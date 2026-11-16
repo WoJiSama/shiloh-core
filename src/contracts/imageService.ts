@@ -1,7 +1,7 @@
 import type { ImageAttempt } from './image.js'
 export type ImageValue = string | Uint8Array
 export interface ImageServiceCandidate { apiUrl: string; apiKey?: string; model: string; name?: string; providerId?: string; size?: string; aspectRatio?: string; quality?: string; [key: string]: unknown }
-export interface ImageServiceRequest { operation: 'generate' | 'edit'; prompt: string; images?: readonly string[]; count?: number; quality?: string; signal?: AbortSignal }
+export interface ImageServiceRequest { operation: 'generate' | 'edit'; prompt: string; images?: readonly string[]; count?: number; quality?: string; signal?: AbortSignal; beforeRequest?: () => void }
 export interface ImageServiceResult { images: ImageValue[]; format: string; provider: string; attempts: ImageAttempt[] }
 export interface ImageServicePorts {
  fetch: typeof fetch

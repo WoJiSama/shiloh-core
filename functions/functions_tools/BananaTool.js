@@ -8,9 +8,10 @@ import {personaFeedbackManager} from '../../domains/memory/PersonaFeedbackManage
 import {serializeMultipartFormData} from '../../utils/multipartFormData.js'
 import {formatMessageSendFailure,getImageBufferMetadata,isMessageSendFailed,resolveImageBuffer} from '../../utils/reliableImageSender.js'
 import {encodeDrawMultipart,checkDrawImageUrl} from '../../dist/backend/modules/toolSupport/infrastructure/bananaAdapters.js'
+import {findQqAccount} from '../../dist/backend/adapters/qqIdentity.js'
 const logger={info:(...args)=>(globalThis.logger||console).info(...args),warn:(...args)=>(globalThis.logger||console).warn(...args),error:(...args)=>(globalThis.logger||console).error(...args)}
 const ports={
- getRedis:()=>globalThis.redis||null,getBot:selfId=>globalThis.Bot?.[selfId]||globalThis.Bot||globalThis.bot||null,getBridge:()=>pluginBridge.instance,
+ getRedis:()=>globalThis.redis||null,getBot:selfId=>{const root=globalThis.Bot||globalThis.bot;return (selfId?findQqAccount(root,selfId):root)||null},getBridge:()=>pluginBridge.instance,
  normalizeImageUrls,guardReply:(...args)=>personaFeedbackManager.guardReply(...args),
  segment:{image:buffer=>globalThis.segment.image(buffer),at:id=>globalThis.segment?.at?.(id)||{type:'at',qq:id},reply:id=>globalThis.segment?.reply?.(id)||{type:'reply',id:String(id),data:{id:String(id)}}},
  logger,resolveImageBuffer,getImageBufferMetadata,isMessageSendFailed,formatMessageSendFailure,isUrlAvailable:url=>checkDrawImageUrl(url,globalThis.fetch),

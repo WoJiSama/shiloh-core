@@ -11,12 +11,16 @@ import type {DrawEvent,DrawOptions,DrawRedis,DrawBot,DrawId} from '../../../cont
 import type {DrawBridge} from '../../../contracts/bananaTool.js';
 import type {TurnTaskFact} from '../../../contracts/turnActionFacts.js';
 import {normalizeDeliveryReceipt} from '../../messaging/domain/deliveryReceipt.js';
+import {withDeliveryGuard} from '../../messaging/infrastructure/deliveryScope.js';
+import {isAgentBindingCurrent} from '../../../contracts/agentBinding.js';
+import {agentBindingToken} from '../../runtime/domain/agentBindings.js';
 import {parseDrawEvent,parseDrawOptions} from './bananaDecoders.js';
 import {toolRecord as record} from '../../../contracts/toolExecution.js';
 import type {AnalysisPorts} from './GoogleAnalysisTool.js';
 interface EditPorts extends AnalysisPorts {getRedis():DrawRedis|null;getBot(id?:DrawId):DrawBot|null;getBridge?():DrawBridge|null;sendImageReliably(event:DrawEvent,image:string):Promise<unknown>;mimeTypes:{extension(type:string):string|false;lookup(path:string):string|false}}
-interface EditInput {apiUrl:string;apiKey:string;model:string;prompt:string;images:readonly string[];stream?:boolean;provider?:string}
-interface EditJob {id:string;opts:DrawOptions;groupId:string;userId:string;messageId:string;messageType:string;selfId:string;sender:NonNullable<DrawEvent['sender']>;createdAt:number;deliveryAttempted?:boolean}
+interface EditInput {apiUrl:string;apiKey:string;model:string;prompt:string;images:readonly string[];stream?:boolean;provider?:string;beforeRequest?:()=>void}
+interface EditJob {id:string;opts:DrawOptions;groupId:string;userId:string;messageId:string;messageType:string;selfId:string;sender:NonNullable<DrawEvent['sender']>;createdAt:number;deliveryAttempted?:boolean;bindingToken?:string}
+const bindingChanged = '角色绑定已改变，原图片编辑任务已停止';
 function errorText(error:unknown):string{return error instanceof Error?error.message:String(error)}
 function text(value:unknown):string{return typeof value==='string'?value:''}
 function first(value:unknown):Record<string,unknown>{return record(Array.isArray(value)?value[0]:null)}
@@ -70,17 +74,20 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
 
     async func(input:Record<string,unknown>, event:unknown) {
         const opts=parseDrawOptions(input), e=parseDrawEvent(event);
+        if (!isAgentBindingCurrent(e)) return {error:bindingChanged};
         const config = this.loadConfig();
         const requestedProvider = this.resolveRequestedProvider(config, opts, e);
         const { provider: _untrustedProvider, ...baseOpts } = opts || {};
         const effectiveOpts = requestedProvider ? { ...baseOpts, provider: requestedProvider } : baseOpts;
         const job = this.createDurableJob(effectiveOpts, e);
-        await this.persistDurableJob(job);
-        await this.recordActionFact(e,{execution:'running'},job.id);
+        this.recoveringJobIds.add(job.id);
         try {
+            await this.persistDurableJob(job);
+            await this.recordActionFact(e,{execution:'running'},job.id);
             return await this.performImageEdit(effectiveOpts, e, {beforeDelivery:async()=>{job.deliveryAttempted=true;await this.persistDurableJob(job)}});
         } finally {
-            await this.removeDurableJob(job.id);
+            try { await this.removeDurableJob(job.id); }
+            finally { this.recoveringJobIds.delete(job.id); }
         }
     }
 
@@ -93,6 +100,7 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
     }
 
     async performImageEdit(opts:DrawOptions, e:DrawEvent, options:{skipProgressNotice?:boolean;beforeDelivery?:()=>Promise<void>} = {}) {
+        if (!isAgentBindingCurrent(e)) return {error:bindingChanged};
         const STREAM = false;
         let progressController = null;
 
@@ -129,6 +137,7 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
             }
 
             // 调用API
+            if (!isAgentBindingCurrent(e)) return {error:bindingChanged};
             const imageUrl = await this.generateConfiguredImageEdit(config, {
                 apiUrl,
                 apiKey,
@@ -136,15 +145,21 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
                 prompt,
                 images,
                 stream: STREAM,
-                provider: requestedProvider
+                provider: requestedProvider,
+                beforeRequest: () => { if (!isAgentBindingCurrent(e)) throw new Error(bindingChanged); },
             });
             const processedUrl = this.extractImageUrl(imageUrl);
 
             if (processedUrl) {
                 await this.recordActionFact(e,{execution:'completed',result:'available'});
                 const deliveryEvent=Object.assign(Object.create(e),{reply:async(payload:unknown)=>{
+                    if (!isAgentBindingCurrent(e)) return {state:'failed',code:'binding_changed'};
                     await options.beforeDelivery?.();
                     await this.recordActionFact(e,{delivery:{state:'unknown'},followUp:{state:'none'}});
+                    if (!isAgentBindingCurrent(e)) {
+                        await this.recordActionFact(e,{delivery:{state:'not_attempted'}});
+                        return {state:'failed',code:'binding_changed'};
+                    }
                     try{
                         const result=await e.reply(payload),outcome=normalizeDeliveryReceipt(result);
                         await this.recordActionFact(e,{delivery:outcome.state==='sent'?{state:'sent',messageId:outcome.messageId}:{state:outcome.state}});
@@ -181,7 +196,8 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
             userId: String(userId || ""),
             messageId: String(messageId || ""),
             messageType: e.message_type || (groupId ? "group" : "private"),
-            selfId: String(e.self_id || e.bot?.uin || ""),
+            selfId: String(e._agentBinding?.target.account.id || e.self_id || e.bot?.uin || ""),
+            ...(e._agentBinding ? {bindingToken:agentBindingToken(e._agentBinding)} : {}),
             sender: {
                 user_id: userId ? Number(userId) : undefined,
                 nickname: e.sender?.nickname || e.nickname || "",
@@ -222,10 +238,17 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
 
     buildRecoveredEvent(job:EditJob):DrawEvent {
         const bot=ports.getBot(job.selfId);
-        if(!bot)throw new Error(`恢复图片编辑找不到机器人 ${job.selfId}`);
+        if(!bot || (job.selfId && String(bot.uin) !== job.selfId))throw new Error(`恢复图片编辑找不到机器人 ${job.selfId}`);
         const groupId=Number(job.groupId)||null,userId=Number(job.userId)||0;
-        return {group_id:groupId,user_id:userId,sender:{...job.sender,user_id:userId},message_id:job.messageId,message_type:job.messageType,self_id:job.selfId||bot.uin||'',bot,
-          reply:async(message:unknown)=>{const peer=groupId?bot.pickGroup?.(groupId):bot.pickFriend?.(userId);if(!peer?.sendMsg)throw new Error('恢复图片编辑缺少投递接口');return peer.sendMsg(message);}};
+        const event:DrawEvent={group_id:groupId,user_id:userId,sender:{...job.sender,user_id:userId},message_id:job.messageId,message_type:job.messageType,self_id:job.selfId||bot.uin||'',bot,
+          reply:async(message:unknown)=>{
+            const peer=groupId?bot.pickGroup?.(groupId):bot.pickFriend?.(userId);
+            if(!peer?.sendMsg)throw new Error('恢复图片编辑缺少投递接口');
+            const isCurrent=()=>isAgentBindingCurrent(event);
+            if(!isCurrent())return {state:'failed',code:'binding_changed'};
+            return await withDeliveryGuard(isCurrent,()=>peer.sendMsg!(message));
+          }};
+        return event;
     }
     async recoverDurableJobs() {
         const keys = await this.scanDurableJobKeys();
@@ -236,21 +259,34 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
             const raw = await store.get(key);
             if (!raw) continue;
             let job:EditJob;
-            try {const rawJob=record(JSON.parse(raw));if(typeof rawJob.id!=='string'||typeof rawJob.selfId!=='string'||typeof rawJob.groupId!=='string'||typeof rawJob.userId!=='string'||typeof rawJob.messageId!=='string'||typeof rawJob.messageType!=='string'||typeof rawJob.createdAt!=='number')throw new Error('invalid job');job={id:rawJob.id,selfId:rawJob.selfId,groupId:rawJob.groupId,userId:rawJob.userId,messageId:rawJob.messageId,messageType:rawJob.messageType,createdAt:rawJob.createdAt,opts:parseDrawOptions(rawJob.opts),sender:{nickname:text(record(rawJob.sender).nickname),card:text(record(rawJob.sender).card)},deliveryAttempted:rawJob.deliveryAttempted===true};} catch {await store.del(key);continue;}
+            try {
+                const rawJob=record(JSON.parse(raw));
+                if(typeof rawJob.id!=='string'||typeof rawJob.selfId!=='string'||typeof rawJob.groupId!=='string'||typeof rawJob.userId!=='string'||typeof rawJob.messageId!=='string'||typeof rawJob.messageType!=='string'||typeof rawJob.createdAt!=='number')throw new Error('invalid job');
+                const bindingToken=rawJob.bindingToken;
+                if(bindingToken!==undefined&&(typeof bindingToken!=='string'||!bindingToken||bindingToken.length>4096))throw new Error('invalid binding');
+                job={id:rawJob.id,selfId:rawJob.selfId,groupId:rawJob.groupId,userId:rawJob.userId,messageId:rawJob.messageId,messageType:rawJob.messageType,createdAt:rawJob.createdAt,opts:parseDrawOptions(rawJob.opts),sender:{nickname:text(record(rawJob.sender).nickname),card:text(record(rawJob.sender).card)},deliveryAttempted:rawJob.deliveryAttempted===true,...(bindingToken?{bindingToken}:{})};
+            } catch {await store.del(key);continue;}
             if(job.deliveryAttempted)continue;
             if (!job.id || this.recoveringJobIds.has(job.id)) continue;
             let event:DrawEvent;
             try{event=this.buildRecoveredEvent(job)}catch(error){this.logWarn(errorText(error));continue;}
+            const bridge=ports.getBridge?.();
+            const expected=job.bindingToken?{token:job.bindingToken}:undefined;
+            const restored=bridge?.restoreDeferredAgentBinding
+                ? bridge.restoreDeferredAgentBinding(event,expected) : expected?'unavailable':'current';
+            if(restored==='unavailable')continue;
+            if(restored==='changed'){await this.removeDurableJob(job.id);continue;}
             this.recoveringJobIds.add(job.id);
             try {
                 await event.reply("刚刚我这边重启了一下，不过这张图的修改要求还记着。我继续处理，完成后直接发出来。");
+                if (!isAgentBindingCurrent(event)) continue;
                 await this.recordActionFact(event,{execution:'running'},job.id);
                 await this.performImageEdit(job.opts || {}, event, { skipProgressNotice: true,beforeDelivery:async()=>{job.deliveryAttempted=true;await this.persistDurableJob(job)} });
             } catch (error) {
                 this.logError(`[图片编辑恢复] 恢复任务失败 id=${job.id}:`, error);
             } finally {
-                await this.removeDurableJob(job.id);
-                this.recoveringJobIds.delete(job.id);
+                try { await this.removeDurableJob(job.id); }
+                finally { this.recoveringJobIds.delete(job.id); }
             }
         }
     }
@@ -303,7 +339,7 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
         selectImageConfigsByProvider(this.resolveImageEditConfigs(config), requestedProvider, "图片编辑");
     }
 
-    async generateConfiguredImageEdit(config:Record<string,unknown>, { apiUrl, apiKey, model, prompt, images, stream = false, provider = "" }:EditInput) {
+    async generateConfiguredImageEdit(config:Record<string,unknown>, { apiUrl, apiKey, model, prompt, images, stream = false, provider = "", beforeRequest }:EditInput) {
         let editConfigs = this.resolveImageEditConfigs(config);
         const requestedProvider = String(provider || "").trim();
         const primaryIsChat = !this.shouldUseImageEditEndpoint(apiUrl);
@@ -316,21 +352,21 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
         if (requestedProvider) {
             if (requestedChatPrimary) {
                 this.logInfo(`[图片渠道] 用户指定 ${requestedProvider}，仅使用当前 chat 图片编辑通道`);
-                return await this.generateChatImageEdit({ apiUrl, apiKey, model, prompt, images, stream });
+                return await this.generateChatImageEdit({apiUrl,apiKey,model,prompt,images,stream,...(beforeRequest?{beforeRequest}:{})});
             }
             editConfigs = selectImageConfigsByProvider(editConfigs, requestedProvider, "图片编辑");
             this.logInfo(`[图片渠道] 用户指定 ${requestedProvider}，本次禁止跨名称 fallback`);
-            return await this.generateImageEdit(editConfigs, prompt, images);
+            return await this.generateImageEdit(editConfigs, prompt, images, beforeRequest);
         }
 
         if (this.shouldUseImageEditEndpoint(apiUrl)) {
             if (!editConfigs.length) throw new Error("未配置可用的图片编辑通道");
-            return await this.generateImageEdit(editConfigs, prompt, images);
+            return await this.generateImageEdit(editConfigs, prompt, images, beforeRequest);
         }
 
         let primaryError:unknown = null;
         try {
-            const chatResult = await this.generateChatImageEdit({ apiUrl, apiKey, model, prompt, images, stream });
+            const chatResult = await this.generateChatImageEdit({apiUrl,apiKey,model,prompt,images,stream,...(beforeRequest?{beforeRequest}:{})});
             if (this.extractImageUrl(chatResult)) return chatResult;
             primaryError = new Error("未接收到有效图片");
         } catch (error) {
@@ -339,13 +375,15 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
 
         if (editConfigs.length) {
             this.logWarn(`[图片编辑] 当前图片编辑通道失败，使用相同原 prompt 尝试下一个 edits 候选: ${errorText(primaryError)}`);
-            return await this.generateImageEdit(editConfigs, prompt, images);
+            return await this.generateImageEdit(editConfigs, prompt, images, beforeRequest);
         }
         throw primaryError || new Error("未接收到有效图片");
     }
 
-    async generateChatImageEdit({ apiUrl, apiKey, model, prompt, images, stream = false }:EditInput) {
+    async generateChatImageEdit({ apiUrl, apiKey, model, prompt, images, stream = false, beforeRequest }:EditInput) {
+        beforeRequest?.();
         const content = await this.buildImageMessages(prompt, images);
+        beforeRequest?.();
         const response = await this.fetchWithTimeout(apiUrl || DEFAULT_CHAT_IMAGE_EDIT_URL, {
             method: "POST",
             headers: {
@@ -364,14 +402,15 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
             : await this.handleChatResponse(response);
     }
 
-    async generateImageEdit(configs:unknown, prompt:string, images:readonly string[]) {
+    async generateImageEdit(configs:unknown, prompt:string, images:readonly string[], beforeRequest?:()=>void) {
         return await generateImageEditWithFallbacks(configs, prompt, images, {
             request: (editConfig, inputPrompt, inputImages, responseFormat) => this.requestImageEdit({
                 apiUrl: text(editConfig.apiUrl),
                 apiKey: text(editConfig.apiKey),
                 model: text(editConfig.model),
                 prompt: inputPrompt,
-                images: inputImages
+                images: inputImages,
+                ...(beforeRequest?{beforeRequest}:{})
             }, responseFormat),
             parseResponse: response => {if(!(response instanceof Response))throw new Error("invalid image response");return this.parseImageEditResponse(response)},
             logInfo: (...args) => this.logInfo(...args),
@@ -379,9 +418,11 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
         });
     }
 
-    async requestImageEdit({ apiUrl, apiKey, model, prompt, images }:EditInput, responseFormat = "") {
+    async requestImageEdit({ apiUrl, apiKey, model, prompt, images, beforeRequest }:EditInput, responseFormat = "") {
+        beforeRequest?.();
         const formData = await this.buildImageEditFormData({ model, prompt, images, responseFormat });
         const multipart = await serializeMultipartFormData(formData);
+        beforeRequest?.();
         return await this.fetchWithTimeout(this.toImageEditUrl(apiUrl), {
             method: "POST",
             headers: {
@@ -534,7 +575,7 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
     logError(...args:unknown[]){ports.logger.warn(...args);}
     async sendProgress(e:DrawEvent, { config = {}, opts = {}, signal }:{config?:Record<string,unknown>;opts?:DrawOptions;signal?:AbortSignal} = {}) {
         const progressConfig = withPersonaSnapshot(config, e);
-        if (!e?.reply || signal?.aborted) return false;
+        if (!e?.reply || signal?.aborted || !isAgentBindingCurrent(e)) return false;
         const reservation = reserveProgressReply(e);
         if (!reservation) return false;
         let deliveryAttempted=false;
@@ -559,7 +600,7 @@ recoveringJobIds:Set<string>;progressFetchImpl:typeof fetch;progressReplyFactory
                 userText: e?.msg || e?.raw_message || opts?.prompt || "",
                 botNames: [progressConfig.persona?.name]
             });
-            if (!guardedText) {
+            if (!guardedText || !isAgentBindingCurrent(e)) {
                 reservation.release();
                 return false;
             }

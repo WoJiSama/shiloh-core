@@ -17,6 +17,11 @@ import {withPersonaSnapshot} from '../../conversation/domain/personaSnapshotConf
 import {parseDrawOptions,parseDrawEvent,parseDrawRecord} from './bananaDecoders.js'
 import type {TurnTaskFact} from '../../../contracts/turnActionFacts.js'
 import {normalizeDeliveryReceipt} from '../../messaging/domain/deliveryReceipt.js'
+import {withDeliveryGuard} from '../../messaging/infrastructure/deliveryScope.js'
+import {KeyedSerialQueue} from '../../messaging/infrastructure/keyedSerialQueue.js'
+import {isAgentBindingCurrent} from '../../../contracts/agentBinding.js'
+import {agentBindingToken} from '../../runtime/domain/agentBindings.js'
+import {configuredConversationKey} from '../../conversation/domain/conversationIdentity.js'
 const errorText=(error:unknown)=>error instanceof Error?error.message:String(error)
 const IMAGE_GENERATION_TIMEOUT_MS = 120000;
 const IMAGE_GENERATION_DONE_MESSAGES = [
@@ -28,6 +33,9 @@ const DRAW_JOB_PREFIX = "ytbot:image_draw_job:";
 const DRAW_QUEUE_PREFIX = "ytbot:image_draw_queue:";
 const DRAW_JOB_TTL_SECONDS = 24 * 60 * 60;
 const imageGenerationScopes = new Map<string,DrawQueue>();
+const durableQueueWrites = new KeyedSerialQueue();
+const liveQueueAdmissions = new Set<string>();
+const bindingChanged = '角色绑定已改变，原绘图任务已停止';
 
 function isReferenceGeneration(opts:DrawOptions = {}) {
   return ["member_avatar", "style_reference", "character_reference"].includes(
@@ -104,6 +112,7 @@ export class BananaTool extends AbstractTool {
 
   async func(rawOpts:unknown, rawEvent:unknown) {
     const opts=parseDrawOptions(rawOpts);const e=parseDrawEvent(rawEvent);
+    if (!isAgentBindingCurrent(e)) return {error:bindingChanged};
     const { prompt } = opts;
     if (!prompt) return "错误：绘图提示词（prompt）不能为空。";
     const config = this.loadConfig();
@@ -128,20 +137,26 @@ export class BananaTool extends AbstractTool {
       notifyFailure: false,
       skipProgressNotice: false
     };
-    const queueState = this.getDrawQueueState(job.scopeKey);
-    await this.persistDrawJob(job);
+    const initialQueue = this.getDrawQueueState(job.scopeKey);
+    if (!initialQueue.activeTask && !initialQueue.recovering) return await this.runDrawJob(job);
 
-    if (queueState.activeTask) {
+    liveQueueAdmissions.add(job.id);
+    try {
+      await this.persistDrawJob(job);
+      const queueState = this.getDrawQueueState(job.scopeKey);
+      if (!queueState.activeTask && !queueState.recovering) return await this.runDrawJob(job);
+
       job.notifyFailure = true;
       job.skipProgressNotice = true;
       queueState.queue.push(job);
-      this.logInfo(`[图片队列] 已排队 scope=${job.scopeKey} requester=${job.requesterName} queue=${queueState.queue.length} active=${queueState.activeTask.requesterName}`);
-      await this.updateDrawTaskStatus(job, "queued", `前面正在帮 ${queueState.activeTask.requesterName || "别人"} 画图`);
+      const activeName = queueState.activeTask?.requesterName || '其他群友';
+      this.logInfo(`[图片队列] 已排队 scope=${job.scopeKey} requester=${job.requesterName} queue=${queueState.queue.length} active=${activeName}`);
+      await this.updateDrawTaskStatus(job, "queued", `前面正在帮 ${activeName} 画图`);
       await this.replyQueuedDraw(e, queueState);
       return `图片生成已排队，前面还有 ${queueState.queue.length} 个任务`;
+    } finally {
+      liveQueueAdmissions.delete(job.id);
     }
-
-    return await this.runDrawJob(job);
   }
 
   async runDrawJob(job:DrawJob) {
@@ -155,15 +170,25 @@ export class BananaTool extends AbstractTool {
       messageId: job.messageId || "",
       startedAt: Date.now()
     };
-    // 先占位再持久化。runNextQueuedDraw 不等待本任务，恢复扫描必须马上看见它在运行。
-    await this.persistDrawJob(job);
-    await this.updateDrawTaskStatus(job, "running", "图片正在生成中");
-
     try {
+      if (!isAgentBindingCurrent(job.e)) return await this.stopDrawJob(job);
+      // Reserve the queue before persisting. Recovery must see the running job immediately.
+      await this.persistDrawJob(job);
+      if (!isAgentBindingCurrent(job.e)) return await this.stopDrawJob(job);
+      await this.updateDrawTaskStatus(job, "running", "图片正在生成中");
+      if (!isAgentBindingCurrent(job.e)) return await this.stopDrawJob(job);
+      let deliveryRecorded = false;
       const result = await this.performDraw(job.opts, job.e, {
-        skipProgressNotice: job.skipProgressNotice
+        skipProgressNotice: job.skipProgressNotice,
+        beforeDelivery: async () => {
+          if (deliveryRecorded) return;
+          const store = this.getRedis();
+          const record = this.serializeDrawJob(job);
+          if (store) await store.set(this.getDurableJobKey(job.id), JSON.stringify({...record, deliveryAttempted:true}), {EX:this.getDurableTtlSeconds()});
+          deliveryRecorded = true;
+        }
       });
-      if (job.notifyFailure && this.isErrorResult(result)) {
+      if (job.notifyFailure && this.isErrorResult(result) && isAgentBindingCurrent(job.e)) {
         await job.e.reply(this.getQueuedFailureMessage(this.serializeResultError(result)));
       }
       await this.markDrawMessageStatus(job, result);
@@ -173,14 +198,20 @@ export class BananaTool extends AbstractTool {
       await this.recordActionFact(job.e,{execution:previous?.result==='available'?'completed':'failed',result:previous?.result==='available'?'available':'unavailable',followUp:{state:'none'}},job.id);
       throw error;
     } finally {
-      queueState.activeTask = null;
       await this.removeDurableDrawJob(job);
       await this.clearDrawTaskStatus(job);
+      queueState.activeTask = null;
       this.runNextQueuedDraw(job.scopeKey);
       setImmediate(() => this.processDurableDrawQueue(job.scopeKey).catch(error => {
         this.logWarn(`[图片队列] 恢复后继续处理队列失败: ${errorText(error)}`);
       }));
     }
+  }
+
+  async stopDrawJob(job:DrawJob) {
+    const result = {error:bindingChanged};
+    await this.markDrawMessageStatus(job, result);
+    return result;
   }
 
   async updateDrawTaskStatus(job:DrawJob, status:string, detail = "") {
@@ -196,7 +227,8 @@ export class BananaTool extends AbstractTool {
         status,
         requesterName: job.requesterName || "",
         detail,
-        scopeKey: job.scopeKey || ""
+        scopeKey: job.scopeKey || "",
+        event: job.e
       });
     } catch (error) {
       this.logWarn(`[图片队列] 同步任务状态失败: ${errorText(error)}`);
@@ -210,7 +242,8 @@ export class BananaTool extends AbstractTool {
       await instance.clearUserToolTaskStatus({
         groupId: job.e?.group_id || "",
         userId: job.requesterId || job.e?.user_id || job.e?.sender?.user_id || "",
-        toolName: this.name
+        toolName: this.name,
+        event: job.e
       });
     } catch (error) {
       this.logWarn(`[图片队列] 清理任务状态失败: ${errorText(error)}`);
@@ -245,6 +278,7 @@ export class BananaTool extends AbstractTool {
         messageId: job.messageId,
         status: failed ? "tool_failed" : "tool_success",
         toolName: this.name,
+        event: job.e,
         error: failed ? this.serializeResultError(result) : ""
       });
     } catch (error) {
@@ -304,7 +338,8 @@ export class BananaTool extends AbstractTool {
       groupId: groupId ? String(groupId) : "",
       messageId: job.messageId || e.message_id || "",
       messageType: e.message_type || (groupId ? "group" : "private"),
-      selfId: e.self_id || e.bot?.uin || "",
+      selfId: e._agentBinding?.target.account.id || e.self_id || e.bot?.uin || "",
+      ...(e._agentBinding ? {bindingToken:agentBindingToken(e._agentBinding)} : {}),
       sender: {
         user_id: userId ? Number(userId) : undefined,
         nickname: e.sender?.nickname || e.nickname || job.requesterName || "",
@@ -353,18 +388,24 @@ export class BananaTool extends AbstractTool {
       bot,
       isGroup
     };
-    event.reply = async message => {
+    const isCurrent = () => isAgentBindingCurrent(event);
+    const send = async (message:unknown) => {
       if (isGroup) {
         const group = bot?.pickGroup?.(groupId!);
+        if (!isCurrent()) return {state:'failed',code:'binding_changed'};
         if (group?.sendMsg) return await group.sendMsg(message);
         if (bot?.sendApi) return await bot.sendApi("send_group_msg", { group_id: groupId, message });
       } else if (userId) {
         const friend = bot?.pickFriend?.(userId);
+        if (!isCurrent()) return {state:'failed',code:'binding_changed'};
         if (friend?.sendMsg) return await friend.sendMsg(message);
         if (bot?.sendApi) return await bot.sendApi("send_private_msg", { user_id: userId, message });
       }
       throw new Error("无法恢复发送上下文");
     };
+    event.reply = async message => isCurrent()
+      ? await withDeliveryGuard(isCurrent, () => send(message))
+      : {state:'failed',code:'binding_changed'};
     return event;
   }
 
@@ -382,9 +423,18 @@ export class BananaTool extends AbstractTool {
   }
 
   async appendDurableQueue(scopeKey:string, jobId:string, ttl = DRAW_JOB_TTL_SECONDS) {
-    const list = await this.readDurableQueue(scopeKey);
-    if (!list.includes(jobId)) list.push(jobId);
-    await this.writeDurableQueue(scopeKey, list, ttl);
+    await durableQueueWrites.run(scopeKey, async () => {
+      const list = await this.readDurableQueue(scopeKey);
+      if (!list.includes(jobId)) list.push(jobId);
+      await this.writeDurableQueue(scopeKey, list, ttl);
+    });
+  }
+
+  async removeDurableQueueEntry(scopeKey:string, jobId:string) {
+    await durableQueueWrites.run(scopeKey, async () => {
+      const list = await this.readDurableQueue(scopeKey);
+      await this.writeDurableQueue(scopeKey, list.filter(id => id !== jobId), this.getDurableTtlSeconds());
+    });
   }
 
   async readDurableQueue(scopeKey:string) {
@@ -417,8 +467,7 @@ export class BananaTool extends AbstractTool {
     if (!store || !job?.id) return;
     try {
       await store.del(this.getDurableJobKey(job.id));
-      const list = await this.readDurableQueue(job.scopeKey);
-      await this.writeDurableQueue(job.scopeKey, list.filter(id => id !== job.id), this.getDurableTtlSeconds());
+      await this.removeDurableQueueEntry(job.scopeKey, job.id);
     } catch (error) {
       this.logWarn(`[图片队列] 清理持久任务失败: ${errorText(error)}`);
     }
@@ -430,7 +479,10 @@ export class BananaTool extends AbstractTool {
     const raw = await store.get(this.getDurableJobKey(jobId));
     if (!raw) return null;
     try {
-      return parseDrawRecord(JSON.parse(raw));
+      const record = parseDrawRecord(JSON.parse(raw));
+      if (record) return record;
+      await store.del(this.getDurableJobKey(jobId));
+      return null;
     } catch {
       await store.del(this.getDurableJobKey(jobId));
       return null;
@@ -481,13 +533,25 @@ export class BananaTool extends AbstractTool {
       if (!ids.length) return;
 
       for (const jobId of ids) {
+        if (liveQueueAdmissions.has(jobId) || queueState.queue.some(job => job.id === jobId)) continue;
         const record = await this.readDurableDrawJob(jobId);
-        if (!record) {
-          await this.writeDurableQueue(scopeKey, ids.filter(id => id !== jobId), this.getDurableTtlSeconds());
+        if (!record || record.id !== jobId || record.scopeKey !== scopeKey || record.deliveryAttempted) {
+          await this.removeDurableQueueEntry(scopeKey, jobId);
           continue;
         }
 
         const job = this.deserializeDrawJob(record);
+        if (!job.e.bot || (record.selfId && String(job.e.bot.uin) !== String(record.selfId))) return;
+        const bridge = this.ports.getBridge();
+        const expected = record.bindingToken ? {token:record.bindingToken} : undefined;
+        const restored = bridge?.restoreDeferredAgentBinding
+          ? bridge.restoreDeferredAgentBinding(job.e, expected)
+          : expected ? 'unavailable' : 'current';
+        if (restored === 'unavailable') return;
+        if (restored === 'changed' || (job.e._agentBinding?.source === 'configured' && this.getDrawScopeKey(job.e) !== scopeKey)) {
+          await this.removeDurableDrawJob(job);
+          continue;
+        }
         this.logInfo(`[图片队列] 恢复未完成绘图任务 scope=${scopeKey} requester=${job.requesterName} message=${job.messageId}`);
         await this.sendRecoveredNotice(job);
         queueState.recovering = false;
@@ -497,11 +561,15 @@ export class BananaTool extends AbstractTool {
         return;
       }
     } finally {
-      if (queueState.recovering) queueState.recovering = false;
+      if (queueState.recovering) {
+        queueState.recovering = false;
+        this.runNextQueuedDraw(scopeKey);
+      }
     }
   }
 
   async sendRecoveredNotice(job:DrawJob) {
+    if (!isAgentBindingCurrent(job.e)) return;
     try {
       await job.e.reply("刚刚我这边重启了一下，不过这张图我还记着呢。我继续画，出来了会直接发给你。");
     } catch (error) {
@@ -509,7 +577,8 @@ export class BananaTool extends AbstractTool {
     }
   }
 
-  async performDraw(opts:DrawOptions, e:DrawEvent, options:{skipProgressNotice?:boolean} = {}) {
+  async performDraw(opts:DrawOptions, e:DrawEvent, options:{skipProgressNotice?:boolean;beforeDelivery?:()=>Promise<void>} = {}) {
+    if (!isAgentBindingCurrent(e)) return {error:bindingChanged};
     const config = this.loadConfig();
     const { prompt, images: rawImages } = opts;
 
@@ -563,6 +632,7 @@ export class BananaTool extends AbstractTool {
       return { error: `${operationLabel}失败: 未检测到有效的图片链接` };
     }
     if (!finalPrompt) return { error: '图片生成失败: 绘图提示词为空' };
+    if (!isAgentBindingCurrent(e)) return {error:bindingChanged};
     let progressController:AbortController|null = null;
     if (!options.skipProgressNotice) {
       progressController = new AbortController();
@@ -575,24 +645,25 @@ export class BananaTool extends AbstractTool {
     }
 
     try {
+      const beforeRequest = () => { if (!isAgentBindingCurrent(e)) throw new Error(bindingChanged); };
       if (!hasReferenceImages && imageGenerationConfigs.length) {
-        const generatedImage = await this.generateImage(imageGenerationConfigs, finalPrompt);
-        await this.replyImageToRequester(e, generatedImage, { aspectRatioIntent });
+        const generatedImage = await this.generateImage(imageGenerationConfigs, finalPrompt, beforeRequest);
+        await this.replyImageToRequester(e, generatedImage, {aspectRatioIntent, beforeDelivery:options.beforeDelivery});
         return '图片生成成功';
       }
 
       if (hasReferenceImages && imageEditConfigs.length) {
-        const editedImage = await this.generateImageEdit(imageEditConfigs, finalPrompt, images);
-        await this.replyImageToRequester(e, editedImage, { aspectRatioIntent });
+        const editedImage = await this.generateImageEdit(imageEditConfigs, finalPrompt, images, beforeRequest);
+        await this.replyImageToRequester(e, editedImage, {aspectRatioIntent, beforeDelivery:options.beforeDelivery});
         return referenceGeneration ? '图片生成成功' : '图片编辑成功';
       }
 
-      const imageUrl = await this.getImageService().chat({ apiUrl, apiKey, model }, finalPrompt, images);
+      const imageUrl = await this.getImageService().chat({ apiUrl, apiKey, model }, finalPrompt, images, undefined, beforeRequest);
 
       const processedUrl = this.extractImageUrl(imageUrl);
 
       if (processedUrl) {
-        await this.replyImageToRequester(e, processedUrl, { aspectRatioIntent });
+        await this.replyImageToRequester(e, processedUrl, {aspectRatioIntent, beforeDelivery:options.beforeDelivery});
         return referenceGeneration ? '图片生成成功' : '图片编辑成功';
       }
       return { error: `${operationLabel}失败` };
@@ -654,6 +725,8 @@ export class BananaTool extends AbstractTool {
   }
 
   getDrawScopeKey(e:DrawEvent) {
+    const configured = configuredConversationKey(e._agentBinding);
+    if (configured) return configured;
     const botId=e.self_id||e.bot?.uin;
     const prefix=botId?`bot:${botId}:`:'';
     if (e?.group_id) return `${prefix}group:${e.group_id}`;
@@ -677,6 +750,7 @@ export class BananaTool extends AbstractTool {
   }
 
   async replyQueuedDraw(e:DrawEvent, queueState:DrawQueue) {
+    if (!isAgentBindingCurrent(e)) return;
     const activeTask = queueState?.activeTask;
     const activeName = activeTask?.requesterName || "别人";
     const sameRequester = activeTask?.requesterId &&
@@ -753,8 +827,8 @@ export class BananaTool extends AbstractTool {
     return this.getImageService().requestEdit(config, prompt, images, format);
   }
 
-  async generateImageEdit(configs:ImageServiceCandidate[], prompt:string, images:string[]) {
-    const result = await this.getImageService().run(configs, { operation: 'edit', prompt, images, count: 1 });
+  async generateImageEdit(configs:ImageServiceCandidate[], prompt:string, images:string[], beforeRequest?:()=>void) {
+    const result = await this.getImageService().run(configs, { operation: 'edit', prompt, images, count: 1, ...(beforeRequest?{beforeRequest}:{}) });
     const image = result.images[0];
     if(image===undefined)throw new Error("图片服务未返回产物");
     return image instanceof Uint8Array ? Buffer.from(image) : image;
@@ -764,8 +838,8 @@ export class BananaTool extends AbstractTool {
     return this.getImageService().requestGeneration(config, prompt, format);
   }
 
-  async generateImage(configs:ImageServiceCandidate[]|ImageServiceCandidate, prompt:string) {
-    const result = await this.getImageService().run(Array.isArray(configs) ? configs : [configs], { operation: 'generate', prompt, count: 1 });
+  async generateImage(configs:ImageServiceCandidate[]|ImageServiceCandidate, prompt:string, beforeRequest?:()=>void) {
+    const result = await this.getImageService().run(Array.isArray(configs) ? configs : [configs], { operation: 'generate', prompt, count: 1, ...(beforeRequest?{beforeRequest}:{}) });
     const image = result.images[0];
     if(image===undefined)throw new Error("图片服务未返回产物");
     return image instanceof Uint8Array ? Buffer.from(image) : image;
@@ -793,7 +867,7 @@ export class BananaTool extends AbstractTool {
     const reservation = reserveProgressReply(e);
     if (!reservation) return false;
     try {
-      if (!e?.reply || signal?.aborted) {
+      if (!e?.reply || signal?.aborted || !isAgentBindingCurrent(e)) {
         reservation.release();
         return false;
       }
@@ -815,7 +889,7 @@ export class BananaTool extends AbstractTool {
         userText: e?.msg || "",
         botNames: hasPersonaSnapshot ? [progressConfig.persona?.name] : [e?.bot?.nickname, this.ports.getBridge()?.getPersonaFor?.(e)?.name ?? this.ports.getBridge()?.config?.persona?.name]
       });
-      if (!guardedMessage) {
+      if (!guardedMessage || !isAgentBindingCurrent(e)) {
         reservation.release();
         return false;
       }
@@ -850,7 +924,7 @@ export class BananaTool extends AbstractTool {
     return { type: "at", qq: userId };
   }
 
-  async replyImageToRequester(e:DrawEvent, image:unknown, context:{aspectRatioIntent?:ImageAspectRatioIntent|null} = {}) {
+  async replyImageToRequester(e:DrawEvent, image:unknown, context:{aspectRatioIntent?:ImageAspectRatioIntent|null;beforeDelivery?: (()=>Promise<void>) | undefined} = {}) {
     const imageBuffer = await this.ports.resolveImageBuffer(image);
     await this.recordActionFact(e,{execution:'completed',result:'available',delivery:{state:'not_attempted'}});
     const metadata = await this.ports.getImageBufferMetadata(imageBuffer);
@@ -872,7 +946,13 @@ export class BananaTool extends AbstractTool {
     let lastError = null;
     for (const buildMessage of attempts) {
       const payload=buildMessage();
+      if (!isAgentBindingCurrent(e)) throw new Error(bindingChanged);
+      await context.beforeDelivery?.();
       await this.recordActionFact(e,{delivery:{state:'unknown'}});
+      if (!isAgentBindingCurrent(e)) {
+        await this.recordActionFact(e,{delivery:{state:'not_attempted'},followUp:{state:'none'}});
+        throw new Error(bindingChanged);
+      }
       try {
         const replyResult = await e.reply(payload);
         const outcome=normalizeDeliveryReceipt(replyResult);

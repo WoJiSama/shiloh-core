@@ -75,10 +75,13 @@ export function createImageService(ports: ImageServicePorts) {
   return ports.encodeMultipart(fields, files)
  }
  async function requestGeneration(config: ImageServiceCandidate, prompt: string, format = '', options: Omit<ImageServiceRequest,'operation'|'prompt'> = {}) {
+  options.beforeRequest?.()
   return timedFetch(config.apiUrl, { method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${config.apiKey}`}, body:JSON.stringify(buildGenerationPayload(config,prompt,format,options.count,options.quality)), ...(options.signal ? { signal:options.signal } : {}) })
  }
  async function requestEdit(config: ImageServiceCandidate, prompt: string, images: readonly string[], format = '', options: Omit<ImageServiceRequest,'operation'|'prompt'> = {}) {
+  options.beforeRequest?.()
   const multipart = await buildEdit(config,prompt,images,format,options.count,options.quality,options.signal)
+  options.beforeRequest?.()
   return timedFetch(config.apiUrl, { method:'POST', headers:{...multipart.headers, Authorization:`Bearer ${config.apiKey || 'sk-xxxxxx'}`}, body: multipart.body, ...(options.signal ? { signal:options.signal } : {}) })
  }
  async function run(configs: readonly ImageServiceCandidate[], request: ImageServiceRequest) {
@@ -105,9 +108,11 @@ export function createImageService(ports: ImageServicePorts) {
   })
   return {...result.value,provider:result.provider,attempts:result.attempts}
  }
- async function chat(config: { apiUrl?:string; apiKey?:string; model?:string },prompt:string,images:readonly string[],signal?:AbortSignal) {
+ async function chat(config: { apiUrl?:string; apiKey?:string; model?:string },prompt:string,images:readonly string[],signal?:AbortSignal,beforeRequest?:()=>void) {
+  beforeRequest?.()
   const content:unknown[] = [{type:'text',text:'你必须至少生成一张高质量的图片:'+prompt}]
   for(const url of images) { if(url) { const data=await ports.loadReference(url,signal); if(!data.startsWith('data:image/'))throw new Error('参考图片转换失败'); content.push({type:'image_url',image_url:{url:data}}) } }
+  beforeRequest?.()
   const response=await timedFetch(config.apiUrl || 'https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${config.apiKey || 'sk-xxxxxx'}`},body:JSON.stringify({model:config.model || 'gemini-3-pro-image-preview',messages:[{role:'user',content}],stream:false}),...(signal?{signal}:{})})
   const data=record(await response.json()); if(!response.ok)throw new Error(`API请求失败: ${response.status} ${record(data.error).message || response.statusText}`)
   const message=record(record(first(data.choices)).message),image=record(first(message.images))

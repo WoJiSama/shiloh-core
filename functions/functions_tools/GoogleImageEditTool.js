@@ -8,6 +8,7 @@ import mimeTypes from 'mime-types'
 import {generateContextualProgressReply} from '../../utils/contextualProgressReply.js'
 import {personaFeedbackManager} from '../../domains/memory/PersonaFeedbackManager.js'
 import {pluginBridge} from '../../utils/pluginBridge.js'
+import {findQqAccount} from '../../dist/backend/adapters/qqIdentity.js'
 export const GoogleImageEditTool=createGoogleImageEditTool({
  loadConfig:()=>YAML.parse(fs.readFileSync(path.join(process.cwd(),'plugins/shiloh-plugin/config/message.yaml'),'utf8')).pluginSettings,
  normalizeImageUrls,imageLoader:getBase64Image,progressReplyFactory:generateContextualProgressReply,
@@ -15,7 +16,7 @@ export const GoogleImageEditTool=createGoogleImageEditTool({
  callApi:(action,params)=>(globalThis.Bot||globalThis.bot)?.sendApi?.(action,params),
  getRedis:()=>globalThis.redis||null,
  getBridge:()=>pluginBridge.instance,
- getBot:id=>{const bot=globalThis.Bot||globalThis.bot;if(!id||String(bot?.uin)===String(id))return bot||null;return bot?.[id]||null},
+ getBot:id=>{const root=globalThis.Bot||globalThis.bot;return (id?findQqAccount(root,id):root)||null},
  sendImageReliably,mimeTypes,
  logger:{info:(...args)=>(globalThis.logger||console).info(...args),warn:(...args)=>(globalThis.logger||console).warn(...args)}
 })

@@ -7,6 +7,19 @@ import {createFileDownload,createTakeFiles,takeSourceMsg} from '../dist/backend/
 import {createUploadedFileProcessor} from '../dist/backend/modules/toolSupport/infrastructure/processUploadedFile.js'
 import {SearchClient} from '../dist/backend/modules/toolSupport/infrastructure/SearchClient.js'
 import {AbstractTool} from '../dist/backend/modules/toolSupport/infrastructure/AbstractTool.js'
+
+test('compiled integer parameters accept safe integers and enforce their numeric range without coercion', () => {
+ class SequenceTool extends AbstractTool {constructor(){super();this.parameters={type:'object',properties:{sourceSeq:{type:'integer',minimum:1,maximum:10}},required:['sourceSeq']}}}
+ const tool=new SequenceTool()
+ for(const sourceSeq of [1,10]) assert.equal(tool.validateParameters({sourceSeq}),true)
+ for(const sourceSeq of ['1',0,11,1.5,NaN,Infinity,Number.MAX_SAFE_INTEGER+1]) assert.notEqual(tool.validateParameters({sourceSeq}),true)
+})
+test('compiled integer array parameters accept safe integers and reject invalid elements', () => {
+ class IntegerArrayTool extends AbstractTool {constructor(){super();this.parameters={type:'object',properties:{values:{type:'array',items:{type:'integer'}}},required:['values']}}}
+ const tool=new IntegerArrayTool()
+ assert.equal(tool.validateParameters({values:[0,1,-2,Number.MAX_SAFE_INTEGER]}),true)
+ for(const value of ['1',1.5,NaN,Infinity,Number.MAX_SAFE_INTEGER+1,undefined,null]) assert.notEqual(tool.validateParameters({values:[1,value]}),true)
+})
 const logger={log(){},error(){}}
 test('compiled tokenizer counts textual multimodal content and history',async()=>{
  const usage=await TotalTokens([{type:'image_url',image_url:'ignored'},{type:'text',text:'hello'}],[{content:'hello'}])
@@ -55,4 +68,8 @@ test('compiled abstract tool normalizes before validation and reports execution 
  assert.match(await tool.execute({},{}),/缺少必填参数/)
  tool.func=async()=>{throw Error('failed')}
  assert.match(await tool.execute({count:2},{}),/^error: 工具 test 执行失败/)
+ tool.func=async()=>{throw Object.assign(Error('accepted then lost'),{uncertain:true})}
+ const unknown=await tool.execute({count:2},{})
+ assert.equal(unknown.status,'unknown')
+ assert.match(unknown.error.message,/核实前不重复执行/)
 })

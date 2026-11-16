@@ -27,6 +27,7 @@ export function parseDrawEvent(value:unknown):DrawEvent {
 export function parseDrawRecord(value:unknown):DrawRecord|null {
  const raw=toolRecord(value)
  if(typeof raw.id!=='string'||!raw.id||typeof raw.scopeKey!=='string'||!raw.scopeKey)return null
+ if(raw.bindingToken!==undefined&&(typeof raw.bindingToken!=='string'||!raw.bindingToken||raw.bindingToken.length>4096))return null
  const sender=toolRecord(raw.sender)
- return {id:raw.id,opts:parseDrawOptions(raw.opts),scopeKey:raw.scopeKey,requesterName:String(raw.requesterName||''),requesterId:String(raw.requesterId||raw.userId||''),userId:String(raw.userId||raw.requesterId||''),groupId:String(raw.groupId||''),messageId:String(raw.messageId||''),messageType:String(raw.messageType||''),selfId:String(raw.selfId||''),sender:{nickname:String(sender.nickname||''),card:String(sender.card||'')},queuedAt:typeof raw.queuedAt==='number'?raw.queuedAt:Date.now(),notifyFailure:raw.notifyFailure===true,skipProgressNotice:raw.skipProgressNotice===true}
+ return {id:raw.id,opts:parseDrawOptions(raw.opts),scopeKey:raw.scopeKey,requesterName:String(raw.requesterName||''),requesterId:String(raw.requesterId||raw.userId||''),userId:String(raw.userId||raw.requesterId||''),groupId:String(raw.groupId||''),messageId:String(raw.messageId||''),messageType:String(raw.messageType||''),selfId:String(raw.selfId||''),sender:{nickname:String(sender.nickname||''),card:String(sender.card||'')},queuedAt:typeof raw.queuedAt==='number'?raw.queuedAt:Date.now(),notifyFailure:raw.notifyFailure===true,skipProgressNotice:raw.skipProgressNotice===true,deliveryAttempted:raw.deliveryAttempted===true,...(raw.bindingToken?{bindingToken:raw.bindingToken}:{})}
 }
