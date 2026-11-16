@@ -6,8 +6,9 @@ import {createDelegatedMemoryStore} from './delegatedMemoryStore.js'
 import {checkDelegatedCaps,formatDelegatedLine,resolvedDelegatedConfig,scoreDelegatedMatch} from '../domain/delegatedMemory.js'
 import {parseOnceTime} from '../../commitments/domain/commitments.js'
 import type {DelegatedMemoryEntry,DelegatedMemoryPorts} from '../../../contracts/delegatedMemory.js'
+import {isAgentBindingCurrent,type AgentBindingTurn,type AgentConversationScope} from '../../../contracts/agentBinding.js'
 
-interface DelegatedEvent {
+interface DelegatedEvent extends AgentBindingTurn {
   group_id?:string|number|undefined
   user_id?:string|number|undefined
   isMaster?:boolean|undefined
@@ -58,78 +59,90 @@ export function createDelegateMemoryRuntime(ports:DelegatedMemoryPorts) {
     }
 
     async func(opts:Record<string,unknown>,e:unknown){
+      return await this.#run(opts,e,false)
+    }
+
+    async executeForOwner(opts:Record<string,unknown>,e:unknown){
+      return await this.#run(opts,e,true)
+    }
+
+    async #run(opts:Record<string,unknown>,e:unknown,ownerOnly:boolean){
       const ev=event(e)
       const action=String(opts.action||'').trim()
-      if(action==='remember')return await remember(opts,ev)
-      if(action==='recall')return await recall(opts,ev)
-      if(action==='list')return await list(ev)
-      if(action==='forget')return await forget(opts,ev)
-      return `未知操作：${action||'(空)'}（可用 remember/recall/list/forget）`
+      if(!['remember','recall','list','forget'].includes(action))return `未知操作：${action||'(空)'}（可用 remember/recall/list/forget）`
+      if(!isAgentBindingCurrent(ev))return 'error: 角色绑定已改变，委托记忆未操作'
+      const binding=ev._agentBinding
+      if(binding&&binding.target.kind!=='group')return '托付记忆是群维度的，请在群里说'
+      const scope: string | AgentConversationScope = binding?.source==='configured' ? binding : binding?.target.id || String(ev.group_id||'')
+      if(!scope)return '托付记忆是群维度的，请在群里说'
+      if(action==='remember')return await remember(opts,ev,scope,ownerOnly)
+      if(action==='recall')return await recall(opts,ev,scope,ownerOnly)
+      if(action==='list')return await list(ev,scope)
+      return await forget(opts,ev,scope)
     }
   }
 
-  async function remember(opts:Record<string,unknown>,ev:DelegatedEvent){
-    const groupId=String(ev.group_id||'')
+  async function remember(opts:Record<string,unknown>,ev:DelegatedEvent,scope:string|AgentConversationScope,ownerOnly:boolean){
     const ownerId=String(ev.user_id||'')
-    if(!groupId)return '托付记忆是群维度的，请在群里说'
     if(!ownerId)return 'error: 缺少托付人身份'
     const content=String(opts.content||'').trim()
     if(!content)return '要记什么事？把用户托付的原话放 content'
     const cfg=resolvedDelegatedConfig(ports.loadConfig())
-    const entries=await store.load(groupId)
-    const capError=checkDelegatedCaps(entries,ownerId,cfg)
-    if(capError)return capError
     const dueAt=String(opts.due_time||'').trim()?Number(parseOnceTime(opts.due_time)||0):0
+    const at=now()
+    const uuid=randomUUID().replaceAll('-','')
     const entry:DelegatedMemoryEntry={
-      id:`dlg_${now()}_${ownerId}_${randomUUID().slice(0,6)}`,
+      id:typeof scope==='string'?`dlg_${at}_${ownerId}_${uuid.slice(0,6)}`:`dlg_${at}_${uuid}`,
       owner:ownerId,ownerName:String(ev.sender?.card||ev.sender?.nickname||ownerId),
       content:content.slice(0,300),dueAt,status:'active',
-      createdAt:now(),updatedAt:now()
+      createdAt:at,updatedAt:at
     }
-    await store.save(groupId,[...entries,entry])
-    ports.logger.info(`[委托记忆] 群 ${groupId} 用户 ${ownerId} 托付「${content.slice(0,40)}」`)
-    return `记下了：「${content.slice(0,80)}」${dueAt?'（到点会自然提起）':''}。轻应一声就行，别报参数。`
+    const capError=await store.update(scope,entries=>{
+      const error=checkDelegatedCaps(entries,ownerId,cfg)
+      return {entries:error?entries:[...entries,entry],result:error}
+    },()=>isAgentBindingCurrent(ev))
+    if(capError)return capError
+    ports.logger.info(`[委托记忆] 群 ${typeof scope==='string'?scope:scope.target.id} 用户 ${ownerId} 托付「${content.slice(0,40)}」`)
+    return `记下了：「${content.slice(0,80)}」${dueAt?'（到点会自然提起）':''}。${ownerOnly?'':'轻应一声就行，别报参数。'}`
   }
 
-  async function recall(opts:Record<string,unknown>,ev:DelegatedEvent){
-    const groupId=String(ev.group_id||'')
-    if(!groupId)return '请在群里问'
+  async function recall(opts:Record<string,unknown>,ev:DelegatedEvent,scope:string|AgentConversationScope,ownerOnly:boolean){
     const query=String(opts.query||'').trim()
     if(!query)return '要找哪件事？把用户问的关键词放 query（或用 list 全量看）'
     const at=now()
-    const entries=(await store.load(groupId)).filter(e=>e.status==='active')
-    if(!entries.length)return '这个群目前没人托付我记过事'
+    const entries=(await store.load(scope)).filter(e=>e.status==='active'&&(!ownerOnly||e.owner===String(ev.user_id||'')))
+    if(!isAgentBindingCurrent(ev))return 'error: 角色绑定已改变，委托记忆未读取'
+    if(!entries.length)return ownerOnly?'你目前还没有托付记忆':'这个群目前没人托付我记过事'
     const scored=entries.map(e=>({e,score:scoreDelegatedMatch(e,query)})).filter(x=>x.score>0)
       .sort((a,b)=>b.score-a.score||b.e.createdAt-a.e.createdAt).slice(0,5)
     if(!scored.length)return `没记住过和「${query.slice(0,30)}」相关的事——不确定的事直说记岔了/没记过，别编`
+    if(ownerOnly)return ['你之前托付过这些事',...scored.map(x=>`- ${x.e.content}`)].join('\n')
     return ['以下是托付的原话（回答时原样引用，不许改写）：',...scored.map(x=>formatDelegatedLine(x.e,at))].join('\n')
   }
 
-  async function list(ev:DelegatedEvent){
-    const groupId=String(ev.group_id||'')
-    if(!groupId)return '请在群里查'
+  async function list(ev:DelegatedEvent,scope:string|AgentConversationScope){
     const ownerId=String(ev.user_id||'')
     const at=now()
-    const entries=(await store.load(groupId)).filter(e=>e.status==='active')
+    const entries=(await store.load(scope)).filter(e=>e.status==='active')
+    if(!isAgentBindingCurrent(ev))return 'error: 角色绑定已改变，委托记忆未读取'
     const visible=ev.isMaster===true?entries:entries.filter(e=>e.owner===ownerId)
     if(!visible.length)return ev.isMaster===true?'这个群目前没有托付记忆':'你还没托付我记过事（群主可看全部）'
-    return [`当前托付记忆（忘掉用 memory_id）：`,...visible.map(e=>formatDelegatedLine(e,at))].join('\n')
+    return [`当前托付记忆（忘掉用 memory_id）：`,...visible.map(e=>`[${e.id}] ${formatDelegatedLine(e,at)}`)].join('\n')
   }
 
-  async function forget(opts:Record<string,unknown>,ev:DelegatedEvent){
-    const groupId=String(ev.group_id||'')
+  async function forget(opts:Record<string,unknown>,ev:DelegatedEvent,scope:string|AgentConversationScope){
     const ownerId=String(ev.user_id||'')
     const shortId=String(opts.memory_id||'').trim()
     if(!shortId)return '要忘掉哪条？先 list 看短 id'
-    const entries=await store.load(groupId)
-    const matches=entries.filter(e=>e.id.includes(shortId))
-    if(!matches.length)return `没找到 id 含「${shortId}」的托付`
-    if(matches.length>1)return `「${shortId}」匹配到 ${matches.length} 条，把 id 抄全一点`
-    const target=matches[0]!
-    if(target.owner!==ownerId&&ev.isMaster!==true)return '只能忘掉自己托付的事（群主可删任何人的）'
-    await store.save(groupId,entries.filter(e=>e.id!==target.id))
-    ports.logger.info(`[委托记忆] 群 ${groupId} 忘掉 ${target.id}「${target.content.slice(0,40)}」`)
-    return `已忘掉：「${target.content.slice(0,60)}」`
+    if(!ownerId)return 'error: 缺少群或托付人身份'
+    return store.update(scope,entries=>{
+      const matches=entries.filter(e=>e.id===shortId||e.id.includes(shortId))
+      if(!matches.length)return {entries,result:`没找到 id 含「${shortId}」的托付`}
+      if(matches.length>1)return {entries,result:`「${shortId}」匹配到 ${matches.length} 条，把 id 抄全一点`}
+      const target=matches[0]!
+      if(target.owner!==ownerId&&ev.isMaster!==true)return {entries,result:'只能忘掉自己托付的事（群主可删任何人的）'}
+      return {entries:entries.filter(e=>e.id!==target.id),result:`已忘掉：「${target.content.slice(0,60)}」`}
+    },()=>isAgentBindingCurrent(ev))
   }
 
   return {DelegateMemoryTool,store}

@@ -4,19 +4,35 @@ import {randomUUID} from 'node:crypto'
 import {AbstractTool} from '../../toolSupport/infrastructure/AbstractTool.js'
 import {sanitizeFinalReplyText} from '../../conversation/domain/replySanitizer.js'
 import {createCommitmentStore} from './commitmentStore.js'
+import {normalizeDeliveryReceipt} from '../../messaging/domain/deliveryReceipt.js'
+import {withDeliveryGuard} from '../../messaging/infrastructure/deliveryScope.js'
+import {agentBindingIdentity,agentBindingToken,agentConversationKey,isPlatformAccount,platformAccountKey} from '../../runtime/domain/agentBindings.js'
+import {isAgentBindingCurrent,type AgentBindingSnapshot,type AgentConversationScope,type ConversationAddress,type PlatformAccountRef} from '../../../contracts/agentBinding.js'
 import {
   advanceCommitmentAfterRun,buildMissAdmissionText,buildRenewalAskText,checkCommitmentCaps,formatCommitmentLine,formatScheduleText,
-  isCommitmentExpired,normalizeSchedule,renderCommitmentCard,renderRenewalCard,resolvedCommitmentConfig,shouldAskRenewal
+  normalizeSchedule,renderCommitmentCard,renderRenewalCard,resolvedCommitmentConfig,shouldAskRenewal
 } from '../domain/commitments.js'
 import type {CommitmentData,CommitmentEvent,CommitmentPorts} from '../../../contracts/commitments.js'
+import type {OutgoingPart} from '../../../contracts/platformMessage.js'
 
 function event(value:unknown):CommitmentEvent {
   return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as CommitmentEvent:{}
 }
 
+function taskVisible(c:CommitmentData,groupId:string,binding?:AgentBindingSnapshot):boolean {
+  if(c.scope) {
+    if(binding?.source!=='configured'||agentConversationKey(c.scope)!==agentConversationKey(binding))return false
+    return !c.importedReminder||c.bindingIdentity===agentBindingIdentity(binding)
+  }
+  return binding?.source!=='configured'&&c.group_id===groupId
+}
+
+const BINDING_CHANGED = '角色绑定已改变，原承诺已停止'
+
 export function createCommitmentRuntime(ports:CommitmentPorts) {
   const store=createCommitmentStore({redis:ports.redis,logger:ports.logger})
   const now=()=>ports.now?ports.now():Date.now()
+  const privatePeerFor=(target:ConversationAddress)=>ports.resolvePrivatePeer ? ports.resolvePrivatePeer(target) : target.id
 
   class CommitmentTool extends AbstractTool {
     constructor(){
@@ -43,13 +59,13 @@ export function createCommitmentRuntime(ports:CommitmentPorts) {
       this.parameters={
         type:'object',
         properties:{
-          action:{type:'string',enum:['create','list','cancel','renew'],description:'create 创建承诺；list 查看当前群承诺；cancel 取消（commitment_id 填 list 里的短 id）；renew 续期（创建人说"续"时用）'},
+          action:{type:'string',enum:['create','list','cancel','renew'],description:'create 创建承诺；list 查看当前群承诺；cancel 取消（commitment_id 填 list 里的完整 id）；renew 续期（创建人说"续"时用）'},
           intent:{type:'string',description:'用户托付的原话（含时间语境），如"每天中午12点在群里发三角洲今日密码"。create 必填'},
           schedule_kind:{type:'string',enum:['once','daily'],description:'once=一次性；daily=每天循环'},
           schedule_time:{type:'string',description:'once 填 ISO 8601 带 +08:00（如 2026-11-10T12:00:00+08:00）；daily 填 HH:mm（如 12:00）'},
           deliver:{type:'string',enum:['agent','static'],description:'agent=到点我自己动手完成（默认）；static=到点直接发固定文字'},
           static_message:{type:'string',description:'deliver=static 时必填：到点要发的原文'},
-          commitment_id:{type:'string',description:'cancel/renew 时填 list 结果里的短 id'}
+          commitment_id:{type:'string',description:'cancel/renew 时填 list 结果里的完整 id'}
         },
         required:['action'],
         additionalProperties:false
@@ -57,18 +73,38 @@ export function createCommitmentRuntime(ports:CommitmentPorts) {
     }
 
     async func(opts:Record<string,unknown>,e:unknown){
+      const outcome = await this.executeWithReceipt(opts, e)
+      return typeof outcome === 'string' ? outcome : outcome.content
+    }
+
+    async executeWithReceipt(opts:Record<string,unknown>,e:unknown){
       const ev=event(e)
       const action=String(opts.action||'').trim()
-      if(action==='create')return await create(opts,ev)
-      if(action==='list')return await list(ev)
-      if(action==='cancel')return await cancel(opts,ev)
-      if(action==='renew')return await renew(opts,ev)
-      return `未知操作：${action||'(空)'}（可用 create/list/cancel/renew）`
+      if(!['create','list','cancel','renew'].includes(action))return `未知操作：${action||'(空)'}（可用 create/list/cancel/renew）`
+      if(!isAgentBindingCurrent(ev))return 'error: 角色绑定已改变，承诺未操作'
+      const binding=ev._agentBinding
+      const groupId=binding ? (binding.target.kind==='group' ? binding.target.id : '') : String(ev.group_id||'')
+      const scope=binding?.source==='configured'&&groupId?{agentId:binding.agentId,target:binding.target}:undefined
+      if(action==='create')return await create(opts,ev,groupId,scope)
+      if(action==='list')return groupId?await list(ev,groupId):'承诺是群维度的，请在群里查'
+      if(binding?.source==='configured'&&!groupId)return '承诺是群维度的，请在群里查'
+      if(action==='cancel')return await cancel(opts,ev,groupId)
+      return await renew(opts,ev,groupId)
+    }
+
+    async managePrivateReminder(opts:Record<string,unknown>,ev:CommitmentEvent){
+      const binding=ev._agentBinding
+      if(binding?.source!=='configured'||binding.target.kind!=='private'||privatePeerFor(binding.target)!==String(ev.user_id||'')||!isAgentBindingCurrent(ev)) {
+        return '这条私聊提醒当前不可操作。'
+      }
+      const owner={...ev,isMaster:false}
+      if(opts.action==='list')return await list(owner,'')
+      if(opts.action==='cancel')return await cancel(opts,owner,'')
+      return '私聊支持查看和取消已接续的提醒。'
     }
   }
 
-  async function create(opts:Record<string,unknown>,ev:CommitmentEvent){
-    const groupId=String(ev.group_id||'')
+  async function create(opts:Record<string,unknown>,ev:CommitmentEvent,groupId:string,scope?:AgentConversationScope){
     const creatorId=String(ev.user_id||'')
     if(!groupId)return '承诺只能在群里创建（私聊没有群的上下文）'
     if(!creatorId)return 'error: 缺少创建人身份'
@@ -77,12 +113,12 @@ export function createCommitmentRuntime(ports:CommitmentPorts) {
 
     const cfg=resolvedCommitmentConfig(ports.loadConfig())
     const active=await store.listActiveCommitments()
-    const capError=checkCommitmentCaps(active,groupId,creatorId,cfg)
+    const capError=checkCommitmentCaps(active.filter(c=>taskVisible(c,groupId,ev._agentBinding)),groupId,creatorId,cfg)
     if(capError)return capError
 
     const deliver=opts.deliver==='static'?'static':'agent'
     if(deliver==='agent'){
-      const simGroup=await ports.isSimulationGroup(groupId)
+      const simGroup=await ports.isSimulationGroup(groupId,scope?.target)
       if(!simGroup)return '这个群没开仿真模式，到点需要我自己动手的活干不了；固定文字的定时发送可以（deliver=static 并给 static_message）'
     }
     const staticMessage=deliver==='static'?String(opts.static_message||'').trim():''
@@ -92,9 +128,10 @@ export function createCommitmentRuntime(ports:CommitmentPorts) {
     const normalized=normalizeSchedule(opts.schedule_kind,opts.schedule_time,at)
     if('error'in normalized)return normalized.error
 
-    const botId=String((ports.getBot()?.uin)||'')
+    const botId=ev._agentBinding?.target.account.id || String(ev.self_id||ev.bot?.uin||ports.getBot()?.uin||'')
+    const uuid=randomUUID().replaceAll('-','')
     const commitment:CommitmentData={
-      id:`cmt_${at}_${creatorId}_${randomUUID().slice(0,6)}`,
+      id:scope?`cmt_${at}_${uuid}`:`cmt_${at}_${creatorId}_${uuid.slice(0,6)}`,
       group_id:groupId,creator_id:creatorId,
       creator_name:String(ev.sender?.card||ev.sender?.nickname||creatorId),
       intent:intent.slice(0,200),
@@ -102,74 +139,145 @@ export function createCommitmentRuntime(ports:CommitmentPorts) {
       static_message:staticMessage||null,
       expiry_at:at+cfg.defaultExpiryDays*86400_000,
       next_run_at:normalized.nextRunAt,status:'active',
-      last_run_at:0,last_result:'',retry_count:0,created_at:at,bot_id:botId
+      last_run_at:0,last_result:'',retry_count:0,created_at:at,bot_id:botId,
+      ...(scope?{scope}:{}),
+      ...(ev._agentBinding?{bindingIdentity:agentBindingIdentity(ev._agentBinding)}:{}),
     }
-    await store.createCommitment(commitment)
+    await store.createCommitment(commitment, active=>{
+      const error=checkCommitmentCaps(active.filter(c=>taskVisible(c,groupId,ev._agentBinding)),groupId,creatorId,cfg)
+      if(error)throw new Error(error)
+    },()=>isAgentBindingCurrent(ev))
     ports.logger.info(`[承诺] 群 ${groupId} 用户 ${creatorId} 创建 ${commitment.schedule.kind}「${intent.slice(0,40)}」下次 ${formatScheduleText(commitment.schedule)}`)
     const deliverNote=deliver==='agent'?'到点我来办':'到点会原样发出来'
-    return `已记下：「${intent}」——${formatScheduleText(commitment.schedule)}，${deliverNote}（${cfg.defaultExpiryDays} 天后到期会再确认要不要续）。跟用户轻确认一句就行，别念参数。`
+    return {
+      content: `已记下：「${intent}」——${formatScheduleText(commitment.schedule)}，${deliverNote}（${cfg.defaultExpiryDays} 天后到期会再确认要不要续）。跟用户轻确认一句就行，别念参数。`,
+      confirmation: `已登记${formatScheduleText(commitment.schedule)}的定时${deliver === 'static' ? '文字提醒' : '任务'}，编号 ${commitment.id}。`,
+    }
   }
 
-  async function list(ev:CommitmentEvent){
-    const groupId=String(ev.group_id||'')
-    if(!groupId)return '承诺是群维度的，请在群里查'
+  async function list(ev:CommitmentEvent,groupId:string){
     const userId=String(ev.user_id||'')
-    const active=(await store.listActiveCommitments()).filter(c=>c.group_id===groupId)
+    const active=(await store.listActiveCommitments()).filter(c=>taskVisible(c,groupId,ev._agentBinding))
+    if(!isAgentBindingCurrent(ev))return 'error: 角色绑定已改变，承诺未读取'
     const visible=ev.isMaster===true?active:active.filter(c=>c.creator_id===userId)
+    if(!groupId){
+      if(!visible.length)return '你目前没有待发的一次性提醒。'
+      const at=now()
+      return ['你的待发提醒（取消用 commitment_id）',...visible.map(c=>formatCommitmentLine(c,at))].join('\n')
+    }
     if(!visible.length)return ev.isMaster===true?'这个群目前没有任何定时托付':'你名下目前没有定时托付（群主/管理可看全部）'
     const at=now()
     return [`当前群的定时托付（取消用 commitment_id）：`,...visible.map(c=>formatCommitmentLine(c,at))].join('\n')
   }
 
-  async function cancel(opts:Record<string,unknown>,ev:CommitmentEvent){
-    const groupId=String(ev.group_id||'')
+  async function cancel(opts:Record<string,unknown>,ev:CommitmentEvent,groupId:string){
     const shortId=String(opts.commitment_id||'').trim()
-    if(!shortId)return '要取消哪个？先 list 看短 id'
-    const active=(await store.listActiveCommitments()).filter(c=>c.group_id===groupId)
+    if(!shortId)return '要取消哪个？先 list 看完整 id'
+    const active=(await store.listActiveCommitments()).filter(c=>taskVisible(c,groupId,ev._agentBinding))
+    if(!isAgentBindingCurrent(ev))return 'error: 角色绑定已改变，承诺未取消'
     const matches=active.filter(c=>c.id.includes(shortId))
     if(!matches.length)return `没找到 id 含「${shortId}」的托付，先 list 确认`
     if(matches.length>1)return `「${shortId}」匹配到 ${matches.length} 条，把 id 抄全一点`
     const target=matches[0]!
     const userId=String(ev.user_id||'')
     if(target.creator_id!==userId&&ev.isMaster!==true)return '只能取消自己创建的托付（群主/管理可取消任何人的）'
-    await store.cancelCommitment(target.id)
-    ports.logger.info(`[承诺] 群 ${groupId} 取消 ${target.id}「${target.intent.slice(0,40)}」`)
+    if(!await store.cancelCommitment(target.id,()=>isAgentBindingCurrent(ev)))return '托付已经结束、已取消或角色绑定已改变'
+    if(groupId)ports.logger.info(`[承诺] 群 ${groupId} 取消 ${target.id}「${target.intent.slice(0,40)}」`)
     return `已取消：「${target.intent.slice(0,60)}」（${formatScheduleText(target.schedule)}）`
   }
 
   /** 续期:到期前问询后创建人说"续"→ 顺延一个默认周期,重置问询标记 */
-  async function renew(opts:Record<string,unknown>,ev:CommitmentEvent){
-    const groupId=String(ev.group_id||'')
+  async function renew(opts:Record<string,unknown>,ev:CommitmentEvent,groupId:string){
     const shortId=String(opts.commitment_id||'').trim()
-    if(!shortId)return '要续哪个？先 list 看短 id'
-    const active=(await store.listActiveCommitments()).filter(c=>c.group_id===groupId)
+    if(!shortId)return '要续哪个？先 list 看完整 id'
+    const active=(await store.listActiveCommitments()).filter(c=>taskVisible(c,groupId,ev._agentBinding))
+    if(!isAgentBindingCurrent(ev))return 'error: 角色绑定已改变，承诺未续期'
     const matches=active.filter(c=>c.id.includes(shortId))
     if(!matches.length)return `没找到 id 含「${shortId}」的托付（可能已结束或已到期），先 list 确认`
     if(matches.length>1)return `「${shortId}」匹配到 ${matches.length} 条，把 id 抄全一点`
     const target=matches[0]!
     const userId=String(ev.user_id||'')
     if(target.creator_id!==userId&&ev.isMaster!==true)return '只能续自己创建的托付（群主/管理可续任何人的）'
+    if(target.importedReminder)return '这是一条一次性提醒，不能续期。需要另一个时间的话可以新建提醒。'
     const cfg=resolvedCommitmentConfig(ports.loadConfig())
     const at=now()
-    const updated={...target,expiry_at:at+cfg.defaultExpiryDays*86400_000,renewal_asked_at:0}
-    await store.commitRunOutcome(updated)
+    if(!await store.updateActive(target.id,current=>({...current,expiry_at:at+cfg.defaultExpiryDays*86400_000,renewal_asked_at:0}),()=>isAgentBindingCurrent(ev)))return '托付已结束、已取消或角色绑定已改变，未续期'
     ports.logger.info(`[承诺] 群 ${groupId} 续期 ${target.id}「${target.intent.slice(0,40)}」至 ${cfg.defaultExpiryDays} 天后`)
     return `已续期：「${target.intent.slice(0,60)}」再跑 ${cfg.defaultExpiryDays} 天（到期前会再问一次）。轻确认一句就行，别念参数。`
   }
 
-  /** 群内通知(失约明说/续约问询):static 直发出站红线——先 sanitize 再发;失败只记日志 */
-  async function sendGroupNotice(c:CommitmentData,text:string){
-    try{
-      const Bot=ports.getBot(c.bot_id||undefined)||ports.getBot()
-      if(!Bot?.sendApi)throw new Error('机器人未连接')
-      const safe=sanitizeFinalReplyText(text)
-      await Bot.sendApi('send_group_msg',{
+  function targetFor(c:CommitmentData):ConversationAddress | undefined {
+    if(c.scope)return c.scope.target
+    const accountId=c.bot_id || String(ports.getBot()?.uin||'')
+    if(accountId)return {account:{platform:'qq',namespace:'global',id:accountId},kind:'group',id:c.group_id}
+    return undefined
+  }
+
+  function captureTaskGuard(c:CommitmentData,target:ConversationAddress | undefined): (()=>boolean) | null | undefined {
+    const resolve=ports.resolveBinding
+    const snapshot=target&&resolve?.(target)
+    if(c.scope){
+      if(snapshot?.source!=='configured'||agentConversationKey(snapshot)!==agentConversationKey(c.scope))return null
+    }else if(resolve&&target&&snapshot?.source!=='legacy'){
+      return null
+    }
+    const token=snapshot?agentBindingToken(snapshot):undefined
+    if(c.bindingIdentity&&(!snapshot||c.bindingIdentity!==agentBindingIdentity(snapshot)))return null
+    if(target?.kind==='private'){
+      const recipient=privatePeerFor(target)
+      if(recipient===undefined)return undefined
+      if(recipient!==c.creator_id)return null
+    }
+    let valid=true
+    return () => {
+      if(!valid)return false
+      valid=false
+      try {
+        const live=target&&resolve?.(target)
+        valid=(live?agentBindingToken(live):undefined)===token&&
+          (target?.kind!=='private'||privatePeerFor(target)===c.creator_id)
+      } catch { /* The binding could not be revalidated. */ }
+      return valid
+    }
+  }
+
+  function bindingChangedError() {
+    return Object.assign(new Error(BINDING_CHANGED),{bindingChanged:true})
+  }
+
+  async function sendTaskText(c:CommitmentData,text:string,target:ConversationAddress | undefined,isCurrent:()=>boolean) {
+    if(!isCurrent())throw bindingChangedError()
+    const safe=sanitizeFinalReplyText(text)
+    if(!safe&&c.importedReminder)throw new Error('提醒文字无法发送')
+    const body=` ${safe}`
+    if(c.scope){
+      if(!target||!ports.messageActions)throw new Error('承诺会话的消息适配器不可用')
+      const {platform,namespace}=target.account
+      const parts:OutgoingPart[]=target.kind==='private'? [{kind:'text',text:safe}]
+        : [{kind:'mention',user:{platform,namespace,id:c.creator_id}},{kind:'text',text:body}]
+      const result=await sendWithDeadline(()=>ports.messageActions!.send({
+        version:1,kind:'message.send',target,parts,
+      },{isCurrent}))
+      assertSent(result)
+    }else{
+      const bot=ports.getBot(target?.account.id||c.bot_id||undefined)
+      if(!bot?.sendApi)throw new Error('绑定的机器人未连接')
+      if(!isCurrent())throw bindingChangedError()
+      const result=await sendWithDeadline(()=>withDeliveryGuard(isCurrent,()=>bot.sendApi!('send_group_msg',{
         group_id:Number(c.group_id),
-        message:[
-          {type:'at',data:{qq:c.creator_id}},
-          {type:'text',data:{text:` ${safe}`}}
-        ]
-      })
+        message:[{type:'at',data:{qq:c.creator_id}},{type:'text',data:{text:body}}],
+      })))
+      assertSent(result)
+    }
+  }
+
+  /** 群内通知(失约明说/续约问询)，发送失败只记日志。 */
+  async function sendGroupNotice(c:CommitmentData,text:string,isCurrent?:()=>Promise<boolean>){
+    try{
+      if(isCurrent&&!await isCurrent())return
+      const target=targetFor(c)
+      const guard=captureTaskGuard(c,target)
+      if(guard)await sendTaskText(c,text,target,guard)
     }catch(error){
       ports.logger.warn(`[承诺] 群 ${c.group_id} 通知发送失败(明说/续约未送达,哨兵会看到失败日志): ${error instanceof Error?error.message:String(error)}`)
     }
@@ -178,85 +286,171 @@ export function createCommitmentRuntime(ports:CommitmentPorts) {
   /** 终态失败收口:记 faillog(哨兵告警)+ 失约明说(失败可见比失约本身伤信任得多) */
   async function finalizeFailure(c:CommitmentData,reason:string,at:number){
     await store.appendFailLog({id:c.id,intent:c.intent,group_id:c.group_id,reason:reason.slice(0,80),at}).catch(()=>{})
-    await sendGroupNotice(c,buildMissAdmissionText(c,reason))
+    if(!c.importedReminder)await sendGroupNotice(c,buildMissAdmissionText(c,reason))
   }
 
   /** 续约问询扫描(10 分钟一拍,闭内冷却):到期前 3 天问一次,只问一次 */
-  let nextRenewalScanAt=0
-  async function maybeAskRenewals(){
+  const nextRenewalScanAt=new Map<string,number>()
+  async function maybeAskRenewals(key:string,handles:(c:CommitmentData)=>boolean){
     const at=now()
-    if(at<nextRenewalScanAt)return
-    nextRenewalScanAt=at+10*60_000
+    if(at<(nextRenewalScanAt.get(key)??0))return
+    nextRenewalScanAt.set(key,at+10*60_000)
     const active=await store.listActiveCommitments()
     for(const c of active){
       if(!shouldAskRenewal(c,at))continue
       try{
-        if(c.deliver==='agent'&&await ports.isSimulationGroup(c.group_id)){
-          await ports.wakeSim(c.group_id,renderRenewalCard(c,at))
+        if(!handles(c))continue
+        const target=targetFor(c)
+        const guard=captureTaskGuard(c,target)
+        if(!guard)continue
+        if(!await store.updateActive(c.id,current=>shouldAskRenewal(current,at)?{...current,renewal_asked_at:at}:null,guard))continue
+        const isCurrent=async()=>{const current=await store.getCommitment(c.id);return current?.status==='active'&&current.renewal_asked_at===at&&guard()}
+        if(c.deliver==='agent'&&await ports.isSimulationGroup(c.group_id,target)){
+          await ports.wakeSim(c.group_id,renderRenewalCard(c,at),{taskId:`renewal:${c.id}:${at}`,botId:c.bot_id,isCurrent},target)
         }else{
-          await sendGroupNotice(c,buildRenewalAskText(c,at))
+          await sendGroupNotice(c,buildRenewalAskText(c,at),isCurrent)
         }
-        await store.commitRunOutcome({...c,renewal_asked_at:at})
-        ports.logger.info(`[承诺] ${c.id}「${c.intent.slice(0,40)}」续约问询已发出`)
+        ports.logger.info(`[承诺] ${c.id}「${c.intent.slice(0,40)}」续约问询已尝试（不自动重复）`)
       }catch(error){
-        ports.logger.warn(`[承诺] ${c.id} 续约问询失败(下轮扫描重试): ${error instanceof Error?error.message:String(error)}`)
+        ports.logger.warn(`[承诺] ${c.id} 续约问询失败(不自动重复): ${error instanceof Error?error.message:String(error)}`)
       }
     }
   }
 
-  /**
-   * 到期兑现:static 直发(经 sanitize);agent 唤醒仿真群回合。daily 立即顺延防双发;
-   * 失败 +10s 重试至 3 次,终态 failed 时失约明说+记 faillog(哨兵告警)。
-   * 续约问询扫描同拍运行(10 分钟冷却),到期前 3 天问创建人一次。
-   */
-  async function commitmentTick(){
-    await maybeAskRenewals().catch(()=>{})
-    const at=now()
-    const due=await store.takeDueCommitments(at)
+  function uncertainError(message:string){return Object.assign(new Error(message),{uncertain:true})}
+  function assertSent(result:unknown){
+    const receipt=normalizeDeliveryReceipt(result)
+    if(receipt.state==='sent')return
+    if(receipt.state==='unknown')throw uncertainError('发送回执缺失或无法确认，停止自动重发')
+    if(receipt.code==='binding_changed')throw bindingChangedError()
+    throw Object.assign(new Error(`发送被明确拒绝${receipt.code?` (${receipt.code})`:''}`),{safeToRetry:true})
+  }
+  async function sendWithDeadline(send:()=>Promise<unknown>):Promise<unknown>{
+    let timer:ReturnType<typeof setTimeout>|undefined
+    try{
+      return await Promise.race([send().catch(error=>{throw uncertainError(error instanceof Error?error.message:String(error))}),new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(uncertainError('发送超时，结果未知')),60_000)})])
+    }finally{if(timer)clearTimeout(timer)}
+  }
+  const ticks=new Map<string,Promise<void>>()
+  let accountScoped=false
+  let recovery:Promise<void>|undefined
+  async function runTick(accountKey?:string){
+    recovery??=store.recoverLegacyIndex().catch(error=>{recovery=undefined;throw error})
+    await recovery
+    const handles=(c:CommitmentData)=>{
+      if(accountKey!==undefined&&(!c.scope||platformAccountKey(c.scope.target.account)!==accountKey))return false
+      return ports.handlesTarget?.(targetFor(c))!==false
+    }
+    await maybeAskRenewals(accountKey??'',handles).catch(error=>ports.logger.warn(`[承诺] 续约扫描失败: ${String(error)}`))
+    const due=await store.takeDueCommitments(now(),handles)
     if(!due.length)return
-    for(const c of due){
-      try{
-        if(c.status!=='active')continue
-        if(isCommitmentExpired(c,at)){
-          await store.commitRunOutcome({...c,status:'expired',last_result:'已到期'})
-          ports.logger.info(`[承诺] ${c.id}「${c.intent.slice(0,40)}」到期收档`)
-          continue
-        }
-        if(c.deliver==='agent'){
-          const simGroup=await ports.isSimulationGroup(c.group_id)
-          if(!simGroup){
-            await store.commitRunOutcome({...c,status:'failed',last_run_at:at,last_result:'群未开仿真,无法兑现'})
-            await finalizeFailure(c,'群没开仿真模式，到点干不了活',at)
+    // Keep every claim alive while another group/task is executing. Different claims retain identity.
+    const pending=new Map(due.map(c=>[c.id,c]))
+    let heartbeatRun:Promise<unknown>|undefined
+    const heartbeat=setInterval(()=>{
+      if(heartbeatRun)return
+      heartbeatRun=Promise.allSettled([...pending.values()].map(c=>store.refreshClaim(c,now())))
+        .finally(()=>{heartbeatRun=undefined})
+    },30_000)
+    heartbeat.unref?.()
+    try{
+      for(const c of due){
+        let externalStarted=false
+        try{
+          if(!await store.refreshClaim(c,now()))continue
+          if(await store.expireClaim(c,now())!=='current')continue
+          if(!handles(c)){
+            await store.releaseUnstartedClaim(c)
             continue
           }
-          await ports.wakeSim(c.group_id,renderCommitmentCard(c))
-          const advanced=advanceCommitmentAfterRun(c,at)
-          await store.commitRunOutcome({...c,last_run_at:at,retry_count:0,last_result:'dispatched',next_run_at:advanced.nextRunAt??0,status:advanced.status})
-          ports.logger.info(`[承诺] ${c.id} 已唤醒仿真群 ${c.group_id} 兑现「${c.intent.slice(0,40)}」`)
-          continue
-        }
-        // static 直发:出站红线,先 sanitize 再出机
-        const Bot=ports.getBot(c.bot_id||undefined)||ports.getBot()
-        if(!Bot?.sendApi)throw new Error('机器人未连接')
-        const text=sanitizeFinalReplyText(String(c.static_message||c.intent))
-        await Bot.sendApi('send_group_msg',{
-          group_id:Number(c.group_id),
-          message:[
-            {type:'at',data:{qq:c.creator_id}},
-            {type:'text',data:{text:` ${text}`}}
-          ]
-        })
-        const advanced=advanceCommitmentAfterRun(c,at)
-        await store.commitRunOutcome({...c,last_run_at:at,retry_count:0,last_result:'sent',next_run_at:advanced.nextRunAt??0,status:advanced.status})
-        ports.logger.info(`[承诺] ${c.id} 静态兑现到群 ${c.group_id}「${c.intent.slice(0,40)}」`)
-      }catch(error){
-        const reason=String(error instanceof Error?error.message:error).slice(0,80)
-        ports.logger.error(`[承诺] 兑现 ${c.id} 失败:`,error)
-        const outcome=await store.requeueForRetry({...c,last_result:reason},at).catch(()=>'retrying' as const)
-        if(outcome==='failed')await finalizeFailure(c,reason,at)
+          const target=targetFor(c)
+          let guard
+          try { guard=captureTaskGuard(c,target) } catch (error) {
+            // An invalid config is recoverable. Leave this claim unstarted so
+            // the same task can be considered after the lease and config recover.
+            ports.logger.warn(`[承诺] ${c.id} 暂停领取：${error instanceof Error?error.message:String(error)}`)
+            continue
+          }
+          if(guard===undefined){
+            await store.releaseUnstartedClaim(c)
+            continue
+          }
+          if(guard===null)throw bindingChangedError()
+          if(c.deliver==='agent'){
+            if(!await ports.isSimulationGroup(c.group_id,target)){
+              if(!ports.waitForSimulation)throw new Error('群未开仿真，无法兑现')
+              await store.releaseUnstartedClaim(c)
+              continue
+            }
+            const result=await ports.wakeSim(c.group_id,renderCommitmentCard(c),{
+              taskId:c.run_id!,botId:c.bot_id,
+              isCurrent:()=>store.refreshClaim(c,now(),false,guard),
+              beforeExecution:async()=>{const allowed=await store.refreshClaim(c,now(),true,guard);if(allowed)externalStarted=true;return allowed},
+            },target)
+            if(!result||result.status==='unknown')throw uncertainError(result?.error||'仿真执行没有返回可确认的回执')
+            if(result.status==='deferred'){
+              if(externalStarted||result.sent>0||(result.actions||0)>0)throw uncertainError('承诺已开始执行，无法安全延期')
+              await store.releaseUnstartedClaim(c)
+              continue
+            }
+            if(result.status==='cancelled'){
+              await store.commitRunOutcome({...c,status:'cancelled',next_run_at:0,last_result:result.error||'执行前已停止'})
+              continue
+            }
+            if(result.status!=='succeeded'||!(result.sent>0||(result.actions||0)>0)){
+              if(result.sent>0||(result.actions||0)>0)throw uncertainError(result.error||'部分动作已执行，不能自动重试整个任务')
+              throw Object.assign(new Error(result.error||'仿真回合没有确认执行动作'),{safeToRetry:true})
+            }
+            externalStarted=true
+          }else{
+            if(!await store.refreshClaim(c,now(),true,guard)){
+              if(!guard())throw bindingChangedError()
+              continue
+            }
+            await sendTaskText(c,String(c.static_message||c.intent),target,guard)
+            externalStarted=true
+          }
+          const advanced=advanceCommitmentAfterRun(c,now())
+          await store.commitRunOutcome({...c,last_run_at:now(),retry_count:0,last_result:c.deliver==='agent'?'执行回合已确认动作':'sent',next_run_at:advanced.nextRunAt??0,status:advanced.status})
+        }catch(error){
+          const reason=String(error instanceof Error?error.message:error).slice(0,160)
+          ports.logger.error(`[承诺] 兑现 ${c.id} 失败:`,error)
+          const metadata=typeof error==='object'&&error!==null?error as {uncertain?:boolean;safeToRetry?:boolean;bindingChanged?:boolean}:{}
+          if(metadata.bindingChanged===true){
+            await store.commitRunOutcome({...c,status:'cancelled',next_run_at:0,last_result:BINDING_CHANGED})
+            continue
+          }
+          const unknown=metadata.uncertain===true||(externalStarted&&metadata.safeToRetry!==true)
+          if(unknown){
+            if(await store.commitRunOutcome({...c,status:'unknown',next_run_at:0,last_run_at:now(),last_result:reason})){
+              await store.appendFailLog({id:c.id,intent:c.intent,group_id:c.group_id,reason:`结果未知，不自动重试：${reason}`,at:now()})
+            }
+          }else{
+            const outcome=await store.requeueForRetry({...c,last_result:reason},now())
+            if(outcome==='failed')await finalizeFailure(c,reason,now())
+          }
+        }finally{pending.delete(c.id)}
       }
+    }finally{
+      clearInterval(heartbeat)
+      await heartbeatRun
     }
   }
-
-  return {CommitmentTool,commitmentTick,store}
+  /** Standalone schedules each verified account independently. The no-arg worker keeps the legacy serial order. */
+  function commitmentTick(account?:PlatformAccountRef):Promise<void>{
+    if(account!==undefined&&!isPlatformAccount(account))return Promise.reject(new Error('承诺调度缺少有效的平台账号'))
+    if(account===undefined&&accountScoped)return Promise.reject(new Error('承诺调度需要指定接收账号'))
+    if(account!==undefined&&ticks.has(''))return Promise.reject(new Error('全局承诺调度尚未完成'))
+    accountScoped||=account!==undefined
+    const accountKey=account&&platformAccountKey(account)
+    const key=accountKey??''
+    const active=ticks.get(key)
+    if(active)return active
+    const tick=runTick(accountKey).finally(()=>{ticks.delete(key)})
+    ticks.set(key,tick)
+    return tick
+  }
+  /** Call after the host has stopped accepting new ticks. */
+  async function drainCommitmentTicks():Promise<void>{await Promise.allSettled(ticks.values())}
+  return {CommitmentTool,commitmentTick,drainCommitmentTicks,store}
 }

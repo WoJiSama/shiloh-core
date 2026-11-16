@@ -79,6 +79,7 @@ export function daysUntilExpiry(c:CommitmentData,now:number):number {
 }
 
 export function shouldAskRenewal(c:CommitmentData,now:number):boolean {
+  if(c.importedReminder)return false
   if(c.status!=='active'||c.expiry_at<=0)return false
   if(now<c.expiry_at-RENEWAL_LEAD_MS)return false
   if(now>=c.expiry_at)return false
@@ -131,5 +132,5 @@ export function formatCommitmentLine(c:CommitmentData,now:number):string {
   const tail=c.status!=='active'
     ?`【${c.status}${c.last_result?`：${c.last_result.slice(0,40)}`:''}】`
     :c.next_run_at>now?`下次 ${formatBeijingClock(c.next_run_at)}`:'马上执行'
-  return `- [${c.id.slice(4,14)}] ${formatScheduleText(c.schedule)}「${c.intent.slice(0,60)}」${nearExpiry} 创建人:${c.creator_name||c.creator_id} ${tail}`
+  return `- [${c.id}] ${formatScheduleText(c.schedule)}「${c.intent.slice(0,60)}」${nearExpiry} 创建人:${c.creator_name||c.creator_id} ${tail}`
 }

@@ -1,3 +1,4 @@
+import {commitmentRedis} from './helpers/commitmentRedis.js'
 // 承诺账本 compiled 集成测试:fake redis(仿 reminderCompiled)+ 注入时钟。
 // 覆盖 create/list/cancel 权限、仿真群闸、tick 静态直发/agent 唤醒/顺延/重试/到期收档。
 import test from 'node:test'
@@ -8,13 +9,13 @@ const prefix='bl-chat:commitment:'
 function setup({ simGroups=['20'] } = {}) {
   const clock={value:Date.parse('2026-11-09T20:00:00+08:00')}
   const data=new Map(),botCalls=[],wakeCalls=[],logs=[]
-  const redis={get:async k=>data.get(k)||null,set:async(k,v,opts)=>{if(opts?.NX&&data.has(k))return null;data.set(k,v);return 'OK'},del:async k=>data.delete(k),eval:async(_s,{keys,arguments:args})=>{if(data.get(keys[0])===args[0])data.delete(keys[0])}}
+  const redis=commitmentRedis(data)
   const bot={uin:'200',sendApi:async(...args)=>{botCalls.push(args);return {retcode:0,data:{message_id:'m1'}}}}
   const runtime=createCommitmentRuntime({
     redis,logger:{info:m=>logs.push(String(m)),warn(){},error:(m,e)=>logs.push(`${m} ${e instanceof Error?e.message:String(e)}`)},
     getBot:id=>!id||id==='200'?bot:undefined,
     isSimulationGroup:async gid=>simGroups.includes(String(gid)),
-    wakeSim:async (gid,card)=>{wakeCalls.push([String(gid),card])},
+    wakeSim:async (gid,card,options)=>{if(options.beforeExecution)assert.equal(await options.beforeExecution(),true);wakeCalls.push([String(gid),card]);return {status:'succeeded',sent:1}},
     loadConfig:()=>({}),
     now:()=>clock.value
   })
@@ -66,7 +67,7 @@ test('tick 静态兑现:发送 + once 完结;agent 唤醒 + daily 顺延',async(
   const daily=JSON.parse(r.data.get(prefix+'detail:'+pending[0].id))
   assert.equal(daily.schedule.kind,'daily')
   assert.equal(daily.next_run_at,Date.parse('2026-11-11T12:00:00+08:00'),'daily 顺延到明天')
-  assert.equal(daily.last_result,'dispatched')
+  assert.equal(daily.last_result,'执行回合已确认动作')
   // 重复 tick 不双发(已顺延到明天)
   await r.commitmentTick()
   assert.equal(r.botCalls.length,1)
@@ -75,7 +76,7 @@ test('tick 静态兑现:发送 + once 完结;agent 唤醒 + daily 顺延',async(
 
 test('tick 失败重试 3 次后置 failed',async()=>{
   const r=setup()
-  r.bot.sendApi=async()=>{throw new Error('send boom')}
+  r.bot.sendApi=async()=>({status:'failed',retcode:100})
   await r.tool.execute({action:'create',intent:'提醒',schedule_kind:'once',schedule_time:'2026-11-10T12:00:00+08:00',deliver:'static',static_message:'x'},ev)
   let at=Date.parse('2026-11-10T12:00:05+08:00')
   for(let i=0;i<6;i++){
@@ -118,7 +119,7 @@ test('renew 续期:权限 + 顺延一个默认周期 + 重置问询标记',async
 test('失约明说:wake 连续失败 3 次后,群内收到坦白 + faillog 记录',async()=>{
   // agent 类承诺,wake 抛错但 bot 可用 → 重试超限后失约明说走 bot 直发
   const data=new Map(),botCalls=[],logs=[]
-  const redis={get:async k=>data.get(k)||null,set:async(k,v,opts)=>{if(opts?.NX&&data.has(k))return null;data.set(k,v);return 'OK'},del:async k=>data.delete(k),eval:async(_s,{keys,arguments:args})=>{if(data.get(keys[0])===args[0])data.delete(keys[0])}}
+  const redis=commitmentRedis(data)
   const bot={uin:'200',sendApi:async(...args)=>{botCalls.push(args);return {retcode:0,data:{message_id:'m1'}}}}
   const clock={value:Date.parse('2026-11-09T20:00:00+08:00')}
   const rt2=createCommitmentRuntime({

@@ -14,6 +14,7 @@ export interface DelegatedMemoryConfigSection { maxPerGroup?:number; maxPerOwner
 export interface DelegatedMemoryRedisLike {
   get(key:string):Promise<string|null>
   set(key:string,value:string):Promise<unknown>
+  eval?(script:string,options:{keys:string[];arguments:string[]}):Promise<unknown>
 }
 export interface DelegatedMemoryPorts {
   redis:DelegatedMemoryRedisLike
