@@ -1,9 +1,15 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { withFileLock } from '../../../foundation/infrastructure/fileLock.js'
+import { KeyedSerialQueue } from '../../../messaging/infrastructure/keyedSerialQueue.js'
+import { claimGameGroup, releaseGameGroup } from '../gameSessionRegistry.js'
 import {decodeUmaPoints,emptyUmaRaceState} from './umaState.js'
 import {DEFAULT_CONFIG,RACE_SIZE,RACE_STAGES,RACE_ACTIONS,PROFICIENCY_MAX,PROFICIENCY_SINGLE_ACTION_CAP,PROFICIENCY_TOTAL_RACE_CAP,PROFICIENCY_REPEAT_GAINS,PROFICIENCY_CHECK_GAINS,PROFICIENCY_LEVELS,ACTION_CHECKS,CHECK_GRADE_EFFECTS,STRATEGY_DEFAULT_ACTIONS,NPC_NAMES,NPC_UMA_PREFIXES,NPC_UMA_SUFFIXES,ATTRIBUTE_DEFS,ATTRIBUTE_TOTAL,ATTRIBUTE_MAX,ATTRIBUTE_MIN,RACE_BALANCE_THRESHOLD,RACE_BALANCE_RETAIN_RATE,RACE_BALANCE_MIN_SELF_RATE,TRACK_NUMERIC_PROFILES,TWIST_NUMERIC_MODIFIERS,SCENE_NUMERIC_MODIFIERS,CONDITION_NUMERIC_MODIFIERS,ATTRIBUTE_ALIASES,AFFIX_QUALITIES,AFFIX_REROLL_COSTS,AFFIX_DIRECTION_LABELS,ACTION_AFFIX_DIRECTIONS,AFFIX_POOL,TRAINING_TYPES,PERSONALITY_ATTRIBUTE_RULES,PERSONALITY_TRAITS,STRATEGIES,TRACKS,RACE_TWISTS,RACE_SCENES,RACE_CONDITIONS,CONDITION_EVENTS} from './umaConstants.js'
 import fs from "fs"
 import path from "path"
 import YAML from "yaml"
 import type {UmaEvent,UmaReport,UmaLogger,UmaConfig,UmaManagerPorts,UmaAffix,UmaTrait,UmaPet,UmaPlayerRecord,UmaPoints,UmaRunner,UmaRaceState,UmaRoom,UmaStage,UmaScene,UmaProfile,UmaCheck,UmaProficiencyEntry,UmaTrainingType,UmaRaceResult} from "../../../../contracts/uma.js"
+const pointsTransactions = new AsyncLocalStorage<ReadonlySet<string>>()
+const pointsQueue = new KeyedSerialQueue()
 const record=(value:unknown):Record<string,unknown>=>value!==null&&typeof value==='object'?value as Record<string,unknown>:{}
 export function createUmaRaceManager(ports:UmaManagerPorts){
 const sendSmartReply=ports.sendSmartReply
@@ -123,7 +129,19 @@ class UmaRaceManager {
     }
   }
 
+  async #withPointsTransaction<T>(work:()=>Promise<T>, config = this.getConfig()):Promise<T> {
+    const file = path.resolve(this.getPointsPath(config))
+    const held = pointsTransactions.getStore()
+    if (held?.has(file)) return await work()
+    return await pointsQueue.run(file, () => withFileLock(`${file}.lock`, () =>
+      pointsTransactions.run(new Set([...(held || []), file]), work)))
+  }
+
   async writePoints(data:UmaPoints, config = this.getConfig()) {
+    return await this.#withPointsTransaction(() => this.#writePointsUnlocked(data, config), config)
+  }
+
+  async #writePointsUnlocked(data:UmaPoints, config:UmaConfig) {
     const task = this.writeChain.catch(()=>{}).then(async () => {
       const file = this.getPointsPath(config)
       ensureDir(path.dirname(file))
@@ -151,6 +169,10 @@ class UmaRaceManager {
   }
 
   async ensurePlayerUmaTrait(userId:unknown, config = this.getConfig()) {
+    return await this.#withPointsTransaction(() => this.#ensurePlayerUmaTraitUnlocked(userId, config), config)
+  }
+
+  async #ensurePlayerUmaTraitUnlocked(userId:unknown, config:UmaConfig) {
     if (!userId) return null
     const data = this.readPoints(config)
     const record = data.players?.[String(userId)]
@@ -578,6 +600,10 @@ class UmaRaceManager {
 
   async rerollAffix(e:UmaEvent) {
     const config = this.getConfig()
+    return await this.#withPointsTransaction(() => this.#rerollAffixUnlocked(e, config), config)
+  }
+
+  async #rerollAffixUnlocked(e:UmaEvent, config:UmaConfig) {
     if (!config.enabled) return "赛马娘小游戏现在没开。"
     const userId = this.getUserId(e)
     if (!userId) return "没拿到你的 QQ 号。"
@@ -653,8 +679,12 @@ class UmaRaceManager {
     return ranked.length ? ranked.join(" / ") : "暂无"
   }
 
-  async adoptUma(e:UmaEvent, { overwrite = false } = {}) {
+  async adoptUma(e:UmaEvent, options:{overwrite?:boolean} = {}) {
     const config = this.getConfig()
+    return await this.#withPointsTransaction(() => this.#adoptUmaUnlocked(e, options, config), config)
+  }
+
+  async #adoptUmaUnlocked(e:UmaEvent, {overwrite = false}:{overwrite?:boolean}, config:UmaConfig) {
     if (!config.enabled) return "赛马娘小游戏现在没开。"
     const userId = this.getUserId(e)
     if (!userId) return "没拿到你的 QQ 号，领养失败。"
@@ -772,6 +802,10 @@ class UmaRaceManager {
 
   async trainUma(e:UmaEvent) {
     const config = this.getConfig()
+    return await this.#withPointsTransaction(() => this.#trainUmaUnlocked(e, config), config)
+  }
+
+  async #trainUmaUnlocked(e:UmaEvent, config:UmaConfig) {
     if (!config.enabled) return "赛马娘小游戏现在没开。"
     const userId = this.getUserId(e)
     if (!userId) return "没拿到你的 QQ 号，训练失败。"
@@ -930,8 +964,12 @@ class UmaRaceManager {
     ].join("\n")
   }
 
-  async abandonUma(e:UmaEvent, { confirm = false } = {}) {
+  async abandonUma(e:UmaEvent, options:{confirm?:boolean} = {}) {
     const config = this.getConfig()
+    return await this.#withPointsTransaction(() => this.#abandonUmaUnlocked(e, options, config), config)
+  }
+
+  async #abandonUmaUnlocked(e:UmaEvent, {confirm = false}:{confirm?:boolean}, config:UmaConfig) {
     if (!config.enabled) return "赛马娘小游戏现在没开。"
     const userId = this.getUserId(e)
     if (!userId) return "没拿到你的 QQ 号，弃养失败。"
@@ -1127,8 +1165,12 @@ class UmaRaceManager {
       event: e,
       timer: null
     }
+    if (!claimGameGroup(groupId, 'uma', room, this.cwd)) return "本群有进行中的海龟汤或其他赛马局，等它结束再开赛马娘。"
     this.rooms.set(groupId, room)
-    await this.joinRace(e)
+    try {
+      const joined = await this.joinRace(e)
+      if (!room.participants.size) { this.#releaseRoom(room); return joined }
+    } catch (error) { this.#releaseRoom(room); throw error }
     const starter = room.participants.get(this.getUserId(e))
     const starterLine = starter
       ? `已自动报名：${starter.nickname}「${starter.umaName}」`
@@ -1152,12 +1194,15 @@ class UmaRaceManager {
 
     const groupId = String(e.group_id)
     let room = this.getRoom(groupId)
+    const expectedRoom = room
     let createdByJoin = false
     const userId = String(e.user_id || e.sender?.user_id || "")
     if (!userId) return "没拿到你的 QQ 号，报名失败。"
     const owned = await this.ensurePlayerUmaTrait(userId, config)
     if (!owned?.uma) return "你还没有领养自己的赛马娘。先用：.赛马娘 领养 名字 性格描述"
     const { uma, trait } = owned
+    room = this.getRoom(groupId)
+    if (expectedRoom && room !== expectedRoom) return "原赛马局已结束或取消，请重新报名。"
 
     if (!room) {
       const lastAt = this.lastRaceAt.get(groupId) || 0
@@ -1175,6 +1220,7 @@ class UmaRaceManager {
         event: e,
         timer: null
       }
+      if (!claimGameGroup(groupId, 'uma', room, this.cwd)) return "本群有进行中的海龟汤或其他赛马局，等它结束再开赛马娘。"
       this.rooms.set(groupId, room)
       createdByJoin = true
     }
@@ -1189,7 +1235,7 @@ class UmaRaceManager {
     const elapsed = Math.floor((Date.now() - room.createdAt) / 1000)
     if (elapsed > config.lobbySeconds) {
       this.clearAutoStart(room)
-      this.rooms.delete(groupId)
+      this.#releaseRoom(room)
       const lastAt = this.lastRaceAt.get(groupId) || 0
       const remain = config.cooldownSeconds - Math.floor((Date.now() - lastAt) / 1000)
       if (remain > 0) return `上一局报名超时了，刚跑完一局，先歇 ${formatDuration(remain)} 再开。`
@@ -1205,6 +1251,7 @@ class UmaRaceManager {
         event: e,
         timer: null
       }
+      if (!claimGameGroup(groupId, 'uma', room, this.cwd)) return "本群有进行中的海龟汤或其他赛马局，等它结束再开赛马娘。"
       this.rooms.set(groupId, room)
       createdByJoin = true
     }
@@ -1300,12 +1347,12 @@ class UmaRaceManager {
     if (!room) return
     const event = room.event
     if (!event?.reply) {
-      this.rooms.delete(String(groupId || ""))
+      this.#releaseRoom(room)
       return
     }
     if (!room.participants?.size) {
       this.clearAutoStart(room)
-      this.rooms.delete(String(groupId || ""))
+      this.#releaseRoom(room)
       await event.reply("报名时间到了，但没有参赛者，本局赛马取消。")
       return
     }
@@ -1321,6 +1368,11 @@ class UmaRaceManager {
     return "normal"
   }
 
+  #releaseRoom(room:UmaRoom) {
+    if (this.rooms.get(room.groupId) === room) this.rooms.delete(room.groupId)
+    releaseGameGroup(room.groupId, room, this.cwd)
+  }
+
   cancelRace(e:UmaEvent) {
     if (!e?.group_id) return "这个小游戏要在群里玩。"
     const groupId = String(e.group_id)
@@ -1330,7 +1382,7 @@ class UmaRaceManager {
     if (!e.isMaster && userId !== room.starterId) return "只有开局的人或主人可以取消这一局。"
     this.clearAutoStart(room)
     this.clearStageTimer(room)
-    this.rooms.delete(groupId)
+    this.#releaseRoom(room)
     return "这局赛马已经取消。"
   }
 
@@ -2421,7 +2473,7 @@ class UmaRaceManager {
   async finishStagedRace(room:UmaRoom) {
     this.clearStageTimer(room)
     const ranking = this.rankRunners(room.runners)
-    this.rooms.delete(String(room.groupId || ""))
+    this.#releaseRoom(room)
     const config = this.getConfig()
     const awardLines = await this.applyAwards(ranking, this.getAwards(config), config)
     const proficiencyGains = await this.applyProficiencyGains(ranking, config)
@@ -2738,6 +2790,10 @@ class UmaRaceManager {
   }
 
   async applyProficiencyGains(ranking:UmaRunner[] = [], config = this.getConfig()) {
+    return await this.#withPointsTransaction(() => this.#applyProficiencyGainsUnlocked(ranking, config), config)
+  }
+
+  async #applyProficiencyGainsUnlocked(ranking:UmaRunner[], config:UmaConfig) {
     const data = this.readPoints(config)
     const results = []
     for (const runner of ranking) {
@@ -2790,6 +2846,10 @@ class UmaRaceManager {
   }
 
   async applyAwards(ranking:UmaRunner[], awards:number[], config:UmaConfig) {
+    return await this.#withPointsTransaction(() => this.#applyAwardsUnlocked(ranking, awards, config), config)
+  }
+
+  async #applyAwardsUnlocked(ranking:UmaRunner[], awards:number[], config:UmaConfig) {
     const data = this.readPoints(config)
     const lines:string[] = []
     ranking.forEach((runner, index) => {
@@ -2904,6 +2964,11 @@ class UmaRaceManager {
   }
 
   async adjustScore(e:UmaEvent) {
+    const config = this.getConfig()
+    return await this.#withPointsTransaction(() => this.#adjustScoreUnlocked(e, config), config)
+  }
+
+  async #adjustScoreUnlocked(e:UmaEvent, config:UmaConfig) {
     if (!e?.isMaster) return "只有主人可以调整赛马娘积分。"
     const parsed = this.parseScoreAdjustInput(e?.msg)
     if (!parsed) {
@@ -2914,7 +2979,6 @@ class UmaRaceManager {
       ].join("\n")
     }
 
-    const config = this.getConfig()
     const data = this.readPoints(config)
     const existing = data.players?.[parsed.userId]
     const before = Number(existing?.points) || 0

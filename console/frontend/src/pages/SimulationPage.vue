@@ -25,6 +25,7 @@ interface CharacterView {
 }
 interface GroupRow {
   groupId: string
+  conversation?: { id: string; kind: string; account: { id: string; platform: string; namespace: string } }
   active: boolean
   running: boolean
   mode: string
@@ -113,7 +114,7 @@ async function setReplyMode(row: GroupRow, value: string) {
 async function resetGroup(groupId: string) {
   dialog.warning({
     title: '重置仿真会话',
-    content: `将清空群 ${groupId} 的回合历史、未读水位与今日预算（长期记忆与好感度保留）。此操作不可撤销，确定继续吗？`,
+    content: `将清空 ${detail.value ? conversationLabel(detail.value) : groupId} 的回合历史、未读水位与今日预算（长期记忆与好感度保留）。此操作不可撤销，确定继续吗？`,
     positiveText: '重置',
     negativeText: '取消',
     onPositiveClick: () => doResetGroup(groupId),
@@ -130,7 +131,7 @@ async function doResetGroup(groupId: string) {
 }
 async function openDetail(groupId: string) {
   const request = ++detailRequest
-  const result = await api<GroupRow>(`/api/simulation/group?group=${groupId}`)
+  const result = await api<GroupRow>(`/api/simulation/group?group=${encodeURIComponent(groupId)}`)
   if (request !== detailRequest) return
   detail.value = result
   detailId.value = groupId
@@ -269,15 +270,22 @@ async function saveCap() {
   }
 }
 
+function conversationLabel(row: GroupRow) {
+  const target = row.conversation
+  if (!target) return overview.value?.groupNames?.[row.groupId] ? `${overview.value.groupNames[row.groupId]}（${row.groupId}）` : row.groupId
+  const account = target.account
+  const qq = account.platform === 'qq' && account.namespace === 'global'
+  const name = qq ? overview.value?.groupNames?.[target.id] : undefined
+  const conversation = name ? `${name}（${target.id}）` : target.id
+  return row.groupId === target.id ? conversation : `${conversation} · ${qq ? 'QQ' : `${account.platform}/${account.namespace}`} ${account.id}`
+}
+
 const columns: DataTableColumns<GroupRow> = [
   {
-    title: '群号',
+    title: '会话',
     key: 'groupId',
     width: 200,
-    render: row => {
-      const name = overview.value?.groupNames?.[row.groupId]
-      return name ? `${name}（${row.groupId}）` : row.groupId
-    },
+    render: conversationLabel,
   },
   { title: '模式', key: 'active', width: 90, render: row => row.active ? (row.running ? '仿真·回合中' : '仿真') : '普通' },
   { title: '回复模式', key: 'replyMode', width: 110, render: row => h(NSelect, { value: row.replyMode || 'auto', options: replyModeOptions, size: 'tiny', onUpdateValue: (value: string) => void setReplyMode(row, value) }) },
@@ -291,10 +299,7 @@ const columns: DataTableColumns<GroupRow> = [
 ]
 import { h } from 'vue'
 const rows = computed(() => overview.value?.groups || [])
-const detailTitle = computed(() => {
-  const name = overview.value?.groupNames?.[detailId.value]
-  return name ? `${name}（${detailId.value}）· 仿真详情` : `群 ${detailId.value} · 仿真详情`
-})
+const detailTitle = computed(() => `${detail.value ? conversationLabel(detail.value) : detailId.value} · 仿真详情`)
 </script>
 
 <template>

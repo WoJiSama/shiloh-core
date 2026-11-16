@@ -1,3 +1,4 @@
+import { claimGameGroup, claimGameGroups, ownsGameGroup, releaseGameGroup } from '../gameSessionRegistry.js'
 // 海龟汤会话管理:命令处理、开局选汤、问答调度、揭晓收局与超时sweeper。
 // 会话内存缓存+落盘恢复;时间驱动统一走sweep(),重启后靠时间戳继续判定,无僵尸局。
 import type {TurtleSoupConfig, TurtleSoupEvent, TurtleSoupLogger, TurtleSoupPuzzle, TurtleSoupSession, TurtleSoupHost, TurtleSoupFeedbackCategory, TurtleSoupGuessEntry} from '../../../../contracts/turtleSoup.js'
@@ -69,11 +70,19 @@ export class TurtleSoupManager {
       const play = plays.filter(play => play.groupId === session.groupId && play.puzzleId === session.puzzleId).sort((a, b) => b.startedAt - a.startedAt)[0]
       if (!session.playId && play) session.playId = play.playId
     }
+    this.claimActiveSessions()
   }
 
   config():TurtleSoupConfig { return this.ports.config ? this.ports.config() : readTurtleSoupConfig(this.ports.cwd ?? process.cwd()) }
 
+  private claimActiveSessions() {
+    const groupIds = [...this.sessions.values()].filter(session => session.phase !== 'reveal').map(session => session.groupId)
+    const conflict = claimGameGroups(groupIds, 'turtleSoup', this, this.ports.cwd)
+    if (conflict !== null) throw new Error(`群 ${conflict} 已有其他游戏运行，无法恢复海龟汤`)
+  }
+
   start() {
+    this.claimActiveSessions()
     const interval = this.ports.sweepIntervalMs ?? 30_000
     if (!this.sweeperTimer) this.sweeperTimer = setInterval(() => {
       void this.sweep().catch(error => this.ports.logger?.warn?.(`[海龟汤] 超时检查失败: ${error instanceof Error ? error.message : String(error)}`))
@@ -81,6 +90,7 @@ export class TurtleSoupManager {
   }
 
   stop() {
+    for (const groupId of this.sessions.keys()) releaseGameGroup(groupId, this, this.ports.cwd)
     if (this.sweeperTimer) { clearInterval(this.sweeperTimer); this.sweeperTimer = null }
   }
 
@@ -146,13 +156,19 @@ export class TurtleSoupManager {
   }
 
   private async persist(session:TurtleSoupSession) {
-    await this.store.saveSession(session)
+    const existing = this.sessions.get(session.groupId)
+    const hadActiveClaim = existing && existing.phase !== 'reveal' && ownsGameGroup(session.groupId, this, this.ports.cwd)
+    if (session.phase !== 'reveal' && !claimGameGroup(session.groupId, 'turtleSoup', this, this.ports.cwd)) throw new Error('本群已有其他游戏进行中')
+    try { await this.store.saveSession(session) }
+    catch (error) { if (!hadActiveClaim) releaseGameGroup(session.groupId, this, this.ports.cwd); throw error }
     this.sessions.set(session.groupId, session)
+    if (session.phase === 'reveal') releaseGameGroup(session.groupId, this, this.ports.cwd)
   }
 
   private async drop(groupId:string) {
     await this.store.removeSession(groupId)
     this.sessions.delete(groupId)
+    releaseGameGroup(groupId, this, this.ports.cwd)
   }
 
   async openGame(e:TurtleSoupEvent):Promise<string> { return this.inGroup(this.getGroupId(e), () => this.openGameLocked(e)) }
@@ -188,6 +204,7 @@ export class TurtleSoupManager {
       lastActivityAt: nowMs, qaLog: [], guessLog: [], usedHints: 0, lastGuessAt: {}, surrendered: {}, sessionId: randomUUID(), revision: 0
     }
     session.participantHistory = [...session.players]
+    if (!claimGameGroup(groupId, 'turtleSoup', this, this.ports.cwd)) return "本群有进行中的赛马娘比赛，等它结束再开海龟汤"
     await this.persist(session)
     const minutes = formatDuration(this.config().joinWindowMinutes * 60_000)
     return [
@@ -726,6 +743,7 @@ export class TurtleSoupManager {
       state.sessions[session.groupId] = next
     })
     Object.assign(session, next)
+    releaseGameGroup(session.groupId, this, this.ports.cwd)
     this.invalidateRequests(session)
     const brief = buildMvpBrief(session, winnerId, puzzle)
     if (playId && brief.players.length && (brief.totalQuestions || brief.totalGuesses)) {

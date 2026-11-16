@@ -7,6 +7,7 @@ import http from "node:http"
 import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import YAML from "yaml"
+import { agentConversationKey } from "../dist/backend/modules/runtime/domain/agentBindings.js"
 
 const serverFile = fileURLToPath(new URL("../console/server.js", import.meta.url))
 
@@ -285,4 +286,82 @@ test('console image history groups legacy files without batch field by params an
   ])
   assert.equal(history[1].prompt, 'legacy single')
   assert.equal(history[1].count, 1)
+})
+
+test('standalone HTTP boundary survives malformed cookies and invalid request authorities', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'console-http-boundary-'))
+  t.after(() => fs.rmSync(root, {recursive:true, force:true}))
+  fs.mkdirSync(path.join(root, 'config'), {recursive:true})
+  fs.writeFileSync(path.join(root, 'config/console.json'), JSON.stringify({token:'isolated-http-boundary-token'}))
+  const base = await startFixtureServer(root, t)
+  const malformed = await fetch(`${base}/api/auth/state`, {headers:{cookie:'unrelated=%; bl_console_sid=%E0%A4%A'}})
+  assert.equal(malformed.status, 200)
+  assert.equal((await malformed.json()).username, null)
+  const denied = await fetch(`${base}/api/simulation/overview`, {headers:{cookie:'unrelated=%'}})
+  assert.equal(denied.status, 401)
+  const invalidHost = await new Promise((resolve, reject) => {
+    const req = http.get(base + '/api/auth/state', {headers:{host:'['}}, res => {
+      let body = ''; res.on('data', chunk => body += chunk); res.on('end', () => resolve({status:res.statusCode, body}))
+    })
+    req.on('error', reject)
+  })
+  assert.equal(invalidHost.status, 500)
+  assert.deepEqual(JSON.parse(invalidHost.body), {error:'请求处理失败'})
+  assert.equal((await fetch(`${base}/api/auth/state`)).status, 200, 'a failed request must not terminate the server')
+})
+
+test('standalone trusteeship scans lazy Promise iterators and Redis key batches', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'console-trusteeship-scan-'))
+  t.after(() => fs.rmSync(root, {recursive:true, force:true}))
+  fs.mkdirSync(path.join(root, 'config'), {recursive:true})
+  fs.writeFileSync(path.join(root, 'config/console.json'), JSON.stringify({token:'isolated-scan-token'}))
+  const preload = path.join(root, 'redis.mjs')
+  fs.writeFileSync(preload, `
+    const entry = group => JSON.stringify([{id:'dlg_1794400000000_10001_abcdef',owner:'10001',content:'saved-'+group,createdAt:1794400000000,status:'active'}]);
+    globalThis.redis = {
+      get: async key => key.startsWith('bl-chat:delegated:') ? entry(key.slice('bl-chat:delegated:'.length)) : null,
+      set: async () => 'OK', del: async () => 0,
+      scanIterator: async () => (async function* () { yield 'bl-chat:delegated:100001'; yield ['bl-chat:delegated:200002', 'bl-chat:delegated:100001']; })()
+    };
+  `)
+  const base = await startFixtureServer(root, t, {NODE_OPTIONS:`--import=${preload}`})
+  const response = await fetch(`${base}/api/trusteeship/overview`, {headers:{'x-console-token':'isolated-scan-token'}})
+  assert.equal(response.status, 200)
+  const overview = await response.json()
+  assert.deepEqual(overview.delegated.map(group => group.groupId).sort(), ['100001','200002'])
+  assert.equal(overview.delegated[0].entries[0].content, 'saved-100001')
+})
+
+test('standalone trusteeship lists and deletes exactly one scoped memory with an identical conversation ID', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'console-trusteeship-scoped-'))
+  t.after(() => fs.rmSync(root, {recursive:true, force:true}))
+  fs.mkdirSync(path.join(root, 'config'), {recursive:true})
+  fs.writeFileSync(path.join(root, 'config/console.json'), JSON.stringify({token:'isolated-scoped-token'}))
+  const groupId='100001'
+  const agentId='daily'
+  const scopeKeys=['tenant-a','tenant-b'].map(namespace=>agentConversationKey({
+    agentId, target:{kind:'group',id:groupId,account:{platform:'feishu',namespace,id:'app-1'}},
+  }))
+  const entryId='dlg_1794400000000_0123456789abcdef0123456789abcdef'
+  const preload = path.join(root, 'redis.mjs')
+  fs.writeFileSync(preload, `
+    const keys = ${JSON.stringify(scopeKeys.map(scope => `bl-chat:delegated:v2:${encodeURIComponent(scope)}`))}
+    const entry = suffix => JSON.stringify([{id:${JSON.stringify(entryId)},owner:'ou_opaque',content:'saved-'+suffix,createdAt:1794400000000,status:'active'}])
+    const data = new Map(keys.map((key,index) => [key,entry(index)]))
+    globalThis.redis = {
+      get: async key => data.get(key) ?? null,
+      set: async () => 'OK', del: async () => 0,
+      eval: async (_script,{keys,arguments:args}) => { if ((data.get(keys[0])||'') !== args[0]) return 0; data.set(keys[0],args[1]); return 1 },
+      scanIterator: async () => (async function* () { yield keys; })()
+    }
+  `)
+  const base = await startFixtureServer(root, t, {NODE_OPTIONS:`--import=${preload}`})
+  const headers={'x-console-token':'isolated-scoped-token','content-type':'application/json'}
+  const get=async()=>(await fetch(`${base}/api/trusteeship/overview`,{headers})).json()
+  const post=body=>fetch(`${base}/api/trusteeship/delegated-delete`,{method:'POST',headers,body:JSON.stringify(body)})
+  const before=await get()
+  assert.deepEqual(before.delegated.map(group=>[group.groupId,group.scopeKey,group.account.namespace]),scopeKeys.map((key,index)=>[groupId,key,`tenant-${index?'b':'a'}`]))
+  assert.equal((await post({groupId:'100002',id:entryId,scopeKey:scopeKeys[0]})).status,400)
+  assert.equal((await post({groupId,id:entryId,scopeKey:scopeKeys[0]})).status,200)
+  assert.deepEqual((await get()).delegated.map(group=>group.scopeKey),[scopeKeys[1]])
 })

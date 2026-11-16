@@ -53,39 +53,47 @@ try {
   if (!globalThis.redis) globalThis.redis = lazyRedis()
   const redis = lazyRedis()
   const { createCommitmentStore } = await import("../dist/backend/modules/commitments/infrastructure/commitmentStore.js")
-  const { createDelegatedMemoryStore } = await import("../dist/backend/modules/memory/infrastructure/delegatedMemoryStore.js")
+  const { createDelegatedMemoryStore, delegatedMemoryScopeFromKey } = await import("../dist/backend/modules/memory/infrastructure/delegatedMemoryStore.js")
+  const { agentConversationKey, decodeAgentConversationKey } = await import("../dist/backend/modules/runtime/domain/agentBindings.js")
   const { resolvedCommitmentConfig } = await import("../dist/backend/modules/commitments/domain/commitments.js")
   const { resolvedDelegatedConfig } = await import("../dist/backend/modules/memory/domain/delegatedMemory.js")
   const quietLogger = { warn: () => {}, info: () => {} }
   const commitmentStore = createCommitmentStore({ redis, logger: quietLogger })
   const delegatedStore = createDelegatedMemoryStore({ redis, logger: quietLogger, loadConfig: () => ({}), now: () => Date.now() })
-  async function delegatedGroupIds() {
-    const ids = new Set()
-    try {
-      if (typeof redis.scanIterator === "function") {
-        for await (const key of redis.scanIterator({ MATCH: "bl-chat:delegated:*", COUNT: 100 })) ids.add(key.slice("bl-chat:delegated:".length))
-      } else {
-        for (const key of await redis.keys("bl-chat:delegated:*")) ids.add(key.slice("bl-chat:delegated:".length))
+  async function delegatedScopes() {
+    const scopes = new Map()
+    const collect = key => {
+      const scope = delegatedMemoryScopeFromKey(String(key))
+      if (scope) scopes.set(String(key), scope)
+    }
+    if (typeof redis.scanIterator === "function") {
+      // lazyRedis returns a Promise of the iterator; Redis 5 emits key batches.
+      for await (const keys of await redis.scanIterator({ MATCH: "bl-chat:delegated:*", COUNT: 100 })) {
+        for (const key of Array.isArray(keys) ? keys : [keys]) collect(key)
       }
-    } catch { /* redis 不可用就当空 */ }
-    return [...ids]
+    } else {
+      for (const key of await redis.keys("bl-chat:delegated:*")) collect(key)
+    }
+    return scopes.values()
   }
   trusteeship = {
     overview: async () => {
       const settings = readPluginSettings()
       const ccfg = resolvedCommitmentConfig(settings.commitments || {})
       const dcfg = resolvedDelegatedConfig(settings.delegatedMemory || {})
-      const [commitments, failures, groupIds] = await Promise.all([
+      const [commitments, failures, scopes] = await Promise.all([
         commitmentStore.listActiveCommitments(),
         commitmentStore.readFailLog(),
-        delegatedGroupIds(),
+        delegatedScopes(),
       ])
       const delegated = []
-      for (const groupId of groupIds) {
+      for (const scope of scopes) {
         try {
-          const entries = await delegatedStore.load(groupId)
+          const entries = await delegatedStore.load(scope)
+          const groupId = typeof scope === "string" ? scope : scope.target.id
           if (entries.length) delegated.push({
             groupId,
+            ...(typeof scope === "string" ? {} : {scopeKey:agentConversationKey(scope), agentId:scope.agentId, account:scope.target.account}),
             entries: entries.map(e => ({ id: e.id, owner: e.owner, ownerName: e.ownerName, content: e.content, dueAt: e.dueAt, status: e.status, createdAt: e.createdAt })),
           })
         } catch { /* 坏键跳过 */ }
@@ -93,8 +101,9 @@ try {
       return {
         commitments: commitments.map(c => ({
           id: c.id, groupId: c.group_id, creatorId: c.creator_id, creatorName: c.creator_name,
+          ...(c.scope ? {agentId:c.scope.agentId, account:c.scope.target.account} : {}),
           intent: c.intent, schedule: c.schedule.kind === "daily" ? `每天 ${c.schedule.time}` : new Date(c.schedule.time + 8 * 3600_000).toISOString().slice(0, 16).replace("T", " "),
-          deliver: c.deliver, nextRunAt: c.next_run_at, expiryAt: c.expiry_at, status: c.status, lastResult: c.last_result, retryCount: c.retry_count,
+          deliver: c.deliver, nextRunAt: c.next_run_at, expiryAt: c.expiry_at, status: c.execution_state || c.status, lastResult: c.last_result, retryCount: c.retry_count,
         })),
         failures,
         delegated,
@@ -104,13 +113,11 @@ try {
         },
       }
     },
-    cancelCommitment: async id => commitmentStore.cancelCommitment(id).then(() => true).catch(() => false),
-    deleteDelegated: async (groupId, id) => {
-      const entries = await delegatedStore.load(String(groupId))
-      const next = entries.filter(e => e.id !== String(id))
-      if (next.length === entries.length) return false
-      await delegatedStore.save(String(groupId), next)
-      return true
+    cancelCommitment: async id => commitmentStore.cancelCommitment(id),
+    deleteDelegated: async (groupId, id, scopeKey) => {
+      if (scopeKey === undefined) return delegatedStore.remove(groupId, id)
+      const scope = decodeAgentConversationKey(scopeKey)
+      return scope?.target.kind === "group" && scope.target.id === groupId ? delegatedStore.remove(scope, id) : false
     },
     clearFailLog: async () => commitmentStore.clearFailLog().then(() => true).catch(() => false),
   }

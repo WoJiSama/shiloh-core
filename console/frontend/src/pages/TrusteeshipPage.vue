@@ -6,9 +6,9 @@ import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
 import { api } from '../lib/api'
 
-interface Commitment {
+interface ConversationScope { groupId: string; agentId?: string; account?: { platform: string; namespace: string; id: string } }
+interface Commitment extends ConversationScope {
   id: string
-  groupId: string
   creatorId: string
   creatorName: string
   intent: string
@@ -22,10 +22,12 @@ interface Commitment {
 }
 interface Failure { id?: string; intent?: string; group_id?: string; reason?: string; at?: number }
 interface DelegatedEntry { id: string; owner: string; ownerName: string; content: string; dueAt: number; status: string; createdAt: number }
+interface DelegatedScope extends ConversationScope { scopeKey?: string }
+type DelegatedRow = DelegatedEntry & DelegatedScope
 interface Overview {
   commitments: Commitment[]
   failures: Failure[]
-  delegated: { groupId: string; entries: DelegatedEntry[] }[]
+  delegated: (DelegatedScope & { entries: DelegatedEntry[] })[]
   config: { maxActivePerGroup: number; maxPerCreator: number; defaultExpiryDays: number; maxPerGroupDelegated: number; maxPerOwnerDelegated: number }
 }
 
@@ -63,6 +65,11 @@ function fmtDue(at: number): string {
   const days = Math.ceil((at - Date.now()) / 86400_000)
   return days <= 0 ? '（到期）' : days <= 7 ? `（${days} 天后到期）` : ''
 }
+function renderConversation(row: ConversationScope): string {
+  return row.account
+    ? `${row.account.platform} / ${row.account.namespace} / ${row.account.id}\n${row.groupId} · ${row.agentId}`
+    : row.groupId
+}
 
 function cancelCommitment(row: Commitment) {
   dialog.warning({
@@ -85,7 +92,7 @@ function cancelCommitment(row: Commitment) {
   })
 }
 
-function deleteDelegated(row: DelegatedEntry, groupId: string) {
+function deleteDelegated(row: DelegatedRow) {
   dialog.warning({
     title: '删除托付记忆',
     content: `将删除 ${row.ownerName || row.owner} 托付的原话「${row.content.slice(0, 60)}」（被托付人的数据归被托付人，删除后不可恢复）。确定继续吗？`,
@@ -94,7 +101,7 @@ function deleteDelegated(row: DelegatedEntry, groupId: string) {
     onPositiveClick: async () => {
       acting.value = true
       try {
-        await api('/api/trusteeship/delegated-delete', { method: 'POST', body: JSON.stringify({ groupId, id: row.id }) })
+        await api('/api/trusteeship/delegated-delete', { method: 'POST', body: JSON.stringify({ groupId: row.groupId, id: row.id, scopeKey: row.scopeKey }) })
         message.success('已删除')
         await load()
       } catch (e: any) {
@@ -120,9 +127,10 @@ async function clearFailLog() {
 }
 
 const commitmentColumns: DataTableColumns<Commitment> = [
-  { title: '群', key: 'groupId', width: 110 },
+  { title: '会话', key: 'groupId', minWidth: 155, render: renderConversation },
   { title: '托付人', key: 'creatorName', width: 110, render: row => row.creatorName || row.creatorId },
   { title: '托付内容（原话）', key: 'intent', minWidth: 220, ellipsis: { tooltip: true } },
+  { title: '状态', key: 'status', width: 90, render: row => (({ active: '待执行', claimed: '已领取', executing: '执行中' } as Record<string, string>)[row.status] || row.status) },
   { title: '节奏', key: 'schedule', width: 120 },
   { title: '兑现', key: 'deliver', width: 80, render: row => row.deliver === 'agent' ? '我动手' : '直发' },
   { title: '下次执行', key: 'nextRunAt', width: 140, render: row => fmtTime(row.nextRunAt) },
@@ -131,20 +139,20 @@ const commitmentColumns: DataTableColumns<Commitment> = [
 ]
 
 const delegatedRows = computed(() => {
-  const rows: ({ groupId: string } & DelegatedEntry)[] = []
-  for (const group of overview.value?.delegated || []) {
-    for (const entry of group.entries) rows.push({ groupId: group.groupId, ...entry })
+  const rows: DelegatedRow[] = []
+  for (const { entries, ...scope } of overview.value?.delegated || []) {
+    for (const entry of entries) rows.push({ ...scope, ...entry })
   }
   return rows
 })
-function delegatedColumnsFor(): DataTableColumns<{ groupId: string } & DelegatedEntry> {
+function delegatedColumnsFor(): DataTableColumns<DelegatedRow> {
   return [
-    { title: '群', key: 'groupId', width: 110 },
+    { title: '会话', key: 'groupId', minWidth: 155, render: renderConversation },
     { title: '托付人', key: 'ownerName', width: 110, render: row => row.ownerName || row.owner },
     { title: '原话', key: 'content', minWidth: 240, ellipsis: { tooltip: true } },
     { title: '记于', key: 'createdAt', width: 140, render: row => fmtTime(row.createdAt) },
     { title: '到期', key: 'dueAt', width: 150, render: row => row.dueAt ? `${fmtTime(row.dueAt)}${fmtDue(row.dueAt)}` : '—' },
-    { title: '', key: 'action', width: 80, render: row => h(NButton, { size: 'tiny', type: 'error', secondary: true, onClick: () => deleteDelegated(row, row.groupId) }, { default: () => '删除' }) },
+    { title: '', key: 'action', width: 80, render: row => h(NButton, { size: 'tiny', type: 'error', secondary: true, onClick: () => deleteDelegated(row) }, { default: () => '删除' }) },
   ]
 }
 </script>

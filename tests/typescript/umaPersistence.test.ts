@@ -22,3 +22,36 @@ test('Uma damaged points fail closed and failed writes do not poison subsequent 
  await manager.writePoints({players:{}},config)
  assert.deepEqual(manager.readPoints(config),{players:{}})
 })
+
+test('Uma mutations serialize complete snapshots across managers and groups', async t => {
+ const cwd=fs.mkdtempSync(path.join(os.tmpdir(),'uma-concurrent-'));t.after(()=>fs.rmSync(cwd,{recursive:true,force:true}))
+ const {UmaRaceManager}=createUmaRaceManager({sendSmartReply:async()=>{}})
+ const first=new UmaRaceManager({cwd}),second=new UmaRaceManager({cwd})
+ const adopted=await Promise.all([
+  first.adoptUma({user_id:'10001',group_id:'200001',msg:'.赛马娘 领养 alpha calm'}),
+  second.adoptUma({user_id:'10002',group_id:'200002',msg:'.赛马娘 领养 beta brave'})
+ ])
+ assert.ok(adopted.every(message=>message.startsWith('领养成功')))
+ assert.deepEqual(Object.keys(first.readPoints().players).sort(),['10001','10002'])
+ await Promise.all(Array.from({length:12},(_,index)=>(index%2?first:second).adjustScore({isMaster:true,msg:'.赛马娘 加积分 10001 1'})))
+ const players=first.readPoints().players
+ assert.equal(players['10001']?.points,12)
+ assert.equal(players['10002']?.uma?.name,'beta')
+ const failed=first.adjustScore({isMaster:true,msg:'.赛马娘 加积分 10001 1'})
+ await failed
+ assert.equal(first.readPoints().players['10001']?.points,13)
+})
+
+test('Uma point updates remain atomic across independent Node processes', async t => {
+ const {spawn}=await import('node:child_process')
+ const cwd=fs.mkdtempSync(path.join(os.tmpdir(),'uma-processes-'));t.after(()=>fs.rmSync(cwd,{recursive:true,force:true}))
+ const moduleUrl=new URL('../../src/modules/games/infrastructure/uma/UmaRaceManager.js',import.meta.url).href
+ const script=`import {createUmaRaceManager} from ${JSON.stringify(moduleUrl)};const {UmaRaceManager}=createUmaRaceManager({sendSmartReply:async()=>{}});const manager=new UmaRaceManager({cwd:${JSON.stringify(cwd)}});await Promise.all(Array.from({length:5},()=>manager.adjustScore({isMaster:true,msg:'.赛马娘 加积分 10001 1'})));`
+ await Promise.all(Array.from({length:3},()=>new Promise<void>((resolve,reject)=>{
+  const child=spawn(process.execPath,['--input-type=module','-e',script],{stdio:['ignore','pipe','pipe']})
+  let errors='';child.stderr.on('data',chunk=>errors+=chunk)
+  child.on('error',reject);child.on('exit',code=>code===0?resolve():reject(new Error(errors||`child exited ${code}`)))
+ })))
+ const {UmaRaceManager}=createUmaRaceManager({sendSmartReply:async()=>{}})
+ assert.equal(new UmaRaceManager({cwd}).readPoints().players['10001']?.points,15)
+})

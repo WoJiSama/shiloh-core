@@ -12,6 +12,9 @@
 // 部署:systemd 独立服务(见 console/bl-console.service),与 Yunzai 进程解耦。
 import { createImageService } from '../../../image/application/imageService.js'
 import type { CharacterActivityOperation } from '../../../../contracts/characterActivities.js'
+import type { PlatformAccountRef } from '../../../../contracts/agentBinding.js'
+import { decodeAgentConversationKey } from '../../../runtime/domain/agentBindings.js'
+import { decodeSimulationAddressKey } from '../../../simulation/infrastructure/simulationAddress.js'
 import { createImageResource } from '../../../image/infrastructure/imageResource.js'
 import { normalizeCustomSize, normalizeQuality } from '../../../image/domain/imageInput.js'
 import { createConfigRepository, ConfigConflictError } from '../../../config/infrastructure/configRepository.js'
@@ -109,13 +112,13 @@ export interface ConsoleExtraPorts {
   /** 托付数据（承诺账本+委托记忆）控制台页：透明化与被遗忘权，只读+删除，数据不出机 */
   trusteeship?: {
     overview(): Promise<{
-      commitments: { id: string; groupId: string; creatorId: string; creatorName: string; intent: string; schedule: string; deliver: string; nextRunAt: number; expiryAt: number; status: string; lastResult: string; retryCount: number }[]
+      commitments: { id: string; groupId: string; agentId?: string; account?: PlatformAccountRef; creatorId: string; creatorName: string; intent: string; schedule: string; deliver: string; nextRunAt: number; expiryAt: number; status: string; lastResult: string; retryCount: number }[]
       failures: { id?: string; intent?: string; group_id?: string; reason?: string; at?: number }[]
-      delegated: { groupId: string; entries: { id: string; owner: string; ownerName: string; content: string; dueAt: number; status: string; createdAt: number }[] }[]
+      delegated: { groupId: string; scopeKey?: string; agentId?: string; account?: PlatformAccountRef; entries: { id: string; owner: string; ownerName: string; content: string; dueAt: number; status: string; createdAt: number }[] }[]
       config: { maxActivePerGroup: number; maxPerCreator: number; defaultExpiryDays: number; maxPerGroupDelegated: number; maxPerOwnerDelegated: number }
     }>
     cancelCommitment(id: string): Promise<boolean>
-    deleteDelegated(groupId: string, id: string): Promise<boolean>
+    deleteDelegated(groupId: string, id: string, scopeKey?: string): Promise<boolean>
     clearFailLog(): Promise<boolean>
   }
 }
@@ -195,7 +198,10 @@ function parseCookies(header = "") {
   const out:Record<string,string> = {}
   for (const part of String(header || "").split(";")) {
     const idx = part.indexOf("=")
-    if (idx > 0) out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim())
+    if (idx > 0) {
+      try { out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim()) }
+      catch { /* Ignore a malformed cookie without rejecting the entire request. */ }
+    }
   }
   return out
 }
@@ -1557,7 +1563,7 @@ function sendJson(res:http.ServerResponse, status:number, payload:unknown) {
   res.end(JSON.stringify(payload))
 }
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req:http.IncomingMessage, res:http.ServerResponse) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`)
   const provided = String(url.searchParams.get("token") || req.headers["x-console-token"] || "")
   const session = sessionUser(req)
@@ -2092,7 +2098,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/simulation/group" && req.method === "GET") {
       if (!simulation) return sendJson(res, 503, { error: "仿真运行时未接入控制台" })
       const groupId = String(url.searchParams.get("group") || "")
-      if (!/^\d{1,12}$/.test(groupId)) return sendJson(res, 400, { error: "group 参数必须是群号" })
+      if (!/^\d{1,12}$/.test(groupId) && !decodeSimulationAddressKey(groupId)) return sendJson(res, 400, { error: "group 参数必须是群号或会话地址" })
       return sendJson(res, 200, await simulation.describeGroup(groupId))
     }
     if (url.pathname === "/api/simulation/group" && req.method === "POST") {
@@ -2100,7 +2106,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req, 8 * 1024)
       const groupId = String(body?.group || "")
       const action = String(body?.action || "")
-      if (!/^\d{1,12}$/.test(groupId)) return sendJson(res, 400, { error: "group 必须是群号" })
+      if (!/^\d{1,12}$/.test(groupId) && !decodeSimulationAddressKey(groupId)) return sendJson(res, 400, { error: "group 必须是群号或会话地址" })
       if (!["enable", "disable", "reset", "initial-prompt", "budget", "turns", "reply-mode", "character", "activity"].includes(action)) return sendJson(res, 400, { error: "action 必须是 enable|disable|reset|initial-prompt|budget|turns|reply-mode|character|activity" })
       if (action === "activity") {
         if (typeof simulation.controlActivity !== "function") return sendJson(res, 503, { error: "仿真运行时版本过旧，不支持角色活动管理" })
@@ -2180,7 +2186,7 @@ const server = http.createServer(async (req, res) => {
       if (!trusteeship) return sendJson(res, 503, { error: "托付数据运行时未接入控制台" })
       const body = await readJsonBody(req, 8 * 1024)
       const id = String(body?.id || "")
-      if (!/^cmt_\d{10,15}_\d{4,12}_[0-9a-f]{6}$/.test(id)) return sendJson(res, 400, { error: "id 必须是完整的承诺 id（cmt_开头）" })
+      if (!/^cmt_\d{10,15}_(?:\d{4,12}_[0-9a-f]{6}|[0-9a-f]{32})$/.test(id)) return sendJson(res, 400, { error: "id 必须是完整的承诺 id（cmt_开头）" })
       const ok = await trusteeship.cancelCommitment(id)
       return sendJson(res, ok ? 200 : 404, ok ? { ok: true, message: `已取消承诺 ${id}` } : { error: "承诺不存在或已不在活跃清单" })
     }
@@ -2189,9 +2195,15 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req, 8 * 1024)
       const groupId = String(body?.groupId || "")
       const id = String(body?.id || "")
-      if (!/^\d{5,12}$/.test(groupId)) return sendJson(res, 400, { error: "groupId 必须是群号" })
-      if (!/^dlg_\d{10,15}_\d{4,12}_[0-9a-f]{6}$/.test(id)) return sendJson(res, 400, { error: "id 必须是完整的托付记忆 id（dlg_开头）" })
-      const ok = await trusteeship.deleteDelegated(groupId, id)
+      const scopeKey = body?.scopeKey
+      if (scopeKey === undefined) {
+        if (!/^\d{5,12}$/.test(groupId)) return sendJson(res, 400, { error: "groupId 必须是群号" })
+      } else {
+        const scope = typeof scopeKey === "string" ? decodeAgentConversationKey(scopeKey) : null
+        if (scope?.target.kind !== "group" || scope.target.id !== groupId) return sendJson(res, 400, { error: "托付记忆分区无效" })
+      }
+      if (!/^dlg_\d{10,15}_(?:\d{4,12}_[0-9a-f]{6}|[0-9a-f]{32})$/.test(id)) return sendJson(res, 400, { error: "id 必须是完整的托付记忆 id（dlg_开头）" })
+      const ok = await trusteeship.deleteDelegated(groupId, id, typeof scopeKey === "string" ? scopeKey : undefined)
       return sendJson(res, ok ? 200 : 404, ok ? { ok: true, message: "已删除该条托付记忆" } : { error: "托付记忆不存在" })
     }
     if (url.pathname === "/api/trusteeship/faillog-clear" && req.method === "POST") {
@@ -2265,6 +2277,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   sendJson(res, 404, { error: "not found" })
+}
+
+const server = http.createServer((req, res) => {
+  void handleRequest(req, res).catch(() => {
+    if (res.writableEnded || res.destroyed) return
+    if (res.headersSent) { res.destroy(); return }
+    sendJson(res, 500, { error: "请求处理失败" })
+  })
 })
 
 function listen() { server.listen(PORT, HOST, () => {

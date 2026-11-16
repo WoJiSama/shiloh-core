@@ -983,6 +983,7 @@ test("a restored legacy playing session finishes and rates its existing play wit
       delete play.familyId
       delete play.participantHistory
     })
+    harness.manager.stop()
     const restored = new TurtleSoupManager(harness.manager.ports)
     assert.equal(restored.getSession("100").playId, playId)
     assert.match(await restored.endGame(harness.event("u1", ".游戏 海龟汤 结束")), /—— 汤底 ——/)
