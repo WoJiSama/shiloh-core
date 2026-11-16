@@ -1,0 +1,199 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
+import { createAgentBindingDirectory, createAgentRuntime } from '../dist/backend/core/index.js'
+import { agentBindingToken, platformAccountKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
+import { createAgentInbox } from '../dist/backend/modules/runtime/infrastructure/agentInbox.js'
+import { simulationAddressKey } from '../dist/backend/modules/simulation/infrastructure/simulationAddress.js'
+import { simulationSessionKey } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
+import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
+
+const makeTarget = namespace => ({ account: { platform: 'fixture', namespace, id: 'bot#1' }, kind: 'group', id: 'channel/42' })
+const first = makeTarget('tenant-a')
+const second = makeTarget('tenant-b')
+const simulationInbox = target => ({ kind: 'simulation', account: target.account })
+const simulationKey = target => `agent:inbox:simulation:${platformAccountKey(target.account)}`
+const redisTest = { skip: !redisAvailable, timeout: 8_000 }
+const now = Date.now()
+
+function message(target, id, text = id, quoteId) {
+  return {
+    version: 1, conversation: target, sender: { ...target.account, id: 'member#1' },
+    messageId: id, occurredAt: now, text, parts: [{ kind: 'text', text }], mentions: [], directedToAccount: true,
+    ...(quoteId ? { quote: { messageId: quoteId, parts: [] } } : {}),
+  }
+}
+
+function deferred() {
+  let resolve
+  const promise = new Promise(done => { resolve = done })
+  return { promise, resolve }
+}
+
+async function waitFor(probe, description) {
+  const until = Date.now() + 3_000
+  while (Date.now() < until) {
+    const found = await probe()
+    if (found) return found
+    await delay(15)
+  }
+  assert.fail(`timed out waiting for ${description}`)
+}
+
+test('legacy inbox moves complete batches and resumes without rewriting rows or receipts', redisTest, async t => {
+  const { reader, storage, prefix } = await createAgentRedisFixture(t)
+  const legacyKey = prefix + 'agent:inbox'
+  const persistedReceipt = prefix + 'agent:inbox:receipt:existing'
+  const migrated = createAgentInbox(storage)
+  const entries = Array.from({ length: 70 }, (_, index) => {
+    const target = index % 2 ? first : second
+    if (index % 3 === 0) {
+      return { event: { kind: 'nudge', target, occurredAt: now, sender: { ...target.account, id: 'member#1' } },
+        bindingToken: 'snapshot', ingressId: `nudge-${index}` }
+    }
+    if (index % 3 === 1) return { event: { kind: 'recall', target, messageId: `recall-${index}` } }
+    return { event: { kind: 'message', message: message(target, `message-${index}`) }, bindingToken: 'snapshot' }
+  })
+  const serialized = entries.map((entry, index) => JSON.stringify(entry, null, index % 2))
+  await reader.rPush(legacyKey, serialized)
+  await reader.set(persistedReceipt, '1', { EX: 600 })
+  let checks = 0
+  await migrated.moveLegacySimulationQueue(() => checks++ < 2)
+  const remaining = await reader.lRange(legacyKey, 0, -1)
+  assert.ok(remaining.length > 0 && remaining.length < serialized.length)
+  assert.deepEqual(remaining, serialized.slice(-remaining.length))
+
+  await migrated.moveLegacySimulationQueue(() => true)
+  await migrated.moveLegacySimulationQueue(() => true)
+  assert.equal(await reader.exists(legacyKey), 0)
+  assert.deepEqual(await reader.lRange(prefix + simulationKey(first), 0, -1), serialized.filter((_, index) => index % 2))
+  assert.deepEqual(await reader.lRange(prefix + simulationKey(second), 0, -1), serialized.filter((_, index) => index % 2 === 0))
+  assert.equal(await reader.get(persistedReceipt), '1')
+  assert.ok(await reader.ttl(persistedReceipt) > 0)
+  assert.equal(await reader.ttl(prefix + simulationKey(first)), -1)
+
+  const head = await migrated.next(simulationInbox(first))
+  assert.equal(head.raw, serialized[1])
+  await assert.rejects(migrated.acknowledge(serialized[3], simulationInbox(first)), /队列顺序已改变/u)
+  await migrated.acknowledge(head.raw, simulationInbox(first))
+  assert.equal((await migrated.next(simulationInbox(first))).raw, serialized[3])
+  assert.equal((await migrated.next(simulationInbox(second))).raw, serialized[0])
+
+  const bad = JSON.stringify({ event: { kind: 'recall', target: { ...first, id: 42 }, messageId: 'bad-address' } })
+  await reader.rPush(legacyKey, [serialized[0], bad])
+  const otherSize = await reader.lLen(prefix + simulationKey(second))
+  await assert.rejects(migrated.moveLegacySimulationQueue(() => true), /无法识别的会话地址/u)
+  assert.deepEqual(await reader.lRange(legacyKey, 0, -1), [serialized[0], bad])
+  assert.equal(await reader.lLen(prefix + simulationKey(second)), otherSize)
+
+  // Redis scripts do not roll back runtime errors. Check all destinations before appending.
+  await reader.del(legacyKey, prefix + simulationKey(first))
+  await reader.set(prefix + simulationKey(first), 'unexpected Redis type')
+  await reader.rPush(legacyKey, serialized.slice(0, 2))
+  await assert.rejects(migrated.moveLegacySimulationQueue(() => true), /invalid Agent inbox destination/u)
+  assert.deepEqual(await reader.lRange(legacyKey, 0, -1), serialized.slice(0, 2))
+  assert.equal(await reader.lLen(prefix + simulationKey(second)), otherSize)
+})
+
+test('Core ingests independent accounts while a quoted message stalls another account', redisTest, async t => {
+  const { reader, storage, isCurrent, prefix } = await createAgentRedisFixture(t)
+  const targets = [first, second]
+  const directory = createAgentBindingDirectory({
+    version: 1, agents: [{ id: 'same-agent', personaId: 'default' }],
+    connections: targets.map(({ account }, index) => ({ id: `account-${index}`, platform: account.platform, namespace: account.namespace, accountId: account.id })),
+    bindings: targets.map(({ kind, id }, index) => ({ connectionId: `account-${index}`, kind, conversationId: id, agentId: 'same-agent' })),
+  }, 'fixture-revision')
+  const token = target => agentBindingToken(directory.resolve(target))
+  const release = deferred()
+  let entered = false
+  function adapter(target, readMessage) {
+    let accept
+    return {
+      account: target.account, id: directory.resolve(target).connectionId, botUserId: target.account.id, botName: 'fixture',
+      start: async handler => { accept = handler },
+      stop: () => {},
+      isReady: () => Boolean(accept),
+      async emit(event) { await accept(event) },
+      actions: { send: async () => { assert.fail('test events are only ingested') } },
+      ...(readMessage ? { readMessage } : {}),
+    }
+  }
+  const slow = adapter(first, async (target, id) => {
+    assert.equal(target.account.namespace, first.account.namespace)
+    assert.equal(id, 'prior')
+    entered = true
+    await release.promise
+    return undefined
+  })
+  const fast = adapter(second)
+  const host = createAgentRuntime({
+    storage, isExecutionCurrent: isCurrent, adapters: [slow, fast],
+    logger: { info() {}, warn() {}, error() {} },
+    getSection: () => ({ wake: { batchWindowMs: 60_000 }, reflection: { enabled: false }, rhythm: { enabled: false } }),
+    getExecutionConfig: () => ({}),
+    resolvePersona: target => {
+      const binding = directory.resolve(target)
+      return binding && { binding, persona: { name: 'fixture' }, systemContent: '' }
+    },
+    YTapi: async () => ({ choices: [] }),
+  })
+  const readSession = async target => JSON.parse(await reader.get(prefix + simulationSessionKey(simulationAddressKey(target))) ?? 'null')
+  const inbox = createAgentInbox(storage)
+  const legacyKey = prefix + 'agent:inbox'
+  const slowEntry = { event: { kind: 'message', message: message(first, 'shared', 'first account', 'prior') }, bindingToken: token(first) }
+  const legacyRow = JSON.stringify(slowEntry)
+  // Simulate a receipt and a pending row from the previous process before upgrading.
+  await inbox.accept(slowEntry)
+  await reader.rename(prefix + simulationKey(first), legacyKey)
+  let starting
+  try {
+    starting = host.start()
+    await waitFor(() => entered, 'first account lookup')
+    assert.equal(await reader.exists(legacyKey), 0)
+    assert.equal(await reader.lIndex(prefix + simulationKey(first), 0), legacyRow)
+    await assert.rejects(inbox.accept(slowEntry, { kind: 'group', account: second.account }), /收件队列不匹配/u)
+
+    await slow.emit({ kind: 'message', message: message(first, 'after', 'later in the first account') })
+    await slow.emit(slowEntry.event)
+    await fast.emit({ kind: 'message', message: message(second, 'shared', 'second account') })
+    await fast.emit({ kind: 'message', message: message(first, 'wrong-account', 'foreign sender') })
+    const peerState = await waitFor(() => readSession(second), 'second account session while the first lookup is in flight')
+    assert.deepEqual(peerState.recent.map(entry => entry.text), ['second account'])
+    assert.equal(await readSession(first), null)
+    assert.equal(await reader.lLen(prefix + simulationKey(first)), 2)
+    assert.equal(await inbox.canReply(first, 'after'), true)
+    assert.equal(await inbox.canReply(second, 'after'), false)
+    assert.equal(await inbox.canReply(first, 'wrong-account'), false)
+
+    // A forged/invalid persisted row must not invalidate another account or consume a real message ID.
+    const invalidReplay = [
+      { event: { kind: 'recall', target: first, messageId: 'after' } },
+      { event: { kind: 'recall', target: second, messageId: 'shared' } },
+      { event: { kind: 'message', message: { ...message(second, 'invalid-shape'), parts: null } }, bindingToken: token(second) },
+      { event: { kind: 'message', message: { ...message(second, 'invalid-sender'), sender: { ...first.account, id: 'member#1' } } }, bindingToken: token(second) },
+    ].map(entry => JSON.stringify(entry))
+    await reader.rPush(prefix + simulationKey(second), invalidReplay)
+    await host.resumePendingWork()
+    await waitFor(async () => await reader.lLen(prefix + simulationKey(second)) === 0, 'wrong-account and invalid replay entries discarded')
+    assert.deepEqual((await readSession(second)).recent.map(entry => entry.text), ['second account'])
+    release.resolve()
+    await starting
+    const firstState = await waitFor(async () => {
+      const state = await readSession(first)
+      return state?.recent.length === 2 ? state : undefined
+    }, 'first account resumes in FIFO order')
+    assert.deepEqual(firstState.recent.map(entry => entry.text), ['first account', 'later in the first account'])
+    assert.equal(await reader.lLen(prefix + simulationKey(first)), 0)
+    assert.equal(await inbox.canReply(first, 'shared'), true)
+    assert.equal(await inbox.canReply(second, 'shared'), true)
+
+    await slow.emit({ kind: 'recall', target: first, messageId: 'shared' })
+    await waitFor(async () => (await readSession(first))?.recent.length === 1, 'first account recall affects its own message')
+    assert.deepEqual((await readSession(second)).recent.map(entry => entry.text), ['second account'])
+    assert.equal(await inbox.canReply(first, 'shared'), false)
+    assert.equal(await inbox.canReply(second, 'shared'), true)
+  } finally {
+    release.resolve()
+    await Promise.allSettled([starting, host.stop()])
+  }
+})
