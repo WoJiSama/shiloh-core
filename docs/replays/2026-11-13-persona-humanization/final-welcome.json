@@ -1,0 +1,2843 @@
+{
+  "complete": true,
+  "metadata": {
+    "schemaVersion": 1,
+    "assessmentVersion": 5,
+    "runId": "c7676d6e-fc1f-41ba-a6a0-b876d819707d",
+    "startedAtISO": "2026-11-13T03:08:17.995Z",
+    "scenarioManifest": [
+      {
+        "id": "welcome-follow-up-once",
+        "events": [
+          {
+            "eventIndex": 0,
+            "eventHash": "f85d95ccc070b6891a8111acbf2f93478bbe1ce3ff72d8511b7bdc32a0411b2b",
+            "expect": {}
+          },
+          {
+            "eventIndex": 1,
+            "eventHash": "a300a4c5fc95e9a1c81bcbf858135a76ab20268be86f13de263fbc8c119e67c5",
+            "expect": {}
+          },
+          {
+            "eventIndex": 2,
+            "eventHash": "c6e8a1265469da8e3686aa75eb078deda3ea7093e21cdd8eb2c93816621762da",
+            "expect": {
+              "noSend": true,
+              "noMainCall": true
+            }
+          },
+          {
+            "eventIndex": 3,
+            "eventHash": "12d2208b8abd2877d5b70a526c72cc871f6951457bbd7694cb9d6a1eb3fbb4a9",
+            "expect": {}
+          }
+        ]
+      }
+    ],
+    "scenarioManifestHash": "3319245b21d4a0c8636fc52f4106ecef8be781295a7d4311b09872f7d1a1d3de",
+    "mode": "live_model",
+    "runnerHash": "2a8d52803a94fa568ca95bfed82ed30ba9d3fa54b5e6b95f9a4511e554966948",
+    "scenariosHash": "e59d1c603451c37729be76e05815a56820f32b5ec741b6e666d1e24d54264a50",
+    "effectiveConfigHash": "7b830f08c086282320fa76dd670e87f7d8251f4034e0c26d67ac084de7a8cbfc",
+    "buildManifestHash": "261e62959f6cfa7a343f4e79f9edd3911d6e21be9ac7ed86af43494472b0603a",
+    "model": "glm-5.3",
+    "personaHash": "b18df3776a96087042b80f35ec9aeb51270918a6adca3cdf58811bbc514286dd",
+    "clock": "fixed initial event epoch; explicit event advances or opt-in earliest eligible model-created goal time; elapsed wall time within events; actual adjustments recorded",
+    "search": "synthetic_fixture",
+    "feeds": "synthetic_fixture; no_real_HTTP",
+    "worker": "synthetic_fixture; scenario_fixed_outcome_for_all_submissions; no_external_worker_submission",
+    "reflection": "separate_reflectCharacter_port; scripted_in_dry_mode; configured_memory_backend_in_live_mode",
+    "consistency": "disabled; production_default",
+    "storage": "fresh_in_memory_per_sample",
+    "platform": "captured_only",
+    "toolResults": "current_event_tool_replies_from_model_requests_and_final_persisted_session; unique_tool_ids_per_sample; no_extra_model_calls",
+    "generation": "configured_executor_with_2048_output_token_cap; compatibility_retries_record_actual_parameters",
+    "simulationOverrides": {
+      "tools": "character_and_activity_tools; no_search_or_worker",
+      "maxToolRounds": 6,
+      "maxSendsPerTurn": 3,
+      "waitMaxMs": 1000,
+      "auxiliaryModels": false,
+      "independentReflection": true,
+      "consistencyReview": false,
+      "probabilityWake": false,
+      "scheduledIdleProbability": 1,
+      "backgroundCheck": "defer_proactive; explicit_per_event_isolation_clears_reply_pending_wakes_and_active_timeout; changes_recorded"
+    },
+    "personaSource": "merged_config_persona; persona_library_bindings_not_loaded",
+    "seed": "empty_bound_session; no_goals_or_memories_seeded",
+    "eventStatusMeaning": "engineering_execution_only; inspect_behavior_observations_separately",
+    "maxCalls": 45,
+    "maxHttp": 55,
+    "maxDurationMs": 300000,
+    "repetitions": 2,
+    "review": "structural checks and behavior observations do not establish naturalness or production acceptance"
+  },
+  "platformMessagesSent": 0,
+  "productionStoreWrites": 0,
+  "results": [
+    {
+      "scenario": "welcome-follow-up-once",
+      "sampleIndex": 1,
+      "eventIndex": 0,
+      "eventHash": "f85d95ccc070b6891a8111acbf2f93478bbe1ce3ff72d8511b7bdc32a0411b2b",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400010,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400010,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我明天同一时间就结束纸灯展的布展了。你明天这时候可以在这个群主动问我一句摆得怎么样，我愿意分享，不用@我",
+      "speaker": "评测群友0",
+      "at": 1794196800011,
+      "status": "passed",
+      "review": "明确欢迎在群里主动问起是合成测试条件。第二天只自然问一次，有无回复不视作结果已知。重启后不能再催。",
+      "expect": {},
+      "calls": [
+        {
+          "id": "model-1",
+          "stage": "main",
+          "requestHash": "291e47a4d4ea386f6dd8db161f6ce732c78dc6b6f32d72fbfc9be2ec1191e21c",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 103,
+            "completion_tokens_details": {
+              "reasoning_tokens": 25
+            },
+            "prompt_tokens": 13456,
+            "prompt_tokens_details": {
+              "cached_tokens": 2176
+            },
+            "total_tokens": 13559
+          },
+          "elapsedMs": 6639,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079276121618906910",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"aboutUser\":\"99000003\",\"content\":\"评测群友0明天12点左右结束纸灯展布展，明确欢迎我届时在群里主动问一句摆得怎么样，不用@。\",\"dueInMinutes\":1440,\"kind\":\"pendingEvent\",\"welcomeProactiveFollowUp\":true}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-2",
+          "stage": "main",
+          "requestHash": "745a62f8887c75e5ab417d1bd79b81e04ee9606242939a48d31d5b015efa3089",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 54,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 13651,
+            "prompt_tokens_details": {
+              "cached_tokens": 13376
+            },
+            "total_tokens": 13705
+          },
+          "elapsedMs": 2283,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079271586133436579",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"记下了，明天这个时候我来问你摆得怎么样喵\"],\"reason\":\"对方明确邀请明天主动问起，已保存pendingEvent，本轮简短回应即可\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 6629
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2276
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "记下了，明天这个时候我来问你摆得怎么样喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "919f66bdcb51d7b3c58874fffd6313e58937f8819df2e6bf386f738cb7e2dccb",
+          "stage": "main",
+          "toolCallId": "call_-7079276121618906910",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgd19bq58\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "30a94cc5fdaebd9280eda677475296d9e83124d6054b832c2f094d620b7dfb64",
+          "stage": "main",
+          "toolCallId": "call_-7079271586133436579",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgd19bq58\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807680
+          },
+          {
+            "id": "89a9c0c7-6129-4099-b71b-a16c95831a78",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196809970
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079276121618906910",
+          "call_-7079271586133436579"
+        ],
+        "missingToolCallIds": []
+      },
+      "behavior": {},
+      "elapsedMs": 9963
+    },
+    {
+      "scenario": "welcome-follow-up-once",
+      "sampleIndex": 1,
+      "eventIndex": 1,
+      "eventHash": "a300a4c5fc95e9a1c81bcbf858135a76ab20268be86f13de263fbc8c119e67c5",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgd19bq58\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807680
+          },
+          {
+            "id": "89a9c0c7-6129-4099-b71b-a16c95831a78",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196809970
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400010,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400010,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794283389976,
+      "status": "passed",
+      "review": "明确欢迎在群里主动问起是合成测试条件。第二天只自然问一次，有无回复不视作结果已知。重启后不能再催。",
+      "expect": {},
+      "calls": [
+        {
+          "id": "model-3",
+          "stage": "main",
+          "requestHash": "1e8ddad360b5ab9fe2821b157a5c858b7abae404cbed419a75e9cc9463bc6e4e",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simSetMood",
+            "simGetMessageImages",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 31,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 13838,
+            "prompt_tokens_details": {
+              "cached_tokens": 2368
+            },
+            "total_tokens": 13869
+          },
+          "elapsedMs": 4725,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079270005585477305",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"布展该收尾了吧，摆得怎么样喵\"]}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-4",
+          "stage": "main",
+          "requestHash": "1c7095038eff639c2685cd5e4eb6e2cb31bfb82883ec54d8f48a8778f3596044",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simSetMood",
+            "simGetMessageImages",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 30,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 13989,
+            "prompt_tokens_details": {
+              "cached_tokens": 13696
+            },
+            "total_tokens": 14019
+          },
+          "elapsedMs": 5679,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079278320642155284",
+              "type": "function",
+              "function": {
+                "name": "simWaitForMessages",
+                "arguments": "{\"purpose\":\"messages\",\"quietMs\":30000,\"timeoutMs\":60000}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-5",
+          "stage": "main",
+          "requestHash": "5f18dfab7503feb3c756255584779ba172d6b12c34c858d0d9fd403f7f51c973",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simSetMood",
+            "simGetMessageImages",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 67,
+            "completion_tokens_details": {
+              "reasoning_tokens": 41
+            },
+            "prompt_tokens": 14087,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 14154
+          },
+          "elapsedMs": 9363,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079276087259166220",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"action\":\"done\",\"id\":\"mw8qgd19bq58\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-6",
+          "stage": "main",
+          "requestHash": "51e169ae95eaf98f3923a39adb599c1dcc5c9c3ae22cce9986d29340e4987913",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simSetMood",
+            "simGetMessageImages",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 41,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14233,
+            "prompt_tokens_details": {
+              "cached_tokens": 13952
+            },
+            "total_tokens": 14274
+          },
+          "elapsedMs": 6683,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079271070737365650",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"已按约定主动问了布展情况，对方暂未回复，不催\",\"throughSeq\":1}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 4718
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5670
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 9358
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 6679
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "布展该收尾了吧，摆得怎么样喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "05627002820c93691e169f205865786857f3e8a25c4f9eb6117c1b48beca44db",
+          "stage": "main",
+          "toolCallId": "call_-7079270005585477305",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:0d153118-b55f-4638-b5f6-9bd5f014e045\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "288255c04124ef10ea06cb44f8cde51dad093898ea25ee8cff1562ed5a2d5bca",
+          "stage": "main",
+          "toolCallId": "call_-7079278320642155284",
+          "name": "simWaitForMessages",
+          "content": "{\"hint\":\"等待超时，等待期间新增 0 条（目标 ≥1 条）。这就是一次有效观察，现在可以选择回一句，或设置唤醒配置后结束回合睡觉。\",\"canSleepNow\":false,\"newMessagesText\":\"\",\"newCount\":0,\"readThroughSeq\":1,\"partial\":false}"
+        },
+        {
+          "hash": "dbcdb1f561976e64a62aa3636a8e7dafae266a4e1e62386d667deda27bc4b1fe",
+          "stage": "main",
+          "toolCallId": "call_-7079276087259166220",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天12点左右结束纸灯展布展，明确欢迎我届时在群里主动问一句摆得怎么样，不用@。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:d02ff7b2-7db0-4e63-8d92-e1d40842cb34\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "033b7528738457f9f9876c1df1648a8794801f60754ec63bcec3b2a6856142b1",
+          "stage": "main",
+          "toolCallId": "call_-7079271070737365650",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 12,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgd19bq58\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807680
+          },
+          {
+            "id": "89a9c0c7-6129-4099-b71b-a16c95831a78",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196809970
+          },
+          {
+            "id": "0d153118-b55f-4638-b5f6-9bd5f014e045",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794283395713
+          },
+          {
+            "id": "d02ff7b2-7db0-4e63-8d92-e1d40842cb34",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天12点左右结束纸灯展布展，明确欢迎我届时在群里主动问一句摆得怎么样，不用@。\"}",
+            "at": 1794283411808
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079270005585477305",
+          "call_-7079278320642155284",
+          "call_-7079276087259166220",
+          "call_-7079271070737365650"
+        ],
+        "missingToolCallIds": []
+      },
+      "behavior": {},
+      "elapsedMs": 28539
+    },
+    {
+      "scenario": "welcome-follow-up-once",
+      "sampleIndex": 1,
+      "eventIndex": 2,
+      "eventHash": "c6e8a1265469da8e3686aa75eb078deda3ea7093e21cdd8eb2c93816621762da",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 12,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgd19bq58\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807680
+          },
+          {
+            "id": "89a9c0c7-6129-4099-b71b-a16c95831a78",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196809970
+          },
+          {
+            "id": "0d153118-b55f-4638-b5f6-9bd5f014e045",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794283395713
+          },
+          {
+            "id": "d02ff7b2-7db0-4e63-8d92-e1d40842cb34",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天12点左右结束纸灯展布展，明确欢迎我届时在群里主动问一句摆得怎么样，不用@。\"}",
+            "at": 1794283411808
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400010,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794290618521,
+          "nextRunAt": 1794312218521,
+          "lastOutcome": "无既有记忆或目标需要修改；记录一条待跟进兴趣：评测群友明天约12点结束纸灯展布展后，可主动问一句摆得如何。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f",
+            "receipt:89a9c0c7-6129-4099-b71b-a16c95831a78",
+            "receipt:0d153118-b55f-4638-b5f6-9bd5f014e045",
+            "receipt:d02ff7b2-7db0-4e63-8d92-e1d40842cb34"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794290618518,
+      "status": "passed",
+      "review": "明确欢迎在群里主动问起是合成测试条件。第二天只自然问一次，有无回复不视作结果已知。重启后不能再催。",
+      "expect": {
+        "noSend": true,
+        "noMainCall": true
+      },
+      "calls": [
+        {
+          "id": "model-7",
+          "stage": "reflection",
+          "requestHash": "8ff5e19ccd93d8bae30cbbb5c1a02253d39ed6bee08a8d686e5494091bf65672",
+          "tools": [],
+          "usage": {
+            "completion_tokens": 184,
+            "completion_tokens_details": {
+              "reasoning_tokens": 34
+            },
+            "prompt_tokens": 708,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 892
+          },
+          "elapsedMs": 9885,
+          "settled": true,
+          "model": "glm-5.3-flash",
+          "output": "{\"summary\":\"无既有记忆或目标需要修改；记录一条待跟进兴趣：评测群友明天约12点结束纸灯展布展后，可主动问一句摆得如何。\",\"updates\":[{\"kind\":\"interest\",\"content\":\"对评测群友的纸灯展布展结果保持关注，布展预计明天12点左右结束，届时可在群里自然地问一句摆得怎么样（不用@）。\",\"evidenceRefs\":[\"receipt:d02ff7b2-7db0-4e63-8d92-e1d40842cb34\",\"receipt:b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f\"]}],\"goals\":[]}",
+          "toolCalls": []
+        }
+      ],
+      "network": [
+        {
+          "stage": "reflection",
+          "model": "glm-5.3-flash",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3-flash",
+              "temperature": 0.3,
+              "max_tokens": 1200,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "5c72bb1705144d5f38dc9f95a7a02be9e3005beb0cd5795340540fbd78e46c53"
+          },
+          "status": 200,
+          "elapsedMs": 9883
+        }
+      ],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [
+        {
+          "callId": "model-7",
+          "requestHash": "8ff5e19ccd93d8bae30cbbb5c1a02253d39ed6bee08a8d686e5494091bf65672",
+          "status": "succeeded",
+          "usage": {
+            "completion_tokens": 184,
+            "completion_tokens_details": {
+              "reasoning_tokens": 34
+            },
+            "prompt_tokens": 708,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 892
+          },
+          "output": "{\"summary\":\"无既有记忆或目标需要修改；记录一条待跟进兴趣：评测群友明天约12点结束纸灯展布展后，可主动问一句摆得如何。\",\"updates\":[{\"kind\":\"interest\",\"content\":\"对评测群友的纸灯展布展结果保持关注，布展预计明天12点左右结束，届时可在群里自然地问一句摆得怎么样（不用@）。\",\"evidenceRefs\":[\"receipt:d02ff7b2-7db0-4e63-8d92-e1d40842cb34\",\"receipt:b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f\"]}],\"goals\":[]}",
+          "model": "glm-5.3-flash"
+        }
+      ],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "restarted": true,
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 15,
+        "paused": false,
+        "memories": [
+          {
+            "id": "reflection-5eb82bce-a533-4ec1-ac7d-b2977b100ae6",
+            "kind": "interest",
+            "content": "对评测群友的纸灯展布展结果保持关注，布展预计明天12点左右结束，届时可在群里自然地问一句摆得怎么样（不用@）。",
+            "epistemic": "inferred",
+            "evidenceRefs": [
+              "receipt:d02ff7b2-7db0-4e63-8d92-e1d40842cb34",
+              "receipt:b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f"
+            ],
+            "createdAt": 1794290618521,
+            "updatedAt": 1794290618521
+          }
+        ],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgd19bq58\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807680
+          },
+          {
+            "id": "89a9c0c7-6129-4099-b71b-a16c95831a78",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196809970
+          },
+          {
+            "id": "0d153118-b55f-4638-b5f6-9bd5f014e045",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794283395713
+          },
+          {
+            "id": "d02ff7b2-7db0-4e63-8d92-e1d40842cb34",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天12点左右结束纸灯展布展，明确欢迎我届时在群里主动问一句摆得怎么样，不用@。\"}",
+            "at": 1794283411808
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "behavior": {
+        "noMessageSent": true,
+        "noMainModelCall": true
+      },
+      "elapsedMs": 11145
+    },
+    {
+      "scenario": "welcome-follow-up-once",
+      "sampleIndex": 1,
+      "eventIndex": 3,
+      "eventHash": "12d2208b8abd2877d5b70a526c72cc871f6951457bbd7694cb9d6a1eb3fbb4a9",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 15,
+        "paused": false,
+        "memories": [
+          {
+            "id": "reflection-5eb82bce-a533-4ec1-ac7d-b2977b100ae6",
+            "kind": "interest",
+            "content": "对评测群友的纸灯展布展结果保持关注，布展预计明天12点左右结束，届时可在群里自然地问一句摆得怎么样（不用@）。",
+            "epistemic": "inferred",
+            "evidenceRefs": [
+              "receipt:d02ff7b2-7db0-4e63-8d92-e1d40842cb34",
+              "receipt:b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f"
+            ],
+            "createdAt": 1794290618521,
+            "updatedAt": 1794290618521
+          }
+        ],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgd19bq58\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807680
+          },
+          {
+            "id": "89a9c0c7-6129-4099-b71b-a16c95831a78",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196809970
+          },
+          {
+            "id": "0d153118-b55f-4638-b5f6-9bd5f014e045",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794283395713
+          },
+          {
+            "id": "d02ff7b2-7db0-4e63-8d92-e1d40842cb34",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天12点左右结束纸灯展布展，明确欢迎我届时在群里主动问一句摆得怎么样，不用@。\"}",
+            "at": 1794283411808
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794290618521,
+          "nextRunAt": 1794312218521,
+          "lastOutcome": "无既有记忆或目标需要修改；记录一条待跟进兴趣：评测群友明天约12点结束纸灯展布展后，可主动问一句摆得如何。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f",
+            "receipt:89a9c0c7-6129-4099-b71b-a16c95831a78",
+            "receipt:0d153118-b55f-4638-b5f6-9bd5f014e045",
+            "receipt:d02ff7b2-7db0-4e63-8d92-e1d40842cb34"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794290618521,
+          "nextRunAt": 1794312218521,
+          "lastOutcome": "无既有记忆或目标需要修改；记录一条待跟进兴趣：评测群友明天约12点结束纸灯展布展后，可主动问一句摆得如何。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f",
+            "receipt:89a9c0c7-6129-4099-b71b-a16c95831a78",
+            "receipt:0d153118-b55f-4638-b5f6-9bd5f014e045",
+            "receipt:d02ff7b2-7db0-4e63-8d92-e1d40842cb34"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "布展完啦，靠窗那排最后摆了四盏纸灯",
+      "speaker": "评测群友0",
+      "at": 1794290629666,
+      "status": "passed",
+      "review": "明确欢迎在群里主动问起是合成测试条件。第二天只自然问一次，有无回复不视作结果已知。重启后不能再催。",
+      "expect": {},
+      "calls": [
+        {
+          "id": "model-8",
+          "stage": "main",
+          "requestHash": "5cc5286d69ef0e7e04532ba838c4433d47435282eab4971ebffefa83310838c2",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 59,
+            "completion_tokens_details": {
+              "reasoning_tokens": 12
+            },
+            "prompt_tokens": 15944,
+            "prompt_tokens_details": {
+              "cached_tokens": 13568
+            },
+            "total_tokens": 16003
+          },
+          "elapsedMs": 6961,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079268493756983121",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"靠窗那排，光线正好打上去，四盏摆最后收尾很稳啊\"],\"replyToSeq\":2}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-9",
+          "stage": "main",
+          "requestHash": "453f8fe8e0299ba6a52f9e6f6ebc0870a4ce550d9620cb528bcb08dfbf3f9a4e",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 35,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 16105,
+            "prompt_tokens_details": {
+              "cached_tokens": 15744
+            },
+            "total_tokens": 16140
+          },
+          "elapsedMs": 7848,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079270795859458201",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"普通聊天回应布展结果，无后续安排\",\"throughSeq\":2}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 6957
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 7834
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "靠窗那排，光线正好打上去，四盏摆最后收尾很稳啊"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "79dfca9f6817b0732c123cb924d7c2dfb844391ff6a931be3712336992e6975c",
+          "stage": "main",
+          "toolCallId": "call_-7079268493756983121",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:e68ba224-c51a-4696-82b3-deb9d24dfaea\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "df8aaef93c2339824190f04406faca2ecb2d75695a9243310cfe48602eb3310d",
+          "stage": "main",
+          "toolCallId": "call_-7079270795859458201",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 18,
+        "paused": false,
+        "memories": [
+          {
+            "id": "reflection-5eb82bce-a533-4ec1-ac7d-b2977b100ae6",
+            "kind": "interest",
+            "content": "对评测群友的纸灯展布展结果保持关注，布展预计明天12点左右结束，届时可在群里自然地问一句摆得怎么样（不用@）。",
+            "epistemic": "inferred",
+            "evidenceRefs": [
+              "receipt:d02ff7b2-7db0-4e63-8d92-e1d40842cb34",
+              "receipt:b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f"
+            ],
+            "createdAt": 1794290618521,
+            "updatedAt": 1794290618521
+          }
+        ],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b3fc8192-f8bc-4a8d-b3fe-35fbad02e60f",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgd19bq58\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807680
+          },
+          {
+            "id": "89a9c0c7-6129-4099-b71b-a16c95831a78",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196809970
+          },
+          {
+            "id": "0d153118-b55f-4638-b5f6-9bd5f014e045",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794283395713
+          },
+          {
+            "id": "d02ff7b2-7db0-4e63-8d92-e1d40842cb34",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天12点左右结束纸灯展布展，明确欢迎我届时在群里主动问一句摆得怎么样，不用@。\"}",
+            "at": 1794283411808
+          },
+          {
+            "id": "e68ba224-c51a-4696-82b3-deb9d24dfaea",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794290637636
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079268493756983121",
+          "call_-7079270795859458201"
+        ],
+        "missingToolCallIds": []
+      },
+      "behavior": {},
+      "elapsedMs": 15831
+    },
+    {
+      "scenario": "welcome-follow-up-once",
+      "sampleIndex": 2,
+      "eventIndex": 0,
+      "eventHash": "f85d95ccc070b6891a8111acbf2f93478bbe1ce3ff72d8511b7bdc32a0411b2b",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400003,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400003,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我明天同一时间就结束纸灯展的布展了。你明天这时候可以在这个群主动问我一句摆得怎么样，我愿意分享，不用@我",
+      "speaker": "评测群友0",
+      "at": 1794196800003,
+      "status": "passed",
+      "review": "明确欢迎在群里主动问起是合成测试条件。第二天只自然问一次，有无回复不视作结果已知。重启后不能再催。",
+      "expect": {},
+      "calls": [
+        {
+          "id": "model-10",
+          "stage": "main",
+          "requestHash": "291e47a4d4ea386f6dd8db161f6ce732c78dc6b6f32d72fbfc9be2ec1191e21c",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 83,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 13456,
+            "prompt_tokens_details": {
+              "cached_tokens": 13440
+            },
+            "total_tokens": 13539
+          },
+          "elapsedMs": 6226,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079273475919047241",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"aboutUser\":\"99000003\",\"content\":\"评测群友0明天（2026-11-10）中午12点左右纸灯展布展结束，明确欢迎我在群里主动问他摆得怎么样，不用@。\",\"dueInMinutes\":1440,\"kind\":\"pendingEvent\",\"welcomeProactiveFollowUp\":true}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-11",
+          "stage": "main",
+          "requestHash": "a2b42ea7dc49137a606cccfc1576298b65c74e723d72387eb893ebb5211b6d29",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 69,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 13657,
+            "prompt_tokens_details": {
+              "cached_tokens": 13376
+            },
+            "total_tokens": 13726
+          },
+          "elapsedMs": 7921,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079272342047685390",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"记下了，明天这时候我来问。摆完了可得跟我好好讲讲，别就一句'还行'打发我喵\"],\"reason\":\"对方明确邀请明天主动问起，已保存pendingEvent，本轮简短回应即可。\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 6222
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 7915
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "记下了，明天这时候我来问。摆完了可得跟我好好讲讲，别就一句'还行'打发我喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "0e6932434394595118ed232c334811e8f62c7aa47fc01ff9969fb16f038a4d76",
+          "stage": "main",
+          "toolCallId": "call_-7079273475919047241",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgcowep2x\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:8ad647e4-ba30-422a-adc0-05758fe59e99\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "92cf621488c162ead7a58257c057cd92e16979b34eb7547d19b6c3f92489680d",
+          "stage": "main",
+          "toolCallId": "call_-7079272342047685390",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "8ad647e4-ba30-422a-adc0-05758fe59e99",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgcowep2x\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807232
+          },
+          {
+            "id": "6286af3d-8779-4be3-8e14-52d3a47b78a2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196815154
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079273475919047241",
+          "call_-7079272342047685390"
+        ],
+        "missingToolCallIds": []
+      },
+      "behavior": {},
+      "elapsedMs": 15153
+    },
+    {
+      "scenario": "welcome-follow-up-once",
+      "sampleIndex": 2,
+      "eventIndex": 1,
+      "eventHash": "a300a4c5fc95e9a1c81bcbf858135a76ab20268be86f13de263fbc8c119e67c5",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "8ad647e4-ba30-422a-adc0-05758fe59e99",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgcowep2x\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807232
+          },
+          {
+            "id": "6286af3d-8779-4be3-8e14-52d3a47b78a2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196815154
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400003,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400003,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794283395158,
+      "status": "passed",
+      "review": "明确欢迎在群里主动问起是合成测试条件。第二天只自然问一次，有无回复不视作结果已知。重启后不能再催。",
+      "expect": {},
+      "calls": [
+        {
+          "id": "model-12",
+          "stage": "main",
+          "requestHash": "78a7d8770a01260b15f9a90f10b918b75351856f40dd1a03a62abab36680f238",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simSetMood",
+            "simGetMessageImages",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 32,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 13868,
+            "prompt_tokens_details": {
+              "cached_tokens": 12736
+            },
+            "total_tokens": 13900
+          },
+          "elapsedMs": 3594,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079275846740995252",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"喂，到点了，纸灯展摆得怎么样了\"]}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-13",
+          "stage": "main",
+          "requestHash": "55fa414e8592f0ee8f513fced46c092d9a5bb4738f614d057b0d5516b83f9751",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simSetMood",
+            "simGetMessageImages",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 14,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14026,
+            "prompt_tokens_details": {
+              "cached_tokens": 13696
+            },
+            "total_tokens": 14040
+          },
+          "elapsedMs": 7880,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079271586133437712",
+              "type": "function",
+              "function": {
+                "name": "simWaitForMessages",
+                "arguments": "{\"purpose\":\"reply\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-14",
+          "stage": "main",
+          "requestHash": "358d32436ee630a6d22b2a127290883642bd8acb4cc33a0a974769d6be202002",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simSetMood",
+            "simGetMessageImages",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 58,
+            "completion_tokens_details": {
+              "reasoning_tokens": 33
+            },
+            "prompt_tokens": 14093,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 14151
+          },
+          "elapsedMs": 5478,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079273853876173305",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"action\":\"done\",\"id\":\"mw8qgcowep2x\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-15",
+          "stage": "main",
+          "requestHash": "0a371c6a517a60b379fff37fa12954844e26de8e60c167db89b4b12d99444a8c",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simSetMood",
+            "simGetMessageImages",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 46,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14247,
+            "prompt_tokens_details": {
+              "cached_tokens": 13952
+            },
+            "total_tokens": 14293
+          },
+          "elapsedMs": 6954,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079272823084022488",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"已按对方邀请主动问了纸灯展情况，待办已done，本轮结束等回应。\",\"throughSeq\":1}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3589
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 7877
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5475
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 6951
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "喂，到点了，纸灯展摆得怎么样了"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "e94ee68ade227c3b41806fdd331c4b34d9d1cdc285d628dc8b9c99b5c1e5a7fa",
+          "stage": "main",
+          "toolCallId": "call_-7079275846740995252",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:b3ee9479-5f68-414c-9c0a-6220d17f2f59\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "0be843431247c74c8f9cb2244daacbbacf5a3d8fdb98091fd5781ac71b0f7974",
+          "stage": "main",
+          "toolCallId": "call_-7079271586133437712",
+          "name": "simWaitForMessages",
+          "content": "{\"hint\":\"群里已安静 86607 秒，可以回复了（回复前不用再等）。\",\"canSleepNow\":true,\"newMessagesText\":\"\",\"newCount\":0,\"readThroughSeq\":1,\"partial\":false}"
+        },
+        {
+          "hash": "619589e6939ed25391f300190a3e79bb3d865821ba1a2ee07459f28e76fd9502",
+          "stage": "main",
+          "toolCallId": "call_-7079273853876173305",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天（2026-11-10）中午12点左右纸灯展布展结束，明确欢迎我在群里主动问他摆得怎么样，不用@。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:be0d9285-3246-4028-9b52-bc0e2fff97fe\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "49ecc11e9a051ec9cecfac2516185300d7aacbd1c4df8af1bfd371667990a8ac",
+          "stage": "main",
+          "toolCallId": "call_-7079272823084022488",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 12,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "8ad647e4-ba30-422a-adc0-05758fe59e99",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgcowep2x\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807232
+          },
+          {
+            "id": "6286af3d-8779-4be3-8e14-52d3a47b78a2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196815154
+          },
+          {
+            "id": "b3ee9479-5f68-414c-9c0a-6220d17f2f59",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794283399758
+          },
+          {
+            "id": "be0d9285-3246-4028-9b52-bc0e2fff97fe",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天（2026-11-10）中午12点左右纸灯展布展结束，明确欢迎我在群里主动问他摆得怎么样，不用@。\"}",
+            "at": 1794283413118
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079275846740995252",
+          "call_-7079271586133437712",
+          "call_-7079273853876173305",
+          "call_-7079272823084022488"
+        ],
+        "missingToolCallIds": []
+      },
+      "behavior": {},
+      "elapsedMs": 24920
+    },
+    {
+      "scenario": "welcome-follow-up-once",
+      "sampleIndex": 2,
+      "eventIndex": 2,
+      "eventHash": "c6e8a1265469da8e3686aa75eb078deda3ea7093e21cdd8eb2c93816621762da",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 12,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "8ad647e4-ba30-422a-adc0-05758fe59e99",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgcowep2x\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807232
+          },
+          {
+            "id": "6286af3d-8779-4be3-8e14-52d3a47b78a2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196815154
+          },
+          {
+            "id": "b3ee9479-5f68-414c-9c0a-6220d17f2f59",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794283399758
+          },
+          {
+            "id": "be0d9285-3246-4028-9b52-bc0e2fff97fe",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天（2026-11-10）中午12点左右纸灯展布展结束，明确欢迎我在群里主动问他摆得怎么样，不用@。\"}",
+            "at": 1794283413118
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400003,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794290620082,
+          "nextRunAt": 1794312220082,
+          "lastOutcome": "已按约定在合适时间主动问候纸灯展布展情况，消息成功送达；相关待办已收档，无新增持久化事项。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:8ad647e4-ba30-422a-adc0-05758fe59e99",
+            "receipt:6286af3d-8779-4be3-8e14-52d3a47b78a2",
+            "receipt:b3ee9479-5f68-414c-9c0a-6220d17f2f59",
+            "receipt:be0d9285-3246-4028-9b52-bc0e2fff97fe"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794290620081,
+      "status": "passed",
+      "review": "明确欢迎在群里主动问起是合成测试条件。第二天只自然问一次，有无回复不视作结果已知。重启后不能再催。",
+      "expect": {
+        "noSend": true,
+        "noMainCall": true
+      },
+      "calls": [
+        {
+          "id": "model-16",
+          "stage": "reflection",
+          "requestHash": "82c51b1fb8832b146b33165ae40eb6d3b747f13e4896a1b2d70ea67dddcbe18d",
+          "tools": [],
+          "usage": {
+            "completion_tokens": 201,
+            "completion_tokens_details": {
+              "reasoning_tokens": 54
+            },
+            "prompt_tokens": 726,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 927
+          },
+          "elapsedMs": 6968,
+          "settled": true,
+          "model": "glm-5.3-flash",
+          "output": "{\"summary\":\"已按约定在合适时间主动问候纸灯展布展情况，消息成功送达；相关待办已收档，无新增持久化事项。\",\"updates\":[{\"kind\":\"interest\",\"content\":\"对评测群友0的纸灯展后续（展示效果、观展反馈）保持轻度关注，若群里出现相关讨论可自然接话。\",\"evidenceRefs\":[\"receipt:be0d9285-3246-4028-9b52-bc0e2fff97fe\",\"receipt:b3ee9479-5f68-414c-9c0a-6220d17f2f59\"]}],\"goals\":[]}",
+          "toolCalls": []
+        }
+      ],
+      "network": [
+        {
+          "stage": "reflection",
+          "model": "glm-5.3-flash",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3-flash",
+              "temperature": 0.3,
+              "max_tokens": 1200,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "5c72bb1705144d5f38dc9f95a7a02be9e3005beb0cd5795340540fbd78e46c53"
+          },
+          "status": 200,
+          "elapsedMs": 6967
+        }
+      ],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [
+        {
+          "callId": "model-16",
+          "requestHash": "82c51b1fb8832b146b33165ae40eb6d3b747f13e4896a1b2d70ea67dddcbe18d",
+          "status": "succeeded",
+          "usage": {
+            "completion_tokens": 201,
+            "completion_tokens_details": {
+              "reasoning_tokens": 54
+            },
+            "prompt_tokens": 726,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 927
+          },
+          "output": "{\"summary\":\"已按约定在合适时间主动问候纸灯展布展情况，消息成功送达；相关待办已收档，无新增持久化事项。\",\"updates\":[{\"kind\":\"interest\",\"content\":\"对评测群友0的纸灯展后续（展示效果、观展反馈）保持轻度关注，若群里出现相关讨论可自然接话。\",\"evidenceRefs\":[\"receipt:be0d9285-3246-4028-9b52-bc0e2fff97fe\",\"receipt:b3ee9479-5f68-414c-9c0a-6220d17f2f59\"]}],\"goals\":[]}",
+          "model": "glm-5.3-flash"
+        }
+      ],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "restarted": true,
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 15,
+        "paused": false,
+        "memories": [
+          {
+            "id": "reflection-439505f5-47ba-4899-ae21-77d7a29d97b6",
+            "kind": "interest",
+            "content": "对评测群友0的纸灯展后续（展示效果、观展反馈）保持轻度关注，若群里出现相关讨论可自然接话。",
+            "epistemic": "inferred",
+            "evidenceRefs": [
+              "receipt:be0d9285-3246-4028-9b52-bc0e2fff97fe",
+              "receipt:b3ee9479-5f68-414c-9c0a-6220d17f2f59"
+            ],
+            "createdAt": 1794290620082,
+            "updatedAt": 1794290620082
+          }
+        ],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "8ad647e4-ba30-422a-adc0-05758fe59e99",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgcowep2x\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807232
+          },
+          {
+            "id": "6286af3d-8779-4be3-8e14-52d3a47b78a2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196815154
+          },
+          {
+            "id": "b3ee9479-5f68-414c-9c0a-6220d17f2f59",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794283399758
+          },
+          {
+            "id": "be0d9285-3246-4028-9b52-bc0e2fff97fe",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天（2026-11-10）中午12点左右纸灯展布展结束，明确欢迎我在群里主动问他摆得怎么样，不用@。\"}",
+            "at": 1794283413118
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "behavior": {
+        "noMessageSent": true,
+        "noMainModelCall": true
+      },
+      "elapsedMs": 8224
+    },
+    {
+      "scenario": "welcome-follow-up-once",
+      "sampleIndex": 2,
+      "eventIndex": 3,
+      "eventHash": "12d2208b8abd2877d5b70a526c72cc871f6951457bbd7694cb9d6a1eb3fbb4a9",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 15,
+        "paused": false,
+        "memories": [
+          {
+            "id": "reflection-439505f5-47ba-4899-ae21-77d7a29d97b6",
+            "kind": "interest",
+            "content": "对评测群友0的纸灯展后续（展示效果、观展反馈）保持轻度关注，若群里出现相关讨论可自然接话。",
+            "epistemic": "inferred",
+            "evidenceRefs": [
+              "receipt:be0d9285-3246-4028-9b52-bc0e2fff97fe",
+              "receipt:b3ee9479-5f68-414c-9c0a-6220d17f2f59"
+            ],
+            "createdAt": 1794290620082,
+            "updatedAt": 1794290620082
+          }
+        ],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "8ad647e4-ba30-422a-adc0-05758fe59e99",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgcowep2x\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807232
+          },
+          {
+            "id": "6286af3d-8779-4be3-8e14-52d3a47b78a2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196815154
+          },
+          {
+            "id": "b3ee9479-5f68-414c-9c0a-6220d17f2f59",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794283399758
+          },
+          {
+            "id": "be0d9285-3246-4028-9b52-bc0e2fff97fe",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天（2026-11-10）中午12点左右纸灯展布展结束，明确欢迎我在群里主动问他摆得怎么样，不用@。\"}",
+            "at": 1794283413118
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794290620082,
+          "nextRunAt": 1794312220082,
+          "lastOutcome": "已按约定在合适时间主动问候纸灯展布展情况，消息成功送达；相关待办已收档，无新增持久化事项。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:8ad647e4-ba30-422a-adc0-05758fe59e99",
+            "receipt:6286af3d-8779-4be3-8e14-52d3a47b78a2",
+            "receipt:b3ee9479-5f68-414c-9c0a-6220d17f2f59",
+            "receipt:be0d9285-3246-4028-9b52-bc0e2fff97fe"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794290620082,
+          "nextRunAt": 1794312220082,
+          "lastOutcome": "已按约定在合适时间主动问候纸灯展布展情况，消息成功送达；相关待办已收档，无新增持久化事项。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:8ad647e4-ba30-422a-adc0-05758fe59e99",
+            "receipt:6286af3d-8779-4be3-8e14-52d3a47b78a2",
+            "receipt:b3ee9479-5f68-414c-9c0a-6220d17f2f59",
+            "receipt:be0d9285-3246-4028-9b52-bc0e2fff97fe"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "布展完啦，靠窗那排最后摆了四盏纸灯",
+      "speaker": "评测群友0",
+      "at": 1794290628308,
+      "status": "passed",
+      "review": "明确欢迎在群里主动问起是合成测试条件。第二天只自然问一次，有无回复不视作结果已知。重启后不能再催。",
+      "expect": {},
+      "calls": [
+        {
+          "id": "model-17",
+          "stage": "main",
+          "requestHash": "6d0e58142950743e3684807cbc617109dc3191570454d10aabb5913d254e6fbd",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 52,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15997,
+            "prompt_tokens_details": {
+              "cached_tokens": 13568
+            },
+            "total_tokens": 16049
+          },
+          "elapsedMs": 2764,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079273544638524132",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"靠窗那排，好位置啊，白天光从窗户进来纸灯看着肯定舒服。四盏是怎么摆的，一排还是错开的？\"]}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-18",
+          "stage": "main",
+          "requestHash": "e186c7e531e0b3c26385b5d70d50448572f1f2951862401a5fd6a0cab1055e2e",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 41,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 16165,
+            "prompt_tokens_details": {
+              "cached_tokens": 15744
+            },
+            "total_tokens": 16206
+          },
+          "elapsedMs": 1959,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079271002017888389",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"普通聊天，回应了布展结果并追问细节，无后续安排。\",\"throughSeq\":2}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2757
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 1954
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "靠窗那排，好位置啊，白天光从窗户进来纸灯看着肯定舒服。四盏是怎么摆的，一排还是错开的？"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "0cf4b61b74e4608c43e8b611bcfe9cfc2fb9cf8a74009cef2b9a9e4d8144810b",
+          "stage": "main",
+          "toolCallId": "call_-7079273544638524132",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:d00e1462-65e6-4118-b8ea-f24cc2eb0931\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "76ffce479eb3b3af34e33892034d452810752d916477f8866c1791e4bae767ac",
+          "stage": "main",
+          "toolCallId": "call_-7079271002017888389",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 18,
+        "paused": false,
+        "memories": [
+          {
+            "id": "reflection-439505f5-47ba-4899-ae21-77d7a29d97b6",
+            "kind": "interest",
+            "content": "对评测群友0的纸灯展后续（展示效果、观展反馈）保持轻度关注，若群里出现相关讨论可自然接话。",
+            "epistemic": "inferred",
+            "evidenceRefs": [
+              "receipt:be0d9285-3246-4028-9b52-bc0e2fff97fe",
+              "receipt:b3ee9479-5f68-414c-9c0a-6220d17f2f59"
+            ],
+            "createdAt": 1794290620082,
+            "updatedAt": 1794290620082
+          }
+        ],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "8ad647e4-ba30-422a-adc0-05758fe59e99",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgcowep2x\",\"note\":\"到期后可在合适的聊天里接续；是否获得主动检查机会取决于本群参与设置。\"}",
+            "at": 1794196807232
+          },
+          {
+            "id": "6286af3d-8779-4be3-8e14-52d3a47b78a2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196815154
+          },
+          {
+            "id": "b3ee9479-5f68-414c-9c0a-6220d17f2f59",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794283399758
+          },
+          {
+            "id": "be0d9285-3246-4028-9b52-bc0e2fff97fe",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天（2026-11-10）中午12点左右纸灯展布展结束，明确欢迎我在群里主动问他摆得怎么样，不用@。\"}",
+            "at": 1794283413118
+          },
+          {
+            "id": "d00e1462-65e6-4118-b8ea-f24cc2eb0931",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794290632079
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079273544638524132",
+          "call_-7079271002017888389"
+        ],
+        "missingToolCallIds": []
+      },
+      "behavior": {},
+      "elapsedMs": 5746
+    }
+  ],
+  "summary": {
+    "events": 8,
+    "failedEvents": 0,
+    "skippedEvents": 0,
+    "behaviorMisses": 0,
+    "logicalCalls": 18,
+    "mainCalls": 16,
+    "reflectionCalls": 2,
+    "consistencyCalls": 0,
+    "consistencyElapsedMs": 0,
+    "unsettledCalls": 0,
+    "feedFetches": 0,
+    "workerCalls": 0,
+    "httpRequests": 18,
+    "capturedMessages": 6,
+    "reportedTokens": 233446,
+    "callsWithoutUsage": 0,
+    "costCny": null,
+    "naturalness": "requires_human_review"
+  }
+}

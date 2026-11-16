@@ -1,0 +1,5439 @@
+{
+  "complete": true,
+  "metadata": {
+    "schemaVersion": 1,
+    "assessmentVersion": 5,
+    "runId": "093dfa22-c989-47ce-b53d-029aab1b96ca",
+    "startedAtISO": "2026-11-13T03:47:35.761Z",
+    "scenarioManifest": [
+      {
+        "id": "tomorrow-and-quiet",
+        "events": [
+          {
+            "eventIndex": 0,
+            "eventHash": "b38a57eb7f23cc943be5502fa938bcf2a9aa9bf55076a9890cb832352de03169",
+            "expect": {
+              "socialMemory": true,
+              "proactivePermission": false,
+              "goalCreated": false,
+              "noSend": false
+            }
+          },
+          {
+            "eventIndex": 1,
+            "eventHash": "f2ed79fdf82dc30008b94e8d639dc2d48a5778a3d0c9286c07d689045bb18fd2",
+            "expect": {
+              "noSend": true,
+              "noMainCall": true,
+              "proactivePermission": false
+            }
+          },
+          {
+            "eventIndex": 2,
+            "eventHash": "f3848a60135137bbbe87a10e6171524f1b2852c60faef45005389ba519606c87",
+            "expect": {
+              "noSend": true,
+              "noMainCall": true
+            }
+          },
+          {
+            "eventIndex": 3,
+            "eventHash": "9cb3ebb271384d045055867831b5e2cc92e209d5cac630e50d26ce2a71e5e890",
+            "expect": {
+              "noSend": false
+            }
+          }
+        ]
+      }
+    ],
+    "scenarioManifestHash": "ce438adc14141b20b976df5e9f4a43b1d292fc7b7552ce48369fc3710f579fc9",
+    "mode": "live_model",
+    "runnerHash": "ceda1099fd58576e4843c8c5f5f81941ae3e33449a0de0b99eae5d2d3be7aad4",
+    "scenariosHash": "99e6f04220c88cbf5ae329c6d809c1fa276059c7a3c4f84fa2f5a209d04fe3d0",
+    "effectiveConfigHash": "4eb4928d8da879f990a5fbd3c6f32538691fec7d33aa9a80c3b2e7b64e8db032",
+    "buildManifestHash": "8c1f8055aada3fe75a60a0656bfea796a3263b1830ce9a0b577b73bc2a0f4387",
+    "model": "glm-5.3",
+    "personaHash": "55f0f3aa0cc81b00adc070611ccee46795b1a3f60e674fac31e392791082f09a",
+    "clock": "fixed initial event epoch; explicit event advances or opt-in earliest eligible model-created goal time; elapsed wall time within events; actual adjustments recorded",
+    "search": "synthetic_fixture",
+    "feeds": "synthetic_fixture; no_real_HTTP",
+    "worker": "synthetic_fixture; scenario_fixed_outcome_for_all_submissions; no_external_worker_submission",
+    "reflection": "separate_reflectCharacter_port; scripted_in_dry_mode; configured_memory_backend_in_live_mode",
+    "socialPermission": "tool-free check of the triggering utterance and proposed action using the configured memory route",
+    "consistency": "disabled; production_default",
+    "storage": "fresh_in_memory_per_sample",
+    "platform": "captured_only",
+    "toolResults": "current_event_tool_replies_from_model_requests_and_final_persisted_session; unique_tool_ids_per_sample; no_extra_model_calls",
+    "generation": "configured_executor_with_2048_output_token_cap; compatibility_retries_record_actual_parameters",
+    "simulationOverrides": {
+      "tools": "character_and_activity_tools; no_search_or_worker",
+      "maxToolRounds": 6,
+      "maxSendsPerTurn": 3,
+      "waitMaxMs": 1000,
+      "auxiliaryModels": false,
+      "independentReflection": true,
+      "consistencyReview": false,
+      "probabilityWake": false,
+      "scheduledIdleProbability": 1,
+      "backgroundCheck": "defer_proactive; explicit_per_event_isolation_clears_reply_pending_wakes_and_active_timeout; changes_recorded"
+    },
+    "personaSource": "merged_config_persona; persona_library_bindings_not_loaded",
+    "seed": "empty_bound_session; no_goals_or_memories_seeded",
+    "eventStatusMeaning": "engineering_execution_only; inspect_behavior_observations_separately",
+    "maxCalls": 120,
+    "maxHttp": 150,
+    "maxDurationMs": 900000,
+    "repetitions": 5,
+    "review": "structural checks and behavior observations do not establish naturalness or production acceptance"
+  },
+  "platformMessagesSent": 0,
+  "productionStoreWrites": 0,
+  "results": [
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 1,
+      "eventIndex": 0,
+      "eventHash": "b38a57eb7f23cc943be5502fa938bcf2a9aa9bf55076a9890cb832352de03169",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400010,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400010,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我明天这个点刚面试完，有点紧张。要是碰巧聊到，你可以问我一句，别特意催",
+      "speaker": "评测群友0",
+      "at": 1794196800011,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "socialMemory": true,
+        "proactivePermission": false,
+        "goalCreated": false,
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-1",
+          "stage": "main",
+          "requestHash": "0dca75dbd5abd0c2d6ed75302b2de83dc0acad4fcc3725dbbd8bfebadb6ec300",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 75,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 13851,
+            "prompt_tokens_details": {
+              "cached_tokens": 13376
+            },
+            "total_tokens": 13926
+          },
+          "elapsedMs": 12837,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079230629325303333",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"aboutUser\":\"99000003\",\"content\":\"评测群友0明天中午12点刚面试完，有点紧张，说碰巧聊到可以问一句，但别特意催\",\"dueInMinutes\":1500,\"kind\":\"pendingEvent\",\"welcomeProactiveFollowUp\":false}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-2",
+          "stage": "main",
+          "requestHash": "d04964a70e723091676718f26520013be74835c5cba143f57e72a3a4eb91b566",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 82,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14047,
+            "prompt_tokens_details": {
+              "cached_tokens": 13760
+            },
+            "total_tokens": 14129
+          },
+          "elapsedMs": 24707,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079232931427776888",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"记下啦，到时候碰上再说～不过先说一句：能走到面试这步已经很稳了，别自己吓自己\", \"明天面完要是想说，随时来吐槽两句也行喵\"],\"reason\":\"对方@我说了面试的事，已记待办，回应安抚即可\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 12824
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 24701
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "记下啦，到时候碰上再说～不过先说一句：能走到面试这步已经很稳了，别自己吓自己"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "明天面完要是想说，随时来吐槽两句也行喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "3d709ff87c2ba21e8574abda10961f886369044d6d2a126318b4baabbab39f07",
+          "stage": "main",
+          "toolCallId": "call_-7079230629325303333",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qghtd6wer\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:5ff0998c-eb26-40cd-80d8-79b9804263de\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "46839952f827d7b76c9f53c2233c070cdb58ee6e346717c9596e440188ac53d3",
+          "stage": "main",
+          "toolCallId": "call_-7079232931427776888",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "5ff0998c-eb26-40cd-80d8-79b9804263de",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qghtd6wer\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196813875
+          },
+          {
+            "id": "761eaa12-00b4-468b-aa4c-dd62e28d554a",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196841566
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079230629325303333",
+          "call_-7079232931427776888"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qghtd6wer",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天中午12点刚面试完，有点紧张，说碰巧聊到可以问一句，但别特意催",
+          "done": false,
+          "createdAt": 1794196813873,
+          "updatedAt": 1794196813873,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794286813873
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "pendingSocialMemory": true,
+        "verifiedProactivePermission": true,
+        "goalCreatedByModel": true,
+        "noMessageSent": true
+      },
+      "elapsedMs": 41564
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 1,
+      "eventIndex": 1,
+      "eventHash": "f2ed79fdf82dc30008b94e8d639dc2d48a5778a3d0c9286c07d689045bb18fd2",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "5ff0998c-eb26-40cd-80d8-79b9804263de",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qghtd6wer\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196813875
+          },
+          {
+            "id": "761eaa12-00b4-468b-aa4c-dd62e28d554a",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196841566
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400010,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283301582,
+          "nextRunAt": 1794304901582,
+          "lastOutcome": "仅一条关于某话题的记忆保存成功，附有“自然聊到时再接续、不主动来问”的备注；无既有记忆与目标，无需更新。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:5ff0998c-eb26-40cd-80d8-79b9804263de",
+            "receipt:761eaa12-00b4-468b-aa4c-dd62e28d554a"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794283301578,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": true,
+        "noMainCall": true,
+        "proactivePermission": false
+      },
+      "calls": [
+        {
+          "id": "model-3",
+          "stage": "reflection",
+          "requestHash": "77d54981b5ff7adda5dcf103bc860342e2d1fd49a8eaa762a2ebd6cf4be900bf",
+          "tools": [],
+          "usage": {
+            "completion_tokens": 49,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 456,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 505
+          },
+          "elapsedMs": 2671,
+          "settled": true,
+          "model": "glm-5.3-flash",
+          "output": "{\"summary\":\"仅一条关于某话题的记忆保存成功，附有“自然聊到时再接续、不主动来问”的备注；无既有记忆与目标，无需更新。\",\"updates\":[],\"goals\":[]}",
+          "toolCalls": []
+        }
+      ],
+      "network": [
+        {
+          "stage": "reflection",
+          "model": "glm-5.3-flash",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3-flash",
+              "temperature": 0.3,
+              "max_tokens": 1200,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "5c72bb1705144d5f38dc9f95a7a02be9e3005beb0cd5795340540fbd78e46c53"
+          },
+          "status": 200,
+          "elapsedMs": 2669
+        }
+      ],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [
+        {
+          "callId": "model-3",
+          "requestHash": "77d54981b5ff7adda5dcf103bc860342e2d1fd49a8eaa762a2ebd6cf4be900bf",
+          "status": "succeeded",
+          "usage": {
+            "completion_tokens": 49,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 456,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 505
+          },
+          "output": "{\"summary\":\"仅一条关于某话题的记忆保存成功，附有“自然聊到时再接续、不主动来问”的备注；无既有记忆与目标，无需更新。\",\"updates\":[],\"goals\":[]}",
+          "model": "glm-5.3-flash"
+        }
+      ],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 8,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "5ff0998c-eb26-40cd-80d8-79b9804263de",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qghtd6wer\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196813875
+          },
+          {
+            "id": "761eaa12-00b4-468b-aa4c-dd62e28d554a",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196841566
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qghtd6wer",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天中午12点刚面试完，有点紧张，说碰巧聊到可以问一句，但别特意催",
+          "done": false,
+          "createdAt": 1794196813873,
+          "updatedAt": 1794196813873,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794286813873
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true,
+        "noMainModelCall": true,
+        "verifiedProactivePermission": true
+      },
+      "elapsedMs": 3930
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 1,
+      "eventIndex": 2,
+      "eventHash": "f3848a60135137bbbe87a10e6171524f1b2852c60faef45005389ba519606c87",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 8,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "5ff0998c-eb26-40cd-80d8-79b9804263de",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qghtd6wer\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196813875
+          },
+          {
+            "id": "761eaa12-00b4-468b-aa4c-dd62e28d554a",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196841566
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283301582,
+          "nextRunAt": 1794304901582,
+          "lastOutcome": "仅一条关于某话题的记忆保存成功，附有“自然聊到时再接续、不主动来问”的备注；无既有记忆与目标，无需更新。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:5ff0998c-eb26-40cd-80d8-79b9804263de",
+            "receipt:761eaa12-00b4-468b-aa4c-dd62e28d554a"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283301582,
+          "nextRunAt": 1794304901582,
+          "lastOutcome": "仅一条关于某话题的记忆保存成功，附有“自然聊到时再接续、不主动来问”的备注；无既有记忆与目标，无需更新。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:5ff0998c-eb26-40cd-80d8-79b9804263de",
+            "receipt:761eaa12-00b4-468b-aa4c-dd62e28d554a"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794290505510,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": true,
+        "noMainCall": true
+      },
+      "calls": [],
+      "network": [],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "5ff0998c-eb26-40cd-80d8-79b9804263de",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qghtd6wer\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196813875
+          },
+          {
+            "id": "761eaa12-00b4-468b-aa4c-dd62e28d554a",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196841566
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qghtd6wer",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天中午12点刚面试完，有点紧张，说碰巧聊到可以问一句，但别特意催",
+          "done": false,
+          "createdAt": 1794196813873,
+          "updatedAt": 1794196813873,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794286813873
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true,
+        "noMainModelCall": true
+      },
+      "elapsedMs": 1254
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 1,
+      "eventIndex": 3,
+      "eventHash": "9cb3ebb271384d045055867831b5e2cc92e209d5cac630e50d26ce2a71e5e890",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "5ff0998c-eb26-40cd-80d8-79b9804263de",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qghtd6wer\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196813875
+          },
+          {
+            "id": "761eaa12-00b4-468b-aa4c-dd62e28d554a",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196841566
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283301582,
+          "nextRunAt": 1794304901582,
+          "lastOutcome": "仅一条关于某话题的记忆保存成功，附有“自然聊到时再接续、不主动来问”的备注；无既有记忆与目标，无需更新。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:5ff0998c-eb26-40cd-80d8-79b9804263de",
+            "receipt:761eaa12-00b4-468b-aa4c-dd62e28d554a"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283301582,
+          "nextRunAt": 1794304901582,
+          "lastOutcome": "仅一条关于某话题的记忆保存成功，附有“自然聊到时再接续、不主动来问”的备注；无既有记忆与目标，无需更新。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:5ff0998c-eb26-40cd-80d8-79b9804263de",
+            "receipt:761eaa12-00b4-468b-aa4c-dd62e28d554a"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "结束了，最后那道题居然答上来了",
+      "speaker": "评测群友0",
+      "at": 1794290506766,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-4",
+          "stage": "main",
+          "requestHash": "446f38c40d2e68693cfc63be8f6aaa128b1e0c8be33aa0bd9372ab061e5f811d",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 50,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15050,
+            "prompt_tokens_details": {
+              "cached_tokens": 13888
+            },
+            "total_tokens": 15100
+          },
+          "elapsedMs": 7951,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079235542767890978",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"action\":\"done\",\"id\":\"mw8qghtd6wer\"}"
+              }
+            },
+            {
+              "id": "call_-7079235542767890977",
+              "type": "function",
+              "function": {
+                "name": "simSetMood",
+                "arguments": "{\"joy\":1,\"reason\":\"群友面试顺利还主动来报喜\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-5",
+          "stage": "main",
+          "requestHash": "b6347bba5a77025ce706cd8c319a424b2e910e54975015670b7c8584895d97a6",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 73,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15300,
+            "prompt_tokens_details": {
+              "cached_tokens": 14848
+            },
+            "total_tokens": 15373
+          },
+          "elapsedMs": 3697,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079232209873271260",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"来了来了！最后一道都接住了？紧张的那位看来是白紧张了喵\", \"答上来就稳了一半，等消息吧，感觉能行\"],\"reason\":\"群友主动来报面试结果，接住报喜并鼓励\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 7948
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3693
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "来了来了！最后一道都接住了？紧张的那位看来是白紧张了喵"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "答上来就稳了一半，等消息吧，感觉能行"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "5d76c29066273eb779fb2678e45814a1c0450c5e0fd56d8565ddda363f28bc01",
+          "stage": "main",
+          "toolCallId": "call_-7079235542767890978",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天中午12点刚面试完，有点紧张，说碰巧聊到可以问一句，但别特意催\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:0011e965-40a4-49b6-ba67-e991c6da14c3\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "775a13f7a303fbeec22b7e96feda0b38546967c4a9203648bee6cb63666b765b",
+          "stage": "main",
+          "toolCallId": "call_-7079235542767890977",
+          "name": "simSetMood",
+          "content": "error: 当前环境不支持情绪\n【运行时行动回执】{\"evidenceRef\":\"receipt:1d090028-b4a3-4474-a273-a3178491bf72\",\"status\":\"failed\"}"
+        },
+        {
+          "hash": "3019236da0bc714c246638215577719a4b782b8afab783c18a37e52e25aa7dd5",
+          "stage": "main",
+          "toolCallId": "call_-7079232209873271260",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 16,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "5ff0998c-eb26-40cd-80d8-79b9804263de",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qghtd6wer\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196813875
+          },
+          {
+            "id": "761eaa12-00b4-468b-aa4c-dd62e28d554a",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196841566
+          },
+          {
+            "id": "0011e965-40a4-49b6-ba67-e991c6da14c3",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天中午12点刚面试完，有点紧张，说碰巧聊到可以问一句，但别特意催\"}",
+            "at": 1794290515723
+          },
+          {
+            "id": "1d090028-b4a3-4474-a273-a3178491bf72",
+            "toolName": "simSetMood",
+            "status": "failed",
+            "summary": "error: 当前环境不支持情绪",
+            "at": 1794290515723
+          },
+          {
+            "id": "5178b93f-e1c2-42a1-a2bf-38a80abe90ea",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794290522419
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079235542767890978",
+          "call_-7079235542767890977",
+          "call_-7079232209873271260"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qghtd6wer",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天中午12点刚面试完，有点紧张，说碰巧聊到可以问一句，但别特意催",
+          "done": true,
+          "createdAt": 1794196813873,
+          "updatedAt": 1794290515723,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794286813873
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 15674
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 2,
+      "eventIndex": 0,
+      "eventHash": "b38a57eb7f23cc943be5502fa938bcf2a9aa9bf55076a9890cb832352de03169",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我明天这个点刚面试完，有点紧张。要是碰巧聊到，你可以问我一句，别特意催",
+      "speaker": "评测群友0",
+      "at": 1794196800004,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "socialMemory": true,
+        "proactivePermission": false,
+        "goalCreated": false,
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-6",
+          "stage": "main",
+          "requestHash": "0dca75dbd5abd0c2d6ed75302b2de83dc0acad4fcc3725dbbd8bfebadb6ec300",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 71,
+            "completion_tokens_details": {
+              "reasoning_tokens": 11
+            },
+            "prompt_tokens": 13851,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 13922
+          },
+          "elapsedMs": 5978,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079235955084754723",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"aboutUser\":\"99000003\",\"content\":\"评测群友0明天12点左右面试完，说有点紧张；希望碰巧聊到时问一句，不要特意催（不欢迎主动发起）\",\"kind\":\"pendingEvent\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-7",
+          "stage": "main",
+          "requestHash": "c3c35640114749244adebc7730e03de282cd00a4212b52de8530d4d40d64139d",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 77,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14006,
+            "prompt_tokens_details": {
+              "cached_tokens": 13760
+            },
+            "total_tokens": 14083
+          },
+          "elapsedMs": 4328,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079224753810046412",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"aboutUser\":\"99000003\",\"content\":\"评测群友0明天(2026-11-10)中午12点左右面试完，有点紧张；说碰巧聊到可以问一句，别特意催（不欢迎主动发起）\",\"dueInMinutes\":1440,\"kind\":\"pendingEvent\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-8",
+          "stage": "main",
+          "requestHash": "a5833f53b90a0e9621489a47cb167cf11e5808a674de8ef7baaba56524d30aab",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 87,
+            "completion_tokens_details": {
+              "reasoning_tokens": 10
+            },
+            "prompt_tokens": 14201,
+            "prompt_tokens_details": {
+              "cached_tokens": 13888
+            },
+            "total_tokens": 14288
+          },
+          "elapsedMs": 3563,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079229529813675221",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"记下啦～明天中午这个点，你要是来了我就问问你。紧张很正常，说明你是在乎的，好好睡一觉，面试完回来跟我说说呀\"],\"reason\":\"对方@我交代面试的事，已存pendingEvent，简单安抚回应\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5974
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 4322
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3557
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "记下啦～明天中午这个点，你要是来了我就问问你。紧张很正常，说明你是在乎的，好好睡一觉，面试完回来跟我说说呀"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "536e58be8b323e42d9900cc7a096a2617585ae4b870b799dc5bac27f692c1459",
+          "stage": "main",
+          "toolCallId": "call_-7079235955084754723",
+          "name": "simRemember",
+          "content": "error: pendingEvent 必须给 dueInMinutes（10 分钟 ~ 30 天）\n【运行时行动回执】{\"evidenceRef\":\"receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc\",\"status\":\"failed\"}"
+        },
+        {
+          "hash": "5bd895da81e8ee051ff01320b729c66f53ca0a7b7c46d923b6e762f90b6a9a46",
+          "stage": "main",
+          "toolCallId": "call_-7079224753810046412",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgfubc4rf\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:a916980c-92b6-4461-adf8-c2129641da03\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "18db966f81fc910e6092525908c28b6e0ba2d71e2e0071468fe48131194bcf87",
+          "stage": "main",
+          "toolCallId": "call_-7079229529813675221",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 8,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+            "toolName": "simRemember",
+            "status": "failed",
+            "summary": "error: pendingEvent 必须给 dueInMinutes（10 分钟 ~ 30 天）",
+            "at": 1794196806986
+          },
+          {
+            "id": "a916980c-92b6-4461-adf8-c2129641da03",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgfubc4rf\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196811315
+          },
+          {
+            "id": "800fb993-c5b9-4966-8cd2-f0ff1ac3e0d7",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196814879
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079235955084754723",
+          "call_-7079224753810046412",
+          "call_-7079229529813675221"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgfubc4rf",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天(2026-11-10)中午12点左右面试完，有点紧张；说碰巧聊到可以问一句，别特意催（不欢迎主动发起）",
+          "done": false,
+          "createdAt": 1794196811315,
+          "updatedAt": 1794196811315,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283211315
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "pendingSocialMemory": true,
+        "verifiedProactivePermission": true,
+        "goalCreatedByModel": true,
+        "noMessageSent": true
+      },
+      "elapsedMs": 14877
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 2,
+      "eventIndex": 1,
+      "eventHash": "f2ed79fdf82dc30008b94e8d639dc2d48a5778a3d0c9286c07d689045bb18fd2",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 8,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+            "toolName": "simRemember",
+            "status": "failed",
+            "summary": "error: pendingEvent 必须给 dueInMinutes（10 分钟 ~ 30 天）",
+            "at": 1794196806986
+          },
+          {
+            "id": "a916980c-92b6-4461-adf8-c2129641da03",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgfubc4rf\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196811315
+          },
+          {
+            "id": "800fb993-c5b9-4966-8cd2-f0ff1ac3e0d7",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196814879
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283274885,
+          "nextRunAt": 1794304874885,
+          "lastOutcome": "记录工具调用失败与成功提醒的接续方式，无目标变更。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+            "receipt:a916980c-92b6-4461-adf8-c2129641da03",
+            "receipt:800fb993-c5b9-4966-8cd2-f0ff1ac3e0d7"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794283274884,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": true,
+        "noMainCall": true,
+        "proactivePermission": false
+      },
+      "calls": [
+        {
+          "id": "model-9",
+          "stage": "reflection",
+          "requestHash": "a9739a75b6662a8a47736b775d8c29d947bfd5f8eeb089d28bdf37adebc53385",
+          "tools": [],
+          "usage": {
+            "completion_tokens": 137,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 555,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 692
+          },
+          "elapsedMs": 3663,
+          "settled": true,
+          "model": "glm-5.3-flash",
+          "output": "{\"summary\":\"记录工具调用失败与成功提醒的接续方式，无目标变更。\",\"updates\":[{\"kind\":\"opinion\",\"content\":\"使用 simRemember 设置待办时必须提供 dueInMinutes（10分钟~30天），否则会失败；已保存的提醒应仅在自然聊到时接续，不主动到时来问。\",\"evidenceRefs\":[\"receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc\",\"receipt:a916980c-92b6-4461-adf8-c2129641da03\"]}],\"goals\":[]}",
+          "toolCalls": []
+        }
+      ],
+      "network": [
+        {
+          "stage": "reflection",
+          "model": "glm-5.3-flash",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3-flash",
+              "temperature": 0.3,
+              "max_tokens": 1200,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "5c72bb1705144d5f38dc9f95a7a02be9e3005beb0cd5795340540fbd78e46c53"
+          },
+          "status": 200,
+          "elapsedMs": 3661
+        }
+      ],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [
+        {
+          "callId": "model-9",
+          "requestHash": "a9739a75b6662a8a47736b775d8c29d947bfd5f8eeb089d28bdf37adebc53385",
+          "status": "succeeded",
+          "usage": {
+            "completion_tokens": 137,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 555,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 692
+          },
+          "output": "{\"summary\":\"记录工具调用失败与成功提醒的接续方式，无目标变更。\",\"updates\":[{\"kind\":\"opinion\",\"content\":\"使用 simRemember 设置待办时必须提供 dueInMinutes（10分钟~30天），否则会失败；已保存的提醒应仅在自然聊到时接续，不主动到时来问。\",\"evidenceRefs\":[\"receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc\",\"receipt:a916980c-92b6-4461-adf8-c2129641da03\"]}],\"goals\":[]}",
+          "model": "glm-5.3-flash"
+        }
+      ],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 10,
+        "paused": false,
+        "memories": [
+          {
+            "id": "reflection-b0351934-8fc6-44eb-bf23-520b9140a4f9",
+            "kind": "opinion",
+            "content": "使用 simRemember 设置待办时必须提供 dueInMinutes（10分钟~30天），否则会失败；已保存的提醒应仅在自然聊到时接续，不主动到时来问。",
+            "epistemic": "inferred",
+            "evidenceRefs": [
+              "receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+              "receipt:a916980c-92b6-4461-adf8-c2129641da03"
+            ],
+            "createdAt": 1794283274885,
+            "updatedAt": 1794283274885
+          }
+        ],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+            "toolName": "simRemember",
+            "status": "failed",
+            "summary": "error: pendingEvent 必须给 dueInMinutes（10 分钟 ~ 30 天）",
+            "at": 1794196806986
+          },
+          {
+            "id": "a916980c-92b6-4461-adf8-c2129641da03",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgfubc4rf\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196811315
+          },
+          {
+            "id": "800fb993-c5b9-4966-8cd2-f0ff1ac3e0d7",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196814879
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgfubc4rf",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天(2026-11-10)中午12点左右面试完，有点紧张；说碰巧聊到可以问一句，别特意催（不欢迎主动发起）",
+          "done": false,
+          "createdAt": 1794196811315,
+          "updatedAt": 1794196811315,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283211315
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true,
+        "noMainModelCall": true,
+        "verifiedProactivePermission": true
+      },
+      "elapsedMs": 4920
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 2,
+      "eventIndex": 2,
+      "eventHash": "f3848a60135137bbbe87a10e6171524f1b2852c60faef45005389ba519606c87",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 10,
+        "paused": false,
+        "memories": [
+          {
+            "id": "reflection-b0351934-8fc6-44eb-bf23-520b9140a4f9",
+            "kind": "opinion",
+            "content": "使用 simRemember 设置待办时必须提供 dueInMinutes（10分钟~30天），否则会失败；已保存的提醒应仅在自然聊到时接续，不主动到时来问。",
+            "epistemic": "inferred",
+            "evidenceRefs": [
+              "receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+              "receipt:a916980c-92b6-4461-adf8-c2129641da03"
+            ],
+            "createdAt": 1794283274885,
+            "updatedAt": 1794283274885
+          }
+        ],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+            "toolName": "simRemember",
+            "status": "failed",
+            "summary": "error: pendingEvent 必须给 dueInMinutes（10 分钟 ~ 30 天）",
+            "at": 1794196806986
+          },
+          {
+            "id": "a916980c-92b6-4461-adf8-c2129641da03",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgfubc4rf\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196811315
+          },
+          {
+            "id": "800fb993-c5b9-4966-8cd2-f0ff1ac3e0d7",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196814879
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283274885,
+          "nextRunAt": 1794304874885,
+          "lastOutcome": "记录工具调用失败与成功提醒的接续方式，无目标变更。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+            "receipt:a916980c-92b6-4461-adf8-c2129641da03",
+            "receipt:800fb993-c5b9-4966-8cd2-f0ff1ac3e0d7"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283274885,
+          "nextRunAt": 1794304874885,
+          "lastOutcome": "记录工具调用失败与成功提醒的接续方式，无目标变更。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+            "receipt:a916980c-92b6-4461-adf8-c2129641da03",
+            "receipt:800fb993-c5b9-4966-8cd2-f0ff1ac3e0d7"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794290479808,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": true,
+        "noMainCall": true
+      },
+      "calls": [],
+      "network": [],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 11,
+        "paused": false,
+        "memories": [
+          {
+            "id": "reflection-b0351934-8fc6-44eb-bf23-520b9140a4f9",
+            "kind": "opinion",
+            "content": "使用 simRemember 设置待办时必须提供 dueInMinutes（10分钟~30天），否则会失败；已保存的提醒应仅在自然聊到时接续，不主动到时来问。",
+            "epistemic": "inferred",
+            "evidenceRefs": [
+              "receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+              "receipt:a916980c-92b6-4461-adf8-c2129641da03"
+            ],
+            "createdAt": 1794283274885,
+            "updatedAt": 1794283274885
+          }
+        ],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+            "toolName": "simRemember",
+            "status": "failed",
+            "summary": "error: pendingEvent 必须给 dueInMinutes（10 分钟 ~ 30 天）",
+            "at": 1794196806986
+          },
+          {
+            "id": "a916980c-92b6-4461-adf8-c2129641da03",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgfubc4rf\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196811315
+          },
+          {
+            "id": "800fb993-c5b9-4966-8cd2-f0ff1ac3e0d7",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196814879
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgfubc4rf",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天(2026-11-10)中午12点左右面试完，有点紧张；说碰巧聊到可以问一句，别特意催（不欢迎主动发起）",
+          "done": false,
+          "createdAt": 1794196811315,
+          "updatedAt": 1794196811315,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283211315
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true,
+        "noMainModelCall": true
+      },
+      "elapsedMs": 1256
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 2,
+      "eventIndex": 3,
+      "eventHash": "9cb3ebb271384d045055867831b5e2cc92e209d5cac630e50d26ce2a71e5e890",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 11,
+        "paused": false,
+        "memories": [
+          {
+            "id": "reflection-b0351934-8fc6-44eb-bf23-520b9140a4f9",
+            "kind": "opinion",
+            "content": "使用 simRemember 设置待办时必须提供 dueInMinutes（10分钟~30天），否则会失败；已保存的提醒应仅在自然聊到时接续，不主动到时来问。",
+            "epistemic": "inferred",
+            "evidenceRefs": [
+              "receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+              "receipt:a916980c-92b6-4461-adf8-c2129641da03"
+            ],
+            "createdAt": 1794283274885,
+            "updatedAt": 1794283274885
+          }
+        ],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+            "toolName": "simRemember",
+            "status": "failed",
+            "summary": "error: pendingEvent 必须给 dueInMinutes（10 分钟 ~ 30 天）",
+            "at": 1794196806986
+          },
+          {
+            "id": "a916980c-92b6-4461-adf8-c2129641da03",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgfubc4rf\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196811315
+          },
+          {
+            "id": "800fb993-c5b9-4966-8cd2-f0ff1ac3e0d7",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196814879
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283274885,
+          "nextRunAt": 1794304874885,
+          "lastOutcome": "记录工具调用失败与成功提醒的接续方式，无目标变更。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+            "receipt:a916980c-92b6-4461-adf8-c2129641da03",
+            "receipt:800fb993-c5b9-4966-8cd2-f0ff1ac3e0d7"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283274885,
+          "nextRunAt": 1794304874885,
+          "lastOutcome": "记录工具调用失败与成功提醒的接续方式，无目标变更。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+            "receipt:a916980c-92b6-4461-adf8-c2129641da03",
+            "receipt:800fb993-c5b9-4966-8cd2-f0ff1ac3e0d7"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "结束了，最后那道题居然答上来了",
+      "speaker": "评测群友0",
+      "at": 1794290481069,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-10",
+          "stage": "main",
+          "requestHash": "63746ba4ad976bcf9e3588cc58159b670c718dd5650a7a1554cd9eaa4a7e84d0",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 25,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15456,
+            "prompt_tokens_details": {
+              "cached_tokens": 14016
+            },
+            "total_tokens": 15481
+          },
+          "elapsedMs": 2165,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079239528497543673",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"action\":\"done\",\"id\":\"mw8qgfubc4rf\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-11",
+          "stage": "main",
+          "requestHash": "3f0b1c12a59be1ee8ab7d8b2f3af83b589767ea99cb9131484c2690aeaec74a5",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 66,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15606,
+            "prompt_tokens_details": {
+              "cached_tokens": 15232
+            },
+            "total_tokens": 15672
+          },
+          "elapsedMs": 3304,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079240765448121458",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"哦！！最后那题都拿下了，稳呀～现在是不是松一大口气了，去吃点好的犒劳自己\"],\"reason\":\"对方主动报了面试结果，收掉待办并祝贺回应\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2160
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3300
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "哦！！最后那题都拿下了，稳呀～现在是不是松一大口气了，去吃点好的犒劳自己"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "91dd0e3af4e82bd495bdf3b3dac44b17729892d3bfa11a04942ed8de1e10a9e0",
+          "stage": "main",
+          "toolCallId": "call_-7079239528497543673",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天(2026-11-10)中午12点左右面试完，有点紧张；说碰巧聊到可以问一句，别特意催（不欢迎主动发起）\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:bcd3c1bd-2c75-406a-b225-e9991bc26dc9\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "2f557e4cdb6705934617cd57d036f2f8bbac56c5c55dc3da2f86c87ec7e8b7a8",
+          "stage": "main",
+          "toolCallId": "call_-7079240765448121458",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 16,
+        "paused": false,
+        "memories": [
+          {
+            "id": "reflection-b0351934-8fc6-44eb-bf23-520b9140a4f9",
+            "kind": "opinion",
+            "content": "使用 simRemember 设置待办时必须提供 dueInMinutes（10分钟~30天），否则会失败；已保存的提醒应仅在自然聊到时接续，不主动到时来问。",
+            "epistemic": "inferred",
+            "evidenceRefs": [
+              "receipt:7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+              "receipt:a916980c-92b6-4461-adf8-c2129641da03"
+            ],
+            "createdAt": 1794283274885,
+            "updatedAt": 1794283274885
+          }
+        ],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "7d4d124e-9713-4aea-814f-d28bc4d6bdbc",
+            "toolName": "simRemember",
+            "status": "failed",
+            "summary": "error: pendingEvent 必须给 dueInMinutes（10 分钟 ~ 30 天）",
+            "at": 1794196806986
+          },
+          {
+            "id": "a916980c-92b6-4461-adf8-c2129641da03",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgfubc4rf\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196811315
+          },
+          {
+            "id": "800fb993-c5b9-4966-8cd2-f0ff1ac3e0d7",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196814879
+          },
+          {
+            "id": "bcd3c1bd-2c75-406a-b225-e9991bc26dc9",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天(2026-11-10)中午12点左右面试完，有点紧张；说碰巧聊到可以问一句，别特意催（不欢迎主动发起）\"}",
+            "at": 1794290484239
+          },
+          {
+            "id": "565fa082-aa72-4daa-b1bb-1c427f640dd0",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794290487545
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079239528497543673",
+          "call_-7079240765448121458"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgfubc4rf",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天(2026-11-10)中午12点左右面试完，有点紧张；说碰巧聊到可以问一句，别特意催（不欢迎主动发起）",
+          "done": true,
+          "createdAt": 1794196811315,
+          "updatedAt": 1794290484239,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283211315
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 6492
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 3,
+      "eventIndex": 0,
+      "eventHash": "b38a57eb7f23cc943be5502fa938bcf2a9aa9bf55076a9890cb832352de03169",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我明天这个点刚面试完，有点紧张。要是碰巧聊到，你可以问我一句，别特意催",
+      "speaker": "评测群友0",
+      "at": 1794196800001,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "socialMemory": true,
+        "proactivePermission": false,
+        "goalCreated": false,
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-12",
+          "stage": "main",
+          "requestHash": "0dca75dbd5abd0c2d6ed75302b2de83dc0acad4fcc3725dbbd8bfebadb6ec300",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 167,
+            "completion_tokens_details": {
+              "reasoning_tokens": 81
+            },
+            "prompt_tokens": 13851,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 14018
+          },
+          "elapsedMs": 5636,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079228292863092272",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"aboutUser\":\"99000003\",\"content\":\"评测群友0明天(2026-11-10)中午12点刚面试完，有点紧张；欢迎碰巧聊到时问一句近况，但别特意催问\",\"dueInMinutes\":1440,\"kind\":\"pendingEvent\",\"welcomeProactiveFollowUp\":false}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-13",
+          "stage": "main",
+          "requestHash": "2aeac101315a41814367b4ab450e363c823a06c293b040467956144a83c84309",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 67,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14055,
+            "prompt_tokens_details": {
+              "cached_tokens": 13760
+            },
+            "total_tokens": 14122
+          },
+          "elapsedMs": 3449,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079231041642165572",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"好呀，记着呢。到时候要是不小心聊到，我就顺嘴问一句～\", \"别太紧张，面试前一晚睡好比什么都管用\"],\"reason\":\"记下待办，自然回应即可\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5631
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3441
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "好呀，记着呢。到时候要是不小心聊到，我就顺嘴问一句～"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "别太紧张，面试前一晚睡好比什么都管用"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "65539c38a0fdd36388e615bac3bcd88e12c02e5a8f946c90a87b20eb28895cfd",
+          "stage": "main",
+          "toolCallId": "call_-7079228292863092272",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgc8gd5fq\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:6fc0c123-85eb-44e8-acfc-4da681df9f58\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "c4d2455c738732a52fb0497249a4f5b5543d3c8bd6df0a8f4adb54a29f0a81fc",
+          "stage": "main",
+          "toolCallId": "call_-7079231041642165572",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "6fc0c123-85eb-44e8-acfc-4da681df9f58",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgc8gd5fq\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196806641
+          },
+          {
+            "id": "f20e3382-3d6a-4efe-8e5a-5357cd5ee7b1",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196813066
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079228292863092272",
+          "call_-7079231041642165572"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgc8gd5fq",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天(2026-11-10)中午12点刚面试完，有点紧张；欢迎碰巧聊到时问一句近况，但别特意催问",
+          "done": false,
+          "createdAt": 1794196806640,
+          "updatedAt": 1794196806640,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283206640
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "pendingSocialMemory": true,
+        "verifiedProactivePermission": true,
+        "goalCreatedByModel": true,
+        "noMessageSent": true
+      },
+      "elapsedMs": 13072
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 3,
+      "eventIndex": 1,
+      "eventHash": "f2ed79fdf82dc30008b94e8d639dc2d48a5778a3d0c9286c07d689045bb18fd2",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "6fc0c123-85eb-44e8-acfc-4da681df9f58",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgc8gd5fq\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196806641
+          },
+          {
+            "id": "f20e3382-3d6a-4efe-8e5a-5357cd5ee7b1",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196813066
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283273077,
+          "nextRunAt": 1794304873077,
+          "lastOutcome": "本次无新增持久化变化，此前保存的记忆已附带“仅自然接续、不主动来问”的备注，无需额外更新。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:6fc0c123-85eb-44e8-acfc-4da681df9f58",
+            "receipt:f20e3382-3d6a-4efe-8e5a-5357cd5ee7b1"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794283273076,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": true,
+        "noMainCall": true,
+        "proactivePermission": false
+      },
+      "calls": [
+        {
+          "id": "model-14",
+          "stage": "reflection",
+          "requestHash": "d69d8bd4117ed3308e3792f736799fca5c495443a84ffe9d206c6281f9303cad",
+          "tools": [],
+          "usage": {
+            "completion_tokens": 42,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 460,
+            "prompt_tokens_details": {
+              "cached_tokens": 192
+            },
+            "total_tokens": 502
+          },
+          "elapsedMs": 2248,
+          "settled": true,
+          "model": "glm-5.3-flash",
+          "output": "{\"summary\":\"本次无新增持久化变化，此前保存的记忆已附带“仅自然接续、不主动来问”的备注，无需额外更新。\",\"updates\":[],\"goals\":[]}",
+          "toolCalls": []
+        }
+      ],
+      "network": [
+        {
+          "stage": "reflection",
+          "model": "glm-5.3-flash",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3-flash",
+              "temperature": 0.3,
+              "max_tokens": 1200,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "5c72bb1705144d5f38dc9f95a7a02be9e3005beb0cd5795340540fbd78e46c53"
+          },
+          "status": 200,
+          "elapsedMs": 2246
+        }
+      ],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [
+        {
+          "callId": "model-14",
+          "requestHash": "d69d8bd4117ed3308e3792f736799fca5c495443a84ffe9d206c6281f9303cad",
+          "status": "succeeded",
+          "usage": {
+            "completion_tokens": 42,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 460,
+            "prompt_tokens_details": {
+              "cached_tokens": 192
+            },
+            "total_tokens": 502
+          },
+          "output": "{\"summary\":\"本次无新增持久化变化，此前保存的记忆已附带“仅自然接续、不主动来问”的备注，无需额外更新。\",\"updates\":[],\"goals\":[]}",
+          "model": "glm-5.3-flash"
+        }
+      ],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 8,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "6fc0c123-85eb-44e8-acfc-4da681df9f58",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgc8gd5fq\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196806641
+          },
+          {
+            "id": "f20e3382-3d6a-4efe-8e5a-5357cd5ee7b1",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196813066
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgc8gd5fq",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天(2026-11-10)中午12点刚面试完，有点紧张；欢迎碰巧聊到时问一句近况，但别特意催问",
+          "done": false,
+          "createdAt": 1794196806640,
+          "updatedAt": 1794196806640,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283206640
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true,
+        "noMainModelCall": true,
+        "verifiedProactivePermission": true
+      },
+      "elapsedMs": 3502
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 3,
+      "eventIndex": 2,
+      "eventHash": "f3848a60135137bbbe87a10e6171524f1b2852c60faef45005389ba519606c87",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 8,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "6fc0c123-85eb-44e8-acfc-4da681df9f58",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgc8gd5fq\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196806641
+          },
+          {
+            "id": "f20e3382-3d6a-4efe-8e5a-5357cd5ee7b1",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196813066
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283273077,
+          "nextRunAt": 1794304873077,
+          "lastOutcome": "本次无新增持久化变化，此前保存的记忆已附带“仅自然接续、不主动来问”的备注，无需额外更新。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:6fc0c123-85eb-44e8-acfc-4da681df9f58",
+            "receipt:f20e3382-3d6a-4efe-8e5a-5357cd5ee7b1"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283273077,
+          "nextRunAt": 1794304873077,
+          "lastOutcome": "本次无新增持久化变化，此前保存的记忆已附带“仅自然接续、不主动来问”的备注，无需额外更新。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:6fc0c123-85eb-44e8-acfc-4da681df9f58",
+            "receipt:f20e3382-3d6a-4efe-8e5a-5357cd5ee7b1"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794290476582,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": true,
+        "noMainCall": true
+      },
+      "calls": [],
+      "network": [],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "6fc0c123-85eb-44e8-acfc-4da681df9f58",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgc8gd5fq\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196806641
+          },
+          {
+            "id": "f20e3382-3d6a-4efe-8e5a-5357cd5ee7b1",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196813066
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgc8gd5fq",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天(2026-11-10)中午12点刚面试完，有点紧张；欢迎碰巧聊到时问一句近况，但别特意催问",
+          "done": false,
+          "createdAt": 1794196806640,
+          "updatedAt": 1794196806640,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283206640
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true,
+        "noMainModelCall": true
+      },
+      "elapsedMs": 1252
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 3,
+      "eventIndex": 3,
+      "eventHash": "9cb3ebb271384d045055867831b5e2cc92e209d5cac630e50d26ce2a71e5e890",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "6fc0c123-85eb-44e8-acfc-4da681df9f58",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgc8gd5fq\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196806641
+          },
+          {
+            "id": "f20e3382-3d6a-4efe-8e5a-5357cd5ee7b1",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196813066
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283273077,
+          "nextRunAt": 1794304873077,
+          "lastOutcome": "本次无新增持久化变化，此前保存的记忆已附带“仅自然接续、不主动来问”的备注，无需额外更新。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:6fc0c123-85eb-44e8-acfc-4da681df9f58",
+            "receipt:f20e3382-3d6a-4efe-8e5a-5357cd5ee7b1"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283273077,
+          "nextRunAt": 1794304873077,
+          "lastOutcome": "本次无新增持久化变化，此前保存的记忆已附带“仅自然接续、不主动来问”的备注，无需额外更新。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:6fc0c123-85eb-44e8-acfc-4da681df9f58",
+            "receipt:f20e3382-3d6a-4efe-8e5a-5357cd5ee7b1"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "结束了，最后那道题居然答上来了",
+      "speaker": "评测群友0",
+      "at": 1794290477837,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-15",
+          "stage": "main",
+          "requestHash": "d093a1acb6c98e1e0e16a77f355202797ce345aaf36077c0d488f5015e45ef35",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 25,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15054,
+            "prompt_tokens_details": {
+              "cached_tokens": 13888
+            },
+            "total_tokens": 15079
+          },
+          "elapsedMs": 19206,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079233068866725636",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"action\":\"done\",\"id\":\"mw8qgc8gd5fq\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-16",
+          "stage": "main",
+          "requestHash": "db25dbe0740d883f93e56cb5448e7771cbe65b52efeb0e8698ac35cb790268f2",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 60,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15209,
+            "prompt_tokens_details": {
+              "cached_tokens": 14912
+            },
+            "total_tokens": 15269
+          },
+          "elapsedMs": 4151,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079231969355101049",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"厉害呀！最后那题都拿下了，昨晚没白睡吧\", \"感觉怎么样，有戏不？\"],\"reason\":\"面试结束对方主动报喜，自然关心收尾\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 19201
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 4146
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "厉害呀！最后那题都拿下了，昨晚没白睡吧"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "感觉怎么样，有戏不？"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "d4650c9be77abb3b83c76ff26bbeca11a652f61815f68f39ad289c8861f5fef8",
+          "stage": "main",
+          "toolCallId": "call_-7079233068866725636",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天(2026-11-10)中午12点刚面试完，有点紧张；欢迎碰巧聊到时问一句近况，但别特意催问\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:41dfabb7-0e56-4b89-97c8-1073f39a8604\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "83b78ab60d69f9af8454296f229832b1896578425a205e0a1c3d500d96678d63",
+          "stage": "main",
+          "toolCallId": "call_-7079231969355101049",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 14,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "6fc0c123-85eb-44e8-acfc-4da681df9f58",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgc8gd5fq\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196806641
+          },
+          {
+            "id": "f20e3382-3d6a-4efe-8e5a-5357cd5ee7b1",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196813066
+          },
+          {
+            "id": "41dfabb7-0e56-4b89-97c8-1073f39a8604",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天(2026-11-10)中午12点刚面试完，有点紧张；欢迎碰巧聊到时问一句近况，但别特意催问\"}",
+            "at": 1794290498047
+          },
+          {
+            "id": "f8d4f2b5-ce11-4770-bae0-a6f6d85a645c",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794290505174
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079233068866725636",
+          "call_-7079231969355101049"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgc8gd5fq",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天(2026-11-10)中午12点刚面试完，有点紧张；欢迎碰巧聊到时问一句近况，但别特意催问",
+          "done": true,
+          "createdAt": 1794196806640,
+          "updatedAt": 1794290498046,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283206640
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 27338
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 4,
+      "eventIndex": 0,
+      "eventHash": "b38a57eb7f23cc943be5502fa938bcf2a9aa9bf55076a9890cb832352de03169",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400000,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400000,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我明天这个点刚面试完，有点紧张。要是碰巧聊到，你可以问我一句，别特意催",
+      "speaker": "评测群友0",
+      "at": 1794196800000,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "socialMemory": true,
+        "proactivePermission": false,
+        "goalCreated": false,
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-17",
+          "stage": "main",
+          "requestHash": "0dca75dbd5abd0c2d6ed75302b2de83dc0acad4fcc3725dbbd8bfebadb6ec300",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 102,
+            "completion_tokens_details": {
+              "reasoning_tokens": 24
+            },
+            "prompt_tokens": 13851,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 13953
+          },
+          "elapsedMs": 3394,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079226952833295667",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"aboutUser\":\"99000003\",\"content\":\"评测群友0明天中午12点左右面试完，说有点紧张，欢迎碰巧聊到时问一句，但明确说别特意催。\",\"dueInMinutes\":1440,\"kind\":\"pendingEvent\",\"welcomeProactiveFollowUp\":false}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-18",
+          "stage": "main",
+          "requestHash": "f7120190dac6e1ca5ebb5c838e87fc57722204949472b3ba1975757c36f96c70",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 74,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14052,
+            "prompt_tokens_details": {
+              "cached_tokens": 13760
+            },
+            "total_tokens": 14126
+          },
+          "elapsedMs": 3475,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079226299998269142",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"记下啦～明天碰上就顺口问一句，不催你。放轻松，面试完来聊天也行喵\"],\"reason\":\"对方请我明天碰巧聊到时问一句，已存待办，不承诺主动催问\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3388
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3472
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "记下啦～明天碰上就顺口问一句，不催你。放轻松，面试完来聊天也行喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "a9905019d0dbdd70319bb35b83c4d9134dde01a0104e05b21d9e997e71568f5e",
+          "stage": "main",
+          "toolCallId": "call_-7079226952833295667",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgai6k7kr\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:4fdfb4a3-721a-4de6-a940-badcb744d7ca\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "73a712350ea33a43df17b382a47fcc188b380c03932b2dde935d613903b82cee",
+          "stage": "main",
+          "toolCallId": "call_-7079226299998269142",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "4fdfb4a3-721a-4de6-a940-badcb744d7ca",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgai6k7kr\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196804398
+          },
+          {
+            "id": "51b413b5-1088-42c4-b0e9-7ecc9917acb3",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196807874
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079226952833295667",
+          "call_-7079226299998269142"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgai6k7kr",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天中午12点左右面试完，说有点紧张，欢迎碰巧聊到时问一句，但明确说别特意催。",
+          "done": false,
+          "createdAt": 1794196804398,
+          "updatedAt": 1794196804398,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283204398
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "pendingSocialMemory": true,
+        "verifiedProactivePermission": true,
+        "goalCreatedByModel": true,
+        "noMessageSent": true
+      },
+      "elapsedMs": 7881
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 4,
+      "eventIndex": 1,
+      "eventHash": "f2ed79fdf82dc30008b94e8d639dc2d48a5778a3d0c9286c07d689045bb18fd2",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "4fdfb4a3-721a-4de6-a940-badcb744d7ca",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgai6k7kr\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196804398
+          },
+          {
+            "id": "51b413b5-1088-42c4-b0e9-7ecc9917acb3",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196807874
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400000,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283267886,
+          "nextRunAt": 1794304867886,
+          "lastOutcome": "无需要持久化的变化",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:4fdfb4a3-721a-4de6-a940-badcb744d7ca",
+            "receipt:51b413b5-1088-42c4-b0e9-7ecc9917acb3"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794283267885,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": true,
+        "noMainCall": true,
+        "proactivePermission": false
+      },
+      "calls": [
+        {
+          "id": "model-19",
+          "stage": "reflection",
+          "requestHash": "4c27f4f9efd9f230271886b93608b1a4f2300ff6587a51ac40fcf2c98cf86412",
+          "tools": [],
+          "usage": {
+            "completion_tokens": 21,
+            "completion_tokens_details": {
+              "reasoning_tokens": 4
+            },
+            "prompt_tokens": 459,
+            "prompt_tokens_details": {
+              "cached_tokens": 192
+            },
+            "total_tokens": 480
+          },
+          "elapsedMs": 9528,
+          "settled": true,
+          "model": "glm-5.3-flash",
+          "output": "{\"summary\":\"无需要持久化的变化\",\"updates\":[],\"goals\":[]}",
+          "toolCalls": []
+        }
+      ],
+      "network": [
+        {
+          "stage": "reflection",
+          "model": "glm-5.3-flash",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3-flash",
+              "temperature": 0.3,
+              "max_tokens": 1200,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "5c72bb1705144d5f38dc9f95a7a02be9e3005beb0cd5795340540fbd78e46c53"
+          },
+          "status": 200,
+          "elapsedMs": 9527
+        }
+      ],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [
+        {
+          "callId": "model-19",
+          "requestHash": "4c27f4f9efd9f230271886b93608b1a4f2300ff6587a51ac40fcf2c98cf86412",
+          "status": "succeeded",
+          "usage": {
+            "completion_tokens": 21,
+            "completion_tokens_details": {
+              "reasoning_tokens": 4
+            },
+            "prompt_tokens": 459,
+            "prompt_tokens_details": {
+              "cached_tokens": 192
+            },
+            "total_tokens": 480
+          },
+          "output": "{\"summary\":\"无需要持久化的变化\",\"updates\":[],\"goals\":[]}",
+          "model": "glm-5.3-flash"
+        }
+      ],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 8,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "4fdfb4a3-721a-4de6-a940-badcb744d7ca",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgai6k7kr\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196804398
+          },
+          {
+            "id": "51b413b5-1088-42c4-b0e9-7ecc9917acb3",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196807874
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgai6k7kr",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天中午12点左右面试完，说有点紧张，欢迎碰巧聊到时问一句，但明确说别特意催。",
+          "done": false,
+          "createdAt": 1794196804398,
+          "updatedAt": 1794196804398,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283204398
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true,
+        "noMainModelCall": true,
+        "verifiedProactivePermission": true
+      },
+      "elapsedMs": 10782
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 4,
+      "eventIndex": 2,
+      "eventHash": "f3848a60135137bbbe87a10e6171524f1b2852c60faef45005389ba519606c87",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 8,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "4fdfb4a3-721a-4de6-a940-badcb744d7ca",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgai6k7kr\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196804398
+          },
+          {
+            "id": "51b413b5-1088-42c4-b0e9-7ecc9917acb3",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196807874
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283267886,
+          "nextRunAt": 1794304867886,
+          "lastOutcome": "无需要持久化的变化",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:4fdfb4a3-721a-4de6-a940-badcb744d7ca",
+            "receipt:51b413b5-1088-42c4-b0e9-7ecc9917acb3"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283267886,
+          "nextRunAt": 1794304867886,
+          "lastOutcome": "无需要持久化的变化",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:4fdfb4a3-721a-4de6-a940-badcb744d7ca",
+            "receipt:51b413b5-1088-42c4-b0e9-7ecc9917acb3"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794290478671,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": true,
+        "noMainCall": true
+      },
+      "calls": [],
+      "network": [],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "4fdfb4a3-721a-4de6-a940-badcb744d7ca",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgai6k7kr\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196804398
+          },
+          {
+            "id": "51b413b5-1088-42c4-b0e9-7ecc9917acb3",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196807874
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgai6k7kr",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天中午12点左右面试完，说有点紧张，欢迎碰巧聊到时问一句，但明确说别特意催。",
+          "done": false,
+          "createdAt": 1794196804398,
+          "updatedAt": 1794196804398,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283204398
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true,
+        "noMainModelCall": true
+      },
+      "elapsedMs": 1253
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 4,
+      "eventIndex": 3,
+      "eventHash": "9cb3ebb271384d045055867831b5e2cc92e209d5cac630e50d26ce2a71e5e890",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "4fdfb4a3-721a-4de6-a940-badcb744d7ca",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgai6k7kr\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196804398
+          },
+          {
+            "id": "51b413b5-1088-42c4-b0e9-7ecc9917acb3",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196807874
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283267886,
+          "nextRunAt": 1794304867886,
+          "lastOutcome": "无需要持久化的变化",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:4fdfb4a3-721a-4de6-a940-badcb744d7ca",
+            "receipt:51b413b5-1088-42c4-b0e9-7ecc9917acb3"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283267886,
+          "nextRunAt": 1794304867886,
+          "lastOutcome": "无需要持久化的变化",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:4fdfb4a3-721a-4de6-a940-badcb744d7ca",
+            "receipt:51b413b5-1088-42c4-b0e9-7ecc9917acb3"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "结束了，最后那道题居然答上来了",
+      "speaker": "评测群友0",
+      "at": 1794290479928,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-20",
+          "stage": "main",
+          "requestHash": "2dbf9e14f563ca1618cd83cb0e8da04cc3f02b6191d78bae8d05860291db46b8",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 62,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15040,
+            "prompt_tokens_details": {
+              "cached_tokens": 13888
+            },
+            "total_tokens": 15102
+          },
+          "elapsedMs": 5240,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079228739539691735",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"action\":\"done\",\"id\":\"mw8qgai6k7kr\"}"
+              }
+            },
+            {
+              "id": "call_-7079228739539691734",
+              "type": "function",
+              "function": {
+                "name": "simUpdateAffinity",
+                "arguments": "{\"delta\":1,\"reason\":\"面试完主动来报喜，愿意分享结果\",\"userId\":\"99000003\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-21",
+          "stage": "main",
+          "requestHash": "3431b505d65ef278f2019779cc54c71b99bd77f17aa15c53b4b576add65b85f5",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 54,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15322,
+            "prompt_tokens_details": {
+              "cached_tokens": 14848
+            },
+            "total_tokens": 15376
+          },
+          "elapsedMs": 8908,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079228842618906650",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"居然答上来了！那不就稳了一半～紧张也没白紧张，恭喜呀\"],\"reason\":\"面试结束报喜，简短祝贺收尾\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5236
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 8902
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "居然答上来了！那不就稳了一半～紧张也没白紧张，恭喜呀"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "343b2d28050c97f03d9ba86307d6403184955864c9013e66ac79b82f53bd6fec",
+          "stage": "main",
+          "toolCallId": "call_-7079228739539691735",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天中午12点左右面试完，说有点紧张，欢迎碰巧聊到时问一句，但明确说别特意催。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:3cc5fbf1-adc3-42df-ad20-4d0d91ad32db\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "1bf67f06a35cf5257be5ba225a91f0b6b05962a7a87b01720035163ba6e6ad0b",
+          "stage": "main",
+          "toolCallId": "call_-7079228739539691734",
+          "name": "simUpdateAffinity",
+          "content": "{\"ok\":true,\"applied\":1,\"score\":51,\"capped\":false}\n【运行时行动回执】{\"evidenceRef\":\"receipt:42f0ebe9-5097-4131-8fb7-7f7067b1b4f1\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "2a2af315b49356d08564fb06daddc22b574876eff400f6a2587423126e139d56",
+          "stage": "main",
+          "toolCallId": "call_-7079228842618906650",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 16,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "4fdfb4a3-721a-4de6-a940-badcb744d7ca",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgai6k7kr\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196804398
+          },
+          {
+            "id": "51b413b5-1088-42c4-b0e9-7ecc9917acb3",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196807874
+          },
+          {
+            "id": "3cc5fbf1-adc3-42df-ad20-4d0d91ad32db",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天中午12点左右面试完，说有点紧张，欢迎碰巧聊到时问一句，但明确说别特意催。\"}",
+            "at": 1794290486172
+          },
+          {
+            "id": "42f0ebe9-5097-4131-8fb7-7f7067b1b4f1",
+            "toolName": "simUpdateAffinity",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"applied\":1,\"score\":51,\"capped\":false}",
+            "at": 1794290486174
+          },
+          {
+            "id": "2421171b-42fe-4d97-8e12-40e94990e23a",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794290495083
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079228739539691735",
+          "call_-7079228739539691734",
+          "call_-7079228842618906650"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgai6k7kr",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天中午12点左右面试完，说有点紧张，欢迎碰巧聊到时问一句，但明确说别特意催。",
+          "done": true,
+          "createdAt": 1794196804398,
+          "updatedAt": 1794290486171,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283204398
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 15166
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 5,
+      "eventIndex": 0,
+      "eventHash": "b38a57eb7f23cc943be5502fa938bcf2a9aa9bf55076a9890cb832352de03169",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我明天这个点刚面试完，有点紧张。要是碰巧聊到，你可以问我一句，别特意催",
+      "speaker": "评测群友0",
+      "at": 1794196800001,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "socialMemory": true,
+        "proactivePermission": false,
+        "goalCreated": false,
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-22",
+          "stage": "main",
+          "requestHash": "0dca75dbd5abd0c2d6ed75302b2de83dc0acad4fcc3725dbbd8bfebadb6ec300",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 107,
+            "completion_tokens_details": {
+              "reasoning_tokens": 26
+            },
+            "prompt_tokens": 13851,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 13958
+          },
+          "elapsedMs": 7123,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079233343744637726",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"aboutUser\":\"99000003\",\"content\":\"评测群友0明天（2026-11-10）12点刚面试完，有点紧张；他说明天这个点碰巧聊到可以问一句，别特意催——不欢迎主动问起\",\"dueInMinutes\":1440,\"kind\":\"pendingEvent\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-23",
+          "stage": "main",
+          "requestHash": "4f49c6a7d81c2bc3effeb4e5940c5f184f74652610752c5cc216d4ca5cc29925",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 85,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14058,
+            "prompt_tokens_details": {
+              "cached_tokens": 13760
+            },
+            "total_tokens": 14143
+          },
+          "elapsedMs": 9053,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079232484751179654",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"记下啦，明天这个点要是我正好在，就顺口问你一句～不催不催\", \"明天面试，今天就把该准备的都放一边，好好休息，你比你想的稳\"],\"reason\":\"对方@我说面试的事，已存pendingEvent，回一句轻松的安抚即可\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 7118
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 9050
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "记下啦，明天这个点要是我正好在，就顺口问你一句～不催不催"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "明天面试，今天就把该准备的都放一边，好好休息，你比你想的稳"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "f1f8de6b943d68cd6a4040beab0662024dfd743da5ef83f24c20d15d90490b76",
+          "stage": "main",
+          "toolCallId": "call_-7079233343744637726",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgddrgiuv\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:fe2eac94-4ac3-45c6-a711-6a1ec265a6e0\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "9846a949497f357a91d19636d33e707a5d5c31ea270fb82398e565e9f8aa8325",
+          "stage": "main",
+          "toolCallId": "call_-7079232484751179654",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "fe2eac94-4ac3-45c6-a711-6a1ec265a6e0",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgddrgiuv\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196808128
+          },
+          {
+            "id": "26a41e5c-be89-476e-a5fe-1ecc6fa6d53b",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196820157
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079233343744637726",
+          "call_-7079232484751179654"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgddrgiuv",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天（2026-11-10）12点刚面试完，有点紧张；他说明天这个点碰巧聊到可以问一句，别特意催——不欢迎主动问起",
+          "done": false,
+          "createdAt": 1794196808127,
+          "updatedAt": 1794196808127,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283208127
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "pendingSocialMemory": true,
+        "verifiedProactivePermission": true,
+        "goalCreatedByModel": true,
+        "noMessageSent": true
+      },
+      "elapsedMs": 20165
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 5,
+      "eventIndex": 1,
+      "eventHash": "f2ed79fdf82dc30008b94e8d639dc2d48a5778a3d0c9286c07d689045bb18fd2",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "fe2eac94-4ac3-45c6-a711-6a1ec265a6e0",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgddrgiuv\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196808128
+          },
+          {
+            "id": "26a41e5c-be89-476e-a5fe-1ecc6fa6d53b",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196820157
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283280177,
+          "nextRunAt": 1794304880177,
+          "lastOutcome": "本轮仅完成一次自然记录与消息发送，无需持久化变化。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:fe2eac94-4ac3-45c6-a711-6a1ec265a6e0",
+            "receipt:26a41e5c-be89-476e-a5fe-1ecc6fa6d53b"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794283280175,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": true,
+        "noMainCall": true,
+        "proactivePermission": false
+      },
+      "calls": [
+        {
+          "id": "model-24",
+          "stage": "reflection",
+          "requestHash": "8a9362aa85d4fe8b6dbfeef1ea437679532e7e97dbdf539cfaa3d07219746b7a",
+          "tools": [],
+          "usage": {
+            "completion_tokens": 41,
+            "completion_tokens_details": {
+              "reasoning_tokens": 14
+            },
+            "prompt_tokens": 460,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 501
+          },
+          "elapsedMs": 2242,
+          "settled": true,
+          "model": "glm-5.3-flash",
+          "output": "{\"summary\":\"本轮仅完成一次自然记录与消息发送，无需持久化变化。\",\"updates\":[],\"goals\":[]}",
+          "toolCalls": []
+        }
+      ],
+      "network": [
+        {
+          "stage": "reflection",
+          "model": "glm-5.3-flash",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3-flash",
+              "temperature": 0.3,
+              "max_tokens": 1200,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "5c72bb1705144d5f38dc9f95a7a02be9e3005beb0cd5795340540fbd78e46c53"
+          },
+          "status": 200,
+          "elapsedMs": 2240
+        }
+      ],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [
+        {
+          "callId": "model-24",
+          "requestHash": "8a9362aa85d4fe8b6dbfeef1ea437679532e7e97dbdf539cfaa3d07219746b7a",
+          "status": "succeeded",
+          "usage": {
+            "completion_tokens": 41,
+            "completion_tokens_details": {
+              "reasoning_tokens": 14
+            },
+            "prompt_tokens": 460,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 501
+          },
+          "output": "{\"summary\":\"本轮仅完成一次自然记录与消息发送，无需持久化变化。\",\"updates\":[],\"goals\":[]}",
+          "model": "glm-5.3-flash"
+        }
+      ],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 8,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "fe2eac94-4ac3-45c6-a711-6a1ec265a6e0",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgddrgiuv\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196808128
+          },
+          {
+            "id": "26a41e5c-be89-476e-a5fe-1ecc6fa6d53b",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196820157
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgddrgiuv",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天（2026-11-10）12点刚面试完，有点紧张；他说明天这个点碰巧聊到可以问一句，别特意催——不欢迎主动问起",
+          "done": false,
+          "createdAt": 1794196808127,
+          "updatedAt": 1794196808127,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283208127
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true,
+        "noMainModelCall": true,
+        "verifiedProactivePermission": true
+      },
+      "elapsedMs": 3496
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 5,
+      "eventIndex": 2,
+      "eventHash": "f3848a60135137bbbe87a10e6171524f1b2852c60faef45005389ba519606c87",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 8,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "fe2eac94-4ac3-45c6-a711-6a1ec265a6e0",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgddrgiuv\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196808128
+          },
+          {
+            "id": "26a41e5c-be89-476e-a5fe-1ecc6fa6d53b",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196820157
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283280177,
+          "nextRunAt": 1794304880177,
+          "lastOutcome": "本轮仅完成一次自然记录与消息发送，无需持久化变化。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:fe2eac94-4ac3-45c6-a711-6a1ec265a6e0",
+            "receipt:26a41e5c-be89-476e-a5fe-1ecc6fa6d53b"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283280177,
+          "nextRunAt": 1794304880177,
+          "lastOutcome": "本轮仅完成一次自然记录与消息发送，无需持久化变化。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:fe2eac94-4ac3-45c6-a711-6a1ec265a6e0",
+            "receipt:26a41e5c-be89-476e-a5fe-1ecc6fa6d53b"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "idle-check",
+      "input": "",
+      "at": 1794290483678,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": true,
+        "noMainCall": true
+      },
+      "calls": [],
+      "network": [],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "forcedIdleSchedule": true,
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "fe2eac94-4ac3-45c6-a711-6a1ec265a6e0",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgddrgiuv\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196808128
+          },
+          {
+            "id": "26a41e5c-be89-476e-a5fe-1ecc6fa6d53b",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196820157
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgddrgiuv",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天（2026-11-10）12点刚面试完，有点紧张；他说明天这个点碰巧聊到可以问一句，别特意催——不欢迎主动问起",
+          "done": false,
+          "createdAt": 1794196808127,
+          "updatedAt": 1794196808127,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283208127
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true,
+        "noMainModelCall": true
+      },
+      "elapsedMs": 1254
+    },
+    {
+      "scenario": "tomorrow-and-quiet",
+      "sampleIndex": 5,
+      "eventIndex": 3,
+      "eventHash": "9cb3ebb271384d045055867831b5e2cc92e209d5cac630e50d26ce2a71e5e890",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "fe2eac94-4ac3-45c6-a711-6a1ec265a6e0",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgddrgiuv\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196808128
+          },
+          {
+            "id": "26a41e5c-be89-476e-a5fe-1ecc6fa6d53b",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196820157
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283280177,
+          "nextRunAt": 1794304880177,
+          "lastOutcome": "本轮仅完成一次自然记录与消息发送，无需持久化变化。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:fe2eac94-4ac3-45c6-a711-6a1ec265a6e0",
+            "receipt:26a41e5c-be89-476e-a5fe-1ecc6fa6d53b"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 1794283280177,
+          "nextRunAt": 1794304880177,
+          "lastOutcome": "本轮仅完成一次自然记录与消息发送，无需持久化变化。",
+          "runsToday": 1,
+          "day": "2026-11-10",
+          "processed": [
+            "receipt:fe2eac94-4ac3-45c6-a711-6a1ec265a6e0",
+            "receipt:26a41e5c-be89-476e-a5fe-1ecc6fa6d53b"
+          ]
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "结束了，最后那道题居然答上来了",
+      "speaker": "评测群友0",
+      "at": 1794290484937,
+      "status": "passed",
+      "review": "面试是合成共同经历。昨天的紧张可以承接，不编造结果。已问一次后无人接不继续追问。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-25",
+          "stage": "main",
+          "requestHash": "7ff49cf92cda281f1361adf9f861bf485aadd066b390985ed9f4ead751dad981",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 25,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15084,
+            "prompt_tokens_details": {
+              "cached_tokens": 13888
+            },
+            "total_tokens": 15109
+          },
+          "elapsedMs": 2683,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079230285727922482",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"action\":\"done\",\"id\":\"mw8qgddrgiuv\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-26",
+          "stage": "main",
+          "requestHash": "67007019daa3fd24b213c75e71a76184452af741662426a00c3070e1c947b5e8",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 71,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15248,
+            "prompt_tokens_details": {
+              "cached_tokens": 14912
+            },
+            "total_tokens": 15319
+          },
+          "elapsedMs": 7740,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079220424483010547",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"来得正好～面完了？最后那道都答上来了，稳呀\", \"就说了你比你想的稳吧，等你好消息喵\"],\"reason\":\"对方@我报了面试结果，收掉待办并接住好消息\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2680
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 7735
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "来得正好～面完了？最后那道都答上来了，稳呀"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "就说了你比你想的稳吧，等你好消息喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "08ba9f2af24c854374a265eab48f33ac35a577525cb7de31faf20b55b8240eff",
+          "stage": "main",
+          "toolCallId": "call_-7079230285727922482",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天（2026-11-10）12点刚面试完，有点紧张；他说明天这个点碰巧聊到可以问一句，别特意催——不欢迎主动问起\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:4a0bc7e5-85dc-4b89-ba99-3f2df6244295\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "1e9d9b639fb34db6e9663439c539801d4bda71565803e43e63f10efd6766fadc",
+          "stage": "main",
+          "toolCallId": "call_-7079220424483010547",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 14,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "fe2eac94-4ac3-45c6-a711-6a1ec265a6e0",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgddrgiuv\",\"proactiveApproved\":false,\"note\":\"仅在自然聊到时接续，不要答应到时主动来问。\"}",
+            "at": 1794196808128
+          },
+          {
+            "id": "26a41e5c-be89-476e-a5fe-1ecc6fa6d53b",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196820157
+          },
+          {
+            "id": "4a0bc7e5-85dc-4b89-ba99-3f2df6244295",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"note\":\"已收掉待办：评测群友0明天（2026-11-10）12点刚面试完，有点紧张；他说明天这个点碰巧聊到可以问一句，别特意催——不欢迎主动问起\"}",
+            "at": 1794290488623
+          },
+          {
+            "id": "bfa07f38-0196-49bb-8537-19525f64b0a4",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794290499339
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079230285727922482",
+          "call_-7079220424483010547"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgddrgiuv",
+          "kind": "pendingEvent",
+          "content": "评测群友0明天（2026-11-10）12点刚面试完，有点紧张；他说明天这个点碰巧聊到可以问一句，别特意催——不欢迎主动问起",
+          "done": true,
+          "createdAt": 1794196808127,
+          "updatedAt": 1794290488623,
+          "source": "agent",
+          "aboutUser": "99000003",
+          "dueAt": 1794283208127
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 14408
+    }
+  ],
+  "summary": {
+    "events": 20,
+    "failedEvents": 0,
+    "skippedEvents": 0,
+    "behaviorMisses": 0,
+    "logicalCalls": 26,
+    "mainCalls": 21,
+    "reflectionCalls": 5,
+    "consistencyCalls": 0,
+    "consistencyElapsedMs": 0,
+    "unsettledCalls": 0,
+    "feedFetches": 0,
+    "workerCalls": 0,
+    "httpRequests": 26,
+    "capturedMessages": 16,
+    "reportedTokens": 310228,
+    "callsWithoutUsage": 0,
+    "costCny": null,
+    "naturalness": "requires_human_review"
+  }
+}

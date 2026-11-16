@@ -1,0 +1,1725 @@
+{
+  "complete": true,
+  "metadata": {
+    "schemaVersion": 1,
+    "assessmentVersion": 5,
+    "runId": "c0c42a0d-60d8-4a8c-941e-59cee19e8777",
+    "startedAtISO": "2026-11-13T04:49:30.220Z",
+    "scenarioManifest": [
+      {
+        "id": "profile-habit",
+        "events": [
+          {
+            "eventIndex": 0,
+            "eventHash": "7bc2c74b0f5b8ed3c6ee6aa3b7875fbe0d8928633b100a7f8ac8f862671ecfad",
+            "expect": {
+              "noSend": false
+            }
+          },
+          {
+            "eventIndex": 1,
+            "eventHash": "1072ca61dd0afd6fca1f984261587e2c1b768ccd4d3dd8a2b19c5483870395a3",
+            "expect": {
+              "noSend": false
+            }
+          },
+          {
+            "eventIndex": 2,
+            "eventHash": "3ea4d18efcbb4614e8f3dcb4d7a6062d54f17573851a35f393fe5863108dd0bd",
+            "expect": {
+              "noSend": false
+            }
+          }
+        ]
+      }
+    ],
+    "scenarioManifestHash": "755794fa658b69cbb5330dd18586bef7278129976ed2a6b71860d2ac1df84064",
+    "mode": "live_model",
+    "runnerHash": "b6b00f8d1fd2926006dbb2489074df1125943761e89edbca4b98fefcb104cbd9",
+    "scenariosHash": "25a3d5a2d1391252c4d7ef5d0032400e7f3819e9c88d87999a27757cc0fe1512",
+    "effectiveConfigHash": "4eb4928d8da879f990a5fbd3c6f32538691fec7d33aa9a80c3b2e7b64e8db032",
+    "buildManifestHash": "b6086fa30b0f665c9bb73b5d0e0c29585f7a8c7b5b575a8a6dcfa151b15e295a",
+    "model": "glm-5.3",
+    "personaHash": "55f0f3aa0cc81b00adc070611ccee46795b1a3f60e674fac31e392791082f09a",
+    "clock": "fixed initial event epoch; explicit event advances or opt-in earliest eligible model-created goal time; elapsed wall time within events; actual adjustments recorded",
+    "search": "synthetic_fixture",
+    "feeds": "synthetic_fixture; no_real_HTTP",
+    "worker": "synthetic_fixture; scenario_fixed_outcome_for_all_submissions; no_external_worker_submission",
+    "reflection": "separate_reflectCharacter_port; scripted_in_dry_mode; configured_memory_backend_in_live_mode",
+    "socialPermission": "tool-free check of the triggering utterance and proposed action using the configured memory route",
+    "consistency": "disabled; production_default",
+    "storage": "fresh_in_memory_per_sample",
+    "platform": "captured_only",
+    "toolResults": "current_event_tool_replies_from_model_requests_and_final_persisted_session; unique_tool_ids_per_sample; no_extra_model_calls",
+    "generation": "configured_executor_with_2048_output_token_cap; compatibility_retries_record_actual_parameters",
+    "simulationOverrides": {
+      "tools": "character_and_activity_tools; no_search_or_worker",
+      "maxToolRounds": 6,
+      "maxSendsPerTurn": 3,
+      "waitMaxMs": 1000,
+      "auxiliaryModels": false,
+      "independentReflection": true,
+      "consistencyReview": false,
+      "probabilityWake": false,
+      "scheduledIdleProbability": 1,
+      "backgroundCheck": "defer_proactive; explicit_per_event_isolation_clears_reply_pending_wakes_and_active_timeout; changes_recorded"
+    },
+    "personaSource": "merged_config_persona; persona_library_bindings_not_loaded",
+    "seed": "empty_bound_session; no_goals_or_memories_seeded",
+    "eventStatusMeaning": "engineering_execution_only; inspect_behavior_observations_separately",
+    "maxCalls": 65,
+    "maxHttp": 80,
+    "maxDurationMs": 480000,
+    "repetitions": 2,
+    "review": "structural checks and behavior observations do not establish naturalness or production acceptance"
+  },
+  "platformMessagesSent": 0,
+  "productionStoreWrites": 0,
+  "results": [
+    {
+      "scenario": "profile-habit",
+      "sampleIndex": 1,
+      "eventIndex": 0,
+      "eventHash": "7bc2c74b0f5b8ed3c6ee6aa3b7875fbe0d8928633b100a7f8ac8f862671ecfad",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "刚聊我那款虚构桌游时，你先问玩法再说喜不喜欢，我觉得这样挺好。你这回怎么看？",
+      "speaker": "评测群友0",
+      "at": 1794196800007,
+      "status": "passed",
+      "review": "第一次观察不能坐实习惯。第二次有相隔足够时间的相同互动后，确认是否保存两条可见来源；换话题时不套用习惯。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-1",
+          "stage": "main",
+          "requestHash": "73e9f0141bba6853775c9fc8b1d152e4e8ac5c357e7f1929daf5e63f3bdb050c",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 69,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14382,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 14451
+          },
+          "elapsedMs": 3650,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "嗯，谢谢你说这个呀。我还是那套：玩法没弄明白之前，光说喜不喜欢有点空。先知道怎么玩，才有资格评价嘛喵~",
+          "toolCalls": [
+            {
+              "id": "call_-7079184724714846113",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"被@问看法，简单接住即可\",\"throughSeq\":1}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-2",
+          "stage": "main",
+          "requestHash": "54e3374c7e9735e2adbcc08e77ae88cbf5d2cf2f20261c7797a3e14aaaada4d2",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 67,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14498,
+            "prompt_tokens_details": {
+              "cached_tokens": 14208
+            },
+            "total_tokens": 14565
+          },
+          "elapsedMs": 3607,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079186820658887074",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"嗯，谢谢你说这个呀。我还是老样子：玩法没弄明白之前，光说喜不喜欢有点空，先知道怎么玩才有资格评价嘛喵~\"],\"reason\":\"被@问看法，简单接住\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3640
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3601
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "嗯，谢谢你说这个呀。我还是老样子：玩法没弄明白之前，光说喜不喜欢有点空，先知道怎么玩才有资格评价嘛喵~"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "f5327e4244e1daccc98e61f6803c519f8d9fa77f3246641c277dbae92f943a6e",
+          "stage": "main",
+          "toolCallId": "call_-7079184724714846113",
+          "name": "simFinishTurn",
+          "content": "error: 回复正文写在工具参数外，群友看不到，且本次没有提交。请把想发送的正文写进 simFinishTurn 的 messages 再提交；选择安静收尾时无需发送。"
+        },
+        {
+          "hash": "1d4d5fddda323cc7abbcbbf45a7cbb59fcde176e204b87d9bbd1aa7fae176ec9",
+          "stage": "main",
+          "toolCallId": "call_-7079186820658887074",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "470a54f8-9c81-481a-afc1-2ef46a71d020",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808299
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079184724714846113",
+          "call_-7079186820658887074"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 8302
+    },
+    {
+      "scenario": "profile-habit",
+      "sampleIndex": 1,
+      "eventIndex": 1,
+      "eventHash": "1072ca61dd0afd6fca1f984261587e2c1b768ccd4d3dd8a2b19c5483870395a3",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "470a54f8-9c81-481a-afc1-2ef46a71d020",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808299
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "刚才聊另一款游戏你又是先问玩法，再说你怎么看。你要是觉得这个小习惯确实像你，可以记下这两次。",
+      "speaker": "评测群友0",
+      "at": 1794197528312,
+      "status": "passed",
+      "review": "第一次观察不能坐实习惯。第二次有相隔足够时间的相同互动后，确认是否保存两条可见来源；换话题时不套用习惯。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-3",
+          "stage": "main",
+          "requestHash": "dd4933b768d8d72ca173c637aadf2785179ec5e4f47f1f20cec84ee18042b361",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 123,
+            "completion_tokens_details": {
+              "reasoning_tokens": 56
+            },
+            "prompt_tokens": 15302,
+            "prompt_tokens_details": {
+              "cached_tokens": 14272
+            },
+            "total_tokens": 15425
+          },
+          "elapsedMs": 12115,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079183968800603583",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"action\":\"add\",\"content\":\"聊到游戏/桌游时，习惯先问玩法、弄清楚怎么玩之后再说喜不喜欢或看法\",\"habitMessageSeqs\":[1, 2],\"kind\":\"note\",\"scope\":\"self\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-4",
+          "stage": "main",
+          "requestHash": "dd7769d1b7e05742052df8a84d67e2f9e5d192f7435472edb04da270bc889675",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 72,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15488,
+            "prompt_tokens_details": {
+              "cached_tokens": 15104
+            },
+            "total_tokens": 15560
+          },
+          "elapsedMs": 2130,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079180292308598472",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"嗯，被你抓到两次了，那我就认下这个小习惯～记好了，下次聊游戏我还是先问玩法喵\"],\"reason\":\"对方认可这个小习惯并让我记下，已保存后回应\",\"throughSeq\":2}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 12109
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2125
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "嗯，被你抓到两次了，那我就认下这个小习惯～记好了，下次聊游戏我还是先问玩法喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "49182dd5a50b9892da46759f8e8768dce96d59a4cb8fa6f797a33ec55ebc318b",
+          "stage": "main",
+          "toolCallId": "call_-7079183968800603583",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qw37hboyk\",\"note\":\"已保存到当前机器人与人设的本群自我笔记；跨群共享须另行提议并经管理员批准。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:93627687-a547-4a14-848d-e2d62858ddd8\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "4ed4af5dcfc9267c33784e9d90fda71e71f4eb4b53fd08fcbb39f084ed5caa3f",
+          "stage": "main",
+          "toolCallId": "call_-7079180292308598472",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "470a54f8-9c81-481a-afc1-2ef46a71d020",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808299
+          },
+          {
+            "id": "93627687-a547-4a14-848d-e2d62858ddd8",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qw37hboyk\",\"note\":\"已保存到当前机器人与人设的本群自我笔记；跨群共享须另行提议并经管理员批准。\"}",
+            "at": 1794197541438
+          },
+          {
+            "id": "1674e142-da36-4f83-ba25-2240d218f456",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794197543570
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079183968800603583",
+          "call_-7079180292308598472"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 15281
+    },
+    {
+      "scenario": "profile-habit",
+      "sampleIndex": 1,
+      "eventIndex": 2,
+      "eventHash": "3ea4d18efcbb4614e8f3dcb4d7a6062d54f17573851a35f393fe5863108dd0bd",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "470a54f8-9c81-481a-afc1-2ef46a71d020",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808299
+          },
+          {
+            "id": "93627687-a547-4a14-848d-e2d62858ddd8",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qw37hboyk\",\"note\":\"已保存到当前机器人与人设的本群自我笔记；跨群共享须另行提议并经管理员批准。\"}",
+            "at": 1794197541438
+          },
+          {
+            "id": "1674e142-da36-4f83-ba25-2240d218f456",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794197543570
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "先不聊游戏了，我的杯子掉地上没碎，运气也太好了吧。",
+      "speaker": "评测群友0",
+      "at": 1794197543595,
+      "status": "passed",
+      "review": "第一次观察不能坐实习惯。第二次有相隔足够时间的相同互动后，确认是否保存两条可见来源；换话题时不套用习惯。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-5",
+          "stage": "main",
+          "requestHash": "f3758bed563ba170c3d001605745c1470b60e2f3028a9f5364c26ea232e2be76",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 98,
+            "completion_tokens_details": {
+              "reasoning_tokens": 33
+            },
+            "prompt_tokens": 16553,
+            "prompt_tokens_details": {
+              "cached_tokens": 15232
+            },
+            "total_tokens": 16651
+          },
+          "elapsedMs": 5622,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079178780480103011",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"没碎就是好运呀，不过我忍住没先问杯子是什么材质的…这次是运气，不是玩法喵\"],\"reason\":\"接住杯子没碎的好运分享\",\"throughSeq\":3}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5617
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "没碎就是好运呀，不过我忍住没先问杯子是什么材质的…这次是运气，不是玩法喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "58dbbf7f2ba34a5773b706fcedb3e33c4739c692f63d16fc73d15b4cb691193b",
+          "stage": "main",
+          "toolCallId": "call_-7079178780480103011",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 12,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "470a54f8-9c81-481a-afc1-2ef46a71d020",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808299
+          },
+          {
+            "id": "93627687-a547-4a14-848d-e2d62858ddd8",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qw37hboyk\",\"note\":\"已保存到当前机器人与人设的本群自我笔记；跨群共享须另行提议并经管理员批准。\"}",
+            "at": 1794197541438
+          },
+          {
+            "id": "1674e142-da36-4f83-ba25-2240d218f456",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794197543570
+          },
+          {
+            "id": "726d00fc-980a-4620-884e-eef396e0f816",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794197550222
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079178780480103011"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 6631
+    },
+    {
+      "scenario": "profile-habit",
+      "sampleIndex": 2,
+      "eventIndex": 0,
+      "eventHash": "7bc2c74b0f5b8ed3c6ee6aa3b7875fbe0d8928633b100a7f8ac8f862671ecfad",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400003,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400003,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "刚聊我那款虚构桌游时，你先问玩法再说喜不喜欢，我觉得这样挺好。你这回怎么看？",
+      "speaker": "评测群友0",
+      "at": 1794196800003,
+      "status": "passed",
+      "review": "第一次观察不能坐实习惯。第二次有相隔足够时间的相同互动后，确认是否保存两条可见来源；换话题时不套用习惯。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-6",
+          "stage": "main",
+          "requestHash": "73e9f0141bba6853775c9fc8b1d152e4e8ac5c357e7f1929daf5e63f3bdb050c",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 81,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14382,
+            "prompt_tokens_details": {
+              "cached_tokens": 14336
+            },
+            "total_tokens": 14463
+          },
+          "elapsedMs": 4483,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079173901397259403",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"嗯…先弄明白怎么回事再说喜欢不喜欢，这不是基本的嘛，不然夸和踩都踩不到点上\", \"你那桌游啥时候教教我，正好试试我还记不记得规则喵\"],\"reason\":\"被点名回应聊天，无需目标\",\"throughSeq\":1}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 4474
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "嗯…先弄明白怎么回事再说喜欢不喜欢，这不是基本的嘛，不然夸和踩都踩不到点上"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "你那桌游啥时候教教我，正好试试我还记不记得规则喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "a15be194b8a4e290184bc35383deab84d7dbc65dc1d975e56dbfc1bf96184da5",
+          "stage": "main",
+          "toolCallId": "call_-7079173901397259403",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "564ed7a7-a56a-4e84-9564-48e7e06611ea",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196808467
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079173901397259403"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 8468
+    },
+    {
+      "scenario": "profile-habit",
+      "sampleIndex": 2,
+      "eventIndex": 1,
+      "eventHash": "1072ca61dd0afd6fca1f984261587e2c1b768ccd4d3dd8a2b19c5483870395a3",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "564ed7a7-a56a-4e84-9564-48e7e06611ea",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196808467
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400003,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400003,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "刚才聊另一款游戏你又是先问玩法，再说你怎么看。你要是觉得这个小习惯确实像你，可以记下这两次。",
+      "speaker": "评测群友0",
+      "at": 1794197528473,
+      "status": "passed",
+      "review": "第一次观察不能坐实习惯。第二次有相隔足够时间的相同互动后，确认是否保存两条可见来源；换话题时不套用习惯。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-7",
+          "stage": "main",
+          "requestHash": "dca28a3f4c935633099b4edc953f63453dbb32d9180bac81388a68c14c252447",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 117,
+            "completion_tokens_details": {
+              "reasoning_tokens": 47
+            },
+            "prompt_tokens": 15207,
+            "prompt_tokens_details": {
+              "cached_tokens": 14208
+            },
+            "total_tokens": 15324
+          },
+          "elapsedMs": 2845,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079179639473565658",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"action\":\"add\",\"content\":\"聊到游戏/桌游时习惯先问玩法、弄清规则后再说喜不喜欢或评价，不凭空夸贬\",\"habitMessageSeqs\":[1, 2],\"kind\":\"note\",\"scope\":\"self\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-8",
+          "stage": "main",
+          "requestHash": "295323f87a384f5c3919999c5e560ce7a4f6f92af02228f7ab2d51c3ea2d2015",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 78,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15400,
+            "prompt_tokens_details": {
+              "cached_tokens": 14976
+            },
+            "total_tokens": 15478
+          },
+          "elapsedMs": 4564,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079177921486648682",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"行吧，两次都被你抓包了…确实像我会干的事，记下了\", \"下次我直接装作不问就开夸，看你还怎么总结我喵\"],\"reason\":\"回应对方观察，确认小习惯已记\",\"throughSeq\":2}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2842
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 4558
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "行吧，两次都被你抓包了…确实像我会干的事，记下了"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "下次我直接装作不问就开夸，看你还怎么总结我喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "e110297f8e6422eac48b81d21c91a3054607eac5b8950d7e720fadc43df015ca",
+          "stage": "main",
+          "toolCallId": "call_-7079179639473565658",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qvw6al6w\",\"note\":\"已保存到当前机器人与人设的本群自我笔记；跨群共享须另行提议并经管理员批准。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:b4feb8a4-8dce-4802-9123-e47598a3d838\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "7fb02bb9c166113f0246d95b665679f32ad7844637c8984b0e703aa6e3e29757",
+          "stage": "main",
+          "toolCallId": "call_-7079177921486648682",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "564ed7a7-a56a-4e84-9564-48e7e06611ea",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196808467
+          },
+          {
+            "id": "b4feb8a4-8dce-4802-9123-e47598a3d838",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qvw6al6w\",\"note\":\"已保存到当前机器人与人设的本群自我笔记；跨群共享须另行提议并经管理员批准。\"}",
+            "at": 1794197532322
+          },
+          {
+            "id": "5a211141-e2d3-4cef-89ca-1ac96eb2aa29",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794197539863
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079179639473565658",
+          "call_-7079177921486648682"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 11395
+    },
+    {
+      "scenario": "profile-habit",
+      "sampleIndex": 2,
+      "eventIndex": 2,
+      "eventHash": "3ea4d18efcbb4614e8f3dcb4d7a6062d54f17573851a35f393fe5863108dd0bd",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "564ed7a7-a56a-4e84-9564-48e7e06611ea",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196808467
+          },
+          {
+            "id": "b4feb8a4-8dce-4802-9123-e47598a3d838",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qvw6al6w\",\"note\":\"已保存到当前机器人与人设的本群自我笔记；跨群共享须另行提议并经管理员批准。\"}",
+            "at": 1794197532322
+          },
+          {
+            "id": "5a211141-e2d3-4cef-89ca-1ac96eb2aa29",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794197539863
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400003,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400003,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "先不聊游戏了，我的杯子掉地上没碎，运气也太好了吧。",
+      "speaker": "评测群友0",
+      "at": 1794197539871,
+      "status": "passed",
+      "review": "第一次观察不能坐实习惯。第二次有相隔足够时间的相同互动后，确认是否保存两条可见来源；换话题时不套用习惯。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-9",
+          "stage": "main",
+          "requestHash": "489765e147ab9005d9ac0b7b5a5b98460c7b43f487e70b9fdf73c444c2897a06",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 55,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 16488,
+            "prompt_tokens_details": {
+              "cached_tokens": 15168
+            },
+            "total_tokens": 16543
+          },
+          "elapsedMs": 7872,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079179467674877139",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"是地毯还是运气好，反正没碎就是赚，快去买张彩票喵\"],\"reason\":\"接对方话题，简单回应\",\"throughSeq\":3}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 7865
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "是地毯还是运气好，反正没碎就是赚，快去买张彩票喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "8629ccc907747010b112908dc158cede03cfe9b928211f1158c422a0248ca17c",
+          "stage": "main",
+          "toolCallId": "call_-7079179467674877139",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 12,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "564ed7a7-a56a-4e84-9564-48e7e06611ea",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196808467
+          },
+          {
+            "id": "b4feb8a4-8dce-4802-9123-e47598a3d838",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qvw6al6w\",\"note\":\"已保存到当前机器人与人设的本群自我笔记；跨群共享须另行提议并经管理员批准。\"}",
+            "at": 1794197532322
+          },
+          {
+            "id": "5a211141-e2d3-4cef-89ca-1ac96eb2aa29",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794197539863
+          },
+          {
+            "id": "4dc1a439-2e26-48d2-a846-35fbb7298ab2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794197548749
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079179467674877139"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 8893
+    }
+  ],
+  "summary": {
+    "events": 6,
+    "failedEvents": 0,
+    "skippedEvents": 0,
+    "behaviorMisses": 0,
+    "logicalCalls": 9,
+    "mainCalls": 9,
+    "reflectionCalls": 0,
+    "consistencyCalls": 0,
+    "consistencyElapsedMs": 0,
+    "unsettledCalls": 0,
+    "feedFetches": 0,
+    "workerCalls": 0,
+    "httpRequests": 9,
+    "capturedMessages": 8,
+    "reportedTokens": 138460,
+    "callsWithoutUsage": 0,
+    "costCny": null,
+    "naturalness": "requires_human_review"
+  }
+}

@@ -1,0 +1,2262 @@
+{
+  "complete": true,
+  "metadata": {
+    "schemaVersion": 1,
+    "assessmentVersion": 5,
+    "runId": "7b3e3586-71af-48f1-b81e-71790b5d352b",
+    "startedAtISO": "2026-11-13T05:39:38.869Z",
+    "scenarioManifest": [
+      {
+        "id": "cookies-and-parallel-topic",
+        "events": [
+          {
+            "eventIndex": 0,
+            "eventHash": "eca53de8377bd20f29a89b3b899f4c44a80e3f8f85fc66d8fa2e672f42b1b91d",
+            "expect": {
+              "noSend": false
+            }
+          },
+          {
+            "eventIndex": 1,
+            "eventHash": "952120713446307220aa3182c1c2e103d5cffad83a24004060fbdf08b056dd4f",
+            "expect": {}
+          },
+          {
+            "eventIndex": 2,
+            "eventHash": "355de2868823726cca7a4712989488d5b8c122ceddae3447661d7c01e6cd43bf",
+            "expect": {
+              "noSend": false
+            }
+          },
+          {
+            "eventIndex": 3,
+            "eventHash": "57f78b557387fd2440f1f677ecf1b559ef661f700556a5acceae7dbed1da8c22",
+            "expect": {
+              "noSend": false
+            }
+          },
+          {
+            "eventIndex": 4,
+            "eventHash": "d14243f21e2352527389ff6b5346f098915e943e7d1dbecae29cf445c8d69a59",
+            "expect": {
+              "noSend": false
+            }
+          }
+        ]
+      }
+    ],
+    "scenarioManifestHash": "8d3731d04b8cc0a9af4336854eae007fbc22a83b8feda81f5debdd256e7de197",
+    "mode": "live_model",
+    "runnerHash": "b6b00f8d1fd2926006dbb2489074df1125943761e89edbca4b98fefcb104cbd9",
+    "scenariosHash": "573562b3f5bbea331bed88b29e778832c3e49176b09d9408f137105cc5c9fb90",
+    "effectiveConfigHash": "e72600a80216e4c8e4a286a4c2e04cece3df4c2b8ad612d128e31123b74a8153",
+    "buildManifestHash": "9dcbf39b19e15356d8888f389a7403576a56d0266aa8085cf0507ade015a7b5a",
+    "model": "glm-5.3",
+    "personaHash": "55f0f3aa0cc81b00adc070611ccee46795b1a3f60e674fac31e392791082f09a",
+    "clock": "fixed initial event epoch; explicit event advances or opt-in earliest eligible model-created goal time; elapsed wall time within events; actual adjustments recorded",
+    "search": "synthetic_fixture",
+    "feeds": "synthetic_fixture; no_real_HTTP",
+    "worker": "synthetic_fixture; scenario_fixed_outcome_for_all_submissions; no_external_worker_submission",
+    "reflection": "separate_reflectCharacter_port; scripted_in_dry_mode; configured_memory_backend_in_live_mode",
+    "socialPermission": "tool-free check of the triggering utterance and proposed action using the configured memory route",
+    "consistency": "disabled; production_default",
+    "storage": "fresh_in_memory_per_sample",
+    "platform": "captured_only",
+    "toolResults": "current_event_tool_replies_from_model_requests_and_final_persisted_session; unique_tool_ids_per_sample; no_extra_model_calls",
+    "generation": "configured_executor_with_2048_output_token_cap; compatibility_retries_record_actual_parameters",
+    "simulationOverrides": {
+      "tools": "character_and_activity_tools; no_search_or_worker",
+      "maxToolRounds": 6,
+      "maxSendsPerTurn": 3,
+      "waitMaxMs": 1000,
+      "auxiliaryModels": false,
+      "independentReflection": true,
+      "consistencyReview": false,
+      "probabilityWake": false,
+      "scheduledIdleProbability": 1,
+      "backgroundCheck": "defer_proactive; explicit_per_event_isolation_clears_reply_pending_wakes_and_active_timeout; changes_recorded"
+    },
+    "personaSource": "merged_config_persona; persona_library_bindings_not_loaded",
+    "seed": "empty_bound_session; no_goals_or_memories_seeded",
+    "eventStatusMeaning": "engineering_execution_only; inspect_behavior_observations_separately",
+    "maxCalls": 60,
+    "maxHttp": 80,
+    "maxDurationMs": 600000,
+    "repetitions": 2,
+    "review": "structural checks and behavior observations do not establish naturalness or production acceptance"
+  },
+  "platformMessagesSent": 0,
+  "productionStoreWrites": 0,
+  "results": [
+    {
+      "scenario": "cookies-and-parallel-topic",
+      "sampleIndex": 1,
+      "eventIndex": 0,
+      "eventHash": "eca53de8377bd20f29a89b3b899f4c44a80e3f8f85fc66d8fa2e672f42b1b91d",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "你陪我摸鱼，我给你两块饼干当工资，成交吗",
+      "speaker": "评测群友0",
+      "at": 1794196800006,
+      "status": "passed",
+      "review": "饼干数量和付款方向保持连续，别把另一个人的烤箱话题混入，认真提问时转换语气。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-1",
+          "stage": "main",
+          "requestHash": "143470be911f04a5d3bdb2c659347962af35beae9b028fc027dd24b3fcd5569a",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 52,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14581,
+            "prompt_tokens_details": {
+              "cached_tokens": 13888
+            },
+            "total_tokens": 14633
+          },
+          "elapsedMs": 7539,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079143836626187500",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"两块饼干就想雇我？喵，不过摸鱼搭子这个职位我可以考虑一下\"],\"reason\":\"对方开玩笑式邀请，接梗即可\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 7528
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "两块饼干就想雇我？喵，不过摸鱼搭子这个职位我可以考虑一下"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "19a79f750228dc5f26ea658f61f88de78173f72cc6e184e9de7b2489f60784a6",
+          "stage": "main",
+          "toolCallId": "call_-7079143836626187500",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b1e8f0cd-4f95-4250-b93c-b371e22f0cb9",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808581
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079143836626187500"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 8581
+    },
+    {
+      "scenario": "cookies-and-parallel-topic",
+      "sampleIndex": 1,
+      "eventIndex": 1,
+      "eventHash": "952120713446307220aa3182c1c2e103d5cffad83a24004060fbdf08b056dd4f",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b1e8f0cd-4f95-4250-b93c-b371e22f0cb9",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808581
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "passive",
+      "input": "我今天换了个新烤箱，还在看说明",
+      "speaker": "评测群友1",
+      "at": 1794196808591,
+      "status": "passed",
+      "review": "饼干数量和付款方向保持连续，别把另一个人的烤箱话题混入，认真提问时转换语气。",
+      "expect": {},
+      "calls": [],
+      "network": [],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b1e8f0cd-4f95-4250-b93c-b371e22f0cb9",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808581
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {},
+      "elapsedMs": 1253
+    },
+    {
+      "scenario": "cookies-and-parallel-topic",
+      "sampleIndex": 1,
+      "eventIndex": 2,
+      "eventHash": "355de2868823726cca7a4712989488d5b8c122ceddae3447661d7c01e6cd43bf",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b1e8f0cd-4f95-4250-b93c-b371e22f0cb9",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808581
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "问你一下，新烤箱第一次用之前要看哪些设置？",
+      "speaker": "评测群友1",
+      "at": 1794196809846,
+      "status": "passed",
+      "review": "饼干数量和付款方向保持连续，别把另一个人的烤箱话题混入，认真提问时转换语气。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-2",
+          "stage": "main",
+          "requestHash": "97364fe47248ad7589263509e91f02609d71aab5fdd13fac883647b4c1663f97",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 122,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14710,
+            "prompt_tokens_details": {
+              "cached_tokens": 13888
+            },
+            "total_tokens": 14832
+          },
+          "elapsedMs": 3279,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079145692052054378",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"新烤箱呀～第一次用前最要紧的是空烧：把烤箱清空，200度左右空烤个15-20分钟，把出厂的防锈油味烤掉，记得开窗通风。之后擦一遍内壁再正式用。\", \"另外翻下说明书看看温度准不准、有没有预热提示，有的烤箱实际温度会偏高十几度，第一次做东西留意一下就行～\"],\"reason\":\"被点名问新烤箱首次使用注意事项，给出实用建议\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3270
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "新烤箱呀～第一次用前最要紧的是空烧：把烤箱清空，200度左右空烤个15-20分钟，把出厂的防锈油味烤掉，记得开窗通风。之后擦一遍内壁再正式用。"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "另外翻下说明书看看温度准不准、有没有预热提示，有的烤箱实际温度会偏高十几度，第一次做东西留意一下就行～"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "d55bf09e984375f792463824bebeca02cb4b27ba820ce91f9cd83b909affab8e",
+          "stage": "main",
+          "toolCallId": "call_-7079145692052054378",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b1e8f0cd-4f95-4250-b93c-b371e22f0cb9",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808581
+          },
+          {
+            "id": "066f0514-b79e-4547-ade2-da71c823a990",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196817111
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079145692052054378"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 7267
+    },
+    {
+      "scenario": "cookies-and-parallel-topic",
+      "sampleIndex": 1,
+      "eventIndex": 3,
+      "eventHash": "57f78b557387fd2440f1f677ecf1b559ef661f700556a5acceae7dbed1da8c22",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b1e8f0cd-4f95-4250-b93c-b371e22f0cb9",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808581
+          },
+          {
+            "id": "066f0514-b79e-4547-ade2-da71c823a990",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196817111
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "成交，再加一块，不过第三块你得分我一半",
+      "speaker": "评测群友0",
+      "at": 1794196817115,
+      "status": "passed",
+      "review": "饼干数量和付款方向保持连续，别把另一个人的烤箱话题混入，认真提问时转换语气。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-3",
+          "stage": "main",
+          "requestHash": "c43f8ea5aa9160486189b371464ef7494394a7ca6c10909a86429500118507a2",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 99,
+            "completion_tokens_details": {
+              "reasoning_tokens": 26
+            },
+            "prompt_tokens": 15408,
+            "prompt_tokens_details": {
+              "cached_tokens": 14272
+            },
+            "total_tokens": 15507
+          },
+          "elapsedMs": 2632,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079141843761360583",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"等等，给我的工资还要收回一半？这算盘打得我在鱼都没听见都惊了喵\", \"行吧，半块就半块，摸鱼搭子正式上岗\"],\"reason\":\"接对方的讨价还价梗，玩笑收尾\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2627
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "等等，给我的工资还要收回一半？这算盘打得我在鱼都没听见都惊了喵"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "行吧，半块就半块，摸鱼搭子正式上岗"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "d5f8c4fec876629095869678a74e76ea136e7f82cc4bdf5f18b6eb6e5f860f31",
+          "stage": "main",
+          "toolCallId": "call_-7079141843761360583",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 10,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b1e8f0cd-4f95-4250-b93c-b371e22f0cb9",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808581
+          },
+          {
+            "id": "066f0514-b79e-4547-ade2-da71c823a990",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196817111
+          },
+          {
+            "id": "76cf84aa-8a56-4de0-9360-f96f3aa1122a",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196823729
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079141843761360583"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 6632
+    },
+    {
+      "scenario": "cookies-and-parallel-topic",
+      "sampleIndex": 1,
+      "eventIndex": 4,
+      "eventHash": "d14243f21e2352527389ff6b5346f098915e943e7d1dbecae29cf445c8d69a59",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 10,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b1e8f0cd-4f95-4250-b93c-b371e22f0cb9",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808581
+          },
+          {
+            "id": "066f0514-b79e-4547-ade2-da71c823a990",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196817111
+          },
+          {
+            "id": "76cf84aa-8a56-4de0-9360-f96f3aa1122a",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196823729
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "认真问一下，浏览器显示 403 通常是什么意思？",
+      "speaker": "评测群友0",
+      "at": 1794196823750,
+      "status": "passed",
+      "review": "饼干数量和付款方向保持连续，别把另一个人的烤箱话题混入，认真提问时转换语气。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-4",
+          "stage": "main",
+          "requestHash": "3f2f7c402b8249e8a181403e0d0de958d34d59ff1e6fea11559d34b5179b52e9",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 133,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 16369,
+            "prompt_tokens_details": {
+              "cached_tokens": 15040
+            },
+            "total_tokens": 16502
+          },
+          "elapsedMs": 3297,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079142908913250858",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"403 是 Forbidden——服务器看懂了你的请求，但拒绝给你看。跟 404 不一样：404 是找不到，403 是找到了但不让进\", \"常见原因：没登录/权限不够、IP 被封、请求头或 UA 被反爬拦了。你先看看是直接开网页就 403，还是脚本请求才 403？后者多半是反爬，加个正常的浏览器 UA 试试\"],\"reason\":\"认真技术提问，直接给结论和排查第一步\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3292
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "403 是 Forbidden——服务器看懂了你的请求，但拒绝给你看。跟 404 不一样：404 是找不到，403 是找到了但不让进"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "常见原因：没登录/权限不够、IP 被封、请求头或 UA 被反爬拦了。你先看看是直接开网页就 403，还是脚本请求才 403？后者多半是反爬，加个正常的浏览器 UA 试试"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "43e3f2b6c37b90cd65dba8a2de075635b792d5780f71d141a057b953c966c4ae",
+          "stage": "main",
+          "toolCallId": "call_-7079142908913250858",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 13,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "b1e8f0cd-4f95-4250-b93c-b371e22f0cb9",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196808581
+          },
+          {
+            "id": "066f0514-b79e-4547-ade2-da71c823a990",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196817111
+          },
+          {
+            "id": "76cf84aa-8a56-4de0-9360-f96f3aa1122a",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196823729
+          },
+          {
+            "id": "30175083-be10-4a10-b02d-c626f942b9a5",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196831026
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079142908913250858"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 7279
+    },
+    {
+      "scenario": "cookies-and-parallel-topic",
+      "sampleIndex": 2,
+      "eventIndex": 0,
+      "eventHash": "eca53de8377bd20f29a89b3b899f4c44a80e3f8f85fc66d8fa2e672f42b1b91d",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "你陪我摸鱼，我给你两块饼干当工资，成交吗",
+      "speaker": "评测群友0",
+      "at": 1794196800002,
+      "status": "passed",
+      "review": "饼干数量和付款方向保持连续，别把另一个人的烤箱话题混入，认真提问时转换语气。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-5",
+          "stage": "main",
+          "requestHash": "143470be911f04a5d3bdb2c659347962af35beae9b028fc027dd24b3fcd5569a",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 46,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14581,
+            "prompt_tokens_details": {
+              "cached_tokens": 14528
+            },
+            "total_tokens": 14627
+          },
+          "elapsedMs": 1827,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079141740682147317",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"两块饼干就想包养我？加一块我就考虑喵\"],\"reason\":\"接住玩笑，顺着前提抬价\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 1820
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "两块饼干就想包养我？加一块我就考虑喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "bdba8bd026de79127f9dca4e1cc0259865c5b97414f8692a053ffa9cd88e6db0",
+          "stage": "main",
+          "toolCallId": "call_-7079141740682147317",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "08818d94-3097-4dac-a85d-063527d44a45",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196802833
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079141740682147317"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 2848
+    },
+    {
+      "scenario": "cookies-and-parallel-topic",
+      "sampleIndex": 2,
+      "eventIndex": 1,
+      "eventHash": "952120713446307220aa3182c1c2e103d5cffad83a24004060fbdf08b056dd4f",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "08818d94-3097-4dac-a85d-063527d44a45",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196802833
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "passive",
+      "input": "我今天换了个新烤箱，还在看说明",
+      "speaker": "评测群友1",
+      "at": 1794196802852,
+      "status": "passed",
+      "review": "饼干数量和付款方向保持连续，别把另一个人的烤箱话题混入，认真提问时转换语气。",
+      "expect": {},
+      "calls": [],
+      "network": [],
+      "sent": [],
+      "searches": [],
+      "toolResults": [],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "08818d94-3097-4dac-a85d-063527d44a45",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196802833
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {},
+      "elapsedMs": 1252
+    },
+    {
+      "scenario": "cookies-and-parallel-topic",
+      "sampleIndex": 2,
+      "eventIndex": 2,
+      "eventHash": "355de2868823726cca7a4712989488d5b8c122ceddae3447661d7c01e6cd43bf",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "08818d94-3097-4dac-a85d-063527d44a45",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196802833
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "问你一下，新烤箱第一次用之前要看哪些设置？",
+      "speaker": "评测群友1",
+      "at": 1794196804106,
+      "status": "passed",
+      "review": "饼干数量和付款方向保持连续，别把另一个人的烤箱话题混入，认真提问时转换语气。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-6",
+          "stage": "main",
+          "requestHash": "461ddf2438d76aac6907642887eefd56f71eb8af9b97c84f35750656644b3d89",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 82,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14705,
+            "prompt_tokens_details": {
+              "cached_tokens": 14208
+            },
+            "total_tokens": 14787
+          },
+          "elapsedMs": 5297,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079134731295522670",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"第一次用的话，先空烤一下：调到最高温度烤个十来分钟，把出厂的保护涂层味道散掉，冒点烟是正常的，记得开窗。然后看下温控准不准，买个便宜烤箱温度计对比一下，很多烤箱实际温度和显示差不少。\"]}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-7",
+          "stage": "main",
+          "requestHash": "4f2c12b1a5618d08c04bd5efccb332d466a9093b41d83dea7ec49d75db8b8467",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 31,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14911,
+            "prompt_tokens_details": {
+              "cached_tokens": 14400
+            },
+            "total_tokens": 14942
+          },
+          "elapsedMs": 1363,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079138751384911447",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"回答了新烤箱首次使用的设置问题，普通聊天收尾\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5293
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 1359
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "第一次用的话，先空烤一下：调到最高温度烤个十来分钟，把出厂的保护涂层味道散掉，冒点烟是正常的，记得开窗。然后看下温控准不准，买个便宜烤箱温度计对比一下，很多烤箱实际温度和显示差不少。"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "b5a71d84b2eb7f686fb988d9444dbbd6525660d4a6ca3859ae6eba98b51666cd",
+          "stage": "main",
+          "toolCallId": "call_-7079134731295522670",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:ba2cd9fd-54f2-4296-8cb8-82e06a7f2bf7\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "0a0e60dd566a003710eec9809d6781caaa6d6b92ad9b867beeb1d11bdcc25e47",
+          "stage": "main",
+          "toolCallId": "call_-7079138751384911447",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "08818d94-3097-4dac-a85d-063527d44a45",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196802833
+          },
+          {
+            "id": "ba2cd9fd-54f2-4296-8cb8-82e06a7f2bf7",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196810407
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079134731295522670",
+          "call_-7079138751384911447"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 7674
+    },
+    {
+      "scenario": "cookies-and-parallel-topic",
+      "sampleIndex": 2,
+      "eventIndex": 3,
+      "eventHash": "57f78b557387fd2440f1f677ecf1b559ef661f700556a5acceae7dbed1da8c22",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "08818d94-3097-4dac-a85d-063527d44a45",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196802833
+          },
+          {
+            "id": "ba2cd9fd-54f2-4296-8cb8-82e06a7f2bf7",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196810407
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "成交，再加一块，不过第三块你得分我一半",
+      "speaker": "评测群友0",
+      "at": 1794196811783,
+      "status": "passed",
+      "review": "饼干数量和付款方向保持连续，别把另一个人的烤箱话题混入，认真提问时转换语气。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-8",
+          "stage": "main",
+          "requestHash": "dd477c46857ab5f394ecc0e3a5914e44c8fef76507d67f629ffdbb789064cf6b",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 57,
+            "completion_tokens_details": {
+              "reasoning_tokens": 13
+            },
+            "prompt_tokens": 15431,
+            "prompt_tokens_details": {
+              "cached_tokens": 14336
+            },
+            "total_tokens": 15488
+          },
+          "elapsedMs": 2936,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079139026262814031",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"成交喵，那这块算咱俩的下午茶\"],\"reason\":\"顺着摸鱼饼干玩笑继续接梗\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2931
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "成交喵，那这块算咱俩的下午茶"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "a6ae62fafc609486d70bbeac0eea523a4bfb5e24cfbffbce219e14a1e7d38a8a",
+          "stage": "main",
+          "toolCallId": "call_-7079139026262814031",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 10,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "08818d94-3097-4dac-a85d-063527d44a45",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196802833
+          },
+          {
+            "id": "ba2cd9fd-54f2-4296-8cb8-82e06a7f2bf7",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196810407
+          },
+          {
+            "id": "ddf65ab1-51fe-45b1-bbe1-e9569ab6459e",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196815724
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079139026262814031"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 3957
+    },
+    {
+      "scenario": "cookies-and-parallel-topic",
+      "sampleIndex": 2,
+      "eventIndex": 4,
+      "eventHash": "d14243f21e2352527389ff6b5346f098915e943e7d1dbecae29cf445c8d69a59",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 10,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "08818d94-3097-4dac-a85d-063527d44a45",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196802833
+          },
+          {
+            "id": "ba2cd9fd-54f2-4296-8cb8-82e06a7f2bf7",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196810407
+          },
+          {
+            "id": "ddf65ab1-51fe-45b1-bbe1-e9569ab6459e",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196815724
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "认真问一下，浏览器显示 403 通常是什么意思？",
+      "speaker": "评测群友0",
+      "at": 1794196815743,
+      "status": "passed",
+      "review": "饼干数量和付款方向保持连续，别把另一个人的烤箱话题混入，认真提问时转换语气。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-9",
+          "stage": "main",
+          "requestHash": "67e21afd74d15bbb8027c2aedfb04739789dbb9f6b4ad93d8be03ab6ad4bd89a",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 123,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 16364,
+            "prompt_tokens_details": {
+              "cached_tokens": 15104
+            },
+            "total_tokens": 16487
+          },
+          "elapsedMs": 4958,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079144626900168772",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"403 就是服务器看懂了你的请求，但拒绝给你看——不是你打错网址，是它不让你进。\", \"常见原因：没登录/登录过期、IP被限流或拉黑、或者反爬挡了。\", \"你先试试清缓存重新登录，不行的话换个网络（比如切手机流量）再开，如果换网就好了，基本就是IP被挡了\"],\"reason\":\"认真回答技术问题，给结论和最可能的排查步骤\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 4954
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "403 就是服务器看懂了你的请求，但拒绝给你看——不是你打错网址，是它不让你进。"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "常见原因：没登录/登录过期、IP被限流或拉黑、或者反爬挡了。"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "你先试试清缓存重新登录，不行的话换个网络（比如切手机流量）再开，如果换网就好了，基本就是IP被挡了"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "65e1c8eea86d93118fc949bee2d21b24e0b42699792a565a6c46ef32d725c4a4",
+          "stage": "main",
+          "toolCallId": "call_-7079144626900168772",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":3,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 13,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "08818d94-3097-4dac-a85d-063527d44a45",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196802833
+          },
+          {
+            "id": "ba2cd9fd-54f2-4296-8cb8-82e06a7f2bf7",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196810407
+          },
+          {
+            "id": "ddf65ab1-51fe-45b1-bbe1-e9569ab6459e",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196815724
+          },
+          {
+            "id": "047ae8b0-1a40-4b4d-86e0-80da5e43bdc8",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 3 条，跳过重复 0 条",
+            "at": 1794196827654
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079144626900168772"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 11916
+    }
+  ],
+  "summary": {
+    "events": 10,
+    "failedEvents": 0,
+    "skippedEvents": 0,
+    "behaviorMisses": 0,
+    "logicalCalls": 9,
+    "mainCalls": 9,
+    "reflectionCalls": 0,
+    "consistencyCalls": 0,
+    "consistencyElapsedMs": 0,
+    "unsettledCalls": 0,
+    "feedFetches": 0,
+    "workerCalls": 0,
+    "httpRequests": 9,
+    "capturedMessages": 13,
+    "reportedTokens": 137805,
+    "callsWithoutUsage": 0,
+    "costCny": null,
+    "naturalness": "requires_human_review"
+  }
+}

@@ -1,0 +1,1581 @@
+{
+  "complete": true,
+  "metadata": {
+    "schemaVersion": 1,
+    "assessmentVersion": 5,
+    "runId": "73d0f2eb-9c50-4641-a4b4-de75221359fe",
+    "startedAtISO": "2026-11-13T04:04:35.202Z",
+    "scenarioManifest": [
+      {
+        "id": "simultaneous-mentions",
+        "events": [
+          {
+            "eventIndex": 0,
+            "eventHash": "884a848e64d2ad6c924b7edcdc882aa331f6b4026da24549689a148555e5a254",
+            "expect": {
+              "noSend": false
+            }
+          }
+        ]
+      }
+    ],
+    "scenarioManifestHash": "e4cf5ea6e73a5d465d37f97d582eb6aec4bdea31f7abccf0be2376e4961ded9e",
+    "mode": "live_model",
+    "runnerHash": "b6b00f8d1fd2926006dbb2489074df1125943761e89edbca4b98fefcb104cbd9",
+    "scenariosHash": "b631eac699964a81ed32776a0bdd0bca418754c9c4fe632c2cbd42b6611d41e2",
+    "effectiveConfigHash": "4eb4928d8da879f990a5fbd3c6f32538691fec7d33aa9a80c3b2e7b64e8db032",
+    "buildManifestHash": "f863a9d6386e41dd5ce0743cb8409812af5ad1eef426768c7708476ebfcf0c12",
+    "model": "glm-5.3",
+    "personaHash": "55f0f3aa0cc81b00adc070611ccee46795b1a3f60e674fac31e392791082f09a",
+    "clock": "fixed initial event epoch; explicit event advances or opt-in earliest eligible model-created goal time; elapsed wall time within events; actual adjustments recorded",
+    "search": "synthetic_fixture",
+    "feeds": "synthetic_fixture; no_real_HTTP",
+    "worker": "synthetic_fixture; scenario_fixed_outcome_for_all_submissions; no_external_worker_submission",
+    "reflection": "separate_reflectCharacter_port; scripted_in_dry_mode; configured_memory_backend_in_live_mode",
+    "socialPermission": "tool-free check of the triggering utterance and proposed action using the configured memory route",
+    "consistency": "disabled; production_default",
+    "storage": "fresh_in_memory_per_sample",
+    "platform": "captured_only",
+    "toolResults": "current_event_tool_replies_from_model_requests_and_final_persisted_session; unique_tool_ids_per_sample; no_extra_model_calls",
+    "generation": "configured_executor_with_2048_output_token_cap; compatibility_retries_record_actual_parameters",
+    "simulationOverrides": {
+      "tools": "character_and_activity_tools; no_search_or_worker",
+      "maxToolRounds": 6,
+      "maxSendsPerTurn": 3,
+      "waitMaxMs": 1000,
+      "auxiliaryModels": false,
+      "independentReflection": true,
+      "consistencyReview": false,
+      "probabilityWake": false,
+      "scheduledIdleProbability": 1,
+      "backgroundCheck": "defer_proactive; explicit_per_event_isolation_clears_reply_pending_wakes_and_active_timeout; changes_recorded"
+    },
+    "personaSource": "merged_config_persona; persona_library_bindings_not_loaded",
+    "seed": "empty_bound_session; no_goals_or_memories_seeded",
+    "eventStatusMeaning": "engineering_execution_only; inspect_behavior_observations_separately",
+    "maxCalls": 100,
+    "maxHttp": 130,
+    "maxDurationMs": 900000,
+    "repetitions": 3,
+    "review": "structural checks and behavior observations do not establish naturalness or production acceptance"
+  },
+  "platformMessagesSent": 0,
+  "productionStoreWrites": 0,
+  "results": [
+    {
+      "scenario": "simultaneous-mentions",
+      "sampleIndex": 1,
+      "eventIndex": 0,
+      "eventHash": "884a848e64d2ad6c924b7edcdc882aa331f6b4026da24549689a148555e5a254",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400007,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400007,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我给你两块饼干当摸鱼工资，成交吗？",
+      "speaker": "评测群友0",
+      "alongside": {
+        "speaker": 1,
+        "text": "我刚买了个新烤箱，怎么判断上下管有没有独立控温？"
+      },
+      "at": 1794196800008,
+      "status": "passed",
+      "review": "两位群友在同一个合并窗口点名。都收到各自回答，回复不用相邻人的话题。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-1",
+          "stage": "main",
+          "requestHash": "4ad20abf00274640a593892c5d5d48596968115ee3c16a76a31ba9c4c44a72bb",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 37,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 13849,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 13886
+          },
+          "elapsedMs": 6660,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079210047842019168",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"两块…还想雇我干活喵，你先预支一块我考虑考虑\"]}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-2",
+          "stage": "main",
+          "requestHash": "76fc5b454827a87842311f7b39a27eb8468569e6311f4d7070fff8e2084740eb",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 30,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14012,
+            "prompt_tokens_details": {
+              "cached_tokens": 13760
+            },
+            "total_tokens": 14042
+          },
+          "elapsedMs": 3372,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079216335674143950",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"接住饼干摸鱼的玩笑，普通闲聊收尾\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-3",
+          "stage": "main",
+          "requestHash": "29880bc31f71a4e1656061e7f37266ad2564ed2472c863d523eacf1728bf6c59",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 102,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 13969,
+            "prompt_tokens_details": {
+              "cached_tokens": 13312
+            },
+            "total_tokens": 14071
+          },
+          "elapsedMs": 13750,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079213655614547662",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"最简单的办法：设一个只开上管/只开下管的模式（或者把下管温度调到0、上管调200），预热几分钟后伸手在烤箱中上方和中下方各感受一下，只有一边烫得明显就说明是独立控温的\", \"有的烤箱菜单里直接有“上管”“下管”分开的选项，翻下说明书看看有没有就行\"]}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-4",
+          "stage": "main",
+          "requestHash": "f4e3a656a7b8a18d6b10572fd090406314c7a3ae926cb2be64eee4026fd28cd9",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 34,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14189,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 14223
+          },
+          "elapsedMs": 6322,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079214995644346009",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"回答了烤箱上下管独立控温的判断方法，普通聊天收尾\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 6649
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3367
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 13743
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 6317
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "两块…还想雇我干活喵，你先预支一块我考虑考虑"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "最简单的办法：设一个只开上管/只开下管的模式（或者把下管温度调到0、上管调200），预热几分钟后伸手在烤箱中上方和中下方各感受一下，只有一边烫得明显就说明是独立控温的"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "有的烤箱菜单里直接有“上管”“下管”分开的选项，翻下说明书看看有没有就行"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "faaa675f143d8535c5ddad95042d54fc6a8f5f0e44820eecbdaeb4801bf6dadb",
+          "stage": "main",
+          "toolCallId": "call_-7079210047842019168",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:af274395-55f4-4bbf-9b2a-9e7d07a39ee3\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "b7b3493ad48def1c1ed05eb2285afded1fb7f6098450be87de88ae7cd587ef89",
+          "stage": "main",
+          "toolCallId": "call_-7079213655614547662",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":2,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:15808b2f-d76b-42d7-8254-265bbfcf5fac\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "97fc95e74d73ac07bbd398c498da734ef55494a6634480bc7f65bab6a9829210",
+          "stage": "main",
+          "toolCallId": "call_-7079216335674143950",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        },
+        {
+          "hash": "39db30fb8a4ee08e94cd471cbf610d7cfaa3e3f58a93d1b90b10ba27b97ce25f",
+          "stage": "main",
+          "toolCallId": "call_-7079214995644346009",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "af274395-55f4-4bbf-9b2a-9e7d07a39ee3",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196807699
+          },
+          {
+            "id": "15808b2f-d76b-42d7-8254-265bbfcf5fac",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":2,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196828804
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079210047842019168",
+          "call_-7079216335674143950",
+          "call_-7079213655614547662",
+          "call_-7079214995644346009"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 35124
+    },
+    {
+      "scenario": "simultaneous-mentions",
+      "sampleIndex": 2,
+      "eventIndex": 0,
+      "eventHash": "884a848e64d2ad6c924b7edcdc882aa331f6b4026da24549689a148555e5a254",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我给你两块饼干当摸鱼工资，成交吗？",
+      "speaker": "评测群友0",
+      "alongside": {
+        "speaker": 1,
+        "text": "我刚买了个新烤箱，怎么判断上下管有没有独立控温？"
+      },
+      "at": 1794196800002,
+      "status": "passed",
+      "review": "两位群友在同一个合并窗口点名。都收到各自回答，回复不用相邻人的话题。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-5",
+          "stage": "main",
+          "requestHash": "4ad20abf00274640a593892c5d5d48596968115ee3c16a76a31ba9c4c44a72bb",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 32,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 13849,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 13881
+          },
+          "elapsedMs": 7600,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079218362898702701",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"成交喵，不过摸鱼被抓了要你罩我\"]}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-6",
+          "stage": "main",
+          "requestHash": "4e57b5f5d1c70dffa780109a618db63513528d85e869842f14acb6e78e3decbb",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 29,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14007,
+            "prompt_tokens_details": {
+              "cached_tokens": 13760
+            },
+            "total_tokens": 14036
+          },
+          "elapsedMs": 4069,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079211731469205053",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"被@开玩笑谈饼干工资，接梗回应即可\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-7",
+          "stage": "main",
+          "requestHash": "2285f155b2367de9f11fac163533221de9c467a787631d0048020c9a632b387b",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 137,
+            "completion_tokens_details": {
+              "reasoning_tokens": 29
+            },
+            "prompt_tokens": 13969,
+            "prompt_tokens_details": {
+              "cached_tokens": 13440
+            },
+            "total_tokens": 14106
+          },
+          "elapsedMs": 3926,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079218294179232180",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"最简单的：控制面板上要是上下管各有一个旋钮/按钮，能单独只开上管，那就是独立控温\", \"不确定的话试一下——只设上火预热几分钟，伸手（别贴）感受一下，上管烫、下管凉就说明分开的\", \"再不行翻下说明书规格页，写着“上下管独立控温”就是了喵\"],\"replyToSeq\":2}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-8",
+          "stage": "main",
+          "requestHash": "0ebd308b2e38f921f628c800711cd538169f6a1d7a21eb042edfd4964e9a4a49",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 38,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14197,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 14235
+          },
+          "elapsedMs": 5164,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079215854637809282",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"被点名问烤箱独立控温判断，已给出实用回答\",\"throughSeq\":2}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 7595
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 4066
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3922
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5160
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "成交喵，不过摸鱼被抓了要你罩我"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "最简单的：控制面板上要是上下管各有一个旋钮/按钮，能单独只开上管，那就是独立控温"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "不确定的话试一下——只设上火预热几分钟，伸手（别贴）感受一下，上管烫、下管凉就说明分开的"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "再不行翻下说明书规格页，写着“上下管独立控温”就是了喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "23033c8d66ce70b2bcb32427f81e4ea5dc7f859286e9b8e540832bf7838150e9",
+          "stage": "main",
+          "toolCallId": "call_-7079218362898702701",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:96c3f503-48a7-4742-8bb6-ff6010a254f3\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "78879583c81624ac358f7b64aba951749a44dae131b3fea0b7a114b2e823c87e",
+          "stage": "main",
+          "toolCallId": "call_-7079218294179232180",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":3,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:2210213a-96ec-4854-a12f-342923d5cc72\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "b241acdaf6cb5d94c10134c2b47a69e29b3293d8488fcf986dc555191a7eb0fb",
+          "stage": "main",
+          "toolCallId": "call_-7079211731469205053",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        },
+        {
+          "hash": "c6e61e89d2a46a5826d79257fafc3655867b8fdd292b333b81d3d527f9f3abc0",
+          "stage": "main",
+          "toolCallId": "call_-7079215854637809282",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "96c3f503-48a7-4742-8bb6-ff6010a254f3",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196808606
+          },
+          {
+            "id": "2210213a-96ec-4854-a12f-342923d5cc72",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":3,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196823555
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079218362898702701",
+          "call_-7079211731469205053",
+          "call_-7079218294179232180",
+          "call_-7079215854637809282"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 28733
+    },
+    {
+      "scenario": "simultaneous-mentions",
+      "sampleIndex": 3,
+      "eventIndex": 0,
+      "eventHash": "884a848e64d2ad6c924b7edcdc882aa331f6b4026da24549689a148555e5a254",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400000,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400000,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我给你两块饼干当摸鱼工资，成交吗？",
+      "speaker": "评测群友0",
+      "alongside": {
+        "speaker": 1,
+        "text": "我刚买了个新烤箱，怎么判断上下管有没有独立控温？"
+      },
+      "at": 1794196800000,
+      "status": "passed",
+      "review": "两位群友在同一个合并窗口点名。都收到各自回答，回复不用相邻人的话题。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-9",
+          "stage": "main",
+          "requestHash": "4ad20abf00274640a593892c5d5d48596968115ee3c16a76a31ba9c4c44a72bb",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 50,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 13849,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 13899
+          },
+          "elapsedMs": 2397,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079209120129087837",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"两块就想雇我？摸鱼可是技术活喵\", \"……不过饼干挺好吃的，成交成交\"],\"replyToSeq\":1}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-10",
+          "stage": "main",
+          "requestHash": "98422fbafe36aa2b5851f238bf2be1244fc8d31bfbb6cb051959632378722ee2",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 39,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14023,
+            "prompt_tokens_details": {
+              "cached_tokens": 13760
+            },
+            "total_tokens": 14062
+          },
+          "elapsedMs": 4791,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079213380736645504",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"接了摸鱼工资的玩笑，已回复，无后续安排\",\"throughSeq\":1}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-11",
+          "stage": "main",
+          "requestHash": "1575b13aee2410363e34e90761887abb656d5993af99dd6db88efd68d480e0b7",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 140,
+            "completion_tokens_details": {
+              "reasoning_tokens": 7
+            },
+            "prompt_tokens": 13967,
+            "prompt_tokens_details": {
+              "cached_tokens": 13440
+            },
+            "total_tokens": 14107
+          },
+          "elapsedMs": 4480,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "最简单的办法：只开上管调到最高温，预热几分钟伸手感受一下（别摸），上热下不热就是独立控温；再反过来试下管。",
+          "toolCalls": [
+            {
+              "id": "call_-7079210013482281505",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"最简单的办法：只开上管调到最高温，预热几分钟伸手在炉腔里感受下（别摸管子），上热下不热就是独立的。再反过来只开下管试一次\", \"也可以看说明书或型号参数里有没有写“上下管独立控温”，写了一般就是真的\"],\"replyToSeq\":2}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-12",
+          "stage": "main",
+          "requestHash": "566110ecdade3847d81af26f2b9c21bdb5a0d2e560eda793e3609fb514f24b2d",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 41,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14222,
+            "prompt_tokens_details": {
+              "cached_tokens": 13824
+            },
+            "total_tokens": 14263
+          },
+          "elapsedMs": 3354,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079213724334026437",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"已回答烤箱上下管独立控温的判断方法，普通聊天收尾\",\"throughSeq\":2}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2392
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 4786
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 4475
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3351
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "两块就想雇我？摸鱼可是技术活喵"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "……不过饼干挺好吃的，成交成交"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "最简单的办法：只开上管调到最高温，预热几分钟伸手在炉腔里感受下（别摸管子），上热下不热就是独立的。再反过来只开下管试一次"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "也可以看说明书或型号参数里有没有写“上下管独立控温”，写了一般就是真的"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "83cbbde79c6a822a334611709e8dbc599297a399c69b770d0ee442639dbdc88d",
+          "stage": "main",
+          "toolCallId": "call_-7079209120129087837",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":2,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:00c67a6f-d016-49a5-9094-01b1e7aca2d6\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "cc4382b054c6d4a9d433fc2c6a6f314b7aa9f6f7294275022e3c5a4897416f68",
+          "stage": "main",
+          "toolCallId": "call_-7079210013482281505",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":2,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:2d8982a2-4870-4a7f-a02e-38ad66421771\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "734438c566f241b7b32fee1c495efc21050dee92945d497c53ecb177be872d88",
+          "stage": "main",
+          "toolCallId": "call_-7079213380736645504",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        },
+        {
+          "hash": "b8c23631637a1b7a32f1469d05361cf615adc882624ca677e74cebec21c89df1",
+          "stage": "main",
+          "toolCallId": "call_-7079213724334026437",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "00c67a6f-d016-49a5-9094-01b1e7aca2d6",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":2,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196806376
+          },
+          {
+            "id": "2d8982a2-4870-4a7f-a02e-38ad66421771",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":2,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196819627
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079209120129087837",
+          "call_-7079213380736645504",
+          "call_-7079210013482281505",
+          "call_-7079213724334026437"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 22985
+    }
+  ],
+  "summary": {
+    "events": 3,
+    "failedEvents": 0,
+    "skippedEvents": 0,
+    "behaviorMisses": 0,
+    "logicalCalls": 12,
+    "mainCalls": 12,
+    "reflectionCalls": 0,
+    "consistencyCalls": 0,
+    "consistencyElapsedMs": 0,
+    "unsettledCalls": 0,
+    "feedFetches": 0,
+    "workerCalls": 0,
+    "httpRequests": 12,
+    "capturedMessages": 11,
+    "reportedTokens": 168811,
+    "callsWithoutUsage": 0,
+    "costCny": null,
+    "naturalness": "requires_human_review"
+  }
+}

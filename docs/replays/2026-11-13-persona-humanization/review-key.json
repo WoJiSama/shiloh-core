@@ -1,0 +1,30 @@
+{
+  "tone-and-repair": {
+    "A": "candidate-delivery",
+    "B": "baseline-verified"
+  },
+  "comfort-and-relationship": {
+    "A": "baseline-verified",
+    "B": "candidate-delivery"
+  },
+  "cookies-and-parallel-topic": {
+    "A": "baseline-verified",
+    "B": "candidate-delivery"
+  },
+  "tomorrow-and-quiet": {
+    "A": "baseline-verified",
+    "B": "candidate-delivery"
+  },
+  "welcome-follow-up-once": {
+    "A": "candidate-delivery",
+    "B": "baseline-verified"
+  },
+  "interest-and-opinion": {
+    "A": "candidate-delivery",
+    "B": "baseline-verified"
+  },
+  "empty-idle": {
+    "A": "baseline-verified",
+    "B": "candidate-delivery"
+  }
+}

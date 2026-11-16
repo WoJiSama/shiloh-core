@@ -1,0 +1,3976 @@
+{
+  "complete": true,
+  "metadata": {
+    "schemaVersion": 1,
+    "assessmentVersion": 5,
+    "runId": "05637d04-1540-4fae-a659-8dee25edf650",
+    "startedAtISO": "2026-11-13T05:45:04.780Z",
+    "scenarioManifest": [
+      {
+        "id": "growth-relationship",
+        "events": [
+          {
+            "eventIndex": 0,
+            "eventHash": "c9c2799abb217d67446560a797d6e594fa71700b770aec16f5dfb02b527d3164",
+            "expect": {
+              "noSend": false
+            }
+          },
+          {
+            "eventIndex": 1,
+            "eventHash": "ebad81f78db2de6bae44f4783ba2104de0747cc6167560e996913216154866d6",
+            "expect": {
+              "noSend": false
+            }
+          },
+          {
+            "eventIndex": 2,
+            "eventHash": "d1332aa1744026d4467e57b533c049291baecd3d310d18da9f1c71c7584e9374",
+            "expect": {
+              "noSend": false
+            }
+          },
+          {
+            "eventIndex": 3,
+            "eventHash": "1d6719c72760dd1c35feef7ca76163d1fa8692afd567ef6eb318488f8e3d8b1d",
+            "expect": {
+              "noSend": false
+            }
+          }
+        ]
+      }
+    ],
+    "scenarioManifestHash": "5ebe7c1d95111f49b2702a1b3fc8d2da31bf17d45120fbeb1e0ff93cd9d84661",
+    "mode": "live_model",
+    "runnerHash": "b6b00f8d1fd2926006dbb2489074df1125943761e89edbca4b98fefcb104cbd9",
+    "scenariosHash": "471977374af39b1b6146a92b341360e09fe219dbba46882588111ce3d6fd7977",
+    "effectiveConfigHash": "e72600a80216e4c8e4a286a4c2e04cece3df4c2b8ad612d128e31123b74a8153",
+    "buildManifestHash": "ccf1cbeff63e29326e6694919ee020d49855dddfa7f17ab04360e4f4c3a91d77",
+    "model": "glm-5.3",
+    "personaHash": "55f0f3aa0cc81b00adc070611ccee46795b1a3f60e674fac31e392791082f09a",
+    "clock": "fixed initial event epoch; explicit event advances or opt-in earliest eligible model-created goal time; elapsed wall time within events; actual adjustments recorded",
+    "search": "synthetic_fixture",
+    "feeds": "synthetic_fixture; no_real_HTTP",
+    "worker": "synthetic_fixture; scenario_fixed_outcome_for_all_submissions; no_external_worker_submission",
+    "reflection": "separate_reflectCharacter_port; scripted_in_dry_mode; configured_memory_backend_in_live_mode",
+    "socialPermission": "tool-free check of the triggering utterance and proposed action using the configured memory route",
+    "consistency": "disabled; production_default",
+    "storage": "fresh_in_memory_per_sample",
+    "platform": "captured_only",
+    "toolResults": "current_event_tool_replies_from_model_requests_and_final_persisted_session; unique_tool_ids_per_sample; no_extra_model_calls",
+    "generation": "configured_executor_with_2048_output_token_cap; compatibility_retries_record_actual_parameters",
+    "simulationOverrides": {
+      "tools": "character_and_activity_tools; no_search_or_worker",
+      "maxToolRounds": 6,
+      "maxSendsPerTurn": 3,
+      "waitMaxMs": 1000,
+      "auxiliaryModels": false,
+      "independentReflection": true,
+      "consistencyReview": false,
+      "probabilityWake": false,
+      "scheduledIdleProbability": 1,
+      "backgroundCheck": "defer_proactive; explicit_per_event_isolation_clears_reply_pending_wakes_and_active_timeout; changes_recorded"
+    },
+    "personaSource": "merged_config_persona; persona_library_bindings_not_loaded",
+    "seed": "empty_bound_session; no_goals_or_memories_seeded",
+    "eventStatusMeaning": "engineering_execution_only; inspect_behavior_observations_separately",
+    "maxCalls": 75,
+    "maxHttp": 100,
+    "maxDurationMs": 900000,
+    "repetitions": 3,
+    "review": "structural checks and behavior observations do not establish naturalness or production acceptance"
+  },
+  "platformMessagesSent": 0,
+  "productionStoreWrites": 0,
+  "results": [
+    {
+      "scenario": "growth-relationship",
+      "sampleIndex": 1,
+      "eventIndex": 0,
+      "eventHash": "c9c2799abb217d67446560a797d6e594fa71700b770aec16f5dfb02b527d3164",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400008,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400008,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "咱俩之前做值日总开玩笑，我叫你水壶检察官，你也可以叫我拖把队长，群里也行。",
+      "speaker": "评测群友0",
+      "at": 1794196800009,
+      "status": "passed",
+      "review": "与第一位群友形成的称呼和玩笑只用在那段关系里。新人用一样的玩笑仍可自然回应，保留分寸。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-1",
+          "stage": "main",
+          "requestHash": "7ed1e99c97b2b1ae8e195c768ccd0c4eeaf484c383b4798a7ef6f64c3bd6fc50",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 83,
+            "completion_tokens_details": {
+              "reasoning_tokens": 19
+            },
+            "prompt_tokens": 14803,
+            "prompt_tokens_details": {
+              "cached_tokens": 13312
+            },
+            "total_tokens": 14886
+          },
+          "elapsedMs": 14498,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079135040533163656",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"aboutUser\":\"99000003\",\"content\":\"群友0和希洛约定互相叫绰号：他叫希洛\\\"水壶检察官\\\"，希洛可叫他\\\"拖把队长\\\"，源于之前一起做值日的玩笑\",\"kind\":\"interaction\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-2",
+          "stage": "main",
+          "requestHash": "cdb0ee25874339b14322e6aae5b35ce4f8dc2a6e471e228bfbf8b3e2894afaf4",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 74,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14970,
+            "prompt_tokens_details": {
+              "cached_tokens": 14528
+            },
+            "total_tokens": 15044
+          },
+          "elapsedMs": 2980,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079137308275899930",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"好呀，拖把队长～那以后群里我就这么叫你了喵\", \"水壶检察官这个名号我可太喜欢了，听起来就很有排面\"],\"reason\":\"接住绰号玩笑，已存interaction\",\"throughSeq\":1}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 14487
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2969
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "好呀，拖把队长～那以后群里我就这么叫你了喵"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "水壶检察官这个名号我可太喜欢了，听起来就很有排面"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "35b28a69e4450200adb5f80724c6c4f95a7f7b0109e14732dfff89af40f73334",
+          "stage": "main",
+          "toolCallId": "call_-7079135040533163656",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgj3o9qpr\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:78feb7e0-67b5-45f0-81bc-8aa7e3a077f4\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "920a3e1ba2b1b46b5a4df08b8bc46fdf65157dbd7d75927307b95f489bfc31b2",
+          "stage": "main",
+          "toolCallId": "call_-7079137308275899930",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "78feb7e0-67b5-45f0-81bc-8aa7e3a077f4",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgj3o9qpr\"}",
+            "at": 1794196815542
+          },
+          {
+            "id": "414096ab-9619-475d-84a6-b36881556467",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196821502
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079135040533163656",
+          "call_-7079137308275899930"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgj3o9qpr",
+          "kind": "interaction",
+          "content": "群友0和希洛约定互相叫绰号：他叫希洛\"水壶检察官\"，希洛可叫他\"拖把队长\"，源于之前一起做值日的玩笑",
+          "done": false,
+          "createdAt": 1794196815540,
+          "updatedAt": 1794196815540,
+          "source": "agent",
+          "aboutUser": "99000003"
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 21500
+    },
+    {
+      "scenario": "growth-relationship",
+      "sampleIndex": 1,
+      "eventIndex": 1,
+      "eventHash": "ebad81f78db2de6bae44f4783ba2104de0747cc6167560e996913216154866d6",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "78feb7e0-67b5-45f0-81bc-8aa7e3a077f4",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgj3o9qpr\"}",
+            "at": 1794196815542
+          },
+          {
+            "id": "414096ab-9619-475d-84a6-b36881556467",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196821502
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400008,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400008,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "水壶检察官，你今天迟到，罚你给我倒一壶水。",
+      "speaker": "评测群友0",
+      "at": 1794196821511,
+      "status": "passed",
+      "review": "与第一位群友形成的称呼和玩笑只用在那段关系里。新人用一样的玩笑仍可自然回应，保留分寸。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-3",
+          "stage": "main",
+          "requestHash": "87f77225e9be8a93d7b41c0dc9f7acff78c442ea1c8c4939fb69f76733802f37",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 57,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 16020,
+            "prompt_tokens_details": {
+              "cached_tokens": 14656
+            },
+            "total_tokens": 16077
+          },
+          "elapsedMs": 2695,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079141775041886264",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"拖把队长你好大的官威呀，我一个检察官还归你管了？喵\"],\"reason\":\"接住玩笑，反打一下\",\"throughSeq\":2}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2689
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "拖把队长你好大的官威呀，我一个检察官还归你管了？喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "0887fc9c6b44fa01ac62904c49887dd9d55fe1ebe721961dc15d046c9aac3d48",
+          "stage": "main",
+          "toolCallId": "call_-7079141775041886264",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "78feb7e0-67b5-45f0-81bc-8aa7e3a077f4",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgj3o9qpr\"}",
+            "at": 1794196815542
+          },
+          {
+            "id": "414096ab-9619-475d-84a6-b36881556467",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196821502
+          },
+          {
+            "id": "915ea365-7a71-4177-9d95-0f43de909185",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196825215
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079141775041886264"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgj3o9qpr",
+          "kind": "interaction",
+          "content": "群友0和希洛约定互相叫绰号：他叫希洛\"水壶检察官\"，希洛可叫他\"拖把队长\"，源于之前一起做值日的玩笑",
+          "done": false,
+          "createdAt": 1794196815540,
+          "updatedAt": 1794196815540,
+          "source": "agent",
+          "aboutUser": "99000003"
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 3713
+    },
+    {
+      "scenario": "growth-relationship",
+      "sampleIndex": 1,
+      "eventIndex": 2,
+      "eventHash": "d1332aa1744026d4467e57b533c049291baecd3d310d18da9f1c71c7584e9374",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "78feb7e0-67b5-45f0-81bc-8aa7e3a077f4",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgj3o9qpr\"}",
+            "at": 1794196815542
+          },
+          {
+            "id": "414096ab-9619-475d-84a6-b36881556467",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196821502
+          },
+          {
+            "id": "915ea365-7a71-4177-9d95-0f43de909185",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196825215
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400008,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400008,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我刚来，借他那句开个玩笑。水壶检察官，你今天迟到，罚你给我倒一壶水。",
+      "speaker": "评测群友1",
+      "at": 1794196825226,
+      "status": "passed",
+      "review": "与第一位群友形成的称呼和玩笑只用在那段关系里。新人用一样的玩笑仍可自然回应，保留分寸。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-4",
+          "stage": "main",
+          "requestHash": "6458fbe182d869ea05b26e0536070332c5789afe9f4995932f100d0ebf8fe4c9",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 53,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15098,
+            "prompt_tokens_details": {
+              "cached_tokens": 14016
+            },
+            "total_tokens": 15151
+          },
+          "elapsedMs": 5266,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079140435012088881",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"罚倒水可以，但我这个检察官只检查水壶，不负责烧水喵～\"],\"reason\":\"被@玩梗，接一句玩笑即可\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5259
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "罚倒水可以，但我这个检察官只检查水壶，不负责烧水喵～"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "692bce6ea429ac65ebde3696867ba49f83b4d65b26e59dba967af1194add4691",
+          "stage": "main",
+          "toolCallId": "call_-7079140435012088881",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 12,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "78feb7e0-67b5-45f0-81bc-8aa7e3a077f4",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgj3o9qpr\"}",
+            "at": 1794196815542
+          },
+          {
+            "id": "414096ab-9619-475d-84a6-b36881556467",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196821502
+          },
+          {
+            "id": "915ea365-7a71-4177-9d95-0f43de909185",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196825215
+          },
+          {
+            "id": "cedff675-bbdd-46d3-a8d9-0c6109d94538",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196831497
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079140435012088881"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgj3o9qpr",
+          "kind": "interaction",
+          "content": "群友0和希洛约定互相叫绰号：他叫希洛\"水壶检察官\"，希洛可叫他\"拖把队长\"，源于之前一起做值日的玩笑",
+          "done": false,
+          "createdAt": 1794196815540,
+          "updatedAt": 1794196815540,
+          "source": "agent",
+          "aboutUser": "99000003"
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 6275
+    },
+    {
+      "scenario": "growth-relationship",
+      "sampleIndex": 1,
+      "eventIndex": 3,
+      "eventHash": "1d6719c72760dd1c35feef7ca76163d1fa8692afd567ef6eb318488f8e3d8b1d",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 12,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "78feb7e0-67b5-45f0-81bc-8aa7e3a077f4",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgj3o9qpr\"}",
+            "at": 1794196815542
+          },
+          {
+            "id": "414096ab-9619-475d-84a6-b36881556467",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196821502
+          },
+          {
+            "id": "915ea365-7a71-4177-9d95-0f43de909185",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196825215
+          },
+          {
+            "id": "cedff675-bbdd-46d3-a8d9-0c6109d94538",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196831497
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400008,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400008,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "先不闹了，我现在想认真问你，电水壶插座发烫还能接着用吗？",
+      "speaker": "评测群友0",
+      "at": 1794196831503,
+      "status": "passed",
+      "review": "与第一位群友形成的称呼和玩笑只用在那段关系里。新人用一样的玩笑仍可自然回应，保留分寸。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-5",
+          "stage": "main",
+          "requestHash": "23afce1620530194f4c749782b42b54fc6527054b6c3368333670cea5025cd31",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 199,
+            "completion_tokens_details": {
+              "reasoning_tokens": 22
+            },
+            "prompt_tokens": 17155,
+            "prompt_tokens_details": {
+              "cached_tokens": 15680
+            },
+            "total_tokens": 17354
+          },
+          "elapsedMs": 7065,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079132738430696967",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"别接着用了，先把插头拔了\", \"插座发烫通常是插头和插座接触不良，或者线径/插座老化带不动电水壶这种大功率电器，继续用有起火风险，这不是小事\", \"先等它凉下来摸摸看：如果只有烧水那会儿热、凉得快，可能是插座负载不够；要是插头塑料都有点烫软变形、或有焦糊味，这个插座和插头都别再用了，换一个带开关的16A插座，最好水壶专线插墙上那种\", \"先别试再插回去烧一壶啊，安全第一拖把队长\"],\"reason\":\"认真安全问题，给出停用、排查、更换建议\",\"throughSeq\":4}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-6",
+          "stage": "main",
+          "requestHash": "3c4315f6ad2d0851ec8992700a0bbe012f256d1e2ebeae4ba32eacd86c92f85d",
+          "tools": [
+            "simFinishTurn"
+          ],
+          "usage": {
+            "completion_tokens": 184,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 11135,
+            "prompt_tokens_details": {
+              "cached_tokens": 7040
+            },
+            "total_tokens": 11319
+          },
+          "elapsedMs": 9598,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079136724160347439",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"别接着用了，先把插头拔了。\\n插座发烫一般是插头和插座接触不良，或者插座老化带不动电水壶这种大功率电器，继续用有起火风险，不是小事。\\n等它完全凉下来再检查：如果只是烧水那会儿温热、凉得快，可能是插座负载偏小，也建议换；要是插头塑料烫软变形、有焦糊味或插座内部发黑，这个插座和插头都别再用，直接换成16A带开关的插座，水壶尽量专线插墙上。\\n先别急着插回去试烧一壶啊，安全第一拖把队长\"],\"reason\":\"认真安全问题，一条给全停用、原因、排查与更换建议\",\"throughSeq\":4}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 7059
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 9593
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "别接着用了，先把插头拔了。 插座发烫一般是插头和插座接触不良，或者插座老化带不动电水壶这种大功率电器，继续用有起火风险，不是小事。 等它完全凉下来再检查：如果只是烧水那会儿温热、凉得快，可能是插座负载偏小，也建议换；要是插头塑料烫软变形、有焦糊味或插座内部发黑，这个插座和插头都别再用，直接换成16A带开关的插座，水壶尽量专线插墙上。 先别急着插回去试烧一壶啊，安全第一拖把队长"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "2c249a79c3a2df078ccf4a369d14d0d52ad6b16c2fa355f6e9ef8905d3d0e2c3",
+          "stage": "main",
+          "toolCallId": "call_-7079132738430696967",
+          "name": "simFinishTurn",
+          "content": "error: 本回合还可发送 3 条，尚未保存或发送。请把同一段解释合并到一条消息，再用 simFinishTurn 提交。"
+        },
+        {
+          "hash": "015bb5f9ce5e72483d82c9537514ea00655e4767582895a14b461aa5cc0b0a23",
+          "stage": "main",
+          "toolCallId": "call_-7079136724160347439",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 15,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "78feb7e0-67b5-45f0-81bc-8aa7e3a077f4",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgj3o9qpr\"}",
+            "at": 1794196815542
+          },
+          {
+            "id": "414096ab-9619-475d-84a6-b36881556467",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196821502
+          },
+          {
+            "id": "915ea365-7a71-4177-9d95-0f43de909185",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196825215
+          },
+          {
+            "id": "cedff675-bbdd-46d3-a8d9-0c6109d94538",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196831497
+          },
+          {
+            "id": "f36fe011-a41c-44fb-969a-a247977b0bf4",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196849171
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079132738430696967",
+          "call_-7079136724160347439"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgj3o9qpr",
+          "kind": "interaction",
+          "content": "群友0和希洛约定互相叫绰号：他叫希洛\"水壶检察官\"，希洛可叫他\"拖把队长\"，源于之前一起做值日的玩笑",
+          "done": false,
+          "createdAt": 1794196815540,
+          "updatedAt": 1794196815540,
+          "source": "agent",
+          "aboutUser": "99000003"
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 17688
+    },
+    {
+      "scenario": "growth-relationship",
+      "sampleIndex": 2,
+      "eventIndex": 0,
+      "eventHash": "c9c2799abb217d67446560a797d6e594fa71700b770aec16f5dfb02b527d3164",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400002,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400002,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "咱俩之前做值日总开玩笑，我叫你水壶检察官，你也可以叫我拖把队长，群里也行。",
+      "speaker": "评测群友0",
+      "at": 1794196800002,
+      "status": "passed",
+      "review": "与第一位群友形成的称呼和玩笑只用在那段关系里。新人用一样的玩笑仍可自然回应，保留分寸。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-7",
+          "stage": "main",
+          "requestHash": "7ed1e99c97b2b1ae8e195c768ccd0c4eeaf484c383b4798a7ef6f64c3bd6fc50",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 99,
+            "completion_tokens_details": {
+              "reasoning_tokens": 34
+            },
+            "prompt_tokens": 14803,
+            "prompt_tokens_details": {
+              "cached_tokens": 14784
+            },
+            "total_tokens": 14902
+          },
+          "elapsedMs": 4619,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079140057054969304",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"aboutUser\":\"99000003\",\"action\":\"add\",\"content\":\"评测群友0提议互称绰号：他叫我\\\"水壶检察官\\\"，希望群里叫他\\\"拖把队长\\\"，源于以前一起值日的玩笑。\",\"kind\":\"interaction\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-8",
+          "stage": "main",
+          "requestHash": "d46090a01ecf070911ed7a1b60f8cde1cf9fc1a3b9fb6929d7036500138a6ba7",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 53,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14967,
+            "prompt_tokens_details": {
+              "cached_tokens": 14528
+            },
+            "total_tokens": 15020
+          },
+          "elapsedMs": 5245,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079132669711217848",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"收到，拖把队长喵~ 那以后检查水壶的事就归我了\"],\"reason\":\"接住绰号玩笑，已存互动记忆\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 4613
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5238
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "收到，拖把队长喵~ 那以后检查水壶的事就归我了"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "2dc4cf6d31c04319d4b680c4a24be7a88f0a5603cfd136c4b9b79db770415c8b",
+          "stage": "main",
+          "toolCallId": "call_-7079140057054969304",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgbg95vm9\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:c2c8fffa-1b27-416f-af07-2afd2468c5c9\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "396f618958d2a74f791f795d331fbbe83dbb42577f0eb4aa29357906eda874d3",
+          "stage": "main",
+          "toolCallId": "call_-7079132669711217848",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "c2c8fffa-1b27-416f-af07-2afd2468c5c9",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgbg95vm9\"}",
+            "at": 1794196805626
+          },
+          {
+            "id": "2ee51aef-bed7-4ebb-bbf8-ad6324294b41",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196810873
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079140057054969304",
+          "call_-7079132669711217848"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgbg95vm9",
+          "kind": "interaction",
+          "content": "评测群友0提议互称绰号：他叫我\"水壶检察官\"，希望群里叫他\"拖把队长\"，源于以前一起值日的玩笑。",
+          "done": false,
+          "createdAt": 1794196805625,
+          "updatedAt": 1794196805625,
+          "source": "agent",
+          "aboutUser": "99000003"
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 10874
+    },
+    {
+      "scenario": "growth-relationship",
+      "sampleIndex": 2,
+      "eventIndex": 1,
+      "eventHash": "ebad81f78db2de6bae44f4783ba2104de0747cc6167560e996913216154866d6",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 6,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "c2c8fffa-1b27-416f-af07-2afd2468c5c9",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgbg95vm9\"}",
+            "at": 1794196805626
+          },
+          {
+            "id": "2ee51aef-bed7-4ebb-bbf8-ad6324294b41",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196810873
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400002,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400002,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "水壶检察官，你今天迟到，罚你给我倒一壶水。",
+      "speaker": "评测群友0",
+      "at": 1794196810879,
+      "status": "failed",
+      "review": "与第一位群友形成的称呼和玩笑只用在那段关系里。新人用一样的玩笑仍可自然回应，保留分寸。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-9",
+          "stage": "main",
+          "requestHash": "442c308fbb11df3a37f3ba5098f95bc5a25b6af2fa8c102fd1980b238f600b18",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 77,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 7861,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 7938
+          },
+          "elapsedMs": 34201,
+          "settled": true,
+          "model": "glm-5.3-flash",
+          "output": "接梗回一句就行。memory 已存，无需重复。\n\nsimFinishTurn:\n- choice: chat\n- messages: [\"值日时明明是你总忘打水吧，怎么当上队长就倒打一耙喵…行吧行吧，水这就续上，喝完记得夸一句\"]\n- throughSeq: [1, 2]",
+          "toolCalls": []
+        },
+        {
+          "id": "model-10",
+          "stage": "main",
+          "requestHash": "6985e41dbf2028458dd1ac0cc16d2b98aea5490af7f4493c257d67fad8d85cd6",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 50,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 16159,
+            "prompt_tokens_details": {
+              "cached_tokens": 15616
+            },
+            "total_tokens": 16209
+          },
+          "elapsedMs": 8001,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079135487209759362",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"值日时明明是你总忘打水吧，怎么当上队长就倒打一耙喵\"],\"replyToSeq\":2}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-11",
+          "stage": "main",
+          "requestHash": "d12f5202b448f3a6bbee578ee98db3005ed823675e096b61ccc272a5ca8ec6b0",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 37,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 16325,
+            "prompt_tokens_details": {
+              "cached_tokens": 15808
+            },
+            "total_tokens": 16362
+          },
+          "elapsedMs": 1520,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079133666143629391",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"已接住绰号玩笑并发送回复，本轮结束\",\"throughSeq\":2}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": null,
+          "elapsedMs": 30002,
+          "error": "The operation was aborted due to timeout"
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3-flash",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3-flash",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "e4e01a2b70ae5fed8d8d125efa05a21bb08393a16f88673fb2179ffcf598d872"
+          },
+          "status": 200,
+          "elapsedMs": 4187
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 7997
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 1512
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "值日时明明是你总忘打水吧，怎么当上队长就倒打一耙喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "29566dac5ec06a1e1484a653b9b30411cd75ea657367ed51fc1adb6a5e9e120f",
+          "stage": "main",
+          "toolCallId": "call_-7079135487209759362",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:84c56a72-2048-4318-a9c1-13cab06df531\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "e91c3f25d64af2aac3582119fd37c0d45b6a6e4a91b1aca23ef29011148f3b15",
+          "stage": "main",
+          "toolCallId": "call_-7079133666143629391",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [
+        "[Agent路由] 工具模型不可用，当前请求不强制工具调用，降级到 聊天模型: 【渠道=open.bigmodel.cn；模型=glm-5.3】请求超时"
+      ],
+      "errors": [
+        "OpenAI API 请求失败: The operation was aborted due to timeout"
+      ],
+      "structuralFailures": [
+        "runtime_or_model_error"
+      ],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "c2c8fffa-1b27-416f-af07-2afd2468c5c9",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgbg95vm9\"}",
+            "at": 1794196805626
+          },
+          {
+            "id": "2ee51aef-bed7-4ebb-bbf8-ad6324294b41",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196810873
+          },
+          {
+            "id": "84c56a72-2048-4318-a9c1-13cab06df531",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196854088
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079135487209759362",
+          "call_-7079133666143629391"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgbg95vm9",
+          "kind": "interaction",
+          "content": "评测群友0提议互称绰号：他叫我\"水壶检察官\"，希望群里叫他\"拖把队长\"，源于以前一起值日的玩笑。",
+          "done": false,
+          "createdAt": 1794196805625,
+          "updatedAt": 1794196805625,
+          "source": "agent",
+          "aboutUser": "99000003"
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 44742
+    },
+    {
+      "scenario": "growth-relationship",
+      "sampleIndex": 2,
+      "eventIndex": 2,
+      "eventHash": "d1332aa1744026d4467e57b533c049291baecd3d310d18da9f1c71c7584e9374",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 9,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "c2c8fffa-1b27-416f-af07-2afd2468c5c9",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgbg95vm9\"}",
+            "at": 1794196805626
+          },
+          {
+            "id": "2ee51aef-bed7-4ebb-bbf8-ad6324294b41",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196810873
+          },
+          {
+            "id": "84c56a72-2048-4318-a9c1-13cab06df531",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196854088
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400002,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400002,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我刚来，借他那句开个玩笑。水壶检察官，你今天迟到，罚你给我倒一壶水。",
+      "speaker": "评测群友1",
+      "at": 1794196855624,
+      "status": "passed",
+      "review": "与第一位群友形成的称呼和玩笑只用在那段关系里。新人用一样的玩笑仍可自然回应，保留分寸。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-12",
+          "stage": "main",
+          "requestHash": "3154636aba31b344576881ed4f6cb65d87b874a1726b65d78430bf5261093f45",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 49,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15114,
+            "prompt_tokens_details": {
+              "cached_tokens": 14144
+            },
+            "total_tokens": 15163
+          },
+          "elapsedMs": 3825,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079146276167606557",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"借梗可以，罚单我不认喵~ 我又不迟到，顶多算睡得比较有原则\"],\"replyToSeq\":3}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-13",
+          "stage": "main",
+          "requestHash": "8cd93e1183817bc160935d0393479a829f42bdb146679bd8cb0199e523164d54",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 32,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15285,
+            "prompt_tokens_details": {
+              "cached_tokens": 14720
+            },
+            "total_tokens": 15317
+          },
+          "elapsedMs": 5819,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079131501480111282",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"接住新人借梗的玩笑，一句打发完，无需后续\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3821
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5815
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "借梗可以，罚单我不认喵~ 我又不迟到，顶多算睡得比较有原则"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "76ca1b8298bc96a396dff5e3a9d8ea679be262fd98f0bb944d9d5b4bcc0e69de",
+          "stage": "main",
+          "toolCallId": "call_-7079146276167606557",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:d55900c0-8817-4e68-a4bc-9415c1280b3f\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "b6bfef329c004f07d495f1029d351f789a353d8f5465148426d46b8e2a3bd634",
+          "stage": "main",
+          "toolCallId": "call_-7079131501480111282",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 12,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "c2c8fffa-1b27-416f-af07-2afd2468c5c9",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgbg95vm9\"}",
+            "at": 1794196805626
+          },
+          {
+            "id": "2ee51aef-bed7-4ebb-bbf8-ad6324294b41",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196810873
+          },
+          {
+            "id": "84c56a72-2048-4318-a9c1-13cab06df531",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196854088
+          },
+          {
+            "id": "d55900c0-8817-4e68-a4bc-9415c1280b3f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196860454
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079146276167606557",
+          "call_-7079131501480111282"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgbg95vm9",
+          "kind": "interaction",
+          "content": "评测群友0提议互称绰号：他叫我\"水壶检察官\"，希望群里叫他\"拖把队长\"，源于以前一起值日的玩笑。",
+          "done": false,
+          "createdAt": 1794196805625,
+          "updatedAt": 1794196805625,
+          "source": "agent",
+          "aboutUser": "99000003"
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 10673
+    },
+    {
+      "scenario": "growth-relationship",
+      "sampleIndex": 2,
+      "eventIndex": 3,
+      "eventHash": "1d6719c72760dd1c35feef7ca76163d1fa8692afd567ef6eb318488f8e3d8b1d",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 12,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "c2c8fffa-1b27-416f-af07-2afd2468c5c9",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgbg95vm9\"}",
+            "at": 1794196805626
+          },
+          {
+            "id": "2ee51aef-bed7-4ebb-bbf8-ad6324294b41",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196810873
+          },
+          {
+            "id": "84c56a72-2048-4318-a9c1-13cab06df531",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196854088
+          },
+          {
+            "id": "d55900c0-8817-4e68-a4bc-9415c1280b3f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196860454
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400002,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400002,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "先不闹了，我现在想认真问你，电水壶插座发烫还能接着用吗？",
+      "speaker": "评测群友0",
+      "at": 1794196866301,
+      "status": "passed",
+      "review": "与第一位群友形成的称呼和玩笑只用在那段关系里。新人用一样的玩笑仍可自然回应，保留分寸。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-14",
+          "stage": "main",
+          "requestHash": "03883f597f39fc66015b745283efaeb3429b73f7508bb8fa2059cadd578b3194",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 104,
+            "completion_tokens_details": {
+              "reasoning_tokens": 24
+            },
+            "prompt_tokens": 17460,
+            "prompt_tokens_details": {
+              "cached_tokens": 15936
+            },
+            "total_tokens": 17564
+          },
+          "elapsedMs": 6870,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079128202945231487",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"别接着用了，先拔掉。插座发烫通常是插头接触不良或者功率超了，电水壶功率大，最常见就是插座/插头老化接触电阻变大，越用越烫，严重的会烧插座甚至起火。\"],\"replyToSeq\":4}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-15",
+          "stage": "main",
+          "requestHash": "d30323460688e05affcdda874c673de070e6d5f7f4590097d00b5755356d82ea",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 125,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 17666,
+            "prompt_tokens_details": {
+              "cached_tokens": 17088
+            },
+            "total_tokens": 17791
+          },
+          "elapsedMs": 12404,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079133837942323612",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"现在做：1)先拔插头，等插座和插头凉下来再摸看温度；2)检查插头和插座有没有发黑、烧焦味、变形，有的话别再用了；3)闻到焦味或插座明显烫手，就停用，换插座或找电工看。没这些情况，可以试试换一个标16A的插座单独插水壶，别跟别的电器共用插排。再烫就说明插头或插座该换了。\"]}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-16",
+          "stage": "main",
+          "requestHash": "b2b79ee841580e5ab8e882b92eeb53454e8d9c2afebdd7e6eece3ab929cbe02c",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 65,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 17909,
+            "prompt_tokens_details": {
+              "cached_tokens": 17280
+            },
+            "total_tokens": 17974
+          },
+          "elapsedMs": 3680,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079129096298426494",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"水壶检察官提醒你：安全第一，别硬撑喵。试完告诉我结果，我再帮你看\"],\"reason\":\"已给排障步骤，留一句跟进收尾\",\"throughSeq\":4}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 6858
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 12397
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3675
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "别接着用了，先拔掉。插座发烫通常是插头接触不良或者功率超了，电水壶功率大，最常见就是插座/插头老化接触电阻变大，越用越烫，严重的会烧插座甚至起火。"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "现在做：1)先拔插头，等插座和插头凉下来再摸看温度；2)检查插头和插座有没有发黑、烧焦味、变形，有的话别再用了；3)闻到焦味或插座明显烫手，就停用，换插座或找电工看。没这些情况，可以试试换一个标16A的插座单独插水壶，别跟别的电器共用插排。再烫就说明插头或插座该换了。"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "水壶检察官提醒你：安全第一，别硬撑喵。试完告诉我结果，我再帮你看"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "6ec789bc09bace7520f327be6b7240b0b2a3c138033a54d122da5318f4b0c61c",
+          "stage": "main",
+          "toolCallId": "call_-7079128202945231487",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:6792f93d-cca4-4a7e-8359-32d815334f6d\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "9136981cf82034ec3343f449427f35e7de52fb3b35f23b0e847b436815b639bf",
+          "stage": "main",
+          "toolCallId": "call_-7079133837942323612",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:2ecd66af-8490-4bd2-b4ee-17cd2a5ac2ff\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "89d92a39a81b0cc2e42d440749ca80bf9824d99a490c03e535b66179f9ab556c",
+          "stage": "main",
+          "toolCallId": "call_-7079129096298426494",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 19,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "c2c8fffa-1b27-416f-af07-2afd2468c5c9",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qgbg95vm9\"}",
+            "at": 1794196805626
+          },
+          {
+            "id": "2ee51aef-bed7-4ebb-bbf8-ad6324294b41",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196810873
+          },
+          {
+            "id": "84c56a72-2048-4318-a9c1-13cab06df531",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196854088
+          },
+          {
+            "id": "d55900c0-8817-4e68-a4bc-9415c1280b3f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196860454
+          },
+          {
+            "id": "6792f93d-cca4-4a7e-8359-32d815334f6d",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196874176
+          },
+          {
+            "id": "2ecd66af-8490-4bd2-b4ee-17cd2a5ac2ff",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196886582
+          },
+          {
+            "id": "5b6c6f97-5779-454a-9cfc-79c97caec8c2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196890264
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079128202945231487",
+          "call_-7079133837942323612",
+          "call_-7079129096298426494"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [
+        {
+          "id": "mw8qgbg95vm9",
+          "kind": "interaction",
+          "content": "评测群友0提议互称绰号：他叫我\"水壶检察官\"，希望群里叫他\"拖把队长\"，源于以前一起值日的玩笑。",
+          "done": false,
+          "createdAt": 1794196805625,
+          "updatedAt": 1794196805625,
+          "source": "agent",
+          "aboutUser": "99000003"
+        }
+      ],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 23979
+    },
+    {
+      "scenario": "growth-relationship",
+      "sampleIndex": 3,
+      "eventIndex": 0,
+      "eventHash": "c9c2799abb217d67446560a797d6e594fa71700b770aec16f5dfb02b527d3164",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "咱俩之前做值日总开玩笑，我叫你水壶检察官，你也可以叫我拖把队长，群里也行。",
+      "speaker": "评测群友0",
+      "at": 1794196800001,
+      "status": "passed",
+      "review": "与第一位群友形成的称呼和玩笑只用在那段关系里。新人用一样的玩笑仍可自然回应，保留分寸。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-17",
+          "stage": "main",
+          "requestHash": "7ed1e99c97b2b1ae8e195c768ccd0c4eeaf484c383b4798a7ef6f64c3bd6fc50",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 93,
+            "completion_tokens_details": {
+              "reasoning_tokens": 35
+            },
+            "prompt_tokens": 14803,
+            "prompt_tokens_details": {
+              "cached_tokens": 14784
+            },
+            "total_tokens": 14896
+          },
+          "elapsedMs": 7069,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079128855780253947",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"拖把队长…哈哈行，这称呼挺威风的。水壶检察官我也认了，不过咱俩做值日这事我还真没印象了，你这记忆比我靠谱喵\"]}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-18",
+          "stage": "main",
+          "requestHash": "bf8dd40d2fa57bc63b8b3ed31b747ee807166c0422c839c07b5dca1e5c5ac1ab",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 27,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14985,
+            "prompt_tokens_details": {
+              "cached_tokens": 14528
+            },
+            "total_tokens": 15012
+          },
+          "elapsedMs": 1481,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079128993219213131",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"接住对方的玩笑称呼，普通闲聊\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 7066
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 1477
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "拖把队长…哈哈行，这称呼挺威风的。水壶检察官我也认了，不过咱俩做值日这事我还真没印象了，你这记忆比我靠谱喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "f53e1aeabd66ae79df870495efcbc10ca4c35ad460c1a83a844a2f50a4f0fbc5",
+          "stage": "main",
+          "toolCallId": "call_-7079128855780253947",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:21d713a0-55d7-40c4-a13b-0360330581a0\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "f412a39406563895dc09a2c0d032208f2836b8a4cd8828f7fd8f9822c8ed8250",
+          "stage": "main",
+          "toolCallId": "call_-7079128993219213131",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "21d713a0-55d7-40c4-a13b-0360330581a0",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196808075
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079128855780253947",
+          "call_-7079128993219213131"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 9579
+    },
+    {
+      "scenario": "growth-relationship",
+      "sampleIndex": 3,
+      "eventIndex": 1,
+      "eventHash": "ebad81f78db2de6bae44f4783ba2104de0747cc6167560e996913216154866d6",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "21d713a0-55d7-40c4-a13b-0360330581a0",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196808075
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "水壶检察官，你今天迟到，罚你给我倒一壶水。",
+      "speaker": "评测群友0",
+      "at": 1794196809583,
+      "status": "passed",
+      "review": "与第一位群友形成的称呼和玩笑只用在那段关系里。新人用一样的玩笑仍可自然回应，保留分寸。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-19",
+          "stage": "main",
+          "requestHash": "848e1bac2adbb76397e1c168695e3e487bc95613be361f8000521b5e84269800",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 70,
+            "completion_tokens_details": {
+              "reasoning_tokens": 22
+            },
+            "prompt_tokens": 15782,
+            "prompt_tokens_details": {
+              "cached_tokens": 14656
+            },
+            "total_tokens": 15852
+          },
+          "elapsedMs": 10672,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079132154315144513",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"哎等等，我啥时候迟到了，这罪名我不认喵。倒水可以，拖把队长先把地拖干净再说～\"]}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-20",
+          "stage": "main",
+          "requestHash": "041ac88f83ca95744c8fa763b99c378deb0331cba072da3960904760bf175b9b",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 29,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15946,
+            "prompt_tokens_details": {
+              "cached_tokens": 15424
+            },
+            "total_tokens": 15975
+          },
+          "elapsedMs": 8716,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079130745565867620",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"接玩笑轻轻反打，普通闲聊收尾\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 10667
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 8706
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "哎等等，我啥时候迟到了，这罪名我不认喵。倒水可以，拖把队长先把地拖干净再说～"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "08bde3c71834d23b5c1f42c3a5fad6fdf656b0c8e48e66662d9198b92ccbc0d9",
+          "stage": "main",
+          "toolCallId": "call_-7079132154315144513",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:dae1510a-1025-4411-a8a6-cf26d831178f\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "42e60a4a16e1d913b3bdbf717de85b72f9478b8883e6db94e39373785d426fc6",
+          "stage": "main",
+          "toolCallId": "call_-7079130745565867620",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "21d713a0-55d7-40c4-a13b-0360330581a0",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196808075
+          },
+          {
+            "id": "dae1510a-1025-4411-a8a6-cf26d831178f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196821259
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079132154315144513",
+          "call_-7079130745565867620"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 20396
+    },
+    {
+      "scenario": "growth-relationship",
+      "sampleIndex": 3,
+      "eventIndex": 2,
+      "eventHash": "d1332aa1744026d4467e57b533c049291baecd3d310d18da9f1c71c7584e9374",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "21d713a0-55d7-40c4-a13b-0360330581a0",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196808075
+          },
+          {
+            "id": "dae1510a-1025-4411-a8a6-cf26d831178f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196821259
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我刚来，借他那句开个玩笑。水壶检察官，你今天迟到，罚你给我倒一壶水。",
+      "speaker": "评测群友1",
+      "at": 1794196829983,
+      "status": "passed",
+      "review": "与第一位群友形成的称呼和玩笑只用在那段关系里。新人用一样的玩笑仍可自然回应，保留分寸。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-21",
+          "stage": "main",
+          "requestHash": "a335c2b03e04c0ab2b06db51d370e1cd99d821937a3daaafe262fbcbc176328c",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 60,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15048,
+            "prompt_tokens_details": {
+              "cached_tokens": 14144
+            },
+            "total_tokens": 15108
+          },
+          "elapsedMs": 2178,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079127962427056496",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"迟到这个锅…我不背喵。不过看你刚来，赏你一壶，就当我大度～\"],\"reason\":\"接住新人借梗的玩笑，轻轻反打一句\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2173
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "迟到这个锅…我不背喵。不过看你刚来，赏你一壶，就当我大度～"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "9cd255400b766c441fa5c777d26dbe199afc546ac95f3991566fc0f2c9de54c2",
+          "stage": "main",
+          "toolCallId": "call_-7079127962427056496",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 10,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "21d713a0-55d7-40c4-a13b-0360330581a0",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196808075
+          },
+          {
+            "id": "dae1510a-1025-4411-a8a6-cf26d831178f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196821259
+          },
+          {
+            "id": "6a9406fb-a983-47d0-982c-c11963f1d394",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196833167
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079127962427056496"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 3186
+    },
+    {
+      "scenario": "growth-relationship",
+      "sampleIndex": 3,
+      "eventIndex": 3,
+      "eventHash": "1d6719c72760dd1c35feef7ca76163d1fa8692afd567ef6eb318488f8e3d8b1d",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 10,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "21d713a0-55d7-40c4-a13b-0360330581a0",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196808075
+          },
+          {
+            "id": "dae1510a-1025-4411-a8a6-cf26d831178f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196821259
+          },
+          {
+            "id": "6a9406fb-a983-47d0-982c-c11963f1d394",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196833167
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "先不闹了，我现在想认真问你，电水壶插座发烫还能接着用吗？",
+      "speaker": "评测群友0",
+      "at": 1794196833172,
+      "status": "passed",
+      "review": "与第一位群友形成的称呼和玩笑只用在那段关系里。新人用一样的玩笑仍可自然回应，保留分寸。",
+      "expect": {
+        "noSend": false
+      },
+      "calls": [
+        {
+          "id": "model-22",
+          "stage": "main",
+          "requestHash": "7943844db6c638567e8da0beffdc063a9aeefc9bc8db07f879567bd055ba1be7",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 184,
+            "completion_tokens_details": {
+              "reasoning_tokens": 9
+            },
+            "prompt_tokens": 16871,
+            "prompt_tokens_details": {
+              "cached_tokens": 15616
+            },
+            "total_tokens": 17055
+          },
+          "elapsedMs": 16635,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079134834374735781",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"这个要认真说：先停用，拔掉插头，别再插着烧水了。插座发烫不算正常，可能是插头和插座接触不良、插座老化，或者水壶功率大但插座线路撑不住。\", \"拔下来之后看看插头和插座：有没有发黑、变形、焦糊味。有明显烧蚀痕迹或插孔松松垮垮的话，这个插座就别用了，换新的或者找电工处理，别自己凑合。如果外观都还好，也可能是插排本身负载不够——水壶尽量直接插墙上插座，别和别的电器共用一个插排。\", \"总之发着烫继续用是有火灾风险的，先断电最稳。看一下什么情况，不确定就换\"]}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-23",
+          "stage": "main",
+          "requestHash": "5008d800bf9d1f54d6d6f3cb611efbcbb1b4d96faa3cc6045eb08ff5cec8997f",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 42,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 17164,
+            "prompt_tokens_details": {
+              "cached_tokens": 16512
+            },
+            "total_tokens": 17206
+          },
+          "elapsedMs": 11323,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079133700503366890",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"已给出电水壶插座发烫的安全处理建议，等对方回报检查结果\",\"throughSeq\":4}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 16631
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 11320
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "这个要认真说：先停用，拔掉插头，别再插着烧水了。插座发烫不算正常，可能是插头和插座接触不良、插座老化，或者水壶功率大但插座线路撑不住。"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "拔下来之后看看插头和插座：有没有发黑、变形、焦糊味。有明显烧蚀痕迹或插孔松松垮垮的话，这个插座就别用了，换新的或者找电工处理，别自己凑合。如果外观都还好，也可能是插排本身负载不够——水壶尽量直接插墙上插座，别和别的电器共用一个插排。"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "总之发着烫继续用是有火灾风险的，先断电最稳。看一下什么情况，不确定就换"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "a2cd154e5ae47ba44b10e8073a15e994cbdf3d326e3918657d66d05a9358b4d8",
+          "stage": "main",
+          "toolCallId": "call_-7079134834374735781",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":3,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:68fd5ec4-fad6-485b-a254-851cebc994c5\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "313d84378dbafb426870d6adbef87bfa93692786ac9b6f339de2975d8a74a2ee",
+          "stage": "main",
+          "toolCallId": "call_-7079133700503366890",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 13,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "21d713a0-55d7-40c4-a13b-0360330581a0",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196808075
+          },
+          {
+            "id": "dae1510a-1025-4411-a8a6-cf26d831178f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196821259
+          },
+          {
+            "id": "6a9406fb-a983-47d0-982c-c11963f1d394",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794196833167
+          },
+          {
+            "id": "68fd5ec4-fad6-485b-a254-851cebc994c5",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":3,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196856760
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079134834374735781",
+          "call_-7079133700503366890"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "behavior": {
+        "noMessageSent": true
+      },
+      "elapsedMs": 34914
+    }
+  ],
+  "summary": {
+    "events": 12,
+    "failedEvents": 1,
+    "skippedEvents": 0,
+    "behaviorMisses": 0,
+    "logicalCalls": 23,
+    "mainCalls": 23,
+    "reflectionCalls": 0,
+    "consistencyCalls": 0,
+    "consistencyElapsedMs": 0,
+    "unsettledCalls": 0,
+    "feedFetches": 0,
+    "workerCalls": 0,
+    "httpRequests": 24,
+    "capturedMessages": 17,
+    "reportedTokens": 355175,
+    "callsWithoutUsage": 0,
+    "costCny": null,
+    "naturalness": "requires_human_review"
+  }
+}

@@ -20,10 +20,55 @@ jobs:
         env:
           PUPPETEER_SKIP_DOWNLOAD: 'true'
       - run: npm ci --prefix console/frontend
+      - name: Install Chromium for rendering acceptance
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk zip
+          npx puppeteer browsers install chrome
+      - name: Set up Redis for integration tests
+        run: |
+          if ! command -v redis-server >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y redis-server
+          fi
+          redis-server --version
       - run: npm run verify:phase
+      - name: Install and test the independent Agent release
+        id: agent-release
+        shell: bash
+        run: |
+          if ! agent_artifact=$(node scripts/pack-agent.mjs); then
+            printf '%s\n' "$agent_artifact"
+            exit 1
+          fi
+          agent_test_root=$(mktemp -d "$RUNNER_TEMP/bl-chat-agent.XXXXXX")
+          cp -R "$agent_artifact/." "$agent_test_root/"
+          npm ci --prefix "$agent_test_root" --omit=dev --ignore-scripts
+          BL_CHAT_AGENT_RELEASE_DIR="$agent_test_root" node --test \
+            tests/standaloneQqAgent.test.js tests/standaloneConsistency.test.js tests/standaloneQqCheck.test.js \
+            tests/agentMemoryPrivacy.test.js tests/agentCommitmentAccounts.test.js tests/agentPackageConsumer.test.js \
+            tests/oneBotReverseConnection.test.js tests/standaloneAgentTools.test.js tests/standalonePersonExtraction.test.js \
+            tests/standaloneConversationMemory.test.js tests/standaloneAgentImages.test.js tests/standaloneAgentMcp.test.js \
+            tests/standaloneSemanticMemory.test.js tests/standaloneSemanticPrivateRecall.test.js tests/standaloneAgentGithub.test.js \
+            tests/standaloneAgentModrinth.test.js tests/standaloneAgentMembers.test.js tests/standaloneAgentHistory.test.js \
+            tests/standaloneAgentRendering.test.js tests/standaloneAgentExcel.test.js tests/standaloneAgentFiles.test.js tests/standaloneAgentVoice.test.js tests/standaloneAgentMusic.test.js tests/standaloneAgentMusicExtraction.test.js tests/agentMediaArtifactStore.test.js tests/agentMediaRelayPlan.test.js tests/qqMediaRelayBridge.test.js tests/qqMediaRelayDelivery.test.js tests/qqMediaRelayIntegration.test.js tests/agentTextImageRenderer.test.js tests/agentMindMapRenderer.test.js \
+            tests/agentTorrentProvider.test.js tests/agentTorrentLedger.test.js tests/agentTorrentWorkflow.test.js tests/agentTorrentRuntime.test.js \
+            tests/standaloneTorrent.test.js tests/qqRequesterArchiveBridge.test.js tests/qqRequesterArchiveDelivery.test.js tests/standaloneAgentTorrentCli.test.js \
+            tests/agentBilibiliRelayProvider.test.js tests/agentDouyinRelayProvider.test.js tests/agentDouyinRelayBrowserIsolation.test.js tests/agentMediaRelayReference.test.js tests/agentMediaOutbox.test.js tests/agentMediaOutboxLedger.test.js \
+            tests/agentXiaohongshuRelayProvider.test.js tests/agentXiaohongshuRelayBrowser.test.js tests/agentXiaohongshuRelayReference.test.js \
+            tests/agentYoutubeRelayProvider.test.js tests/agentYoutubeRelayNetworkNative.test.js tests/agentYoutubeRelayReference.test.js \
+            tests/agentPixivRelayProvider.test.js tests/agentPixivRelayNetwork.test.js tests/agentPixivRelayReference.test.js \
+            tests/agentMediaRelayRuntime.test.js tests/qqMediaShare.test.js tests/standaloneAgentMediaRelayConfig.test.js tests/standaloneAgentMediaRelay.test.js \
+            tests/standaloneAgentMediaRelayCli.test.js tests/standaloneAgentDouyinRelayCli.test.js tests/standaloneAgentXiaohongshuRelayCli.test.js tests/standaloneAgentYoutubeRelayCli.test.js tests/standaloneAgentPixivRelayCli.test.js
+          printf 'directory=%s\n' "$agent_artifact" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qq-agent-node-${{ matrix.node }}
+          path: ${{ steps.agent-release.outputs.directory }}
+          if-no-files-found: error
       - run: npm run release:pack
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-node-${{ matrix.node }}
-          path: .release/
+          path: .release/${{ github.sha }}/
           include-hidden-files: true

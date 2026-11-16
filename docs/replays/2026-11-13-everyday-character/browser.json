@@ -1,0 +1,7713 @@
+{
+  "builtAt": "2026-11-13T06:58:25.817Z",
+  "checks": [
+    {
+      "label": "1440-dark-_",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_bot_100001",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_groups",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1496
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "TH",
+          "class": "n-data-table-th n-data-table-th--last",
+          "width": 160,
+          "right": 1496
+        },
+        {
+          "tag": "DIV",
+          "class": "n-data-table-th__title-wrapper",
+          "width": 136,
+          "right": 1484
+        },
+        {
+          "tag": "DIV",
+          "class": "n-data-table-th__title",
+          "width": 136,
+          "right": 1484
+        },
+        {
+          "tag": "TBODY",
+          "class": "n-data-table-tbody",
+          "width": 1215,
+          "right": 1496
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_groups-group-names",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1496
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "TH",
+          "class": "n-data-table-th n-data-table-th--last",
+          "width": 160,
+          "right": 1496
+        },
+        {
+          "tag": "DIV",
+          "class": "n-data-table-th__title-wrapper",
+          "width": 136,
+          "right": 1484
+        },
+        {
+          "tag": "DIV",
+          "class": "n-data-table-th__title",
+          "width": 136,
+          "right": 1484
+        },
+        {
+          "tag": "TBODY",
+          "class": "n-data-table-tbody",
+          "width": 1215,
+          "right": 1496
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_group-admin",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_group-admin?group=100001",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_group-admin?group=100001-广告与刷屏",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_group-admin?group=100001-欢迎与退群",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_group-admin?group=100001-入群验证",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_group-admin?scope=defaults",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_group-admin?scope=defaults-广告与刷屏",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_group-admin?scope=defaults-欢迎与退群",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_group-admin?scope=defaults-入群验证",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_persona",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_persona-账号与会话绑定",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_persona-默认人设与画像",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_persona-人设库",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_ai",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation-访问权限",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation-上下文与路由",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation-任务模型",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation-回复方式",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation-触发与私聊",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation-追踪-严格模式",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation-追踪-参与频率",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation-追踪-回复与续话",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation-追踪-焦点与唤醒",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation-追踪-防刷屏",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation-追踪-画像与复读",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_conversation-追踪高级",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_simulation",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_simulation-角色档案",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_simulation-角色活动详情",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_life",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_pipeline",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_pipeline-平台授权",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_pipeline-健康报告",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_pipeline-可靠管道",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_pipeline-任务记录",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_pipeline-任务详情",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_risk",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_draw",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_observe",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_observe_details",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_commands",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_commands-骰子基础-开关与检定",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_commands-骰子基础-掷骰上限",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_commands-骰子基础-日期与团录",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_commands-骰子目录",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_commands-骰子回复",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_commands-牌堆与规则",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_commands-表情包",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_commands-命令总表",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_semantic",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_semantic-分块管理",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_semantic-评估历史",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_semantic-运行信息",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_semantic-检索测试",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_semantic-记忆策略-保存与提取",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_semantic-记忆策略-召回与注入",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_semantic-记忆策略-巩固与回扣",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_semantic-记忆策略-演化与纠错",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_semantic-记忆策略-中期摘要",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_semantic-记忆裁决",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_bot_100001",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_groups",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1496
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "TH",
+          "class": "n-data-table-th n-data-table-th--last",
+          "width": 160,
+          "right": 1496
+        },
+        {
+          "tag": "DIV",
+          "class": "n-data-table-th__title-wrapper",
+          "width": 136,
+          "right": 1484
+        },
+        {
+          "tag": "DIV",
+          "class": "n-data-table-th__title",
+          "width": 136,
+          "right": 1484
+        },
+        {
+          "tag": "TBODY",
+          "class": "n-data-table-tbody",
+          "width": 1215,
+          "right": 1496
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_groups-group-names",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1496
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 1215,
+          "right": 1496
+        },
+        {
+          "tag": "TH",
+          "class": "n-data-table-th n-data-table-th--last",
+          "width": 160,
+          "right": 1496
+        },
+        {
+          "tag": "DIV",
+          "class": "n-data-table-th__title-wrapper",
+          "width": 136,
+          "right": 1484
+        },
+        {
+          "tag": "DIV",
+          "class": "n-data-table-th__title",
+          "width": 136,
+          "right": 1484
+        },
+        {
+          "tag": "TBODY",
+          "class": "n-data-table-tbody",
+          "width": 1215,
+          "right": 1496
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_group-admin",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_group-admin?group=100001",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_group-admin?group=100001-广告与刷屏",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_group-admin?group=100001-欢迎与退群",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_group-admin?group=100001-入群验证",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_group-admin?scope=defaults",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_group-admin?scope=defaults-广告与刷屏",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_group-admin?scope=defaults-欢迎与退群",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_group-admin?scope=defaults-入群验证",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_persona",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_persona-账号与会话绑定",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_persona-默认人设与画像",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_persona-人设库",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_ai",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation-访问权限",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation-上下文与路由",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation-任务模型",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation-回复方式",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation-触发与私聊",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation-追踪-严格模式",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation-追踪-参与频率",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation-追踪-回复与续话",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation-追踪-焦点与唤醒",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation-追踪-防刷屏",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation-追踪-画像与复读",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_conversation-追踪高级",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_simulation",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_simulation-角色档案",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_simulation-角色活动详情",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_life",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_pipeline",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_pipeline-平台授权",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_pipeline-健康报告",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_pipeline-可靠管道",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_pipeline-任务记录",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_pipeline-任务详情",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_risk",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_draw",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_observe",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_observe_details",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_commands",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_commands-骰子基础-开关与检定",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_commands-骰子基础-掷骰上限",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_commands-骰子基础-日期与团录",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_commands-骰子目录",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_commands-骰子回复",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_commands-牌堆与规则",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_commands-表情包",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_commands-命令总表",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_semantic",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_semantic-分块管理",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_semantic-评估历史",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_semantic-运行信息",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_semantic-检索测试",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_semantic-记忆策略-保存与提取",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_semantic-记忆策略-召回与注入",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_semantic-记忆策略-巩固与回扣",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_semantic-记忆策略-演化与纠错",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_semantic-记忆策略-中期摘要",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "1440-light-_semantic-记忆裁决",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_bot_100001",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_groups",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 810
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 920
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 180,
+          "right": 1100
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1260
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "TH",
+          "class": "n-data-table-th n-data-table-th--sortable",
+          "width": 110,
+          "right": 810
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_groups-group-names",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 810
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 920
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 180,
+          "right": 1100
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1260
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "TH",
+          "class": "n-data-table-th n-data-table-th--sortable",
+          "width": 110,
+          "right": 810
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_group-admin",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 845,
+          "right": 866
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 845,
+          "right": 866
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 845,
+          "right": 866
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 130,
+          "right": 766
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 100,
+          "right": 866
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 845,
+          "right": 866
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 845,
+          "right": 866
+        },
+        {
+          "tag": "TH",
+          "class": "n-data-table-th",
+          "width": 130,
+          "right": 766
+        },
+        {
+          "tag": "DIV",
+          "class": "n-data-table-th__title-wrapper",
+          "width": 105,
+          "right": 753
+        },
+        {
+          "tag": "DIV",
+          "class": "n-data-table-th__title",
+          "width": 105,
+          "right": 753
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_group-admin?group=100001",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_group-admin?group=100001-广告与刷屏",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_group-admin?group=100001-欢迎与退群",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_group-admin?group=100001-入群验证",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_group-admin?scope=defaults",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_group-admin?scope=defaults-广告与刷屏",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_group-admin?scope=defaults-欢迎与退群",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_group-admin?scope=defaults-入群验证",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_persona",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_persona-账号与会话绑定",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_persona-默认人设与画像",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_persona-人设库",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_ai",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 906.421875,
+          "right": 926.421875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 906.421875,
+          "right": 926.421875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 817.296875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 761.296875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 817.296875
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 817.296875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 109.125,
+          "right": 926.421875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 853.296875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 73.125,
+          "right": 926.421875
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 73.125,
+          "right": 926.421875
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation-访问权限",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation-上下文与路由",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation-任务模型",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation-回复方式",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation-触发与私聊",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation-追踪-严格模式",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation-追踪-参与频率",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation-追踪-回复与续话",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation-追踪-焦点与唤醒",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation-追踪-防刷屏",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation-追踪-画像与复读",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_conversation-追踪高级",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_simulation",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 930,
+          "right": 951
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1100,
+          "right": 1121
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1100,
+          "right": 1121
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 841
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 90,
+          "right": 931
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 100,
+          "right": 1031
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 90,
+          "right": 1121
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 1100,
+          "right": 1121
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 1100,
+          "right": 1121
+        },
+        {
+          "tag": "TH",
+          "class": "n-data-table-th",
+          "width": 110,
+          "right": 841
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_simulation-角色档案",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_simulation-角色活动详情",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_life",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_pipeline",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_pipeline-平台授权",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_pipeline-健康报告",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_pipeline-可靠管道",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_pipeline-任务记录",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_pipeline-任务详情",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_risk",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_draw",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_observe",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "hour-column",
+          "width": 25,
+          "right": 742
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-count",
+          "width": 25,
+          "right": 742
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-track",
+          "width": 25,
+          "right": 742
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-bar",
+          "width": 25,
+          "right": 742
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-label",
+          "width": 25,
+          "right": 742
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-column",
+          "width": 25,
+          "right": 774
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-count",
+          "width": 25,
+          "right": 774
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-track",
+          "width": 25,
+          "right": 774
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-bar",
+          "width": 25,
+          "right": 774
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-label",
+          "width": 25,
+          "right": 774
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_observe_details",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_commands",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_commands-骰子基础-开关与检定",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_commands-骰子基础-掷骰上限",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_commands-骰子基础-日期与团录",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_commands-骰子目录",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_commands-骰子回复",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_commands-牌堆与规则",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_commands-表情包",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_commands-命令总表",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_semantic",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_semantic-分块管理",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_semantic-评估历史",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "TABLE",
+          "class": "evaluation-table",
+          "width": 800,
+          "right": 843
+        },
+        {
+          "tag": "THEAD",
+          "class": "",
+          "width": 800,
+          "right": 843
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 800,
+          "right": 843
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 131.46875,
+          "right": 754.53125
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 88.46875,
+          "right": 843
+        },
+        {
+          "tag": "TBODY",
+          "class": "",
+          "width": 800,
+          "right": 843
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 800,
+          "right": 843
+        },
+        {
+          "tag": "TD",
+          "class": "",
+          "width": 131.46875,
+          "right": 754.53125
+        },
+        {
+          "tag": "TD",
+          "class": "",
+          "width": 88.46875,
+          "right": 843
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_semantic-运行信息",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_semantic-检索测试",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_semantic-记忆策略-保存与提取",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_semantic-记忆策略-召回与注入",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_semantic-记忆策略-巩固与回扣",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_semantic-记忆策略-演化与纠错",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_semantic-记忆策略-中期摘要",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-dark-_semantic-记忆裁决",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_bot_100001",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_groups",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 810
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 920
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 180,
+          "right": 1100
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1260
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "TH",
+          "class": "n-data-table-th n-data-table-th--sortable",
+          "width": 110,
+          "right": 810
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-light-_groups-group-names",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 810
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 920
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 180,
+          "right": 1100
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1260
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 1215,
+          "right": 1260
+        },
+        {
+          "tag": "TH",
+          "class": "n-data-table-th n-data-table-th--sortable",
+          "width": 110,
+          "right": 810
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-light-_group-admin",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 845,
+          "right": 866
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 845,
+          "right": 866
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 845,
+          "right": 866
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 130,
+          "right": 766
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 100,
+          "right": 866
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 845,
+          "right": 866
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 845,
+          "right": 866
+        },
+        {
+          "tag": "TH",
+          "class": "n-data-table-th",
+          "width": 130,
+          "right": 766
+        },
+        {
+          "tag": "DIV",
+          "class": "n-data-table-th__title-wrapper",
+          "width": 105,
+          "right": 753
+        },
+        {
+          "tag": "DIV",
+          "class": "n-data-table-th__title",
+          "width": 105,
+          "right": 753
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-light-_group-admin?group=100001",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_group-admin?group=100001-广告与刷屏",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_group-admin?group=100001-欢迎与退群",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_group-admin?group=100001-入群验证",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_group-admin?scope=defaults",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_group-admin?scope=defaults-广告与刷屏",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_group-admin?scope=defaults-欢迎与退群",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_group-admin?scope=defaults-入群验证",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_persona",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_persona-账号与会话绑定",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_persona-默认人设与画像",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_persona-人设库",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_ai",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 906.421875,
+          "right": 926.421875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 906.421875,
+          "right": 926.421875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 817.296875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 761.296875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 817.296875
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 817.296875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 109.125,
+          "right": 926.421875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 853.296875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 73.125,
+          "right": 926.421875
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 73.125,
+          "right": 926.421875
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation-访问权限",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation-上下文与路由",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation-任务模型",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation-回复方式",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation-触发与私聊",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation-追踪-严格模式",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation-追踪-参与频率",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation-追踪-回复与续话",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation-追踪-焦点与唤醒",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation-追踪-防刷屏",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation-追踪-画像与复读",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_conversation-追踪高级",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_simulation",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 930,
+          "right": 951
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1100,
+          "right": 1121
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1100,
+          "right": 1121
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 841
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 90,
+          "right": 931
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 100,
+          "right": 1031
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 90,
+          "right": 1121
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 1100,
+          "right": 1121
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 1100,
+          "right": 1121
+        },
+        {
+          "tag": "TH",
+          "class": "n-data-table-th",
+          "width": 110,
+          "right": 841
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-light-_simulation-角色档案",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_simulation-角色活动详情",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_life",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_pipeline",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_pipeline-平台授权",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_pipeline-健康报告",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_pipeline-可靠管道",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_pipeline-任务记录",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_pipeline-任务详情",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_risk",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_draw",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_observe",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "hour-column",
+          "width": 25,
+          "right": 742
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-count",
+          "width": 25,
+          "right": 742
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-track",
+          "width": 25,
+          "right": 742
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-bar",
+          "width": 25,
+          "right": 742
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-label",
+          "width": 25,
+          "right": 742
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-column",
+          "width": 25,
+          "right": 774
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-count",
+          "width": 25,
+          "right": 774
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-track",
+          "width": 25,
+          "right": 774
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-bar",
+          "width": 25,
+          "right": 774
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-label",
+          "width": 25,
+          "right": 774
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-light-_observe_details",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_commands",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_commands-骰子基础-开关与检定",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_commands-骰子基础-掷骰上限",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_commands-骰子基础-日期与团录",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_commands-骰子目录",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_commands-骰子回复",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_commands-牌堆与规则",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_commands-表情包",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_commands-命令总表",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_semantic",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_semantic-分块管理",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_semantic-评估历史",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [
+        {
+          "tag": "TABLE",
+          "class": "evaluation-table",
+          "width": 800,
+          "right": 843
+        },
+        {
+          "tag": "THEAD",
+          "class": "",
+          "width": 800,
+          "right": 843
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 800,
+          "right": 843
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 131.46875,
+          "right": 754.53125
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 88.46875,
+          "right": 843
+        },
+        {
+          "tag": "TBODY",
+          "class": "",
+          "width": 800,
+          "right": 843
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 800,
+          "right": 843
+        },
+        {
+          "tag": "TD",
+          "class": "",
+          "width": 131.46875,
+          "right": 754.53125
+        },
+        {
+          "tag": "TD",
+          "class": "",
+          "width": 88.46875,
+          "right": 843
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "736-light-_semantic-运行信息",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_semantic-检索测试",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_semantic-记忆策略-保存与提取",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_semantic-记忆策略-召回与注入",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_semantic-记忆策略-巩固与回扣",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_semantic-记忆策略-演化与纠错",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_semantic-记忆策略-中期摘要",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "736-light-_semantic-记忆裁决",
+      "width": 736,
+      "documentWidth": 736,
+      "bodyWidth": 736,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "TABLE",
+          "class": "ops-table",
+          "width": 346.28125,
+          "right": 379.28125
+        },
+        {
+          "tag": "THEAD",
+          "class": "",
+          "width": 346.28125,
+          "right": 379.28125
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 346.28125,
+          "right": 379.28125
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 52.234375,
+          "right": 338.9375
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 40.34375,
+          "right": 379.28125
+        },
+        {
+          "tag": "TBODY",
+          "class": "",
+          "width": 346.28125,
+          "right": 379.28125
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 346.28125,
+          "right": 379.28125
+        },
+        {
+          "tag": "TD",
+          "class": "",
+          "width": 52.234375,
+          "right": 338.9375
+        },
+        {
+          "tag": "TD",
+          "class": "",
+          "width": 40.34375,
+          "right": 379.28125
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 346.28125,
+          "right": 379.28125
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_bot_100001",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_groups",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 340,
+          "right": 373
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 125,
+          "right": 498
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 190,
+          "right": 688
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 798
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 908
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 180,
+          "right": 1088
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1248
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_groups-group-names",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 340,
+          "right": 373
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 125,
+          "right": 498
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 190,
+          "right": 688
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 798
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 908
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 180,
+          "right": 1088
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1248
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_group-admin",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 845,
+          "right": 860
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 845,
+          "right": 860
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 845,
+          "right": 860
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 125,
+          "right": 360
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 145,
+          "right": 505
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 125,
+          "right": 630
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 130,
+          "right": 760
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 100,
+          "right": 860
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 845,
+          "right": 860
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 845,
+          "right": 860
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_group-admin?group=100001",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_group-admin?group=100001-广告与刷屏",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_group-admin?group=100001-欢迎与退群",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_group-admin?group=100001-入群验证",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_group-admin?scope=defaults",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_group-admin?scope=defaults-广告与刷屏",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_group-admin?scope=defaults-欢迎与退群",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_group-admin?scope=defaults-入群验证",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_persona",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 310,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 310,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 134,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 98,
+          "right": 324
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 98,
+          "right": 324
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_persona-账号与会话绑定",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 310,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 310,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 134,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 98,
+          "right": 324
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 98,
+          "right": 324
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_persona-默认人设与画像",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 678,
+          "right": 692
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 678,
+          "right": 692
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 120,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 84,
+          "right": 402
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 84,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 120,
+          "right": 522
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 438
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 84,
+          "right": 522
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 84,
+          "right": 522
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 614
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_persona-人设库",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 310,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 310,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 134,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 98,
+          "right": 324
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 98,
+          "right": 324
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_ai",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 906.421875,
+          "right": 920.421875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 906.421875,
+          "right": 920.421875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 42,
+          "right": 332
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 42,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 424
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 368
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 424
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 424
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 502
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 424
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 480
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 480
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation-访问权限",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 424
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 480
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 480
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation-上下文与路由",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 424
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 480
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 480
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation-任务模型",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation-回复方式",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation-触发与私聊",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 424
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 480
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 480
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation-追踪-严格模式",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 410
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 558
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation-追踪-参与频率",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 410
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 558
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation-追踪-回复与续话",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 410
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 558
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation-追踪-焦点与唤醒",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 544,
+          "right": 490
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 544,
+          "right": 490
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 384
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 342
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 42,
+          "right": 384
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 42,
+          "right": 384
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 490
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 420
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 490
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 490
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation-追踪-防刷屏",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation-追踪-画像与复读",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_conversation-追踪高级",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 410
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 558
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_simulation",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 930,
+          "right": 945
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1100,
+          "right": 1115
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1100,
+          "right": 1115
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 415
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 70,
+          "right": 485
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 595
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 130,
+          "right": 725
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 835
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 90,
+          "right": 925
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 100,
+          "right": 1025
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_simulation-角色档案",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_simulation-角色活动详情",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_life",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_pipeline",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_pipeline-平台授权",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_pipeline-健康报告",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_pipeline-可靠管道",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_pipeline-任务记录",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_pipeline-任务详情",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_risk",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_draw",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_observe",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "hour-column",
+          "width": 25,
+          "right": 346
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-count",
+          "width": 25,
+          "right": 346
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-track",
+          "width": 25,
+          "right": 346
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-bar",
+          "width": 25,
+          "right": 346
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-label",
+          "width": 25,
+          "right": 346
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-column",
+          "width": 25,
+          "right": 378
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-count",
+          "width": 25,
+          "right": 378
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-track",
+          "width": 25,
+          "right": 378
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-bar",
+          "width": 25,
+          "right": 378
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-failure",
+          "width": 25,
+          "right": 378
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_observe_details",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_commands",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_commands-骰子基础-开关与检定",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_commands-骰子基础-掷骰上限",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_commands-骰子基础-日期与团录",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_commands-骰子目录",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_commands-骰子回复",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_commands-牌堆与规则",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_commands-表情包",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_commands-命令总表",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_semantic",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_semantic-分块管理",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_semantic-评估历史",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "TABLE",
+          "class": "evaluation-table",
+          "width": 800,
+          "right": 832
+        },
+        {
+          "tag": "THEAD",
+          "class": "",
+          "width": 800,
+          "right": 832
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 800,
+          "right": 832
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 124.40625,
+          "right": 363.25
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 124.40625,
+          "right": 487.65625
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 124.40625,
+          "right": 612.0625
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 131.46875,
+          "right": 743.53125
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 88.46875,
+          "right": 832
+        },
+        {
+          "tag": "TBODY",
+          "class": "",
+          "width": 800,
+          "right": 832
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 800,
+          "right": 832
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_semantic-运行信息",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_semantic-检索测试",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_semantic-记忆策略-保存与提取",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 438
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 494
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 494
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_semantic-记忆策略-召回与注入",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 438
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 494
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 494
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_semantic-记忆策略-巩固与回扣",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 438
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 494
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 494
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_semantic-记忆策略-演化与纠错",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_semantic-记忆策略-中期摘要",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-dark-_semantic-记忆裁决",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 438
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 494
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 494
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "TABLE",
+          "class": "ops-table",
+          "width": 346.28125,
+          "right": 379.28125
+        },
+        {
+          "tag": "THEAD",
+          "class": "",
+          "width": 346.28125,
+          "right": 379.28125
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 346.28125,
+          "right": 379.28125
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 52.234375,
+          "right": 338.9375
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 40.34375,
+          "right": 379.28125
+        },
+        {
+          "tag": "TBODY",
+          "class": "",
+          "width": 346.28125,
+          "right": 379.28125
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 346.28125,
+          "right": 379.28125
+        },
+        {
+          "tag": "TD",
+          "class": "",
+          "width": 52.234375,
+          "right": 338.9375
+        },
+        {
+          "tag": "TD",
+          "class": "",
+          "width": 40.34375,
+          "right": 379.28125
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 346.28125,
+          "right": 379.28125
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_bot_100001",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_groups",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 340,
+          "right": 373
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 125,
+          "right": 498
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 190,
+          "right": 688
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 798
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 908
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 180,
+          "right": 1088
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1248
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_groups-group-names",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 340,
+          "right": 373
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 125,
+          "right": 498
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 190,
+          "right": 688
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 798
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 908
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 180,
+          "right": 1088
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1248
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_group-admin",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 845,
+          "right": 860
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 845,
+          "right": 860
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 845,
+          "right": 860
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 125,
+          "right": 360
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 145,
+          "right": 505
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 125,
+          "right": 630
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 130,
+          "right": 760
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 100,
+          "right": 860
+        },
+        {
+          "tag": "THEAD",
+          "class": "n-data-table-thead",
+          "width": 845,
+          "right": 860
+        },
+        {
+          "tag": "TR",
+          "class": "n-data-table-tr",
+          "width": 845,
+          "right": 860
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_group-admin?group=100001",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_group-admin?group=100001-广告与刷屏",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_group-admin?group=100001-欢迎与退群",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_group-admin?group=100001-入群验证",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_group-admin?scope=defaults",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_group-admin?scope=defaults-广告与刷屏",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_group-admin?scope=defaults-欢迎与退群",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_group-admin?scope=defaults-入群验证",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_persona",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 310,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 310,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 134,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 98,
+          "right": 324
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 98,
+          "right": 324
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_persona-账号与会话绑定",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 310,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 310,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 134,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 98,
+          "right": 324
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 98,
+          "right": 324
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_persona-默认人设与画像",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 678,
+          "right": 692
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 678,
+          "right": 692
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 120,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 84,
+          "right": 402
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 84,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 120,
+          "right": 522
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 438
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 84,
+          "right": 522
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 84,
+          "right": 522
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 614
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_persona-人设库",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 310,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 310,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 134,
+          "right": 324
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 98,
+          "right": 324
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 98,
+          "right": 324
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_ai",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 906.421875,
+          "right": 920.421875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 906.421875,
+          "right": 920.421875
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 42,
+          "right": 332
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 42,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 424
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 368
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 424
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 424
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 502
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 424
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 480
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 480
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation-访问权限",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 424
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 480
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 480
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation-上下文与路由",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 424
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 480
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 480
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation-任务模型",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation-回复方式",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation-触发与私聊",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 466,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 388
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 480
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 424
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 480
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 480
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation-追踪-严格模式",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 410
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 558
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation-追踪-参与频率",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 410
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 558
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation-追踪-回复与续话",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 410
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 558
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation-追踪-焦点与唤醒",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 544,
+          "right": 490
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 544,
+          "right": 490
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 384
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 342
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 42,
+          "right": 384
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 42,
+          "right": 384
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 490
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 420
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 490
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 490
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation-追踪-防刷屏",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation-追踪-画像与复读",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_conversation-追踪高级",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 544,
+          "right": 558
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 374
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 78,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 410
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 42,
+          "right": 452
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 558
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_simulation",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 930,
+          "right": 945
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1100,
+          "right": 1115
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1100,
+          "right": 1115
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 415
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 70,
+          "right": 485
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 595
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 130,
+          "right": 725
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 835
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 90,
+          "right": 925
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 100,
+          "right": 1025
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_simulation-角色档案",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_simulation-角色活动详情",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_life",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_pipeline",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_pipeline-平台授权",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_pipeline-健康报告",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_pipeline-可靠管道",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_pipeline-任务记录",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_pipeline-任务详情",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_risk",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_draw",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_observe",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "hour-column",
+          "width": 25,
+          "right": 346
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-count",
+          "width": 25,
+          "right": 346
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-track",
+          "width": 25,
+          "right": 346
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-bar",
+          "width": 25,
+          "right": 346
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-label",
+          "width": 25,
+          "right": 346
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-column",
+          "width": 25,
+          "right": 378
+        },
+        {
+          "tag": "SPAN",
+          "class": "hour-count",
+          "width": 25,
+          "right": 378
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-track",
+          "width": 25,
+          "right": 378
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-bar",
+          "width": 25,
+          "right": 378
+        },
+        {
+          "tag": "DIV",
+          "class": "hour-failure",
+          "width": 25,
+          "right": 378
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_observe_details",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_commands",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_commands-骰子基础-开关与检定",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_commands-骰子基础-掷骰上限",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_commands-骰子基础-日期与团录",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_commands-骰子目录",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_commands-骰子回复",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_commands-牌堆与规则",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_commands-表情包",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_commands-命令总表",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_semantic",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_semantic-分块管理",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_semantic-评估历史",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "TABLE",
+          "class": "evaluation-table",
+          "width": 800,
+          "right": 832
+        },
+        {
+          "tag": "THEAD",
+          "class": "",
+          "width": 800,
+          "right": 832
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 800,
+          "right": 832
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 124.40625,
+          "right": 363.25
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 124.40625,
+          "right": 487.65625
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 124.40625,
+          "right": 612.0625
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 131.46875,
+          "right": 743.53125
+        },
+        {
+          "tag": "TH",
+          "class": "",
+          "width": 88.46875,
+          "right": 832
+        },
+        {
+          "tag": "TBODY",
+          "class": "",
+          "width": 800,
+          "right": 832
+        },
+        {
+          "tag": "TR",
+          "class": "",
+          "width": 800,
+          "right": 832
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_semantic-运行信息",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_semantic-检索测试",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_semantic-记忆策略-保存与提取",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 438
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 494
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 494
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_semantic-记忆策略-召回与注入",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 438
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 494
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 494
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_semantic-记忆策略-巩固与回扣",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 438
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 494
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 494
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-light-_semantic-记忆策略-演化与纠错",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_semantic-记忆策略-中期摘要",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-light-_semantic-记忆裁决",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-tabs-nav-scroll-content",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-wrapper",
+          "width": 480,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 106,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 332
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 70,
+          "right": 402
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-wrapper",
+          "width": 92,
+          "right": 494
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab-pad",
+          "width": 36,
+          "right": 438
+        },
+        {
+          "tag": "DIV",
+          "class": "n-tabs-tab",
+          "width": 56,
+          "right": 494
+        },
+        {
+          "tag": "SPAN",
+          "class": "n-tabs-tab__label",
+          "width": 56,
+          "right": 494
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "desktop-quick-search",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "mobile-drawer-navigation",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [
+        {
+          "tag": "DIV",
+          "class": "n-scrollbar-content",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "TABLE",
+          "class": "n-data-table-table",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "COLGROUP",
+          "class": "",
+          "width": 1215,
+          "right": 1248
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 340,
+          "right": 373
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 125,
+          "right": 498
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 190,
+          "right": 688
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 798
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 110,
+          "right": 908
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 180,
+          "right": 1088
+        },
+        {
+          "tag": "COL",
+          "class": "",
+          "width": 160,
+          "right": 1248
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "320-login",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "320-setup",
+      "width": 320,
+      "documentWidth": 320,
+      "bodyWidth": 320,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "character-activity-controls",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "life-default-rhythm-save",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "dice-validated-save",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "tracking-validated-save",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    },
+    {
+      "label": "memory-validated-save",
+      "width": 1440,
+      "documentWidth": 1440,
+      "bodyWidth": 1440,
+      "overflow": [],
+      "ok": true
+    }
+  ],
+  "failures": [],
+  "browserErrors": [],
+  "missingApis": [],
+  "externalRequests": [],
+  "semanticRequests": [
+    {
+      "method": "GET",
+      "endpoint": "playground",
+      "group": "100001",
+      "query": "周末游戏"
+    },
+    {
+      "method": "POST",
+      "endpoint": "forget",
+      "group": "100001",
+      "id": "fixture-search"
+    },
+    {
+      "method": "GET",
+      "endpoint": "chunks",
+      "group": "100001",
+      "offset": 0
+    },
+    {
+      "method": "GET",
+      "endpoint": "chunks",
+      "group": "100001",
+      "offset": 20
+    }
+  ],
+  "policyRequests": [
+    {
+      "kind": "dice",
+      "payload": {
+        "values": {
+          "diceSystem.maxDiceSides": 20
+        },
+        "secrets": {},
+        "revision": "072a7f376a48c566537221bdec988d3efcc7201c6fc7c057be446320c9ab16f9"
+      },
+      "changed": 1
+    },
+    {
+      "kind": "tracking",
+      "payload": {
+        "values": {
+          "smartTrigger.talkValue": 0.08
+        },
+        "secrets": {},
+        "revision": "5ed396b64f1fe14c5358b755d818db23dfc48a93f7e607abbfe8f7d60d730801"
+      },
+      "changed": 1
+    },
+    {
+      "kind": "memory",
+      "payload": {
+        "values": {
+          "memorySystem.maxFactsPerGroup": 51
+        },
+        "secrets": {},
+        "revision": "e278952a278f223eb3ff847f85ffee0862480fb9016821998a5499bb61d564b2"
+      },
+      "changed": 1
+    }
+  ],
+  "simulationRequests": [
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "character",
+      "operation": "pause"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "character",
+      "operation": "resume"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "character",
+      "operation": "pause-goal",
+      "id": "goal-100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "character",
+      "operation": "resume-goal",
+      "id": "goal-100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "activity",
+      "operation": "work-restore",
+      "id": "work-100001",
+      "payload": {
+        "revision": 1
+      }
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "activity",
+      "operation": "work-archive",
+      "id": "work-100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "activity",
+      "operation": "work-restore",
+      "id": "work-100001",
+      "payload": {
+        "revision": 2
+      }
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "activity",
+      "operation": "subscription-pause",
+      "id": "subscription-100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "activity",
+      "operation": "subscription-resume",
+      "id": "subscription-100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "activity",
+      "operation": "reflection-reset"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "activity",
+      "operation": "shared-delete",
+      "id": "shared-100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "activity",
+      "operation": "shared-approve",
+      "id": "pending-100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "character",
+      "operation": "delete-memory",
+      "id": "memory-100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "character",
+      "operation": "cancel-goal",
+      "id": "goal-100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "activity",
+      "operation": "work-delete",
+      "id": "work-100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "POST",
+      "group": "100001",
+      "action": "activity",
+      "operation": "subscription-remove",
+      "id": "subscription-100001"
+    },
+    {
+      "method": "GET",
+      "group": "100001"
+    },
+    {
+      "method": "GET",
+      "group": "200002"
+    }
+  ],
+  "lifeRequests": [
+    {
+      "method": "POST",
+      "sleepFrom": 2,
+      "sleepTo": 9
+    }
+  ],
+  "featureChecks": [
+    {
+      "label": "1440-dark-_simulation",
+      "feature": "character-profile-evidence-and-activity",
+      "ok": true
+    },
+    {
+      "label": "1440-dark-_life",
+      "feature": "group-scoped-life-lines-and-default-rhythm",
+      "ok": true
+    },
+    {
+      "label": "1440-light-_simulation",
+      "feature": "character-profile-evidence-and-activity",
+      "ok": true
+    },
+    {
+      "label": "1440-light-_life",
+      "feature": "group-scoped-life-lines-and-default-rhythm",
+      "ok": true
+    },
+    {
+      "label": "736-dark-_simulation",
+      "feature": "character-profile-evidence-and-activity",
+      "ok": true
+    },
+    {
+      "label": "736-dark-_life",
+      "feature": "group-scoped-life-lines-and-default-rhythm",
+      "ok": true
+    },
+    {
+      "label": "736-light-_simulation",
+      "feature": "character-profile-evidence-and-activity",
+      "ok": true
+    },
+    {
+      "label": "736-light-_life",
+      "feature": "group-scoped-life-lines-and-default-rhythm",
+      "ok": true
+    },
+    {
+      "label": "320-dark-_simulation",
+      "feature": "character-profile-evidence-and-activity",
+      "ok": true
+    },
+    {
+      "label": "320-dark-_life",
+      "feature": "group-scoped-life-lines-and-default-rhythm",
+      "ok": true
+    },
+    {
+      "label": "320-light-_simulation",
+      "feature": "character-profile-evidence-and-activity",
+      "ok": true
+    },
+    {
+      "label": "320-light-_life",
+      "feature": "group-scoped-life-lines-and-default-rhythm",
+      "ok": true
+    },
+    {
+      "feature": "pause",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "resume",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "pause-goal",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "resume-goal",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "work-restore",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "work-archive",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "work-restore",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "subscription-pause",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "subscription-resume",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "reflection-reset",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "shared-delete",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "shared-approve",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "delete-memory",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "cancel-goal",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "work-delete",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "subscription-remove",
+      "group": "100001",
+      "ok": true
+    },
+    {
+      "feature": "other-group-preserved-after-mutations",
+      "group": "200002",
+      "ok": true
+    },
+    {
+      "feature": "default-rhythm-save-and-reload",
+      "ok": true
+    }
+  ],
+  "screenshots": [
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_groups-group-names.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_group-admin-overview.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_group-admin_group_100001-广告与刷屏.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_group-admin_group_100001-欢迎与退群.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_group-admin_group_100001-入群验证.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_group-admin_scope_defaults-广告与刷屏.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_group-admin_scope_defaults-欢迎与退群.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_group-admin_scope_defaults-入群验证.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_persona.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_ai.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_conversation-访问权限.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_conversation-上下文与路由.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_conversation-任务模型.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_conversation-回复方式.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_conversation-触发与私聊.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_conversation-对话追踪.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_simulation-character-overview.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_simulation-character-activities.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_life-life-lines.png",
+    "/private/tmp/shiloh-everyday-browser/pipeline-config-desktop.png",
+    "/private/tmp/shiloh-everyday-browser/pipeline-authorization-desktop.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_pipeline.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_observe.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_commands-骰子基础.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_commands.png",
+    "/private/tmp/shiloh-everyday-browser/1440-dark-_semantic-记忆策略.png",
+    "/private/tmp/shiloh-everyday-browser/1440-light-_groups-group-names.png",
+    "/private/tmp/shiloh-everyday-browser/1440-light-_group-admin-overview.png",
+    "/private/tmp/shiloh-everyday-browser/736-dark-_groups-group-names.png",
+    "/private/tmp/shiloh-everyday-browser/736-dark-_group-admin-overview.png",
+    "/private/tmp/shiloh-everyday-browser/736-light-_groups-group-names.png",
+    "/private/tmp/shiloh-everyday-browser/736-light-_group-admin-overview.png",
+    "/private/tmp/shiloh-everyday-browser/320-dark-_groups-group-names.png",
+    "/private/tmp/shiloh-everyday-browser/320-dark-_group-admin-overview.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_groups-group-names.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_group-admin-overview.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_group-admin_group_100001-广告与刷屏.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_group-admin_group_100001-欢迎与退群.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_group-admin_group_100001-入群验证.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_group-admin_scope_defaults-广告与刷屏.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_group-admin_scope_defaults-欢迎与退群.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_group-admin_scope_defaults-入群验证.png",
+    "/private/tmp/shiloh-everyday-browser/persona-default-long-tags-mobile.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_persona.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_conversation-访问权限.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_conversation-上下文与路由.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_conversation-任务模型.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_conversation-回复方式.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_conversation-触发与私聊.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_conversation-对话追踪.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_simulation-character-overview.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_simulation-character-activities.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_life-life-lines.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_pipeline.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_commands-骰子基础.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_commands.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_semantic-记忆策略.png",
+    "/private/tmp/shiloh-everyday-browser/320-light-_semantic.png",
+    "/private/tmp/shiloh-everyday-browser/auth-login-mobile.png",
+    "/private/tmp/shiloh-everyday-browser/auth-setup-mobile.png",
+    "/private/tmp/shiloh-everyday-browser/semantic-snapshot-context.png"
+  ]
+}

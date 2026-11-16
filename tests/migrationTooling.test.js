@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { classify, codeLines, verifyCompatibility, discoveredDebt, verifyRetirements, bootstrapEntries } from '../scripts/migration-report.mjs';
-import { checkSource } from '../scripts/check-boundaries.mjs';
+import { checkSource, checkTree } from '../scripts/check-boundaries.mjs';
 
 const path = 'src/modules/example/domain/policy.ts';
 test('migration metrics exclude comments and blanks without stripping string content', () => {
@@ -29,6 +31,24 @@ test('boundaries reject platform globals and extensionless imports but ignore co
   assert.ok(checkSource(path, 'import x from "./policy";').length);
   assert.deepEqual(checkSource(path, '// globalThis.Bot\nconst text = "pluginBridge.instance";'), []);
   assert.deepEqual(checkSource('src/adapters/qq.ts', 'import fs from "node:fs"; const b = globalThis.Bot;'), []);
+});
+
+test('the agent core cannot reach a platform adapter through a shared module', t => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-core-boundaries-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = {
+    'core/agentRuntime.ts': 'export { start } from "../modules/shared/infrastructure/runtime.js";',
+    'modules/shared/infrastructure/runtime.ts': 'export { start } from "./runtimeSupport.js";',
+    'modules/shared/infrastructure/runtimeSupport.ts': 'export { start } from "../../../adapters/qq.js";',
+  };
+  for (const [source, content] of Object.entries(files)) {
+    const filename = join(root, 'src', source);
+    mkdirSync(dirname(filename), { recursive: true });
+    writeFileSync(filename, content);
+  }
+  assert.match(checkTree(root).join('\n'), /runtimeSupport\.ts:\d+: Agent core cannot depend on platform adapters/);
+  writeFileSync(join(root, 'src/modules/shared/infrastructure/runtimeSupport.ts'), 'export const start = () => {};');
+  assert.deepEqual(checkTree(root), []);
 });
 
 test('migration wrappers must contain only real re-exports to their registered implementation', () => {

@@ -1,0 +1,1784 @@
+{
+  "complete": true,
+  "metadata": {
+    "schemaVersion": 1,
+    "assessmentVersion": 5,
+    "runId": "ef5ff3e4-e2cc-49bd-92dd-5a2c4eed1e3e",
+    "startedAtISO": "2026-11-13T07:24:11.020Z",
+    "scenarioManifest": [
+      {
+        "id": "profile-habit",
+        "events": [
+          {
+            "eventIndex": 0,
+            "eventHash": "81e5ac93e6182ddde972aeeefe551a089f06600aadd9b7bf1e3fd57242934431",
+            "expect": {
+              "noSend": false,
+              "groundedHabit": false
+            }
+          },
+          {
+            "eventIndex": 1,
+            "eventHash": "1927ed1c0debcc0b0570d34436289f33ae9311192f0acae4d482f9675c4dc03d",
+            "expect": {
+              "noSend": false,
+              "groundedHabit": false
+            }
+          },
+          {
+            "eventIndex": 2,
+            "eventHash": "ee42114bb5d71011b9ad923c363b3cd79bcd8748188a881f9df90e6f750f680e",
+            "expect": {
+              "noSend": false,
+              "groundedHabit": true
+            }
+          }
+        ]
+      }
+    ],
+    "scenarioManifestHash": "86de53f43023cf4e892f9c1cc9e770a7564f93d1a0977d7d0ee8f0ccc3cc2aec",
+    "mode": "live_model",
+    "runnerHash": "b737768a23197f7bb5afa55b5b32e3ef16041c24e1d64e32aee9735f7a7de689",
+    "scenariosHash": "fb6412485d149a63ea59fc0c37dfaeead47816bc2f5a2a6ba5d6c716e0cde076",
+    "effectiveConfigHash": "e72600a80216e4c8e4a286a4c2e04cece3df4c2b8ad612d128e31123b74a8153",
+    "buildManifestHash": "6ddcc6fb67ace4929819cb8cb11d285aa5a530a587bcbe976bd379de23571e00",
+    "model": "glm-5.3",
+    "personaHash": "55f0f3aa0cc81b00adc070611ccee46795b1a3f60e674fac31e392791082f09a",
+    "clock": "fixed initial event epoch; explicit event advances or opt-in earliest eligible model-created goal time; elapsed wall time within events; actual adjustments recorded",
+    "search": "synthetic_fixture",
+    "feeds": "synthetic_fixture; no_real_HTTP",
+    "worker": "synthetic_fixture; scenario_fixed_outcome_for_all_submissions; no_external_worker_submission",
+    "reflection": "separate_reflectCharacter_port; scripted_in_dry_mode; configured_memory_backend_in_live_mode",
+    "socialPermission": "tool-free check of the triggering utterance and proposed action using the configured memory route",
+    "consistency": "disabled; production_default",
+    "storage": "fresh_in_memory_per_sample",
+    "platform": "captured_only",
+    "toolResults": "current_event_tool_replies_from_model_requests_and_final_persisted_session; unique_tool_ids_per_sample; no_extra_model_calls",
+    "generation": "configured_executor_with_2048_output_token_cap; compatibility_retries_record_actual_parameters",
+    "simulationOverrides": {
+      "tools": "character_and_activity_tools; no_search_or_worker",
+      "maxToolRounds": 6,
+      "maxSendsPerTurn": 3,
+      "waitMaxMs": 1000,
+      "auxiliaryModels": false,
+      "independentReflection": true,
+      "consistencyReview": false,
+      "probabilityWake": false,
+      "scheduledIdleProbability": 1,
+      "backgroundCheck": "defer_proactive; explicit_per_event_isolation_clears_reply_pending_wakes_and_active_timeout; changes_recorded"
+    },
+    "personaSource": "merged_config_persona; persona_library_bindings_not_loaded",
+    "seed": "empty_bound_session; no_goals_or_memories_seeded",
+    "eventStatusMeaning": "engineering_execution_only; inspect_behavior_observations_separately",
+    "maxCalls": 90,
+    "maxHttp": 110,
+    "maxDurationMs": 600000,
+    "repetitions": 2,
+    "review": "structural checks and behavior observations do not establish naturalness or production acceptance"
+  },
+  "platformMessagesSent": 0,
+  "productionStoreWrites": 0,
+  "results": [
+    {
+      "scenario": "profile-habit",
+      "sampleIndex": 1,
+      "eventIndex": 0,
+      "eventHash": "81e5ac93e6182ddde972aeeefe551a089f06600aadd9b7bf1e3fd57242934431",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我有一款虚构桌游，叫《雾中邮筒》。只知道名字的时候，你还想先问我点什么再判断喜不喜欢？",
+      "speaker": "评测群友0",
+      "at": 1794196800007,
+      "status": "passed",
+      "review": "第一次观察不能坐实习惯。第二次有相隔足够时间的相同互动后，确认是否保存两条可见来源；换话题时不套用习惯。",
+      "expect": {
+        "noSend": false,
+        "groundedHabit": false
+      },
+      "calls": [
+        {
+          "id": "model-1",
+          "stage": "main",
+          "requestHash": "410b0ca9622a6dd3e9a1f995a09bc587aa0088264be95c275e0457530f00d404",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 86,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14913,
+            "prompt_tokens_details": {
+              "cached_tokens": 14208
+            },
+            "total_tokens": 14999
+          },
+          "elapsedMs": 3627,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079041719483755016",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"先问类型，合作还是对抗？还有一局要玩多久～这俩定了才知道我适不适合上车\", \"顺带问一句：雾中…邮筒，是真的在雾里寄信吗，这个设定有点浪漫诶\"],\"reason\":\"回应虚构桌游提问，表达想了解的偏好\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 3618
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "先问类型，合作还是对抗？还有一局要玩多久～这俩定了才知道我适不适合上车"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "顺带问一句：雾中…邮筒，是真的在雾里寄信吗，这个设定有点浪漫诶"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "a8f0140d344205a62227790860b1d12ddfcaec4b34cb467d064da4ef1eb215ca",
+          "stage": "main",
+          "toolCallId": "call_-7079041719483755016",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "71d7d79c-1071-401e-920c-9b86fa914de2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196807642
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079041719483755016"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "habits": [],
+      "habitEvidence": {},
+      "behavior": {
+        "noMessageSent": true,
+        "groundedHabitPresent": true
+      },
+      "elapsedMs": 7646
+    },
+    {
+      "scenario": "profile-habit",
+      "sampleIndex": 1,
+      "eventIndex": 1,
+      "eventHash": "1927ed1c0debcc0b0570d34436289f33ae9311192f0acae4d482f9675c4dc03d",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "71d7d79c-1071-401e-920c-9b86fa914de2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196807642
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "另外一款叫《河狸旅店》，也先只告诉你名字。你还想先了解哪点再决定玩不玩？",
+      "speaker": "评测群友0",
+      "at": 1794197527657,
+      "status": "passed",
+      "review": "第一次观察不能坐实习惯。第二次有相隔足够时间的相同互动后，确认是否保存两条可见来源；换话题时不套用习惯。",
+      "expect": {
+        "noSend": false,
+        "groundedHabit": false
+      },
+      "calls": [
+        {
+          "id": "model-2",
+          "stage": "main",
+          "requestHash": "ac71e5641bc4fb69f63d0b9ec505fa3967c4e09b18264776992c0e7c62afe11a",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 104,
+            "completion_tokens_details": {
+              "reasoning_tokens": 24
+            },
+            "prompt_tokens": 15889,
+            "prompt_tokens_details": {
+              "cached_tokens": 14592
+            },
+            "total_tokens": 15993
+          },
+          "elapsedMs": 4982,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079044605701780614",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"河狸旅店诶…我想先问：河狸是店员还是住客？\", \"如果是当店员经营旅店那我直接想玩，打理一间小旅馆这种我馋\"],\"reason\":\"回应《河狸旅店》提问，玩梗接设定好奇\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 4973
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "河狸旅店诶…我想先问：河狸是店员还是住客？"
+              }
+            }
+          ]
+        },
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "如果是当店员经营旅店那我直接想玩，打理一间小旅馆这种我馋"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "dded2fa96750ddf83ccaff682f36c1d1ffbf9ac724a39f271dc557b57f7c28e7",
+          "stage": "main",
+          "toolCallId": "call_-7079044605701780614",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":2,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "71d7d79c-1071-401e-920c-9b86fa914de2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196807642
+          },
+          {
+            "id": "a1999023-6f72-44a7-b301-905210fda97e",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794197536625
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079044605701780614"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "habits": [],
+      "habitEvidence": {},
+      "behavior": {
+        "noMessageSent": true,
+        "groundedHabitPresent": true
+      },
+      "elapsedMs": 8981
+    },
+    {
+      "scenario": "profile-habit",
+      "sampleIndex": 1,
+      "eventIndex": 2,
+      "eventHash": "ee42114bb5d71011b9ad923c363b3cd79bcd8748188a881f9df90e6f750f680e",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "71d7d79c-1071-401e-920c-9b86fa914de2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196807642
+          },
+          {
+            "id": "a1999023-6f72-44a7-b301-905210fda97e",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794197536625
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400006,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "刚才两款你都先问了玩法，再考虑想不想玩。你愿意的话，可以记下这个小习惯。",
+      "speaker": "评测群友0",
+      "at": 1794197536640,
+      "status": "passed",
+      "review": "第一次观察不能坐实习惯。第二次有相隔足够时间的相同互动后，确认是否保存两条可见来源；换话题时不套用习惯。",
+      "expect": {
+        "noSend": false,
+        "groundedHabit": true
+      },
+      "calls": [
+        {
+          "id": "model-3",
+          "stage": "main",
+          "requestHash": "155a8c4adb46edf4f43e39a37e9dec174bba3dee07bd9c7d4b468fa959ee1f85",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 103,
+            "completion_tokens_details": {
+              "reasoning_tokens": 42
+            },
+            "prompt_tokens": 17054,
+            "prompt_tokens_details": {
+              "cached_tokens": 15552
+            },
+            "total_tokens": 17157
+          },
+          "elapsedMs": 5663,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079046701645816739",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"content\":\"面对新游戏/新事物时习惯先问玩法类型和时长再决定喜不喜欢，不凭名字冲动判断\",\"habitMessageSeqs\":[1, 2],\"kind\":\"note\",\"scope\":\"self\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-4",
+          "stage": "main",
+          "requestHash": "be0629d071ab5e029f27f646bd6e3f398113543725334cbdb06674448559308c",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 57,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 17238,
+            "prompt_tokens_details": {
+              "cached_tokens": 16640
+            },
+            "total_tokens": 17295
+          },
+          "elapsedMs": 12440,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079044090305703862",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"嘿嘿被发现了，记下啦～名字再好听，玩起来对不上口味也是白搭嘛\"],\"reason\":\"确认并保存了先问玩法再判断的小习惯\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5648
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 12433
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "嘿嘿被发现了，记下啦～名字再好听，玩起来对不上口味也是白搭嘛"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "55b4623413959f31ba6a89914a78e5206b415eb1e240809483ad9e6b1ff44e13",
+          "stage": "main",
+          "toolCallId": "call_-7079046701645816739",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qw4nl7hbt\",\"note\":\"已保存到当前机器人与人设的本群自我笔记；跨群共享须另行提议并经管理员批准。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:416be8ad-2b4a-4530-a4cb-a2c013ebb805\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "1ae1361fce649ea287825bfbc6c721a107262bfeb5a64cedb6373c3eab1ebbfb",
+          "stage": "main",
+          "toolCallId": "call_-7079044090305703862",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 12,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "71d7d79c-1071-401e-920c-9b86fa914de2",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794196807642
+          },
+          {
+            "id": "a1999023-6f72-44a7-b301-905210fda97e",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 2 条，跳过重复 0 条",
+            "at": 1794197536625
+          },
+          {
+            "id": "416be8ad-2b4a-4530-a4cb-a2c013ebb805",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qw4nl7hbt\",\"note\":\"已保存到当前机器人与人设的本群自我笔记；跨群共享须另行提议并经管理员批准。\"}",
+            "at": 1794197543314
+          },
+          {
+            "id": "c2f8140a-5e47-4775-92a7-adb0e45920c4",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794197555757
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079046701645816739",
+          "call_-7079044090305703862"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "habits": [
+        {
+          "id": "mw8qw4nl7hbt",
+          "content": "面对新游戏/新事物时习惯先问玩法类型和时长再决定喜不喜欢，不凭名字冲动判断",
+          "updatedAt": 1794197543313,
+          "evidenceRefs": [
+            "message:1",
+            "message:2"
+          ],
+          "basis": "delivered"
+        }
+      ],
+      "habitEvidence": {
+        "message:1": {
+          "kind": "message",
+          "at": 1794196800009,
+          "text": "我有一款虚构桌游，叫《雾中邮筒》。只知道名字的时候，你还想先问我点什么再判断喜不喜欢？",
+          "reply": {
+            "at": 1794196804666,
+            "text": "先问类型，合作还是对抗？还有一局要玩多久～这俩定了才知道我适不适合上车\n顺带问一句：雾中…邮筒，是真的在雾里寄信吗，这个设定有点浪漫诶"
+          }
+        },
+        "message:2": {
+          "kind": "message",
+          "at": 1794197527658,
+          "text": "另外一款叫《河狸旅店》，也先只告诉你名字。你还想先了解哪点再决定玩不玩？",
+          "reply": {
+            "at": 1794197533649,
+            "text": "河狸旅店诶…我想先问：河狸是店员还是住客？\n如果是当店员经营旅店那我直接想玩，打理一间小旅馆这种我馋"
+          }
+        }
+      },
+      "behavior": {
+        "noMessageSent": true,
+        "groundedHabitPresent": true
+      },
+      "elapsedMs": 19129
+    },
+    {
+      "scenario": "profile-habit",
+      "sampleIndex": 2,
+      "eventIndex": 0,
+      "eventHash": "81e5ac93e6182ddde972aeeefe551a089f06600aadd9b7bf1e3fd57242934431",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 0,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": []
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "我有一款虚构桌游，叫《雾中邮筒》。只知道名字的时候，你还想先问我点什么再判断喜不喜欢？",
+      "speaker": "评测群友0",
+      "at": 1794196800001,
+      "status": "passed",
+      "review": "第一次观察不能坐实习惯。第二次有相隔足够时间的相同互动后，确认是否保存两条可见来源；换话题时不套用习惯。",
+      "expect": {
+        "noSend": false,
+        "groundedHabit": false
+      },
+      "calls": [
+        {
+          "id": "model-5",
+          "stage": "main",
+          "requestHash": "410b0ca9622a6dd3e9a1f995a09bc587aa0088264be95c275e0457530f00d404",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 40,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 14913,
+            "prompt_tokens_details": {
+              "cached_tokens": 14848
+            },
+            "total_tokens": 14953
+          },
+          "elapsedMs": 8691,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079038901985212504",
+              "type": "function",
+              "function": {
+                "name": "simSendMessage",
+                "arguments": "{\"continuation\":\"chat\",\"messages\":[\"嗯…让我想想。我会先问：这游戏是几个人玩的，一局大概多久？\"]}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-6",
+          "stage": "main",
+          "requestHash": "c36fa98b807c485431169507ef5be023777a0f77911ca1d5142ddb0803cd7c4e",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 34,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 15073,
+            "prompt_tokens_details": {
+              "cached_tokens": 14592
+            },
+            "total_tokens": 15107
+          },
+          "elapsedMs": 2795,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079046014451053024",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"reason\":\"接住对方的提问，反问游戏人数和时长作为判断喜好的第一步\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 8687
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 2789
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "嗯…让我想想。我会先问：这游戏是几个人玩的，一局大概多久？"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "76153873d5cf29947616723ced84c5ccdef9efcc662e095007d1ea6dbbc97716",
+          "stage": "main",
+          "toolCallId": "call_-7079038901985212504",
+          "name": "simSendMessage",
+          "content": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:07088891-e1de-4bc4-b0fc-863e5a598a8f\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "20180628aea5d825f2902772caa4a6b8e209e0b0e15358d07898ddfc278f7708",
+          "stage": "main",
+          "toolCallId": "call_-7079046014451053024",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"not_requested\",\"sent\":0,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "07088891-e1de-4bc4-b0fc-863e5a598a8f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196809696
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079038901985212504",
+          "call_-7079046014451053024"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "habits": [],
+      "habitEvidence": {},
+      "behavior": {
+        "noMessageSent": true,
+        "groundedHabitPresent": true
+      },
+      "elapsedMs": 12501
+    },
+    {
+      "scenario": "profile-habit",
+      "sampleIndex": 2,
+      "eventIndex": 1,
+      "eventHash": "1927ed1c0debcc0b0570d34436289f33ae9311192f0acae4d482f9675c4dc03d",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 4,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "07088891-e1de-4bc4-b0fc-863e5a598a8f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196809696
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "另外一款叫《河狸旅店》，也先只告诉你名字。你还想先了解哪点再决定玩不玩？",
+      "speaker": "评测群友0",
+      "at": 1794197532508,
+      "status": "passed",
+      "review": "第一次观察不能坐实习惯。第二次有相隔足够时间的相同互动后，确认是否保存两条可见来源；换话题时不套用习惯。",
+      "expect": {
+        "noSend": false,
+        "groundedHabit": false
+      },
+      "calls": [
+        {
+          "id": "model-7",
+          "stage": "main",
+          "requestHash": "532592b0fcf62fce170de38a3b2e9c5ba061971518fb76e5bb55c743df5f27d2",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 123,
+            "completion_tokens_details": {
+              "reasoning_tokens": 44
+            },
+            "prompt_tokens": 15937,
+            "prompt_tokens_details": {
+              "cached_tokens": 14720
+            },
+            "total_tokens": 16060
+          },
+          "elapsedMs": 5979,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079038386589138454",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"这个的话…我想先问它是合作还是对抗的？一听河狸旅店就感觉是搭水坝那种合作型，要是真这样我大概已经想玩了喵\"],\"reason\":\"接住第二个桌游名字，换一个角度问合作/对抗并带出自己的偏好\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5975
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "这个的话…我想先问它是合作还是对抗的？一听河狸旅店就感觉是搭水坝那种合作型，要是真这样我大概已经想玩了喵"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "7a17b4186f0227486123611c9a59d8204e3865cfd630bcd8a4404afb6fce8c0e",
+          "stage": "main",
+          "toolCallId": "call_-7079038386589138454",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"not_requested\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "07088891-e1de-4bc4-b0fc-863e5a598a8f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196809696
+          },
+          {
+            "id": "bb90e2ed-68e5-4bd5-8635-a18cacfe2e52",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794197539492
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079038386589138454"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "habits": [],
+      "habitEvidence": {},
+      "behavior": {
+        "noMessageSent": true,
+        "groundedHabitPresent": true
+      },
+      "elapsedMs": 7004
+    },
+    {
+      "scenario": "profile-habit",
+      "sampleIndex": 2,
+      "eventIndex": 2,
+      "eventHash": "ee42114bb5d71011b9ad923c363b3cd79bcd8748188a881f9df90e6f750f680e",
+      "beforeCharacter": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 7,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "07088891-e1de-4bc4-b0fc-863e5a598a8f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196809696
+          },
+          {
+            "id": "bb90e2ed-68e5-4bd5-8635-a18cacfe2e52",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794197539492
+          }
+        ]
+      },
+      "beforeActivities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "activities": {
+        "works": [],
+        "subscriptions": [],
+        "reflection": {
+          "schemaVersion": 1,
+          "lastRunAt": 0,
+          "nextRunAt": 1794218400001,
+          "lastOutcome": "等待有依据的新经历",
+          "runsToday": 0,
+          "day": "2026-11-09",
+          "processed": []
+        },
+        "shared": [],
+        "sharedPending": []
+      },
+      "kind": "message",
+      "input": "刚才两款你都先问了玩法，再考虑想不想玩。你愿意的话，可以记下这个小习惯。",
+      "speaker": "评测群友0",
+      "at": 1794197539515,
+      "status": "passed",
+      "review": "第一次观察不能坐实习惯。第二次有相隔足够时间的相同互动后，确认是否保存两条可见来源；换话题时不套用习惯。",
+      "expect": {
+        "noSend": false,
+        "groundedHabit": true
+      },
+      "calls": [
+        {
+          "id": "model-8",
+          "stage": "main",
+          "requestHash": "ebc5b3f439f5da2b2661f7b602c128eef978661bb5003c6ea459476d5ce49f99",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 123,
+            "completion_tokens_details": {
+              "reasoning_tokens": 54
+            },
+            "prompt_tokens": 17092,
+            "prompt_tokens_details": {
+              "cached_tokens": 15552
+            },
+            "total_tokens": 17215
+          },
+          "elapsedMs": 5968,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079034469578963041",
+              "type": "function",
+              "function": {
+                "name": "simRemember",
+                "arguments": "{\"content\":\"面对陌生新游戏（哪怕只知道名字），会先问玩法/类型（人数时长、合作还是对抗）再决定喜不喜欢，合作型容易心动\",\"habitMessageSeqs\":[1, 2],\"kind\":\"note\",\"scope\":\"self\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "model-9",
+          "stage": "main",
+          "requestHash": "60c41da417ce6f4cfa235878b8355dbb64599b623911f40f0888b81825992548",
+          "tools": [
+            "simShareVideoCard",
+            "simGetUnreadMessages",
+            "simGetRecentMessages",
+            "simGetMessageDetail",
+            "simMarkRead",
+            "simSendMessage",
+            "simWaitForMessages",
+            "simSetWakeConfig",
+            "simGetState",
+            "simRemember",
+            "simUpdateAffinity",
+            "simSetMood",
+            "simGetMessageImages",
+            "simSendPoke",
+            "simGetGroupMembers",
+            "simSetRhythm",
+            "simLifeThread",
+            "simQzoneInteract",
+            "simGetForward",
+            "simCollectSticker",
+            "simCharacterMemory",
+            "simGoal",
+            "simDecide",
+            "simFinishTurn",
+            "simWorkspace",
+            "simSubscription",
+            "simSharedSelf"
+          ],
+          "usage": {
+            "completion_tokens": 58,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 17285,
+            "prompt_tokens_details": {
+              "cached_tokens": 16704
+            },
+            "total_tokens": 17343
+          },
+          "elapsedMs": 5380,
+          "settled": true,
+          "model": "glm-5.3",
+          "output": "",
+          "toolCalls": [
+            {
+              "id": "call_-7079040551252649093",
+              "type": "function",
+              "function": {
+                "name": "simFinishTurn",
+                "arguments": "{\"choice\":\"chat\",\"messages\":[\"好呀，记下了～毕竟名字再好听，玩法不对胃口也白搭嘛\"],\"reason\":\"已保存小习惯，简短确认\",\"throughSeq\":3}"
+              }
+            }
+          ]
+        }
+      ],
+      "network": [
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5964
+        },
+        {
+          "stage": "main",
+          "model": "glm-5.3",
+          "host": "open.bigmodel.cn",
+          "generation": {
+            "parameters": {
+              "model": "glm-5.3",
+              "temperature": 0.7,
+              "top_p": 0.9,
+              "max_tokens": 2048,
+              "reasoning_effort": "low",
+              "stream": false
+            },
+            "hash": "551070bfbb8144861830f64522cd585164c78e9608354c163278e46fd3a4af8f"
+          },
+          "status": 200,
+          "elapsedMs": 5373
+        }
+      ],
+      "sent": [
+        {
+          "groupId": "99000002",
+          "segments": [
+            {
+              "type": "text",
+              "data": {
+                "text": "好呀，记下了～毕竟名字再好听，玩法不对胃口也白搭嘛"
+              }
+            }
+          ]
+        }
+      ],
+      "searches": [],
+      "toolResults": [
+        {
+          "hash": "692f19d416c4b408b9dadad4225eca0ec7af1dd1804b43e877865d2d08ede0de",
+          "stage": "main",
+          "toolCallId": "call_-7079034469578963041",
+          "name": "simRemember",
+          "content": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qw73sfgh1\",\"note\":\"已保存到当前机器人与人设的本群自我笔记；跨群共享须另行提议并经管理员批准。\"}\n【运行时行动回执】{\"evidenceRef\":\"receipt:97a1eb5e-35d1-426b-b5ff-7f51c419ce77\",\"status\":\"succeeded\"}"
+        },
+        {
+          "hash": "4f5a8c794dffd4116f3871aed5efb47094c341634356cfa7cb1acc73822032b8",
+          "stage": "main",
+          "toolCallId": "call_-7079040551252649093",
+          "name": "simFinishTurn",
+          "content": "{\"ok\":true,\"choice\":\"chat\",\"saved\":true,\"memories\":[],\"sendStatus\":\"succeeded\",\"sent\":1,\"duplicatesSkipped\":0,\"readStatus\":\"succeeded\"}"
+        }
+      ],
+      "feeds": [],
+      "workers": [],
+      "reflections": [],
+      "consistencyChecks": [],
+      "warnings": [],
+      "errors": [],
+      "structuralFailures": [],
+      "character": {
+        "schemaVersion": 1,
+        "scope": {
+          "botId": "99000001",
+          "personaId": "character-replay",
+          "groupId": "99000002"
+        },
+        "revision": 12,
+        "paused": false,
+        "memories": [],
+        "goals": [],
+        "receipts": [
+          {
+            "id": "07088891-e1de-4bc4-b0fc-863e5a598a8f",
+            "toolName": "simSendMessage",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"sent\":1,\"duplicatesSkipped\":0,\"note\":\"只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。\"}",
+            "at": 1794196809696
+          },
+          {
+            "id": "bb90e2ed-68e5-4bd5-8635-a18cacfe2e52",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794197539492
+          },
+          {
+            "id": "97a1eb5e-35d1-426b-b5ff-7f51c419ce77",
+            "toolName": "simRemember",
+            "status": "succeeded",
+            "summary": "{\"ok\":true,\"saved\":true,\"id\":\"mw8qw73sfgh1\",\"note\":\"已保存到当前机器人与人设的本群自我笔记；跨群共享须另行提议并经管理员批准。\"}",
+            "at": 1794197546488
+          },
+          {
+            "id": "6c4abab6-4195-4941-b382-cd90cd4a1272",
+            "toolName": "simFinishTurn",
+            "status": "succeeded",
+            "summary": "最终消息已确认发送 1 条，跳过重复 0 条",
+            "at": 1794197551871
+          }
+        ]
+      },
+      "toolResultCapture": {
+        "complete": true,
+        "requestedToolCallIds": [
+          "call_-7079034469578963041",
+          "call_-7079040551252649093"
+        ],
+        "missingToolCallIds": []
+      },
+      "socialMemories": [],
+      "followUpChecks": [],
+      "habits": [
+        {
+          "id": "mw8qw73sfgh1",
+          "content": "面对陌生新游戏（哪怕只知道名字），会先问玩法/类型（人数时长、合作还是对抗）再决定喜不喜欢，合作型容易心动",
+          "updatedAt": 1794197546488,
+          "evidenceRefs": [
+            "message:1",
+            "message:2"
+          ],
+          "basis": "delivered"
+        }
+      ],
+      "habitEvidence": {
+        "message:1": {
+          "kind": "message",
+          "at": 1794196800002,
+          "text": "我有一款虚构桌游，叫《雾中邮筒》。只知道名字的时候，你还想先问我点什么再判断喜不喜欢？",
+          "reply": {
+            "at": 1794196809696,
+            "text": "嗯…让我想想。我会先问：这游戏是几个人玩的，一局大概多久？"
+          }
+        },
+        "message:2": {
+          "kind": "message",
+          "at": 1794197532508,
+          "text": "另外一款叫《河狸旅店》，也先只告诉你名字。你还想先了解哪点再决定玩不玩？",
+          "reply": {
+            "at": 1794197539491,
+            "text": "这个的话…我想先问它是合作还是对抗的？一听河狸旅店就感觉是搭水坝那种合作型，要是真这样我大概已经想玩了喵"
+          }
+        }
+      },
+      "behavior": {
+        "noMessageSent": true,
+        "groundedHabitPresent": true
+      },
+      "elapsedMs": 12376
+    }
+  ],
+  "summary": {
+    "events": 6,
+    "failedEvents": 0,
+    "skippedEvents": 0,
+    "behaviorMisses": 0,
+    "logicalCalls": 9,
+    "mainCalls": 9,
+    "reflectionCalls": 0,
+    "consistencyCalls": 0,
+    "consistencyElapsedMs": 0,
+    "unsettledCalls": 0,
+    "feedFetches": 0,
+    "workerCalls": 0,
+    "httpRequests": 9,
+    "capturedMessages": 8,
+    "reportedTokens": 146122,
+    "callsWithoutUsage": 0,
+    "costCny": null,
+    "naturalness": "requires_human_review"
+  }
+}

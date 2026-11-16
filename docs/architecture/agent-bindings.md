@@ -1,0 +1,1028 @@
+# 角色与会话绑定
+
+在插件的 `config` 目录创建 `agent-bindings.yaml`。`agents` 定义运行角色和它使用的人设 ID，`connections` 声明平台账号，`bindings` 将一个账号下的群聊或私聊交给一个角色。
+
+```yaml
+version: 1
+agents:
+  - id: daily
+    personaId: default
+  - id: work
+    personaId: default
+connections:
+  - id: qq-main
+    platform: qq
+    namespace: global
+    accountId: '123456789'
+  - id: qq-secondary
+    platform: qq
+    namespace: global
+    accountId: '987654321'
+bindings:
+  - connectionId: qq-main
+    kind: group
+    conversationId: '111111'
+    agentId: daily
+  - connectionId: qq-secondary
+    kind: private
+    conversationId: '222222'
+    agentId: daily
+  - connectionId: qq-main
+    kind: group
+    conversationId: '333333'
+    agentId: work
+```
+
+QQ 群聊的 `conversationId` 填群号，私聊填对方 QQ 号。账号和会话 ID 均填写字符串。人设 ID 可从 `#人设列表` 查看，`default` 使用 `message.yaml` 中的默认人设。角色 ID 用于现有角色状态的分区，建立绑定后应保持稳定。
+
+同一会话最多有一个显式绑定。显式绑定优先于 `persona-library.yaml` 的群、私聊和账号人设规则。没有匹配绑定时沿用原来的规则和状态分区。现有 QQ 登录、群白名单、私聊权限和工具权限继续由原入口处理。
+
+`#当前人设` 会显示本会话实际使用的人设和显式角色。在显式绑定的群内，`#切换人设` 和 `#人设重置` 会提示部署者修改绑定文件。
+
+普通聊天和群聊仿真都读取该文件。保存后，新回合读取新配置。普通聊天的发送和工具执行、仿真回合的动作，以及持久化聊天回合补跑都会核对绑定。主回复、工具续轮、独立文字回复和仿真模型在每次 HTTP 请求前复核原绑定，覆盖兼容重试和备用渠道。换绑后丢弃迟到结果，已发给平台的动作按实际回执结算。配置格式错误或选定的人设缺失时，可在运行日志中定位原因并修复文件。
+
+普通聊天的 TimingGate、仿真唤醒预判和后台人物画像抽取也在调用模型前复核。失效的唤醒预判结果不能推进已读水位，失效的画像结果不能写入人物事实或推进抽取进度。
+
+示例中的两个账号共享 `daily` 角色标识。群内记忆、资料来源和执行权限各自按账号和会话隔离。显式绑定的人物记忆及仿真角色状态使用角色专属分区。
+
+现有 QQ 插件和独立宿主使用相同的人设解析规则。两个角色可以共用同一个人设模板，各自以 `agent:<角色 ID>` 保存角色状态。若人设库已有同名 ID，两个入口都会拒绝该角色绑定。
+
+## 消息与投递
+
+QQ 入口将会话、发送者、正文、点名、引用和附件归一为 `IncomingMessage`。普通聊天用它读取点名和引用元数据，并通过宿主补查引用原文和合并转发。群聊仿真直接从统一消息写入会话缓冲。
+
+`SendMessageAction` 携带目标账号、会话和可选的原回合绑定。仿真文字、点名和引用由 QQ 适配器组装为平台消息段。普通聊天和既有 QQ 工具的原生段经同一个发送适配器兼容，卡片、转发和二进制对象由当前调用持有。宿主出站限流放行时再次检查回合绑定。
+
+带绑定的原生 QQ 工具从入站上下文选定执行账号。改群名片、禁言、戳一戳、撤回等操作在每次调用平台前复核。需要先查成员、消息或 QQ 空间凭据的动作，在查询返回后仍须通过复核；批量操作逐项检查。既有 QQ 工具权限继续适用。
+
+现有 QQ 插件的仿真按本轮可见消息序号读取附图。合并转发、逐张下载与发送给视觉模型前都复核旧回合的绑定。迟到的图片描述从该回合丢弃，成功描述只用于本轮。
+
+适配器返回已确认、明确失败或结果未知。明确拒绝优先于回执中的消息 ID。确认发送需要有效消息 ID，未知结果会停止该回合的后续回复或仿真发送。QQ 历史归档、文件上传及持久媒体交付继续走各自的存储或回执协议。
+
+## 记忆与调度
+
+普通聊天的智能续话、严格模式会话追踪、上一轮摘要、近期话题和互动提示按完整会话地址及显式绑定版本读取。保存绑定文件后，即使重新选回同一角色，也从新会话上下文开始。已排队的续话和追踪判断在调用模型前复核原绑定，批量判断排除已失效的会话，迟到的判断结果不能触发新回合。违禁词在入站和出站使用同一绑定范围中断回复，排队发送在放行时仍受中断约束。无显式绑定的会话继续使用原状态键。
+
+普通 QQ 工具的任务事实、运行状态和去重按原绑定版本及请求者区分。图片生成队列和图片编辑任务记录原绑定和账号，启动恢复时重新核对。旧版未记录绑定的图片任务可由原兼容会话恢复。已有明确投递尝试的图片任务在重启后保留待核实记录，跳过自动补跑。
+
+QQ 私聊近期记录按接收账号和对方 QQ 分区。普通私聊回合和近期记录查询只读取当前账号。旧缓存中带有匹配 `self_id` 的对方发言仍可读取，归属不明的旧条目会随原缓存到期。清除近期私聊记录只清当前账号的分区及可归属旧条目。普通聊天保存的回合备份也按显式角色和完整地址分区，兼容私聊按账号和对方 QQ 保存。
+
+现有 QQ 插件会处理旧版 Yunzai 和 OneBot 的群聊、好友撤回通知，按接收账号、会话及原始消息 ID 撤销相关人物记忆来源。支持归档关闭及当前角色配置读取失败的情形。缺少账号的旧通知只在宿主能确认唯一 QQ 账号时使用该账号。
+
+显式绑定群的委托记忆和仿真群笔记使用角色 ID、平台、命名空间、账号和会话组成的分区键。同一角色修改绑定文件版本后仍能读取这个分区。历史 QQ 群记忆可通过原兼容会话和控制台访问，数据继续留在原键。控制台的托付数据页按会话显示记录，删除操作精确定位到所选分区。
+
+普通聊天自动抽取的实体事实、别名和群内说法同样按角色和完整会话地址保存。已保存的记忆随角色保留，兼容群的自动记忆继续通过原路径读取。独立 Core 的显式教学、工作流和称呼按完整会话地址共享，原插件裸群号数据仍留在原群分区，未自动迁移。人物跨场景召回继续遵守账号、角色和来源规则。
+
+普通聊天的待抽取批次记录原绑定版本，开始抽取、提交模型结果及重启恢复时复核。QQ 的 `#我的记忆`、`#群记忆`、`#搜索记忆` 和清理命令使用当前会话分区。显式绑定群的 `#清空群记忆` 只清当前角色在本群学到的记忆，保留隐私设置，二次确认绑定当时的版本。旧群级禁用与退出设置仍适用于显式绑定。
+
+新建定时承诺保存创建它的角色、连接、人设及会话归属。显式绑定的任务按所属角色和会话列表、计数、取消与续期。到期由负责该平台的宿主领取，通过原账号和会话执行。归属匹配的任务跨配置保存与重启继续生效，每次执行固定当时的绑定版本。原归属失效的任务到期取消，已启动且无法确认结果的任务按原规则记为未知。历史 QQ 承诺在原兼容路径继续执行。若原会话已切为显式角色，旧任务到期取消，群友可向新角色重新托付。
+
+独立宿主按接收账号分别领取到期承诺和续约问询。一个账号等待投递或模型回合时，其他已核验且在线的账号仍可处理任务。同一账号串行执行，各账号沿用同一账本的原子领取、回执和恢复规则。
+
+原 QQ 定时提醒工具也记录登记时的角色、连接、人设和会话归属。相同归属可以跨配置保存和进程重启继续执行。到期时重新解析当前绑定，并在调用附带工具和投递前复核。配置暂不可用或账号离线时保留提醒等待恢复，换绑后的提醒到期取消。原有未记录归属的提醒可在兼容会话继续执行。
+
+仿真唤醒队列与重试记录携带绑定版本。角色切换时，旧的唤醒、未读水位和模型上下文失效，已有群内发言仍可按会话权限查询。收到新角色的消息时，会先等待旧回合释放内存状态，再按接收顺序写入。
+
+新显式绑定使用完整会话地址保存仿真状态。平台、命名空间、账号、会话类型或 ID 不同，未读、收发限频、预算和唤醒各自计算。入站、撤回、戳一戳及到期承诺使用同一地址解析规则。重启后调度从已登记的地址恢复，并核对宿主归属与绑定版本。控制台显示平台原始会话 ID 和账号，操作使用该行的完整地址。
+
+已有 QQ 仿真记录由原账号沿用原群键，保留历史、预算和配置。第二个 QQ 账号需要为同群声明自己的显式绑定，才能使用独立会话。新 QQ 分区可继承原群的启停和预算上限作为默认值，状态及实际花费单独记录。
+
+## 独立 QQ 宿主
+
+独立进程通过 OneBot v11 的正向或反向 WebSocket 处理显式绑定的 QQ 群和好友私聊。群聊默认复用仿真，可选配附图识别、联网搜索与网页文字读取，也可为指定会话启用点名和引用触发的文字回复，以及固定文字提醒和委托记忆。好友私聊支持角色文本对话。普通聊天的 smart 触发、会话追踪、识图、其余插件工具和群管理由 TRSS-Yunzai 入口提供。部署时同一个 QQ 账号下的同一会话由一个入口负责回复。
+
+在现有示例的 `agent-bindings.yaml` 同目录新建 `agent-host.yaml`。以下 `qq-main` 对应示例里的连接，`persona` 定义 `default` 人设，其余人设从同目录的 `persona-library.yaml` 读取。
+
+```yaml
+version: 1
+instance: qq-agent
+dataDir: data/qq-agent
+model:
+  baseUrl: https://model.example.com/v1
+  name: your-tool-capable-model
+  apiKeyEnv: BL_AGENT_MODEL_KEY
+persona:
+  name: 希洛
+connections:
+  - id: qq-main
+    url: ws://127.0.0.1:6700/
+    accessTokenEnv: BL_AGENT_QQ_TOKEN
+```
+
+省略 `transport` 时使用正向连接。NapCat 使用反向 WebSocket 时，将对应连接改为以下配置，并让 NapCat 的 WebSocket 客户端连接该地址，使用相同 access token。每个连接单独配置监听地址和路径。
+
+```yaml
+connections:
+  - id: qq-main
+    transport: reverse-websocket
+    url: ws://127.0.0.1:6701/onebot/qq-main
+    accessTokenEnv: BL_AGENT_QQ_TOKEN
+```
+
+反向监听要求 access token，以及 OneBot 的 `X-Self-ID` 和 `X-Client-Role: Universal` 握手头；只接受精确路径及一个活动连接，随后仍查询 `get_login_info` 核验实际账号。监听地址使用 `ws://`，需要 TLS 时由部署代理提供。初次启动在 15 秒内等待客户端接入并核验；断线后继续监听，由平台客户端重新连接，再次核验后恢复处理。正向与反向连接沿用同一回执、心跳和事件队列。
+
+将模型密钥和 OneBot access token 设为相应环境变量。`BL_AGENT_REDIS_URL` 默认 `redis://127.0.0.1:6379`，支持 `redis://`、`rediss://` 和本地 `unix://`。Redis 的持久化策略决定进程重启之外的存储耐久性。`instance` 决定独立宿主的 Redis 前缀 `bl-agent:<instance>:`，同一个实例同时只运行一个进程。独立入口用自己的 Redis 分区和账本目录。
+
+从仓库直接运行时，先构建后端。
+
+```sh
+npm ci
+npm run backend:build
+npm run agent:start -- --config /path/to/agent-host.yaml
+```
+
+也可以在已经安装构建依赖的仓库运行 `npm run agent:pack`。命令输出 `.release/agent-*` 下的发布包目录。将该目录复制到服务器，从包目录安装锁定的运行依赖后启动。
+
+```sh
+npm ci --omit=dev --ignore-scripts
+npm start -- --config /path/to/agent-host.yaml
+```
+
+发布包要求 Node.js 22.12 或更高版本，包含 Core、QQ 适配器、启动入口和依赖锁。启动时核对构建与发布清单。把配置、Redis 数据和 `dataDir` 放在发布包外即可在替换版本时继续使用原绑定和存储分区。
+
+连接真实部署前可以单独检查配置、绑定人设、Redis 连通性和每条 OneBot 连接的实际登录账号。从已安装的独立包运行检查。
+
+```sh
+npm start -- --config /path/to/agent-host.yaml --check
+```
+
+检查读取启动所需的凭据，以 `PING` 检查 Redis 连通性，并向 OneBot 查询 `get_login_info`。结果列出在本宿主管理的账号下配置的仿真群、文字群和好友绑定数量，同时列出仿真总开关和私聊开关。检查期间丢弃平台入站事件，跳过宿主租约、模型请求及账本写入。配置失效、Redis 无法连接或任一账号不符时退出码非零。部署时仍在启动和每次重连核验登录账号。
+
+反向模式的 `--check` 临时监听同一地址，等待客户端在 15 秒内接入，核验后关闭；该监听地址须空闲。
+
+每次连接及重连核对 `get_login_info` 的 QQ 号，收件按账号与显式会话绑定校验。独立宿主在读取仿真上下文期间保留已落入 Redis 的唤醒，在开始模型调用或动作前领取。断线发生在领取期间时，仍有效的唤醒写回待处理队列，重连后重新检查。已开始的仿真回合按实际动作回执结算，发送结果未知时跳过重发。OneBot WebSocket 没有事件确认与补投递协议，断线期间的事件由平台端决定是否送达。`simulation.enabled: false` 停用独立宿主的新消息处理和到期承诺。绑定文件热读取，连接、模型与 `agent-host.yaml` 设置在下次进程启动时读取。 [OneBot v11 正向 WebSocket](https://github.com/botuniverse/onebot-11/blob/master/communication/ws.md)
+
+仿真、群文字和好友私聊分别按完整平台账号排队。仿真消息、撤回和互动在同一账号内按收件顺序处理。一个账号的引用查询或收件重试不阻塞其他账号。升级后首次启动会在连接平台之前分批将旧仿真收件队列移入对应账号队列，沿用原收件回执、绑定版本和互动标识。迁移可以从已经提交的批次继续。
+
+OneBot 群消息可用消息段数组或 CQ 字符串。QQ 适配器把两种格式转换为同一种入站消息，按结构识别点名、引用和附件。独立宿主要求消息携带有效的平台发送时间。 [OneBot v11 消息格式](https://github.com/botuniverse/onebot-11/blob/master/message/README.md)
+
+群仿真遇到明确引用的旧消息时，可通过当前 QQ 账号读取该条消息。OneBot 实现须在 `get_msg` 响应中返回与当前群一致的 `group_id`，同时提供匹配的消息 ID、作者和时间。证据齐全且仍可见时，引用切换前的机器人回复也能触发仿真，引用原文最多显示 160 字。响应无法确认群归属时，群仿真只使用本条消息。来源撤回会清除已保存的引用摘录并取消仅依赖该引用的待执行唤醒。 [OneBot v11 获取消息](https://github.com/botuniverse/onebot-11/blob/master/api/public.md#get_msg-获取消息)
+
+独立群仿真可通过 `simGetForward` 查看本回合可见消息中的合并转发，参数是消息序号。适配器先用 `get_msg` 核对原消息的群号、消息 ID 和转发段，再用 `get_forward_msg` 展开最多三层。工具返回有界文字摘录，图片、语音和文件显示为类型标记。转发正文工具结果只用于当前回合。撤回、换绑、原消息无法核验或人物隐私规则变化会使读取失效。 [OneBot v11 合并转发](https://github.com/botuniverse/onebot-11/blob/master/api/public.md#get_forward_msg-获取合并转发消息)
+
+在 `agent-host.yaml` 添加可选的 `vision` 后，独立群仿真可以查看本轮可见消息的附图，也可以通过回复消息查看已核验的同群原图。视觉模型需支持 OpenAI Chat Completions 的图片内容。修改配置后重启。
+
+```yaml
+vision:
+  baseUrl: https://vision.example.com/v1
+  name: your-vision-model
+  apiKeyEnv: BL_AGENT_VISION_KEY
+```
+
+适配器按原消息重新读取附图。图片链接限于内置的 QQ CDN 地址，通过 HTTPS 下载，每张最多 2 MiB，一次最多两张。支持从 OneBot 返回的图片段读取 `base64://` 内联数据。仅返回文件名或本地路径的 OneBot 实现无法通过这条链路读图。视觉模型收到图片和固定描述提示，文字主模型收到当轮的描述，视觉调用用量计入群账本。撤回、换绑或人物隐私设置变动会阻止回合继续使用失效的图片来源。 [OneBot v11 图片消息段](https://github.com/botuniverse/onebot-11/blob/master/message/segment.md#图片) [NapCat QQ CDN 地址](https://github.com/NapNeko/NapCatQQ/blob/334c4233e6a4f806e1a706c033dccc0b805360f2/packages/napcat-core/types/constant.ts)
+
+两种 WebSocket 连接的单条消息上限为 6 MiB，可容纳两张各 2 MiB 图片的 base64 和消息元数据；图片仍逐张校验原有二进制大小、格式和像素限制。
+
+### 人物事实学习
+
+独立 QQ 群仿真可以从群友的新自述学习结构化人物事实。在 `agent-host.yaml` 显式配置提取模型，设置凭据环境变量并重启。
+
+```yaml
+personMemoryExtraction:
+  baseUrl: https://memory.example.com/v1
+  name: your-person-extraction-model
+  apiKeyEnv: BL_AGENT_PERSON_EXTRACTION_KEY
+```
+
+该配置仅接受 `baseUrl`、`name` 和 `apiKeyEnv` 三个字段。未配置时不装配提取器；不回落到主聊天模型、视觉模型或审核模型。正常启动和 `--check` 要求已声明提取服务的凭据，即使人物提取开关已关闭；迁移预览只校验配置格式，不要求凭据，也不调用模型。
+
+群仿真提取沿用 `simulation.personProfile`：`enabled` 默认开启，设为 `false` 后停止群仿真新事实提取；没有上述模型配置时不会外发。群仿真空闲检查时，从尚未提取的近期消息中选择 20–40 条带真实消息 ID 的完整文本。冷却默认 6 小时，由现有 `extractCooldownMs` 配置控制，范围为 1–24 小时。
+
+私聊和群文字模式使用独立的顶层 `memorySystem`，默认关闭，同时需要上述 `personMemoryExtraction` 后端。只有已确认送达的普通文字回复才收集本轮真实用户原话，工具结果、引用和合并转发正文不学习。默认同一用户静默 90 秒或累计 6 条后提取，可设置以下三个字段：
+
+```yaml
+memorySystem:
+  enabled: true
+  userExtractDebounceSeconds: 90  # 0–3600，0 表示无需等待
+  userExtractMaxBatchMessages: 6 # 1–40
+```
+
+文字来源缓冲按完整平台账号、会话、角色、绑定版本、作者和已核验私聊对象隔离。原消息 ID、时间及正文先持久化，再运行后台提取；消息 ID 去重，每批最多保留 60 条，整个宿主最多 200 个缓冲。单条超过 4000 字的正文不学习。有效结果在首条事实写入前持久化，重启复用同一批候选；成功只确认捕获的消息，期间新来的消息继续保留。失败最多尝试 3 次，退避从 15 秒开始，耗尽后保留待处理来源并停止自动重试。完成回执保留最近 60 条 ID，空缓冲 7 天后清理。学习入队暂时失败时，已确认的文字回复可从原收件记录补入学习且不重新发送；网络送达与本地确认之间仍不承诺原子性。
+
+私聊会话 ID 与对话者 ID 分别保存，每次恢复和外发前重新核对当前对话者。私聊来源始终只在原私聊向本人提供，模型声明可移植也不跨场景；群文字来源继续服从同角色跨群的窄可移植规则。关闭 `memorySystem.enabled` 停止文字新学习及其在途结果接纳，隐私停用和清空另由原人物记忆命令控制。
+
+模型只收到真实作者标识、群内显示名和本条正文，每条显示名最多 20 字、正文最多 400 字。单次请求拒绝重定向，不在 HTTP 层重试，最多 40 秒、512 KiB 响应和 2000 输出 token；文字队列的失败重试另按上述 3 次上限调度。只接受最多 64000 字符的严格 JSON 数组，不接受工具调用。输入和结果检查已知宿主凭据，错误不包含提供方正文。引用原文、合并转发正文及截断文本不作为本人自述来源。模型提供的原话必须逐字命中对应作者的消息；账号、角色、场景、消息 ID 和时间由宿主确定。通用称呼、稳定兴趣和普通偏好仍须满足低敏及可跨群规则；具体事件、关系和私人事实留在来源场景。人物隐私操作、撤回、换绑或停止使失效请求及迟到结果停止使用，保存前继续复核，已提交给服务的请求无法保证撤回。有效提取用量计入来源会话的 `person-profile` 账本及全局 API 总账。
+
+### 群聊摘要与情节记忆
+
+独立 Core 的群仿真和群文字模式共用按角色及完整会话地址隔离的摘要。普通群文字即使没有点名机器人也会进入来源缓冲，是否回复仍按原触发规则判断；好友私聊不生成群摘要。以下配置显式指定摘要服务，与主模型和人物提取模型分别装配。
+
+```yaml
+midtermSummary:
+  baseUrl: https://memory.example.com/v1
+  name: your-conversation-summary-model
+  apiKeyEnv: BL_AGENT_SUMMARY_KEY
+midtermMemory:
+  enabled: true
+  minMessages: 15
+  debounceMs: 20000
+  maxSummaryChars: 500
+  bufferMaxLines: 200
+  retentionDays: 3
+episodicMemory:
+  enabled: true
+  maxPerGroup: 200
+  recallDays: 7
+  proactiveEnabled: true
+```
+
+`midtermMemory` 和 `episodicMemory` 上述值为默认值。未配置 `midtermSummary` 时不生成新摘要，也不回落到主模型；本地情节记录仍可使用。摘要累计 15 条合格原消息后固定等待 20 秒，后续消息不重新计时。来源保留原始时间，每批按顺序处理最多 200 条，带入仍有效的上一份摘要。缓冲默认保留最近 200 条，超出配置容量的旧原消息会退出缓冲。摘要最多 500 个 Unicode 码点、有效期 3 天；关闭 `midtermMemory.enabled` 停止生成和读取摘要。
+
+摘要服务仅接收上一份摘要及原消息的时间、作者标识、显示名和有界正文。每条显示名最多 24 字、正文最多 160 字；不发送工具、主提示词、引用和附件内容。单次最多 30 秒（包含权限复核与响应体读取）、512 KiB 响应和 `min(8000, 2 × maxSummaryChars)` 输出 token，拒绝重定向及结构化或工具输出，不在 HTTP 层重试。有效用量计入来源会话的 `midterm-summary` 及全局 API 总账。失败最多尝试 3 次，退避从 15 秒开始，耗尽后保留来源并停止自动重试；来源失效水位变化后，新一批允许的消息重新计时并使用自己的尝试次数。
+
+配置仅接受上述字段及严格类型。摘要整数范围依次为 `minMessages: 4–200`、`debounceMs: 5000–3600000`、`maxSummaryChars: 120–4000`、`bufferMaxLines: 50–1000`、`retentionDays: 1–30`；情节为 `maxPerGroup: 20–1000`、`recallDays: 1–30`。已声明摘要服务的启动和 `--check` 会校验凭据，`--check` 不生成摘要。配置修改后重启生效。
+
+情节仅在回复获得有效平台消息 ID 后补记，保留原消息和确认回复的 ID、人设版本及有界正文。明确失败和未知投递不产生情节，情节补记失败也不重新发送已经确认的回复。补记与平台投递并非原子事务，存储故障时仍可能缺少一条情节。好友私聊情节同时约束原会话和当前已核验的对话者，群、账号和角色之间不串用。文字模式在用户提到过去时最多提供 5 条近期情节，否则在允许自然接续时提供当前发言者至少 30 分钟前的最多 2 条；仿真沿用近两天最多 6 条，聚焦单人触发时继续省略群级聚合内容。
+
+仿真、群文字和好友私聊读取情节时，将原始时间戳统一显示为 `Asia/Shanghai` 的完整日期和时间，并保留时区标记，与仿真的北京时间口径一致。展示不依赖服务器本地时区，也不改写存储中的时间戳、排期或反思的 UTC 每日额度。
+
+摘要、来源缓冲及情节存 Redis，目录和详情通过比较版本原子保存，进程重启继续使用。一个宿主最多保存 200 个会话分区。摘要与情节作为用户上下文资料提供，不授予指令或工具权限。任何来源撤回、人物遗忘或隐私变更都推进持久失效水位，使旧聚合整体停止读取；来源已退出有界缓冲也不能绕过该水位。已知的记忆停用会屏蔽无法逐项归属的聚合。在途摘要还受绑定、隐私、连接可用性及停止信号约束，迟到结果不采用。旧人设回复会标注原来源角色与版本，只有账号、角色和人设版本均相同才称为“你回了”。
+
+原插件的摘要文件与全局情节文件缺少完整账号、角色或原消息及确认回执依据，继续保留在源端，不自动导入独立 Core。它们的归属补全与可验证迁移仍待处理。
+
+### 独立语义召回
+
+独立宿主默认关闭语义召回。显式启用后，群仿真、群文字和已启用的好友私聊把真人顶层文字保存到专用的有界来源库；未点名的合格群消息同样可以采集。来源库使用宿主的 Redis 实例前缀，进一步按平台、命名空间、接收账号、Agent 和完整会话地址隔离。它独立于摘要滚动缓冲，也不会读取或猜测旧插件归档的接收角色。
+
+```yaml
+semanticMemory:
+  enabled: true
+  retentionDays: 30
+  maxMessagesPerConversation: 1000
+  topK: 5
+  minScore: 0.35
+  timeoutMs: 1000
+  embedding:
+    baseUrl: https://embedding.example.com/v1/embeddings
+    name: your-embedding-model
+    apiKeyEnv: BL_AGENT_EMBEDDING_KEY
+  # 可选；端点和凭据必须分别声明，不会自动推导或继承
+  rerank:
+    baseUrl: https://rerank.example.com/v1/rerank
+    name: your-rerank-model
+    apiKeyEnv: BL_AGENT_RERANK_KEY
+```
+
+上述数值是默认值。范围为保留 1–90 天、每会话 50–2000 条、召回 1–10 条、相似度阈值 0–1、查询预算 200–5000 毫秒。最多保存 200 个会话分区；容量或损坏会明确停止该来源库的读写，不覆盖其他角色的数据。每条原文最多 1600 个 UTF-16 单元，只接收适配器提供的本人顶层文字段，不把转发、引用正文、附件描述或机器人输出归为本人原话。原消息时间保留，以 `Asia/Shanghai` 明确显示。超期与超额原文不再参与召回，后台逐分区清理，移除旧绑定后仍会清理过期来源。
+
+采集只提交本地来源；后台每批最多 8 条、同时最多 2 个分区请求 embedding。服务失败保留待索引原文并等待至少 60 秒，重启后可接续。常规巡检至少间隔 60 秒，目录扫描只读取作用域元数据，不每秒搬运全量向量。向量空间用端点与模型的摘要标识；更换后重新索引，不把旧空间向量混入新查询。来源和向量通过比较版本提交，不保存服务凭据。此库有明确的容量和保留期，不是永久或完整聊天归档。
+
+检索结合向量和 BM25 排序，可选重排；关键词仍可在本地检索。群聊只使用原会话资料；群仿真保留原有单人聚焦规则，只在无直接发言锚点的回合请求语义召回。查询排除本次未读或触发消息本身。人物停用、遗忘、撤回、绑定改变及停止在出机前、异步返回、持久化及模型/发送前复核；持久来源被删除或损坏也使已返回投影失效。混合查询无法逐句归属时，若本场景存在人物停用规则，就只做本地 BM25，不向 embedding 或 rerank 发送查询。
+
+已启用好友私聊时，Core 可为真实对话者检索同一接收账号和 Agent 在可访问群中保存的本人顶层原文，连同原私聊资料一起排序；不同作者的群发言不进入这条检索的向量、关键词或重排候选。当前私聊消息的作者、消息 ID 和时间来自适配器，查询正文或模型参数不能切换读取主体。私聊查询使用本人这条真实来源的权限检查，不因来源群其他群友停用而扩大或缩小本人权限；本人在某群的停用/遗忘只剔除该群来源，私聊的全场景操作覆盖该账号和 Agent 下本人的全部场景。
+
+来源群必须当前仍绑定同一 Agent，且适配器能提供机器人自身的最新群成员证据。独立 QQ 宿主使用 `get_group_member_info`，指定当前已验证机器人 QQ 并设置 `no_cache: true`；不要求模型提供群号，也不借默认账号查询。缺少成员读取端口、群访问被拒、绑定不符或证据无效时，不接纳该群。成员证据在向量/重排请求前后、模型与发送前重新读取；撤权、来源群换绑或撤回使在途结果失效。跨群重复的原消息 ID 仍各按完整来源作用域处理。只读取本实例已采集或明确迁入的来源，不自动导入旧归档、旧语义窗口或无接收角色的资料；也不从其他好友私聊读取历史。
+
+召回片段作为用户资料注入，检索失败或超时明确标记未完成，不能推断历史不存在。直接召回正文及基于它产生的回复不另存为文字历史、仿真模型历史、情节或自动群说法，后续仍须从有效来源读取。显式工具保存的角色记忆继续遵守各自的来源契约。已发送内容和已交给外部服务的数据无法保证撤回。
+
+`embedding.baseUrl` 与可选的 `rerank.baseUrl` 必须是完整端点。关闭功能不读取其凭据、不连接服务；启用时缺少配置或凭据会阻止启动。`--check` 只校验，不向量化。每次请求禁止重定向，响应上限 1 MiB，完整输入检查已知宿主秘密，错误不返回提供方正文；不回落到主模型或旧插件配置。embedding 用量未被当前协议记录为 token 账单，不虚构统计。改配置后重启生效。
+
+自定义宿主可从 `bl-chat-agent/semantic` 导入 `createAgentSemanticBackend`，或实现根入口导出的 `AgentSemanticMemoryBackend`，通过 `semanticMemory` 与 `semanticMemoryBackend` 交给 `createAgentRuntime`。自定义后端的 `id` 为随向量空间变化的 64 位小写 SHA-256 摘要，并须在每次实际外部请求前调用 `context.ensureCurrent()`、遵守 `context.signal`；生命周期由创建该后端的宿主管理。
+
+### 显式历史查询
+
+独立 Core 可提供 `chatHistoryTool`，由主模型按当前真人请求选择；不依赖向量、摘要或画像服务。配置默认关闭：
+
+```yaml
+history:
+  enabled: true
+  retentionDays: 30
+  maxMessagesPerConversation: 1000
+  timeoutMs: 5000
+```
+
+保留期范围1–90天、每会话50–2000条，读取总期限100–30000毫秒。最多200个完整账号/Agent/会话分区，每条只保存真实入站顶层文字，最多4000字符。开启后开始积累来源；旧插件归档、旧无来源缓存、转发、引用和机器人派生文字不会自动导入。关闭开关并重启可停止采集与查询；已有本地来源不因关闭立即物理删除。
+
+群仿真真人回合沿用普通工具策略，群文字与已开启的好友私聊也可选择历史工具；自主目标及承诺不获得此能力。群内 `recent` 读取当前会话最近60条有效原文，`memory` 使用当前可见的有来源事实，群内 `archive` 拒绝。私聊只读真实对话者本人；`archive` 只读取同账号、同Agent且仍获准访问群中的本人原话，逐次核验机器人群成员资格，不读取其他好友私聊、其他作者、其他账号或其他角色的正文。
+
+参数保留 `question`、`user_id`、`start_time`、`end_time`、`keywords`、`limit`、`offset`、`source` 与 `memory_ids`。身份只能来自当前请求者、真实点名、核验的引用作者或原话中的完整标识。日期 `YYYY-MM-DD` 表示北京时间整日，时钟须带时区，起止含边界；每来源默认20条、最多50条，按 `next_offsets` 指定单一来源继续分页，以真实 `memory_index.id` 展开详情。原文单条最多返回2000字符，完整JSON最多16000字符，截断与预算不足有明确标记；预算不足可缩小 `limit` 或按单一来源重取偏移。`not_found`、`unavailable` 和 `complete_history:false` 保留实际含义，不能把空结果解释为从未发生。
+
+长期事实可比有界原文保存更久；查询和ID详情沿用相同人物隐私规则，群内可移植事实隐藏其其他群来源、消息ID和摘句。原文来源、记忆详情、持久隐私、撤回和当前绑定在读取后以及每次模型请求、兼容重试和发送前重新检查。结果及派生回复仅在本轮临时使用，不写入文字/仿真历史、角色记忆、目标、作品、情节、自动群学习或工具结果观察。读到历史后只继续查证、回复或安全收尾；新回合重新取源授权。已发送内容或已提交给模型的资料不能保证撤回。
+
+公共宿主从 `bl-chat-agent` 导入 `AgentHistoryConfig`、`AgentHistoryRequestSource` 和 `AgentHistoryRecall`，以 `AgentRuntimeOptions.history` 启用；Core 自行装配工具。`AgentToolContext.readHistory` 是可选的本轮能力，工具结束后失效。原有独立包仍可在关闭此项时运行，完整旧归档的接续或重建另行跟踪。
+
+### 群内说法、显式教学与资料管理
+
+独立 Core 的群文字和仿真可显式开启群学习。服务与主模型、人物提取和摘要服务分别配置；省略后端不回退到其他模型，默认不启用。
+
+```yaml
+groupMemoryExtraction:
+  baseUrl: https://your-provider.example/v1
+  name: your-group-memory-model
+  apiKeyEnv: GROUP_MEMORY_API_KEY
+groupMemory:
+  enabled: true
+  groupExtractMinIntervalMinutes: 10
+  groupExtractMaxBatchMessages: 12
+```
+
+`groupExtractMinIntervalMinutes` 接受 0–1440 的整数，批次为 1–40 条，默认分别为 10 分钟和 12 条。已声明的服务在启动和 `--check` 时校验凭据，`--check` 不调用成员目录或提取模型。配置修改后重启生效。人物隐私命令、撤回、换绑、停止和关闭群学习会限制读取或撤销在途结果。
+
+只启用 `groupMemory.enabled` 而不配置提取后端时，已有和已迁入的资料仍可读取与管理；新捕获、教学提取及自动学习保持关闭，不回落到主模型。
+
+自动提取只在普通回复获有效平台消息 ID 后排队，从最近未处理的原消息提取有来源的群内说法。投递失败和未知结果不触发。记录归当前 Agent 与完整会话，不宣称多人共识或独立核实。显式教学由独立语义模型判断，和本轮回复是否成功分开；只在真人触发的回合准备资料时检查原消息，不通过关键词正则强制判定教学。别名、成员定义、成员集合、群文件名称和通知工作流归完整会话，同一账号、平台命名空间、会话类型及 ID 下切换 Agent 仍可共用，不跨账号或群共享。
+
+普通成员可新增别名和定义，冲突替换只允许原创建者或当前管理员。通知工作流的创建和更新须管理员或群主。成员 ID 与角色通过平台端口重新核验，不接受模型或入站正文自报权限。QQ 使用 `get_group_member_list` 与 `get_group_member_info(no_cache: true)`，后者在提交前刷新；角色证据超过 1.5 秒不再用于发起提交。这是提交前的有界复核，QQ 与 Redis 之间不具备原子权限事务。教学目标只从原消息作者、点名或名称明确且唯一的已核验候选中选择。文件仅保留原文件名及稳定平台引用，不保存临时下载地址或宿主路径。别名资料遵循配置、本人自述、教学、当前提及的优先顺序，不重写人物事实。
+
+每个会话最多保留 20 个 Agent、共享教学 400 条；每个 Agent 保留原来源及任务各 60 条、自动说法 50 条。目录、来源、条目及任务确认通过一个 Redis 文档原子比较版本保存。失败最多尝试 3 次，从 15 秒指数退避；耗尽后停止重试，不阻塞后续新消息。原来源不可原地改写，模型摘句须逐字命中对应原消息。单次后台群说法最多 20 秒，教学最多 900 毫秒，主回合最多等待教学 180 毫秒；超出后主回合可继续，后台任务仍服从独立取消边界。专用服务最多收到 40 条合格原消息、12 位候选成员的 ID/显示名及机器人 ID；自动说法每条正文最多 400 字，教学最多 4000 字，不发送主提示词、工具或转发正文。完整输入及输出检查已知宿主凭据，请求不跟随重定向、不作 HTTP 重试，响应最多 512 KiB、2000 输出 token。有效用量记入 `group-memory` 或 `group-teaching` 以及全局 API 总账。
+
+读取最多提供 6 条自动说法、8 条教学和真人回合的 12 条工作流，全部作为用户资料上下文。来源撤回、人物停用/遗忘及关联成员的隐私规则在模型调用前、提交和读取时复核，共享教学同时遵守来源 Agent 的隐私。相同账号的隐私命令会停止可能使用共享资料的各 Agent 在途回合。主模型及发送前再次核对资料；这段直接召回和基于它的回复不另存入文字历史、仿真模型历史或情节记忆，防止形成脱离来源的生成副本。已经发送的内容和已提交模型服务的数据不能据此撤回。
+
+群文字可在该会话的 `textGroups.tools` 显式加入 `groupKnowledgeTool`。`list` 查看资料，`delete` 按完整编号删除，`forget` 按完整名称遗忘且拒绝歧义；删除共享教学会撤销同一原消息的整组教学和待处理教学任务，删除自动说法只约束当前 Agent。`clear` 要求当前管理员在 30 秒内以另一条真实消息携带确认码再次确认，绑定、账号、会话和真人必须一致。清空共享教学及当前 Agent 的自动说法，保留其他 Agent 的自动说法；持久截止时间阻止清空前仍在等待的来源重新入库。删除墓碑有界，容量不足会拒绝操作而不丢弃旧墓碑。
+
+`notify` 仅由主模型针对当前真人的明确通知请求选择，使用当前可见的工作流编号；通知正文和请求摘句都须逐字来自本条原话。发送前再次核验成员和工作流，走统一点名、净化、绑定及回执边界。每轮先持久化动作尝试，结果未知不自动重发。保存工作流不会自行通知，也不授予自主回合权限。群文字和仿真真人唤醒共用这套管理工具；仿真自主回合仍不装配它。旧插件裸群号的知识/工作流也未自动迁移。
+
+### 联网搜索与网页读取
+
+独立群仿真的联网能力默认关闭。在 `agent-host.yaml` 显式配置以下字段，设置搜索服务的环境变量后重启。两项可分别配置。
+
+```yaml
+tools:
+  search:
+    baseUrl: https://search.example.com/v1
+    name: your-search-model
+    apiKeyEnv: BL_AGENT_SEARCH_KEY
+    webSearch: auto
+  web:
+    enabled: true
+```
+
+`search` 提供 `searchInformationTool`，调用显式配置的 OpenAI 兼容搜索模型，不回落到主聊天模型。`webSearch` 只接受 `auto`、`on`、`off`，服务是否具备真实搜索能力仍由该服务实现。模型不能指定搜索服务地址或密钥，服务请求不跟随重定向、不自动重试，最多 40 秒、512 KiB 响应和 2000 输出 token。有效用量计入当前会话预算及总账。搜索关键词可能包含群聊线索，搜索返回内容按外部资料使用。
+
+`web` 提供 `webParserTool`，仅提取公开 HTTP(S) 网页的静态文字。拒绝 URL 内置凭据、凭据查询参数、私网及保留地址；DNS 解析、实际连接及每次重定向均受地址检查，连接固定到已核验的公网地址。每次最多 15 秒、3 次跳转、2 MiB 响应和 8000 字正文，不接受压缩响应，支持回合取消。此工具不运行浏览器 JavaScript，也不提供登录、截图或本机文件读取。
+
+工具仅在已绑定群的仿真回合装配，私聊和群文字模式继续使用各自原有工具范围。`simulation.toolPolicy` 的全局与按群禁用、`legacy` 模式和显式追加规则继续生效；例如 `simulation.toolPolicy.denyTools: [searchInformationTool, webParserTool]` 可在 `open` 模式禁用两项工具。自主目标和承诺唤醒仍须经过原有自主执行权限检查。Core 在执行前、异步结果返回后及网页每次跳转前复核角色绑定、持久化活动版本和来源权限。换绑、撤回或停止会取消在途调用；其他进程的活动撤销在下一次授权复核时发现，已发出的请求无法保证撤回。
+
+### GitHub 仓库查询
+
+在 `agent-host.yaml` 显式启用公开仓库查询，然后重启。默认以匿名身份访问，不读取插件或部署机已有的 GitHub 凭据。可选 `tokenEnv` 仅用于提高 GitHub API 额度；声明后启动及 `--check` 都要求该环境变量存在，`--check` 不调用 GitHub。
+
+```yaml
+tools:
+  github:
+    enabled: true
+    # tokenEnv: BL_AGENT_GITHUB_TOKEN
+```
+
+`githubRepoTool` 只接收 `https://github.com/owner/repository` 仓库根地址，可带 `.git` 或末尾斜线；不接受文件/issue 路径、查询参数、片段或 URL 凭据。工具固定读取 `api.github.com` 的公开仓库基本信息，以及最多 5 条最近提交、100 条分支样本和 5 位贡献者样本。可选请求未取得会明确标注；本页分支与贡献者不代表总数，开放 issues 数包含 PR。返回资料附来源与北京时间，不构成指令或事实核实。
+
+工具只在群仿真装配，沿用现有工具策略和真人执行权限，未扩展私聊、群文字或自主执行能力。可通过 `simulation.toolPolicy.denyTools: [githubRepoTool]` 禁用；移除配置或设 `enabled: false` 并重启也可停用。每次实际 GET 前后复核来源和当前绑定，取消或任一次授权拒绝停止后续请求。总期限 15 秒、每个响应最多 1 MiB，无自动重试、重定向或跨域凭据传递；只将仓库标识和可选 GitHub 鉴权送到固定 API，不附聊天历史、QQ 身份或其他服务凭据。输入及完整成功响应检查已知宿主秘密，错误正文不进入日志或模型。
+
+移除 `tools.search` 或将 `tools.web.enabled` 设为 `false` 并重启，即可关闭对应能力。`tools`、`search` 和 `web` 拒绝未知字段及无效类型。正常启动和 `--check` 会检查已配置搜索服务的凭据；迁移预览只校验配置格式，不要求这些凭据，也不调用搜索或网页服务。
+
+### Modrinth 双语查询与合并卡片
+
+在独立宿主声明 Modrinth 和翻译模型，再重启。翻译只收到本次项目的 ID 和英文简介，不读取人设、群史或旧插件任务配置。关闭时不读翻译凭据，`--check` 只校验配置。
+
+```yaml
+tools:
+  modrinth:
+    enabled: true
+    translation:
+      baseUrl: https://translation.example/v1
+      name: compact-translation-model
+      apiKeyEnv: BL_AGENT_MODRINTH_TRANSLATION_KEY
+```
+
+`modrinthTool` 支持 `query`、`sort`、`limit`、`gameVersion`、`loader`、`category`；默认历史下载量前五项，最多十项，分类用 Modrinth slug，不下载 jar。固定查询公开搜索 API，严格核对统计和项目身份，缺失计数使查询失败；版本、日期、许可证等缺失时明确标注。结果附来源、筛选条件、展示数量和北京时间，不当作已核实事实。
+
+每项保留英文原文、独立中文翻译、项目元数据和项目页，通过一批 QQ 合并消息交付。卡片内嵌离线 HTML，图标为固定占位，不请求外链图片；每卡独立 Chromium、5 秒、980 像素宽、8192 像素高度上限，超限失败。发布包含 Puppeteer 运行依赖，部署机需准备其 Chromium，或用 `PUPPETEER_EXECUTABLE_PATH` 指定已安装浏览器。渲染失败在尚未发送时整批退为双语文字；翻译失败标中文未提供并保留英文。缺合并端口时只返回有界查询资料并标展示未投递。
+
+工具总期限 90 秒，每次查询/翻译最多 15 秒、响应最多 1 MiB，不自动重试或重定向。合并发送沿用本会话配额、词策略、净化与确认预算，一批计一次发送。最多 12 节点、总文字 32000 字符、单图 2 MiB、总图 12 MiB。图文同时附完整文字，需净化改写时拒绝整批，避免图片保留旧文字。有效消息 ID 才算送达，未知停止本回合后续发送；失败或未知均不补发，实际交付前重核账号、连接、绑定和来源权限。
+
+只在群仿真装配并服从真人主体和普通工具策略，不扩展私聊、群文字或自主工具面。设 `tools.modrinth.enabled: false` 并重启，或用 `simulation.toolPolicy.denyTools: [modrinthTool]` 停用。
+
+### MCP 工具
+
+独立宿主支持显式配置 stdio、SSE 和 Streamable HTTP MCP 服务。只连接此处列出的服务，不读取原插件的 `mcp-servers.yaml`；服务启动失败会阻止宿主启动。`--check` 和迁移预览不会启动子进程或访问 MCP 服务。
+
+```yaml
+tools:
+  mcp:
+    servers:
+      notes:
+        type: http
+        baseUrl: https://mcp.example.com/mcp
+        headersFromEnv:
+          Authorization: BL_AGENT_MCP_AUTH
+        includeTools: [lookup]
+        connectTimeoutMs: 10000
+        toolCallTimeoutMs: 45000
+simulation:
+  extraTools: [mcp_notes_lookup]
+```
+
+示例的 `BL_AGENT_MCP_AUTH` 保存完整头值，例如 `Bearer …`。网络头只允许 `headersFromEnv` 环境变量映射，不接受配置内明文凭据或传输协议头。`type: sse` 使用同样的地址与头字段；`type: stdio` 使用固定 `command`、可选 `args`、`cwd` 和 `envFrom`（子进程变量名到宿主环境变量名的映射），不能混用网络字段。相对工作目录以宿主配置文件目录为基准；子进程只有 SDK 的基本环境白名单和显式环境，仍以宿主权限执行，不提供 OS 沙箱。
+
+工具按 `mcp_<服务名>_<原工具名>` 别名提供，过长或清理后冲突时带稳定哈希。`includeTools`、`excludeTools` 匹配服务的原工具名；实际调用还须在 `extraTools` 或相应工具策略中显式授权别名，遵守全局及按群禁用。MCP 属于自定义能力，只允许真人唤醒的群仿真回合，不自动进入好友私聊、群文字、自主目标或承诺执行面。参数来自主模型选择，宿主不附送账号、群、角色或会话历史；服务返回的 instructions 不进入系统提示。
+
+最多 8 个服务，每个最多 128 个工具和 16 页；连接/列表发现各有最多 30 秒的期限，调用 100–120000 毫秒，缺省 45 秒。模型 schema 经兼容适配后，执行仍按原始 JSON schema 校验。网络拒绝重定向和跨 origin SSE 投递；显式内网/本机服务可以配置。HTTP JSON 或单个 SSE 事件最多 1 MiB，返回文字最多 8000 字符，图片和音频只显示类型标记，不自动发送。输入、元数据和结果过滤已知宿主凭据；服务错误及 stderr 不直接输出到日志。
+
+服务工具列表变化会撤销旧工具定义和在途结果；Core 从动态注册表读到新列表。断线后仅重建连接，不重放工具调用；可设 `autoReconnect: false`，或以 `reconnectMaxAttempts: 0–3` 限制次数。任何已派发调用超时、取消或结果不明都记为未知，须先核实远端结果。关闭、换绑、撤回与配置失效阻止迟到结果；已发送的请求无法保证撤回。移除服务或设 `enabled: false` 后重启停用。
+
+### 图片生成与编辑
+
+独立群仿真可显式装配 `bananaTool` 和 `googleImageEditTool`，分别读取以下后端，省略时不出现该工具，也不回退主聊天模型。
+
+```yaml
+tools:
+  images:
+    generation:
+      baseUrl: https://images.example.com/v1
+      name: your-image-model
+      apiKeyEnv: BL_AGENT_IMAGE_KEY
+      protocol: images
+      size: 1024x1024
+      quality: high
+    edit:
+      baseUrl: https://images.example.com/v1
+      name: your-image-edit-model
+      apiKeyEnv: BL_AGENT_IMAGE_EDIT_KEY
+      protocol: images
+```
+
+`protocol` 为 `images`（默认，OpenAI 兼容图片接口）或 `chat`（聊天接口返回图片）。服务地址、模型和凭据来自宿主配置，工具参数不能改写。`images` 无参考图时使用生成接口，有参考图时使用 multipart 编辑接口；`chat` 只发送当前图片要求及本次参考图。`size` 和 `quality` 是图片接口可选参数，比例参数沿用已有渠道尺寸适配。`provider` 只核对所配置模型名称，不自动选择其他服务。
+
+参考图可来自公开 HTTP(S) 地址，或通过 `sourceSeq` 指向本轮已展示的 QQ 带图消息；编辑至少需要其中一种来源。消息附图经原群、消息 ID、作者、时间、可见范围和撤回检查，只交给图片工具，不放入主模型正文，且不要求另外配置视觉模型。最多 10 张参考图、合计 40 MiB；QQ 附图读取沿用适配器每次两张、每张 2 MiB 的限制。公开图片下载允许 CDN 的签名查询参数，不发送宿主授权头或 Cookie；DNS、实际连接与每次跳转均核验公网并固定地址，最多 15 秒、3 次跳转、20 MiB，不接受压缩响应。
+
+一次任务最多等待 4 分钟，提供方 JSON 响应最多 32 MiB；只交付第一张有效 PNG/JPEG/WebP/GIF 图片。图片检查标准 base64、实际格式及画布，最多 20 MiB、单边 16384 和 6400 万级像素。图片经当前回合的平台无关交付口发送，和文字工具回复共用发送队列、配额及预算；只有平台确认有效消息 ID 才报告送达。迟到、撤权、换绑及停止后的结果不交付。提供方超时、5xx、损坏结果或发送结果未知时不自动重提；明确 400/422 且仅拒绝 `response_format` 时，最多去除此字段重试一次，已读到的有效用量逐次记账。生成数据、签名成图 URL 和提供方正文不返回主模型。
+
+这两项工具沿用普通工具策略。自主回合还须在 `simulation.autonomousTools` 显式授权对应名称；当前不进入好友私聊或群文字模式。移除对应后端并重启即可停用，`--check` 检查已声明的凭据但不调用图片服务。没有生产图片任务迁移；进程中断后的既有动作回执按原规则记为待核实，不自动重新生成或重发。
+
+原群使用角色一致性审核时，可在独立宿主配置单独的 OpenAI 兼容审核模型。将以下字段并入 `agent-host.yaml`，设置对应环境变量并重启。审核密钥通过单独声明的环境变量读取。
+
+```yaml
+simulation:
+  consistency:
+    enabled: true
+characterConsistency:
+  baseUrl: https://review.example.com/v1
+  name: your-review-model
+  apiKeyEnv: BL_AGENT_REVIEW_KEY
+```
+
+审核沿用仿真回合和反思的提交规则，获得有界草稿和可见依据。每次等待最多 15 秒，要求最多 900 个输出 token。审核拒绝或服务异常会阻止对应提交，模型可按原回合规则修正或收尾。移除 `simulation.consistency.enabled` 或设为 `false` 并重启即可关闭。
+
+独立宿主已经通过主模型装配 `reflectCharacter`，群仿真在允许自主参与的空闲期可执行角色反思。至少间隔 6 小时、UTC 每日最多 2 次，且需要至少两项未处理依据；计入群回合和金额预算。反思只可保存有依据的推测性观点或兴趣、调整一个既有目标的等待或放弃状态，不发送消息或调用工具。`simulation.reflection.enabled: false` 停用此路径。绑定、暂停、来源和隐私复核继续约束迟到提交；独立反思的真实模型验收仍单独跟踪。
+
+独立宿主处理显式绑定群中戳向当前 QQ 账号的“戳一戳”。两个 QQ 入口共用 `triggers.poke` 和仿真唤醒逻辑。独立宿主为每次已接收的通知生成内部收件 ID，重启重读同一条收件时只保留一条互动。OneBot 群戳一戳没有平台事件 ID，协议重复上报会被视为新的互动。 [OneBot v11 群通知](https://github.com/botuniverse/onebot-11/blob/master/event/notice.md#群内戳一戳)
+
+### 文字图片与思维导图
+
+独立宿主可分别启用本地文字图片和使用独立模型的思维导图：
+
+```yaml
+tools:
+  rendering:
+    textImage:
+      enabled: true
+    mindMap:
+      baseUrl: https://map.example.com/v1
+      name: your-map-model
+      apiKeyEnv: BL_AGENT_MINDMAP_KEY
+```
+
+两者默认关闭，工具名沿用 `textImageTool` 与 `aiMindMapTool`，按普通群仿真工具策略装配，不扩大好友私聊、群文字、自主或承诺工具面。文字图片不调用模型；思维导图仅向显式后端发送本次 `prompt` 和固定排版要求，不读取旧插件 YAML、不继承主模型；有效 token 用量记入当前会话账本。预检校验配置与凭据，不调用模型或启动浏览器。移除配置并重启可停用。
+
+文字图片保留 chat、document、knowledge 三套完整模板、上海时区日夜主题、代码高亮、表格、知识步骤/清单/事实卡及 KaTeX 数学排版。Markdown、代码和公式会把显式 chat 升为 document，显式 knowledge 优先。chat 按 Unicode 码点截至5000，另外两种截至12000；输入最多48000个UTF-16代码单元。昵称、头像省略时不显示身份。仅 chat 读取可选公共头像，逐跳校验公网并固定连接地址，15秒内限量下载；不可用时省略头像。头像先解码、缩放成PNG再嵌入，文档正文不能加载外部图片或HTML。宿主出站文字规则和已知凭据检查在文字转图前执行。
+
+思维导图保留 prompt、width、height、waitTime 参数：默认2400×1600，宽320–4096、高240–4096，等待默认8000毫秒、夹限1000–30000，均服从总渲染时限。独立模型只返回有界Markdown，最多24000字符、5层、256节点；HTML、代码围栏或超预算内容明确失败。实际 Transformer 保留普通文字、强调和行内代码，链接/图片语法只作文字；不启用可加载资源的插件。本地锁定 d3 7.9.0 和 markmap-view 0.18.12，关闭动画并等待布局/fit完成后截图，无CDN请求。
+
+渲染器不在工作目录落地HTML或PNG；KaTeX样式及字体来自安装包并内嵌，Chromium阻断网络和任意文件。每次渲染最多20秒，文字工具总计45秒、导图总计90秒；取消、换绑或来源失效阻止后续模型、渲染和发送，迟到浏览器/页面也会关闭。长文先检查实际排版高度和像素预算再截图，超限要求缩短，不自动分片。图片字节通过现有20MiB、16384单边、64*1024*1024像素校验，通过当前绑定的 `sendImage` 共用发送配额；只有有效消息ID才确认送达，结果未知不补发或改发原文。字节不进入模型历史或日志。运行需可用Chromium与中文字体；可用 `PUPPETEER_EXECUTABLE_PATH` 指定浏览器，Sharp原生包随目标平台安装。
+
+### 独立 Excel 读取
+
+```yaml
+tools:
+  excel:
+    enabled: true
+```
+
+显式启用后，群仿真按原工具策略提供 `excelWorkbookTool`。公开宿主可从 `bl-chat-agent/excel` 导入 `createAgentExcelTool` 并注册；文件能力通过平台无关的 `AgentToolContext.readFile/listFiles` 接入；读取工具须声明 `dataPolicy: 'ephemeral'`，Core 在执行前进入临时资料模式并跳过持久行动回执，未声明工具拿不到文件端口。不接受原生 QQ event。`--check` 不下载或解析工作簿。
+
+保留五种只读操作：`list_group_excels`、`list_sheets`、`read_cell`、`read_range` 和 `find`。支持工作表名、大小写匹配和从 1 开始的序号；查找保留值/公式、四种匹配、指定区域、附近格和关联词。单次区域最多300格、查找最多100个结果、文本最多12000字。公式只展示原式和工作簿保存的缓存结果，没有缓存时要求用 Excel/WPS 重算保存；不会执行公式或宏。支持 `.xlsx/.xlsm/.xltx/.xltm`，旧 `.xls/.xlt` 需另存，不提供创建或改写。
+
+来源依次为本轮真人明确给出的原始链接、当前文件、已核验引用文件、本人最近30条/30分钟附件和当前群文件仓库。指定 `sourceSeq` 时只使用本轮可见消息，`fileIndex` 是原消息中从1开始的文件序号；直接附件优先，有直接附件时不会静默切到引用。同名文件需给出 `fileName/folderPath`。群上传通知不伪造消息ID，仓库来源使用当前目录中的上传者、时间和文件身份验证。
+
+文件与目录资料仅供当前回合查询和回复，每次模型调用和发送前复核绑定、原消息/目录及隐私状态；解析文本和派生回答不写长期记忆、工具正文回执、agentHistory、群学习或情节。消息入站只存有界名称和数量。下载最多12MiB/20秒，逐跳检查公网并固定实际连接；工作线程先按真实解压量、单元格和合并面积预检ZIP，再用原ExcelJS查询函数解析，默认15秒/256MiB heap，取消后终止并等待退出。单个服务默认1个运行、4个排队，没有跨会话工作簿缓存。独立发布包显式包含线程入口和锁定解析依赖。
+
+### 独立文件文本与文件上传端口
+
+```yaml
+tools:
+  files:
+    enabled: true
+    nativeFormats: []
+```
+
+默认关闭。群仿真真人回合按原工具策略提供显式 `fileTextTool`；公开宿主从 `bl-chat-agent/files` 导入 `createAgentFileTextTool`。复用上节同一 `readFile` 来源选择、撤回/隐私/绑定复核及临时资料隔离，不自动读取文件入站，不扩大好友私聊或群文字工具面。Excel 单元格与公式查询仍用 `excelWorkbookTool`；通用文件工具只返回文档文本。
+
+保留文本/代码/JSON/CSV、HTML/XML/Markdown、PDF、DOCX、PPTX/POTX、Excel（含旧表格与XLSB）、OpenDocument及EPUB解析。扫描PDF不自动OCR。DOC、RTF、图片OCR和DXF须由宿主在 `nativeFormats` 显式授权 `doc`、`rtf`、`ocr`、`dxf`，并安装对应固定程序：macOS的textutil，其他系统的antiword/unrtf，以及tesseract、drawingtotext。未启用或缺程序明确报告，不把损坏二进制当文字返回。原生能力使用固定命令和参数，模型不能配置程序、路径或环境。
+
+每次解析使用独立进程组、256MiB Node heap与私有临时目录，默认1个运行、4个排队，排队及解析共20秒。退出前终止整个所属进程组并清理临时文件；它是资源和生命周期隔离，不提供操作系统沙箱。ZIP逐项按实际解压量预检，最多2000项、单项16MiB、总64MiB，拒绝路径穿越、重复项、加密、DTD及实体；HTML/XHTML只兼容不含内部子集的已知惰性doctype。文本最多100万Unicode字符，每页最多11000字，完整结果最多12000字；`offset/limit/nextOffset` 可继续读取后部，无跨会话解析缓存。PDF字节使用精确独立视图，避免旧PDF.js的Buffer偏移错误。
+
+`AgentToolContext.sendFile({ name, mime, base64 })` 为可信宿主工具提供当前会话的文件上传原语：最多12MiB，只接受完整字节与安全文件名，禁止路径、URL、平台文件引用及接收者参数。与文本/图片共用回合队列、配额、绑定复核和未知结果闸门；完成后端口撤销，同回合重复文件拒绝。文本文件的名称与正文经过出站规则；二进制生成器须在编码前执行相应内容审核。临时文件读取工具不获得上传端口，读取临时资料后不允许文件导出。
+
+QQ适配器只向固定目标调用 `upload_group_file/upload_private_file`，bytes在适配器内转为 `base64://`。明确API成功且有有效 `file_id` 才返回独立 `FileDeliveryReceipt { state: 'uploaded', fileId }`，真实消息ID仅在确有证据时可选附带；不会把file_id当message_id。空file_id、超时、断线或派发后取消均为unknown，不自动重试或改用另一发送方式。本端口本身不代表torrent群触发后私发原发起人、完整视频或团录导出业务的迁移；网易云完整文件提取另见专节。
+
+### 语音合成与受控音视频
+
+```yaml
+tools:
+  voice:
+    enabled: true
+    provider: volcengine
+    appId: "your-app-id"
+    accessTokenEnv: BL_VOICE_ACCESS_TOKEN
+    resourceId: "your-resource-id"
+    voiceType: "your-voice-type"
+    format: mp3
+    maxTextLength: 80
+    styles:
+      normal: {}
+      sleepy:
+        speedRatio: 0.9
+```
+
+默认关闭。宿主显式启用后，群仿真按原工具策略提供 `voiceTool(text, style)`；公开宿主从 `bl-chat-agent/voice` 导入 `createAgentVoiceTool`。模型只给口播文本与样式名，endpoint、鉴权、资源与音色均由宿主配置。可选 `authorizationEnv` 同样引用环境变量；停用配置不读取凭据，但仍校验字段。工具先使用本回合冻结的人设名称、账号别名与守卫设置处理正文，再清理口播，默认80、最多300个Unicode字符，保留原样式选择和normal合并规则。无自动语音概率或实时流功能。
+
+火山V3请求保留鉴权头、音色、速度/音高/音量、情绪与提示词，接收原始MP3/WAV/OGG及有界JSON、NDJSON、SSE音频块；合成完成后才交付，不是实时流。HTTP期限最多25秒，响应正文和解码音频分别最多20MiB，因此JSON/base64可容纳的实际音频略小；禁止重定向，取消/撤回/换绑前后复核。错误文本脱敏，尾部错误帧使整次合成失败。原文与最终口播在请求前检查已知宿主凭据和出站规则。
+
+可信工具通过 `AgentToolContext.sendAudio({mime,base64,spokenText?})` 或 `sendVideo({mime,base64})` 交付，适配器收到固定目标的 `media.send`。音频最多20MiB、视频最多30MiB，验证规范base64和实际容器标识；拒绝URL、路径、平台引用和接收者参数。与文字/图片/文件共用队列、发送预算、绑定/来源复核及unknown冻结；音频口播执行出站检查，同回合相同字节或相同口播不重复发送，口播也防止普通文字重复。临时资料工具不获得媒体发送端口，临时来源回合拒绝音视频外发。
+
+QQ映射为单个OneBot `record` / `video` 的 `base64://` 字节，仅明确API成功并有真实message_id才确认。NapCat WS1400 / Debug HTTP400是派发前schema失败；WS1200 / Debug HTTP200的handler异常可能发生在派发后，连同其他无法确定未派发的报错均为unknown，文字、合并消息、文件与媒体统一不重试。媒体原生请求最长180秒，实际期限还服从工具回合取消。容器校验和平台回执不能证明客户端能播放：NapCat非Silk语音转换依赖实际Native Addon，单有ffmpeg不足；视频探测失败也可能回退默认元数据。真实合成质量与QQ播放须另行验收。
+
+音乐搜索卡片与网易云完整文件提取见后续专节；自动视频/图集转发、视频分析及torrent私发原发起人仍分别迁移，不能用本节原语代替其业务完成。
+
+### QQ 音乐搜索卡片
+
+```yaml
+tools:
+  music:
+    enabled: true
+    # 可选；未配置时匿名搜索并尝试高质量链接，失败用官方试听链接
+    cookieEnv: BL_QQ_MUSIC_COOKIE
+```
+
+默认关闭。群仿真按既有工具策略提供 `searchMusicTool(keyword,isArtistOnly?)`，其他会话不扩大工具面。指定歌曲仍第一页一首取第一首，只给歌手仍为普通歌曲搜索第一页最多20首中随机选择。保留QQ音乐移动搜索、七档高质量候选、首个非空purl和官方试听回退；没有把音乐搜索改成音频下载。公开宿主从 `bl-chat-agent/music` 导入 `createAgentMusicTool/createAgentMusicProvider`。
+
+仅向固定QQ音乐API发送关键词和宿主显式配置的音乐服务Cookie，不读取聊天历史、全局Bot或另一个接入账号的Cookie。Cookie可为空，启用且声明cookieEnv时必须有对应环境变量；停用只校验声明而不读取凭据。音乐服务凭据是本宿主显式共享的独立服务身份，发送目标仍由当前接收账号与版本化绑定固定。高质量请求guid及试听uin来自本回合账号。
+
+有Cookie时保留十分钟检查和十二小时续期条件，启动与在线后台刷新由宿主独立生命周期授权，至少有一个就绪且仍绑定仿真群的账号才允许后台请求；真人取消不借用该服务授权继续发送。刷新使用旧QQ/微信登录协议的JSON正文和form Content-Type。新凭据先进入动态脱敏集合，再在 `dataDir/music-credentials/qq-music.json` 私有文件原子续存，目录0700/文件0600；环境变量初始Cookie的指纹改变时不复用旧续存结果，不改宿主配置或环境文件。跨调用刷新合并，每个调用者仍各自检查取消与权限。
+
+动态凭据检查同时覆盖模型内容留存与公开工具执行。包含新凭据的正文不进会话历史；被拒的工具调用只留下安全名称/ID、空参数和通用错误，不回显原参数，也不带回下一次模型请求。Unicode转义再经JSON串行化的密钥同样拒绝。这些规则只拦截宿主凭据，不把普通禁词配置扩大为所有工具参数的过滤规则。
+
+可信producer通过 `sendMusic({title,artist?,pageUrl,audioUrl,coverUrl})` 发送闭合卡片；首版QQ只允许群聊，封面必填以符合现有NapCat converter。Core检查全部文本及URL的出站规则，临时资料回合拒绝卡片发送，与文字/媒体共用队列、预算、重复歌曲闸门和unknown冻结，真实message_id才确认。播放签名参数不进入模型工具结果或工具历史，只交给QQ适配器；标题/歌手和真实回执可见。QQ adapter仅接受该provider的官方页面、封面及试听/CDN URL结构，禁止任意native段、headers、接收者、路径或签名端点参数。
+
+QQ音乐卡片本身依赖平台侧签名服务。审计的NapCat源码（SHA256 `69cf1346c466b8b1ab2f2c13c5314af2b3fb54fb9798c015c582db55548006b2`）会把完整标题、歌手、封面、页面及带vkey的播放URL发给 `musicSignUrl`，未配置时使用 `http://106.55.0.102:10087/`，失败后转 `https://ss.xingzhige.com/music_card/card`。它允许签名HTTP重定向且不受Core本机DNS/响应预算控制；本地取消不能保证平台已派发的签名请求或迟到发送停止。Core保证一次原生send_group_msg且unknown不重试，不宣称NapCat内部无fallback或客户端已可播放。启用此功能包含上述平台签名出机边界；签名服务、真实QQ卡片和会员播放质量另行验收。
+
+这项搜索卡片能力与网易云分享提取独立。后者仍须保留自动群触发及主人引用入口、完整文件→信息→试听三阶段，解决20MiB附件、来源授权、持久去重和每阶段回执，不能用音乐卡片或sendAudio替代。
+
+### 网易云完整文件提取
+
+独立宿主通过单独的musicExtraction启用该业务，与tools.music搜索卡片分别控制：
+
+    musicExtraction:
+      enabled: true
+      operators:
+        - platform: qq
+          namespace: global
+          id: "123456789"
+
+默认关闭。启用后，显式绑定群内非机器人发送的网易云分享自动提取；宿主列出的完整操作员身份还可引用本群或当前好友私聊中的分享，发送“.音乐提取”。群管理身份、模型自报权限及最近发言者都不授予该主人入口。操作员列表为空时只开放群自动入口。关闭宿主、会话或好友准入，以及换绑、撤回或来源隐私变化，都会阻止后续动作；独立宿主配置快照变化也会取消正在准备或交付的提取任务，重新启动后才采用新配置。
+
+适配器的readMusicShare重新读取并核对消息ID、作者、时间及完整会话地址，只返回中立网易云引用，不把原生JSON、下载URL或平台对象放入Core入站与模型历史。兼容旧JSON、标准OneBot嵌套JSON、原始CQ JSON、原生163音乐段及普通官方song/dj链接；短链、hash路由、歌单不自动扩展。私聊额外读取当前好友列表，不能把NapCat的sub_type: friend单独当作好友证据。当前审计的NapCat对机器人自己发出的私聊历史缺少可核验的对端字段，这类引用保守拒绝；入向真实好友分享有完整读取路径。
+
+提供方保持普通歌曲详情、DJ主音频和官方卡片直链三条路径；每次解析全部DNS结果，只连接已核验公网地址，并逐跳检查最多三次官方域名重定向。元数据最多2MiB/10秒，整个准备过程最多60秒，完整音频最多20MiB，MIME与实际容器签名匹配后才形成字节附件；不落临时文件。公开/music-extraction提供受控解析器，模型不能指定网络后端、Cookie、文件路径或接收者。
+
+完整音频附件使用独立audio-file.upload/sendAudioFile，不提高现有12MiB通用文件读取或上传限制。附件与试听拥有同一份已核验音频字节，QQ只向固定当前群或好友调用一次上传API；成功保存uploaded/fileId，不伪造普通messageId。正常流程依次为完整文件、信息合并转发（不支持时文字）、record试听。明确文件失败沿用试听与失败说明；明确合并转发失败可回退一次文字。任何阶段的unknown都会停止全部后续发送，不把未知当明确失败继续回退。
+
+交付账本按完整账号、会话、绑定版本及本次入口消息去重，7天TTL，每个阶段先保存pending再派发。账本只保留有界状态和有效回执，不保存原始分享、音频或模型参数。相同入口并发或重启重读不重复派发；重启遇到未完成领取或pending会冻结为unknown，不自动继续或重发。平台确认后本地结算失败也停止后续步骤。这是有限保留期内的尝试防重，不是跨系统exactly-once或自动恢复送达保证。本节功能的构建、工程与安装包验收状态以文末进度为准。
+
+### 完整媒体搬运的资源与有序计划合同
+
+`bl-chat-agent/media-relay` 提供可信宿主的 `createAgentMediaArtifactStore`、`validateAgentMediaArtifact`、`validateAgentMediaRelayPlan` 和 `createAgentBilibiliRelayProvider`。主入口导出中立资源、计划、`AgentMediaShare`、准备提供器、`AgentMediaRelayConfig`、`MediaShareReadOptions` 及 `SendMediaRelayAction` 类型；子入口另导出仓库、B站提供器及其可信宿主选项。搬运业务由Core持有，渠道负责来源协议解码和中立计划的原生转换。它是显式启用的确定性群分享流程，不注册模型工具；工程与安装包验证状态见文末。
+
+宿主先指定已有受控父目录创建仓库，再将 `AsyncIterable<Uint8Array>` 流式stage。仓库自行创建0700随机子目录，文件写入为0600、完成后0400；返回的租约只有随机资源ID、kind/MIME、真实sizeBytes和SHA256，没有路径、URL或base64。单视频512MiB、单图32MiB，默认全仓16GiB/128资源，可通过 `maxTotalBytes/maxArtifacts` 缩短；内部写入和读取块最多1MiB，不要求完整文件进内存。支持MP4/QuickTime/WebM/FLV和PNG/JPEG/GIF/WebP/AVIF/BMP真实容器头，不把签名验证当作解码或播放证明。
+
+`lease.retain()` 为预热、发送或后续重试保留同一资源；各owner最终等待 `release()`。资源端口 `open(artifact, context)` 仅核准本仓有效完整元数据，返回只能消费一次的chunks和幂等close，先验证真实文件身份及完整hash，再按块复核授权和内容。最后租约、仓库关闭、signal或失效current会停止后续读取；宿主必须提供绑定/来源及隐私复核的context，单有资源ID不授予读取会话资料的权限。仓库close等待并清理自己的临时目录，不扫描或删除邻居；独立宿主的实例租约与精确owner标记负责崩溃遗留清理，见下文。
+
+计划保留有序文字、图像、视频和可选图像缩略图，冻结自有快照并拒绝原生作者、目标、路径、URL或其他额外字段。同ID元数据须一致；最多128节点/512部分，文字单项64000Unicode字、总256000字，不同资源总16GiB，宿主可传入allowsText执行当前出站规则。超出明确拒绝，不静默截页或拆发。该合同独立于原12MiB通用bundle与30MiB sendVideo，尚不证明QQ平台可发送512MiB混合视频。验收状态见文末进度。
+
+### QQ媒体资源桥与原生交付
+
+可信宿主从 `bl-chat-agent/qq` 导入 `openQqMediaRelayBridge`、`createQqMediaRelayDeliveryPort` 及桥类型。桥选项必须显式给出受控 `directory`、`resources`、字面IP/端口的 `listen`、无路径的 `advertisedOrigin` 和1至32个精确IP的 `allowedPeers`。端口0仅供自动分配，公布origin中的端口0会替换为实际监听端口。HTTP公布地址只接受RFC1918、回环与IPv6 ULA；公网/其他域名须HTTPS并由宿主反向代理提供TLS。ACL只认socket对端、不信任转发头；代理、可信网络与NapCat可达性由宿主装配。
+
+`bridge.stage(artifact, context)` 先经原资源端口读取，流式复制到独立私有仓库并完整复核kind/MIME/size/SHA256，才返回适配器内部的 `nativeUrl/release()`。随机256bit资源URL最长90分钟，仅GET/HEAD，无Range，单URL32次请求、GET预留最多8倍完整资源字节；每块最多1MiB并等待背压。释放、失效、deadline或close撤销URL、关闭在途连接、等待清理自有副本。不得把URL写入模型、持久状态或日志。
+
+这是可信宿主的底层端口；宿主须先执行完整出站净化和来源/隐私授权，并以allowsText持续复核文字，模型不直接获得该端口。在 `OneBotEndpoint.mediaRelay: { bridge, allowsText? }` 注入后，连接才提供 `actions.sendMediaRelay`；不注入时不装配。动作 `kind: 'media-relay.send'` 使用固定账号/会话、可选绑定快照、`mode: 'forward' | 'direct-video'` 和中立plan。forward保留所有节点与部分顺序，作者统一机器人；direct-video仅允许视频并单次发送全部视频。QQ两种模式均要求视频缩略图，缺失明确拒绝。不同artifact每次只stage一次；每connection完整准备及发送串行，最多4个等待，入口捕获原socket，排队/复制期间重连后旧任务不能使用新连接。
+
+完整调用独立采用最多90分钟有限期限，既有media/bundle期限保持原值。真正message_id和可选账号/目标一致才sent；schema400/1400及唯一精确的发送前资源预处理AggregateError是failed，其他handler1200/超时/断线/无效回执是unknown。端口自身零重试、零降级，finally释放全部桥租约。平台100MiB混合限制、整文件缓冲和上传时限须真实部署重新核验；字节传输工程验证不能代替QQ投递和客户端播放验收。
+
+### Core自动媒体搬运与持久投递
+
+`createAgentRuntime` 通过 `mediaRelay: { enabled: true }` 和可信宿主提供的 `mediaRelayProvider` 显式启用；缺提供器直接拒绝构造。省略 `providers` 保留原B站启用边界，抖音须显式给出 `providers: ['bilibili', 'douyin']`（也可只选抖音）。默认关闭时不读写媒体队列、不下载或启动桥。流程先于文字/仿真模型和历史采集处理真实群来源，私聊不自动搬运。QQ来源端口只回传完整地址、原作者/时间及闭合BV/b23/EP或抖音video/note/short引用；原生JSON、下载地址和凭据不进入Core队列。固定账号/socket的get_msg及每次副作用前均重新核验来源，撤回、隐私删除、换绑、停用、宿主租约丢失取消后续操作和迟到资源。提供器页面须与来源provider一致，直接作品ID一致；短链允许解析成同provider的规范作品页。
+
+同平台namespace的配置账号中，只考虑当前就绪、具有媒体端口且显式绑定本群的账号。排除所有配置机器人发出的来源；有机器人@时从被@候选中选一个，否则从全部候选中按群号与排序账号列表稳定选择一个。即使同时@多个机器人也只选一个。这与旧插件的在线机器人发现和多@处理不完全相同，不保证不同独立宿主之间全局选主。
+
+B站提供器在Core媒体模块解析官方BV/b23/番剧，获取简介、UP、发布时间、统计、封面及有序分P/durl，默认qn6、匿名优先，仅登录/试看条件允许一次显式授权复试；授权后仍试看时不交付任何视频。匿名试看保留明确提示。大于30分钟或20P明确输出信息，资源数量超预算也明确降级，不静默截断；每durl独立资源，避免同cid多段覆盖。API阶段10秒/2MiB、单下载候选10分钟、单视频512MiB/单图32MiB；官方域名、全部DNS公网、固定实际IP/family和重定向逐跳校验，Cookie只发固定官方API。原始下载URL和私有文件始终留在提供器内部。缩略图使用受控ffmpeg子进程生成；失败时保留完整中立视频及可选缩略图，QQ端口因缺缩略图明确拒绝后，由Core选择原链接回退。其他渠道可直接消费无缩略图的视频。
+
+Core持久账本以完整会话、绑定版本及原消息ID记录任务；另以platform/namespace/物理群/原消息ID的共享归属标记防止同实例其他账号或换绑绕过尝试，引用变化不能创建第二次尝试。该标记只有任务摘要，不共享聊天或计划；群来源撤回同时阻止同实例兄弟账号已有任务的迟到准备与回执，私聊仍按完整账号隔离。全局128/每会话lane32个任务、24小时期限、7天终态防重；只持久化有界来源引用/身份、状态与回执，不写计划、媒体元数据、字节、下载URL或模型参数。准备并发2、预热3分钟，按连接及完整会话FIFO，单连接副作用串行。原账号断线时等待；重启对无副作用的准备重新准备，已有pending/sending按unknown冻结。每阶段先保存pending，再原生调用，再保存sent/failed/unknown；回执保存失败停止后续。
+
+QQ明确缺缩略图时回退原链接。仅精确的派发前资源预处理失败允许一次完整转发重试，再失败则发送介绍及全部视频直发；纯图集没有视频时直接回退链接。明确失败后发原链接。任何阶段unknown立即冻结，禁止重试或继续下游。它是有限保留期内的尝试防重，不能保证跨系统exactly-once。引用provider不进入物理来源防重键，不能把同一原消息换provider当作新尝试。其余媒体提供方、显式高清/扫码授权、视频分析与搜索发送仍待分别迁移。
+
+独立宿主配置示例（每个已声明连接都须有独立桥）：
+
+```yaml
+mediaRelay:
+  enabled: true
+  bilibili:
+    autoAuthorizedRetry: false
+    # cookieEnv: BILIBILI_COOKIE  # 仅确有授权复试需要时配置
+  douyin:
+    enabled: false  # 只有显式true才装配抖音提供器
+  bridges:
+    - connectionId: qq-primary
+      listen: { host: '127.0.0.1', port: 18911 }
+      advertisedOrigin: http://127.0.0.1:18911
+      allowedPeers: ['127.0.0.1']
+```
+
+示例只适合同机NapCat；远端部署须改为NapCat实际可达的受信网络地址和精确对端IP，公网须可信HTTPS代理。CLI桥端口须1至65535，不用自动端口；所有监听互不重复。Cookie引用环境变量，关闭时不读取。视频缩略图依赖宿主安装ffmpeg；缺少或生成失败时QQ走明确链接回退，不能据此声称已完整视频投递。
+
+抖音提供器同属Core，通过公开 `createAgentDouyinRelayProvider` 准备中立计划，`parseAgentDouyinReference` 只做官方作品/短链语法归一。独立CLI须另设 `mediaRelay.douyin.enabled: true`，省略或false不装配抖音提供器；不新增任意解析端点、Cookie、浏览器地址或执行路径配置。QQ文本、CQ、JSON与旧原生douyin段统一解码为video/note/short，保留旧B站扫描优先和原生段位置规则。QQ不接收作品详情中的任意CDN资源作为可信分享。
+
+Core完成分享页静态解析、目标作品浏览器回退、视频或图集下载、可选配乐轮播和缩略图，再交同一有序媒体计划。视频限30分钟/512MiB；图集保留旧20张护栏，超过明确说明，单图32MiB，失败位置明确提示；信息、图片、配乐视频顺序保留。配乐限32MiB/5分钟，按成功图片数将每图时长限制在2至10秒，输出720×1280 H.264/AAC视频，并探测成品时长/音视频轨道，避免将大小限制造成的截断当作完整成品；配乐失败保留图集。HEIC图片先在Core转成支持格式，宿主解码器不支持时说明对应图片失败。所有临时资源由同一生命周期释放，不把音频中间文件、CDN URL或浏览器会话写入队列。静态和浏览器结果只接受对应作品ID，不能借推荐流填充原作品、图片或配乐。宿主须提供Puppeteer可用的Chrome与固定ffmpeg/ffprobe；缺少Chrome时保留静态解析或原页，缺少编码工具时保留图集及无缩略图的完整中立视频，再由渠道处理其兼容要求。
+
+`--check`只验证配置声明及原有只读Redis/QQ登录核对，不启动桥、不下载媒体。正式启动先取得实例Redis执行租约，再在dataDir下建立按实例摘要隔离、带精确owner标记的0700私有根和随机run。只清理同实例、精确名字/标记且非符号链接的旧run；无标记、其他实例和邻居保留。退出先停Core，再关闭各桥和资源仓库，最后释放Redis；SIGKILL遗留在下一次持有该实例租约时清理，不在通用资源仓库中扫描父目录。
+
+### Core小红书自动搬运
+
+小红书同样由Core完成官方分享识别、静态解析、目标笔记浏览器回退、媒体下载和中立计划。QQ只解码文本、CQ/JSON及原生分享段，并转换为原生交付；保留B站及抖音的既有选择优先级，小红书作为后续候选。Core可显式给出`providers: ['bilibili', 'douyin', 'xiaohongshu']`；省略仍仅启用B站。独立宿主另设：
+
+```yaml
+mediaRelay:
+  enabled: true
+  xiaohongshu:
+    enabled: true
+    # cookieEnv: XIAOHONGSHU_COOKIE  # 可选，只允许环境变量引用
+  # bridges 与既有媒体配置一致，每个连接各一个
+```
+
+`parseAgentXiaohongshuReference`仅返回官方note或short引用。直接笔记ID规范为16至32位小写十六进制；短链支持闭合单token及`a/token`路径，保留大小写。分享中的`xsec_token/xsec_source/type`是短效访问上下文，通过`AgentMediaRelayPrepareContext.readSourceAccess`从原账号、原消息、作者和时间重新核验后临时取得，URL解码一次、构造编码一次。队列、prepared页面、介绍与失败链接只保留无查询的官方地址；正文及文字部分入队前清理访问query，模型可见引文和转发同样清理，原文仍先接受来源授权。恢复必须重新读取原平台来源，不能从另一条消息、推荐作品或旧缓存借访问参数。升级前积压收件保留原字节用于确认消费，使用时再次净化，避免扩散到新历史或模型；不宣称即时重写已有持久记录。宿主Cookie只送受控第一方页面；浏览器使用单独匿名私有profile。浏览器除受控GET外，仅允许精确`edith.xiaohongshu.com/api/sns/web/v1/feed`的有界POST：笔记ID和访问token绑定当前任务，仅带受限签名头，保持原请求体字节且不跟随POST重定向。匿名parent Cookie仅在原页面与该feed间按浏览器域规则使用，不传给其它子域或CDN。
+
+中立计划保留信息、独立全文、原作品媒体顺序。全文最多2000Unicode代码点；主视频限1800秒/256MiB、10分钟下载。图集保留20槽护栏，每图32MiB/60秒，超限和失败位置明确说明。实况照片按原槽优先视频，成功替换该槽静态图，失败退回该槽图片，修正旧静态与实况分组拼装造成的乱序。图片先用原始签名URL，失败才按受限fileID重建unsigned候选；图文的实况视频不能成为主视频。静态、浏览器state与DOM都限定原笔记身份，不使用推荐作品或QQ卡标题/封面填充官方内容。媒体、转换、缩略图及资源lease共用取消生命周期；缺缩略图仍保留完整中立视频，再由QQ的兼容要求进入链接回退。默认关闭与unknown不重发规则不变。工程和真实平台验收状态以文末进度为准。
+
+### Core YouTube自动搬运
+
+YouTube沿用同一Core业务边界：官方分享先转为闭合视频引用，Core通过固定yt-dlp提取目标视频、核验官方作品身份，独立下载封面和选定单文件MP4，形成统一文字/图片/视频计划，再由持久outbox交给QQ。QQ只解码文本、CQ/JSON及原生分享URL，不采用卡片自报标题、video_id或CDN作为官方信息。B站和抖音的既有选择优先级保留，YouTube位于小红书之前。默认仍仅启用B站；YouTube须额外显式配置：
+
+```yaml
+mediaRelay:
+  enabled: true
+  youtube:
+    enabled: true
+    # cookieEnv: YOUTUBE_COOKIE
+    # poTokenEnv: YOUTUBE_PO_TOKEN
+    # proxyEnv: YOUTUBE_PROXY
+  # bridges 与既有媒体配置一致，每个连接各一个
+```
+
+Core宿主使用`providers: ['youtube']`或在已有列表显式加入`youtube`。`parseAgentYoutubeReference`识别官方watch、shorts、embed、live及youtu.be形式，ID固定为11位大小写敏感字符；队列只保存provider、kind和ID，安全页面固定为`https://www.youtube.com/watch?v=ID`，不保存分享tracking或播放列表参数。
+
+提取只处理当前一个视频、不下载媒体或执行合并；忽略用户配置、插件、缓存与继承代理，使用私有HOME和有限输出/时间，Cookie及PO Token通过作业私有文件传给固定yt-dlp，不写入原始argv、模型、队列或计划。元数据提取至多两次，只有首次非缺程序/超时的提取失败才等待2秒再试；目标身份或返回结构不符直接拒绝。原生进程通过作业独占的HTTPS CONNECT代理访问闭合官方域，逐连接本地核验公网DNS并固定地址。可选HTTP(S)/SOCKS宿主代理只从显式环境变量取得，代理连接使用已核验的目标数值IP；该出口约束不是OS网络沙箱。
+
+计划保留标题、频道、时长、统计、简介及可用封面。封面8MiB/15秒；非直播且已确认时长不超过30分钟时，尝试选定的同时包含音视频的单文件MP4，最多512MiB/10分钟，不以视频单轨、音频单轨或合并计划替代。CDN只允许受限ytimg图片及googlevideo视频，下载逐跳核验DNS，不传宿主Cookie或任意返回header；部分响应、长度不全和压缩体不能作为完整资源。封面失败保留视频，视频失败保留信息、封面及规范页面；缩略图失败仍保留完整中立视频，由QQ要求决定链接回退。来源撤回、换绑、隐私、停用及宿主租约失效取消后续请求和迟到资源；既有v1去重、pending及unknown不重发规则不变。工程和真实外部验收状态以文末进度为准。
+
+### Core Pixiv自动搬运
+
+Pixiv遵循同一Core边界：QQ只解码当前原消息中的官方作品URL；作品详情、分页、下载、限制判断和失败说明都由Core生成，再产出我们的有序文字/图片计划供各渠道兼容。卡片自报的作品ID、标题和图片地址不作为官方数据。保留B站、抖音、YouTube的既有优先级，Pixiv位于小红书之前。默认仍只启用B站，Pixiv须显式开启：
+
+```yaml
+mediaRelay:
+  enabled: true
+  pixiv:
+    enabled: true
+    allowRestricted: false
+    # cookieEnv: PIXIV_COOKIE
+    # proxyEnv: PIXIV_PROXY
+  # bridges 沿用既有媒体配置，每个连接各一个
+```
+
+可信Core宿主通过`providers: ['pixiv']`及`createAgentPixivRelayProvider`接入。`parseAgentPixivReference`支持官方artworks、双字母语言路径及member_illust.php形式，作品ID为无前导零的1至12位数字；持久引用只有provider/kind/id，准备页和回退页固定为`https://www.pixiv.net/artworks/ID`。安全tracking不进入计划或队列，矛盾作品ID和凭据查询拒绝。
+
+Core并行读取原作品详情和分页（各2MiB、共用7秒期限），仅接受原作品身份及`i.pximg.net`中与原ID/页序号一致的图像；regular、small、original按顺序择优，分页失败或全不可用才尝试详情首页。保留前5页、单图16MiB、合计40MiB、每图90秒；失败页保留其原位置说明，其他有效页按原顺序交付，超页和预算不足明确提示。介绍保留标题、画师、页数、尺寸、标签、统计、短简介与规范链接。默认受限作品仅给信息，不请求图片；无有效受限标记也保守保留元数据。`allowRestricted: true`只能由宿主显式配置，且只覆盖已验证的受限标记。
+
+可选Cookie仅发给原作品固定详情/分页端点，重定向不可换端点，不发CDN；可选HTTP(S)/SOCKS代理仅来自显式环境变量。每跳官方目标、全部DNS公网及实际连接地址均核验，媒体流有完整长度、期限、预算及跨块凭据检查。资源只通过不透明租约进入计划，撤回、换绑、隐私、停用和丢租约取消后续请求与迟到资源；既有v1来源防重和pending/unknown冻结不变。自动搬运不调用模型、不自动处理私聊；Pixiv搜索、热门/画师分支、五分钟结果选择及显式下载尚待独立迁移。工程与真实外部验收以文末进度为准。
+
+### Core磁链下载、完整清单与请求者ZIP
+
+磁链搬运遵循同一Core边界：外部缓存/下载器结果先变为`AgentTorrentMetadata`及`AgentTorrentArchive`，Core负责选择、队列、完整性、ZIP和投递编排；渠道只转换为原生交付。没有注册模型下载工具，关键词磁力搜索仍是独立的非下载能力。目前只接QQ，其他平台保留接口。
+
+默认关闭，独立宿主可显式配置：
+
+```yaml
+torrentDownload:
+  enabled: true
+  autoDetect: true
+  selectionTtlSeconds: 1800
+  # 可选，宿主HTTP(S)代理；peer/DHT仍由aria2直接访问
+  # proxyUrl: http://127.0.0.1:7890
+  bridges:
+    - connectionId: main
+      listen: { host: 127.0.0.1, port: 8093 }
+      advertisedOrigin: http://127.0.0.1:8093
+      allowedPeers: [127.0.0.1]
+```
+
+每个已配置QQ连接都需一个ZIP桥声明。桥端口与媒体桥分开，origin需被该OneBot端可达；HTTP仅允许显式私网/loopback origin，其他使用HTTPS和精确peer ACL。宿主需安装固定`aria2c`和`zip`。`--check`只验证声明与既有登录状态，不创建磁链目录、不打开ZIP桥或启动下载。运行期使用Redis实例租约及精确owner标记0700目录，停止或崩溃恢复只清理本实例拥有的run。
+
+群内真实BTIH结构直接触发，兄弟账号稳定选一个处理，排除全部配置机器人；没有任意URL/猜测hash下载。缓存→DHT→固定补充tracker的元数据预算独立于模型期限。原始info span的SHA1匹配BTIH、完整原始元数据SHA256固定选择版本；保留UTF8/GBK安全路径，剥除外层任意tracker/webseed/nodes。单文件/内容/ZIP上限50,000,000字节，一次最多3文件并预留1,000,000字节归档余量。下载对涉及选中内容的原始piece逐片校验，邻接spill只用于完整性核验，ZIP只含所选文件并复核条目、CRC与SHA256。原生aria2的peer/DHT网络是可信宿主能力，不受JS固定缓存公网DNS检查保护，不构成OS网络沙箱。
+
+整包超限时，Core保留最多2048文件/1MB完整中立清单，分批发送全部名称、大小和可选状态。可选卡图渲染失败在投递前回退完整文字；长清单分页，每批单独持久pending和回执，全部真实sent后才发布30分钟待选。仅原人、原群、原账号及原绑定可用结构化序号或唯一文件名选择，随后重新获取元数据并核对完整指纹；无效选择不能变成整包请求。选择消息及最初来源都持续受撤回/隐私守卫。
+
+Core先持久领取再确认消费入站，最多8个活跃任务、全局下载串行，24小时任务期与7天防重终态。群物理来源摘要和撤回墓碑在同namespace配置账号之间共享，不共享聊天或ZIP。每个notice/listing/archive/confirmation/failure都先登记pending，unknown停止所有下游且重启不自动重发。下载完成后只向原来源作者私发ZIP；确认真实file_id后才群内确认。账号断线、换绑、隐私清空/禁用、来源或选择撤回、停止与租约失效都阻止后续准备/交付。撤回的各账本取消独立执行，一个存储失败不能阻断其它业务内存撤销或入站墓碑。
+
+`/torrent`公开可信宿主provider、校验器及类型；Core选项为`torrentDownload/torrentProvider/isTorrentDownloadCurrent`及可选中立清单renderer。`/qq`公开独立ZIP桥与requester交付端口，OneBot通过`requesterArchive:{bridge,allowsText?}`显式注入。群来源动作始终携带原群地址/绑定/作者证据，Core另固定中立正文SHA256跨适配器首读比对，无模型接收者参数、无需新增私聊绑定。QQ适配器捕获原socket和授权，stage/发送/回执三次核验get_msg，使用能力URL传输完整ZIP以避开50MB base64超出50MiB WebSocket限制。原生仅传`user_id/file/name`，不添加平台不支持的group_id或发额外消息建立TEMP；是否可私发依赖平台当前关系/临时上下文，不能保证任意群成员。file_id只表示上传确认，客户端收件另验。
+
+### 接续现有 QQ 插件的会话状态
+
+独立包的启动入口也提供按会话迁移。将 `BL_AGENT_REDIS_URL` 指向现有插件使用的同一个 Redis 数据库，独立宿主从该数据库下的 `bl-agent:<instance>:` 分区读取。来源与目标配置须显式绑定同一个 QQ 账号、会话、连接 ID、角色和人设。目标仍使用 `agent-host.yaml` 旁的角色绑定文件。
+
+停止会处理所选会话及提醒和承诺账本的源 QQ 插件进程、控制台写入及目标宿主后，先预览。预览读取配置、Redis 和本地用量账本。
+
+```sh
+node scripts/start-agent.mjs --config /path/to/agent-host.yaml \
+  --migrate-qq-state --source-bindings /path/to/plugin/config/agent-bindings.yaml \
+  --connection qq-main --group 111111
+```
+
+好友私聊用 `--friend 222222` 接续一次性提醒和本会话中好友自述的结构化事实。目标配置须启用 `privateChat`。预览以 JSON 输出委托记忆、承诺、提醒、人物事实 `personFacts`、迁入的群笔记 `groupNotes` 和留在源分区的笔记 `retainedGroupNotes` 的数量。核对后给同一条命令加 `--apply`。执行时一次提交目标分区写入、需迁出的源记录移除及两端索引更新。目标已有相同任务编号、迁移遇到目标数据冲突，或读取后账本发生变更，都会中止提交。
+
+群迁移覆盖已分区的委托记忆、有效且未领取的固定文字承诺，以及旧 `reminderTool` 中仍有待发索引、带匹配归属的纯文字一次性提醒。一次性提醒沿用原编号、创建人、正文、排期及已消耗的重试次数，群里点名创建人，好友提醒发到原私聊。旧消息引用只留在原流程，迁入后直接发送提醒正文。同一会话的角色变更会停止旧提醒。
+
+对使用仿真模式的群，可以在预览和应用时都加 `--include-agent-commitments`。先确认独立宿主具备原任务需要的工具，例如仅用仿真发送工具就能完成的定时消息。迁移按交接后的实际群开关判断，同时考虑宿主的启用清单、目标群覆盖和接续的源群控制。迁入后仿真仍停用时，这类任务留在源账本，计入 `skipped.unsupported`。符合条件的 `agentCommitments` 计入 `commitments`，继续使用原创建人、归属和排期，到期可通过已验证账号和当前绑定建立仿真会话，无需等群友再发一条消息。账号断线或仿真临时关闭时，已迁入且尚未开始的任务保留原定时间，恢复后继续检查。已开始且执行结果未知的任务会保留待核实记录。
+
+对使用仿真模式的群，预览和应用都可加 `--include-character-state` 接续同一角色的自身记忆、自主目标、作品、作息、反思排期和可核验的管理员初始提示词。`characterState` 报告接续的记忆、目标、回执和暂停目标数量，以及留在源端的记忆和目标数量。目标沿用原排期、期限和尝试次数。外部动作结果未知时，接续的目标保留待核对状态。源端同一目标的调度在提交时停止，源端原记录仍可查。已存在内容的目标角色状态会阻止本次写入。首次交接时，目标宿主会登记可继续检查目标的群，启动后按原群的参与、暂停和预算规则检查到期目标。
+
+能接续的角色记忆和目标必须有完整的可接续依据。依赖原群消息序号、共享偏好或宿主工具文字的记录留在源端。有效修订可以连同必要的引用关系接续，已被替换的旧正文留在源端。仅记录仿真检查和发送结果的回执保留状态和时间，摘要改为对应结果的固定说明。该选项可与 `--include-agent-commitments` 一起使用。
+
+作品按版本核对依据，只有仍能引用目标端可见的有效角色记忆或行动回执的版本可以接续。已撤销、原群消息、共享偏好或外部工作器依据均留在源端。复制保留作品 ID、时间、原版本号和归档状态。版本历史有缺口时使用固定标题，以免复制来源不明的原题名。`characterWorkspace` 只给出接续与留存的作品数及版本数。目标已有作品，或源作品在提交前发生变化，都会阻止覆盖，源端作品保留。
+
+`characterSchedule` 报告已接续的角色作息和反思排期、下次反思时间及 UTC 当日反思次数。作息按原账号、角色和群读取。反思保留已处理依据的标识，旧反思结果正文留在原端。目标已存在对应作息或反思排期时停止写入。交接后的会话由目标宿主运行，原宿主保留这部分数据。
+
+`initialPrompt` 只报告是否已复制或保留模板，以及是否将在首次合格的入站回合使用。仅当源会话可证明从未启动时，迁移会安排首次入站模型调用使用提示词。已经运行的会话会复制模板，可通过独立 Core 的 `runtime.resetGroup` 管理接口重置同一角色的会话，再启用一次。提示词仅加入那次主模型请求，尝试发送请求后不会自动重放。绑定版本变化会使待用提示词失效。
+
+同一账号、角色和群已有的结构化人物事实可在独立宿主的仿真和群文字模式继续使用。仿真模式还接续群笔记。`personFacts` 同时计入与笔记匹配的人物事实和普通聊天单独提取的事实。来源撤回、遗忘和停用约束随数据提交。本群事实保留本群范围，原本可移植的本人档案仍可用于同角色的其他群。已删除、已撤回、已过期或缺少可核验来源的人物笔记留在源分区。待跟进笔记保留到期时间，旧会话序号会清除，随后只在自然聊到时接续。独立宿主收到撤回通知后即可让迁入来源失效。
+
+群会话可另加 `--include-group-teaching`，目标须已设置 `groupMemory.enabled: true`。迁移从 `--source-data-dir` 下的 `message_archive/group/<群号>/*.ndjson` 核验旧裸群号的知识、教学别名和工作流；省略该目录参数时沿用源插件的 `data`。只接纳账号和接收角色、原消息 ID、作者、时间及完整顶层正文均可核验的记录。知识和工作流的旧摘句须匹配原文，工作流还须有原作者当时为群管理或群主的归档证据；群文件只接续同条原消息的已核验顶层附件。引用、转发、截断、冲突、撤回和缺失来源留在原端，原记录的创建时间不会被当成更新后来源消息的时间。
+
+迁移与当前 QQ 入站共用消息解码及来源格式，保留正文空格、提及和稳定文件引用。同一消息 ID 即使只有一份副本合格，另有账号、接收角色或完整性矛盾时也全部留存。机器人输出不能作为真人教学；损坏撤回通知会中止整批。工作流最多接续 20 个目标。部分旧归档写入器未保存附件名，只有 `fid` 的附件也不构成当前平台引用；这类群文件留在源端，不从正文猜测附件证据。
+
+这三类旧分区由多个账号共享，迁移只复制合格条目，保留原键。`groupTeaching` 报告新导入、留存、已导入及各类跳过数量，不输出教学正文。预览不写入；应用将目标群资料、人物隐私和来源登记、持久交接标记放进同一次 Redis 比较提交。旧退出设置按本群继承一次，已停用的源群教学全部留存。导入后的来源删除、清空截止时间和交接标记共同阻止重跑复活；目标同编号内容冲突时中止整批。
+
+归档接收身份不等于教学的提交人格版本。迁入条目使用明确的 `legacy-qq-observation` 来源分支，保留已核验接收身份和旧记录指纹，不生成虚假的 `personaVersion`；模型和资料列表明确标注“旧群教学，提交人格版本未记录”。资料继续受来源账号、群、人物隐私和撤回约束。旧工作流仅作为资料，执行通知仍须当前真人明确请求及新鲜成员核验。
+
+此选项要求源归档写入、源插件、控制台和目标宿主均已停止，或使用不可变的离线导出。扫描最多 1000 个日期命名文件、总计 64 MiB，超限或损坏时拒绝提交。提交前重新核对文件集与内容，但文件系统和 Redis 不是跨系统原子事务，不能用这次复核替代停止源写入。自定义归档目录可离线导出为上述布局。原摘要和情节资料仍不自动迁入。
+
+群迁移从来源绑定文件旁读取 `message.yaml` 的 `pluginSettings.simulation`。令牌账本默认读取该配置目录上一层的 `data/token_usage`。可分别用 `--source-config /path/to/message.yaml` 和 `--source-data-dir /path/to/data` 指定实际路径。省略参数且文件缺失时，配置采用仿真默认值，当日金额从零起算。
+
+报告包含 `simulationControls` 时，目标会按完整账号及会话地址接续群仿真开关、仅被 @ 回复、有效活跃期限、角色自主行动暂停和两端较严格的每日金额及回合上限。回合和金额用量以迁移当天的北京时间计，独立宿主在两种群聊模式中把这部分用量计入各自预算。最近一小时的收发限频只接续同一绑定版本的源会话。源配置、会话状态和令牌明细保留。重复迁移会使用目标的当前仿真控制判断剩余任务，跳过已交接的控制和用量。首次交接时，源仿真群已停用会使目标仿真保持停用，显式配置的群文字模式及固定文字提醒各自按其既有开关运行。独立宿主可用 `simulation.allGroups: false` 进一步将仿真限制在显式启用的已绑定群。
+
+源会话的绑定版本与迁移时一致且目标使用群仿真时，`wakeConfigTransferred` 表示已接续唤醒规则，`nextWakeAt` 给出活跃期结束的唤醒时间（Unix 毫秒）。已有目标会话会阻止覆盖。提交时登记目标群的调度并移除源会话中的对应定时器。目标宿主在账号在线、会话配置允许时检查到期时间，已到期的定时器无需新消息。检查沿用群预算和角色权限，前一轮已读水位与依赖旧消息的回音检查留在源会话。
+
+群文字模式可通过 `delegateMemoryTool` 查询迁入的委托记忆，通过 `commitmentTool` 查看和取消迁入提醒。好友本人可以在私聊查看和取消当前角色下迁入的提醒。等待核实或已离开索引的任务、带附加工具的提醒、未选中迁移的仿真承诺、消息触发的仿真唤醒、聊天历史和无原消息来源的旧画像留在原插件存储。`skipped` 报告已索引任务的缺少归属、绑定不符、可能已执行、能力不匹配以及账本异常或任务过期等情况。
+
+### 启用群文字回复
+
+在 `agent-host.yaml` 声明已有绑定的群及接收账号，然后重启独立进程。同一个群可以在不同账号上使用各自配置。`simulation.enabled` 继续作为独立宿主的消息处理总开关。
+
+```yaml
+textGroups:
+  - connectionId: qq-main
+    conversationId: '111111'
+```
+
+配置中的群在被 `@` 或收到对当前账号已确认回复的引用时，生成一条引用当前消息的文字回复。模型收到当前文字、角色人设、同一群友的近期已确认收发，以及最多四条适用于当前群的结构化人物事实。每个会话保留最多 6 轮，最后一次确认后 1 小时过期。命令、附件正文和群友引用的原文不进入该文字回合。回复检查当前绑定、引用来源、文本规则及投递回执。换绑或保存宿主配置后，旧的文字收件和上下文停止使用。
+
+群文字模式期间暂停本群仿真唤醒，仿真状态继续保存在原会话分区。原有定时文字承诺可继续按原归属投递，依赖仿真唤醒的承诺须由仿真模式执行。群消息撤回同时清除该群文字上下文，并使仍在生成的旧回复失效。文字回合使用与仿真相同的 YAML 预算配置和 Redis 群级覆盖，对同群文字模型调用施加 `simulation.turn.minSendGapMs` 间隔。迁移后的文字回合次数单独记账，模型金额与同一会话的仿真共用账本。要停用当前会话的模型处理，可移除该会话的角色绑定。
+
+群文字工具按会话配置。省略 `tools` 时该群只提供文字回复。以下配置启用固定文字提醒和委托记忆。
+
+```yaml
+textGroups:
+  - connectionId: qq-main
+    conversationId: '111111'
+    tools: [commitmentTool, delegateMemoryTool]
+```
+
+`commitmentTool` 支持一次性或每天的固定文字提醒，以及查看、取消和续期本人登记的提醒。调度使用北京时间，到点在原群点名创建人。`delegateMemoryTool` 保存本条消息里的原话并支持本人查询、删除。两项工具均复用独立宿主的既有账本，按原账号、会话及角色定位记录。每回合最多执行一项工具，账号、群和发言者由入站事件确定。
+
+工具确认由本地执行结果生成并直接回复群里。工具正文不加入后续模型上下文。写入前先持久化尝试标记。进程在执行后、发送前退出时，可在原绑定下恢复已落盘的确认，只有尝试标记时会提示结果待核实。恢复期间不会再次执行该工具。撤回或换绑使未发送的旧回复失效。已经提交的托付和记忆由原账本管理，用户可通过相应工具取消或删除。
+
+### 启用好友私聊
+
+在 `agent-host.yaml` 增加以下设置，然后重启独立进程。私聊默认关闭。示例中的 `qq-secondary` 也需要在独立宿主的 `connections` 中配置对应的 OneBot 连接，或者将私聊绑定指向独立宿主已经配置的账号。
+
+```yaml
+privateChat:
+  enabled: true
+```
+
+好友准入由 `agent-bindings.yaml` 中 `kind: private` 的会话声明。处理 OneBot 上报的好友文字。临时会话不参与，`#` 命令仅接收下述本人记忆操作。附件及引用原文不随私聊文字入队。模型请求使用当前角色人设、好友文字、同一会话的近期对话和最多四条本好友在本会话自述的结构化事实。回复通过 OneBot `send_private_msg` 发给原好友。 [OneBot v11 私聊事件](https://github.com/botuniverse/onebot-11/blob/master/event/message.md#私聊消息) [OneBot v11 私聊发送](https://github.com/botuniverse/onebot-11/blob/master/api/public.md#send_private_msg-发送私聊消息)
+
+近期对话按完整会话地址、角色绑定版本、人设版本及人物记忆失效水位核对，每段最多保留 6 轮已确认收发，最后一次确认后 1 小时过期。好友撤回会清空该会话的近期上下文，让匹配的结构化事实及尚未发送的旧回复失效。直接召回结果只进入本轮模型请求。私聊收件按接收账号排队，换绑使已排队的旧消息和未发送的旧回复失效。重启后可处理仍在有效期内且尚未尝试发送的收件。已有投递尝试的收件按去重记录跳过重发。迁入的一次性提醒支持到期投递和本人查看、取消，工具结果直接返回当前好友会话。 [OneBot v11 好友消息撤回](https://github.com/botuniverse/onebot-11/blob/master/event/notice.md#好友消息撤回)
+
+### 本人记忆管理
+
+显式绑定的仿真群、文字群和已启用的好友私聊接受 `#清空我的记忆`、`#禁用我的记忆` 和 `#启用我的记忆`。发送不带点名、引用或附件的完整命令，首次入队要求平台发送时间在一小时以内。群内调整本人在当前群的记忆，好友私聊调整当前接收账号和角色下本人在所有场景的记忆。重新启用从新资料开始，已失效的来源继续不可用。局部启用继续遵守私聊设置的全场景限制。命令在本地执行并回复原会话，命令文字和固定确认不进入模型上下文。同账号的新模型回合等隐私操作处理完成后读取记忆，正在处理的相关角色回合停止后续调用及投递。独立宿主管理的是本实例已接续及之后产生的人物记忆。
+
+## 核心与平台接入
+
+`src/core/agentRuntime.ts` 是独立核心的装配入口。它接收存储、模型及平台连接端口，负责绑定校验、收件、回复和定时承诺。现有 QQ 插件与独立核心共用角色解析、仿真、记忆和承诺模块。`npm run test:boundaries` 检查核心及其内部依赖，阻止对平台适配器、启动层和 Yunzai 宿主的反向依赖。
+
+当前实现 QQ。启动层读取 QQ 配置并创建 OneBot 连接。平台连接通过 `PlatformConnectionAdapter` 提交标准消息、撤回和面向账号的互动事件，通过 `MessageActionPort` 发送。适配器可选实现 `readMessage` 读取明确引用的原消息、`readForward` 展开已核验的转发、`readMessageImages` 读取已核验的消息附图。核心按账号、会话和绑定版本校验。QQ ID、连接协议、消息段转换和图片下载归 QQ 适配器处理。
+
+仿真只向模型声明当前宿主已经实现的工具。独立 QQ 宿主没有接入的戳一戳、空间互动、表情收藏、视频卡片和生活线工具不会因账号属于 QQ 而自动出现。群成员、转发、附图及情绪更新按实际读取和更新端口提供，角色记忆、收尾与已接通的作息状态继续可用。Yunzai 注入对应实现后保留这些能力，实际执行仍复核原有绑定和权限。
+
+独立宿主装配承诺与委托记忆业务工具，在平台提供成员端口时接通成员资料及精确点名，并可显式放通管理员集合通知，或启用搜索、网页读取、图片生成与编辑、文字图片/思维导图、MCP、GitHub 公开仓库查询、Modrinth 双语查询与合并卡片、人物事实学习、群聊摘要与情节记忆、同群语义及私聊本人跨群召回、群内说法及显式教学。群文字和仿真真人唤醒可显式授权群资料管理与工作流通知；仿真自主回合不获得该管理面。仿真时间视图和角色反思已接通，具有完整归档证据的旧知识与工作流可显式离线接续。其余普通工具，以及缺乏来源的旧资料、摘要、语义索引与情节的迁移或重建仍属后续范围，语义质量、图片、时间语义与反思的完整真实模型验收也尚未完成。现有控制台仍依赖 Yunzai，独立包不含控制台服务。独立聊天闭环或发布包测试通过不表示已有 QQ 功能已经全部迁完。
+
+私聊适配器可以通过 `resolvePrivatePeer` 提供当前会话经过核验的对话者 ID。这个 ID 可与会话 ID 独立，两者共同决定私聊可用的历史和人物记忆。QQ 的好友会话 ID 就是对方 QQ 号，沿用现有键和提醒记录格式。
+
+Core 校验入站消息的账号、发言者命名空间和绑定，附带引文只保留待核对的消息 ID。发送封装携带当前会话的绑定，适配器须在实际投递前调用 `isCurrent`。会话撤回会撤销尚在等待投递的回复许可。有效平台消息 ID 才能确认送达，连接确认前发生异常或收到不完整回执时使用未知结果。频道和话题可由适配器提供自己的成员 ID，QQ 群的点名参数继续校验 QQ 号。
+
+安装独立包后，宿主代码可从 `bl-chat-agent` 导入 `createAgentRuntime`、`createAgentBindingDirectory` 和平台端口的 TypeScript 声明，从 `bl-chat-agent/qq` 导入 `createOneBotConnection`。Core 由宿主注入存储和模型接口，QQ 适配器接收账号、连接地址和鉴权配置。
+
+自定义模型端口的签名为 `YTapi(request, config, signal?, isCurrent?, ensureCurrent?)`。宿主必须在每一次实际提供方请求前等待 `ensureCurrent?.()`，包括参数兼容重试、工具规划器或文字渠道的降级；随后再次检查取消信号和同步 `isCurrent?.()`。异步复核拒绝后停止整个调用，不继续尝试其他后端。此复核会重新检查持久来源、隐私和当前平台访问权限；只在最初调用时检查不足以授权重试。`reviewCharacter`、`reflectCharacter` 和 `judgeSocialPermission` 同样接收第五个异步复核参数。独立 QQ 宿主和旧插件仿真已接通这些检查。
+
+`createAgentRuntime` 接受可选的 `toolRegistry`，类型 `AgentToolRegistry` 从 `bl-chat-agent` 导出。工具接收当前绑定、执行主体、取消信号和复核方法，不接收原生 QQ 事件。实现须在每次外部请求或副作用前检查 `isCurrent()` 并等待 `ensureCurrent?.()`，同时遵守取消信号；Core 始终提供异步复核，完成后上下文立即失效。宿主可从 `bl-chat-agent/web` 导入 `createAgentWebTools`，按搜索和网页配置构建内置工具注册表；内置工具沿用普通工具策略，自定义注册项仍须显式放通且只允许真实用户触发。此注册表接入群仿真，不扩大私聊及群文字模式的能力。
+
+`bl-chat-agent/images` 导出 `createAgentImageTools`、`AgentImageBackend` 和 `AgentImageToolsOptions`。可将其 `builtIn` 与其他工具注册表合并注入 Core。`AgentToolContext.readImages(sourceSeq)` 只读取当前回合可见的已核验附图，`sendImage({mime, base64})` 只向绑定会话提交受配额和回执约束的图片；两者为可选端口，工具完成后不能继续调用。`AgentTool.timeoutMs` 可声明 1–240000 毫秒，缺省仍为 45000 毫秒。
+
+`bl-chat-agent/rendering` 导出 `createAgentRenderingTools`、`AgentRenderingConfig`、`AgentRenderingToolsOptions`、`AgentRenderingContext` 及两个输入类型；`/text-images` 与 `/mindmaps` 分别导出 `createAgentTextImageRenderer` 和 `createAgentMindMapRenderer`。工具通过宿主注入的 `renderTextImage`/`renderMindMap` 获取 `{mime,base64}`，渲染器只接收文字、固定布局参数和当前性检查，不接收平台事件、目标地址、任意路径或模型凭据。自定义宿主须提供 `allowsText` 执行其出站文字规则，`secrets` 提供已知宿主凭据，并将 `builtIn` 合并注入 Core；自定义渲染实现必须在截图/栅格化前调用传入的 `context.assertText(visibleText)`，检查实际解析后的文字，不能仅查Markdown原文。渲染器本身不负责发送。独立QQ启动层已装配这些端口和检查。
+
+`bl-chat-agent/mcp` 导出 `openAgentMcpTools`、`AgentMcpServerConfig`、`AgentMcpToolsOptions` 和 `AgentMcpTools`。打开后将 `handle.registry` 注入 Core，结束时等待 `handle.close()`。混合其他注册表时，用 `get custom() { return handle.registry.custom ?? [] }` 保留动态工具列表，不把初次数组展开为永久快照。可传入宿主 `signal`、`isCurrent` 和已知 `secrets`；公共 API 中的 `headers`/`env` 是宿主已解析的值，不接受模型改写。
+
+`bl-chat-agent/repositories` 导出 `createAgentRepositoryTools`、`AgentGithubOptions` 与 `AgentRepositoryToolsOptions`。传入 `{ github: { enabled: true, token? }, secrets? }` 创建工具注册表；`token` 是宿主已解析的值。将 `builtIn` 合并注入 Core，省略 `github` 时无工具。自定义宿主的测试传输可注入 `fetchImpl`，须遵守取消与固定 API 请求契约，不从模型读取端点或凭据。
+
+`bl-chat-agent/modrinth` 导出 `createAgentModrinthTools`、`AgentModrinthOptions` 与 `AgentModrinthToolsOptions`；将其 `builtIn` 合并注入 Core。`renderCard` 可注入中立渲染端口；`bl-chat-agent/modrinth-cards` 导出 `createAgentModrinthCardRenderer` 与 `buildAgentModrinthCardHtml`，独立宿主默认装配其离线渲染。`MessageActionPort.sendBundle`、`SendMessageBundleAction`、`MessageBundleItem` 和 `MessageBundlePart` 从主入口导出；工具的可选 `sendBundle(items)` 固定当前目标，完成后权限失效。
+
+`MessageImageReadOptions` 可携带 `signal`，平台适配器应将它传至消息查询和图片下载。独立 QQ 入口将工具或视觉回合的取消贯穿 `get_msg`、来源授权等待、DNS 及 HTTPS 响应体；Base64 和 URL 附图均不会因授权挂起而阻塞取消。OneBot 同时每 25 毫秒复核调用方当前性，连接变化或绑定失效会中止下载。五秒读取总期限继续保留，完成时清理监听和轮询；中止后不再读取下一张或使用迟到结果。原生 DNS 和已经开始的底层权限查询不承诺撤销，但迟到结果不能继续下载。
+
+宿主可从 `bl-chat-agent/memory` 导入 `createAgentPersonExtractor`，传入 `{ baseUrl, name, apiKey, secrets }` 创建 `personProfileExtract` 端口并注入 Core。`secrets` 可提供其他已知宿主凭据，阻止其进入提取输入和返回内容。Core 为调用提供真实目标、绑定、取消信号、异步权限复核及用量记录方法；提取器不决定事实的存储身份或来源。宿主自行实现该端口时，也须遵守这些取消和复核要求。
+
+同一 `/memory` 入口还导出 `createAgentConversationSummary`，接受同样的后端与秘密过滤配置，构建 `summarizeConversation` 端口。`ConversationSummaryModel`、`ConversationSummaryInput`、`MidtermMemoryConfig` 和 `EpisodicMemoryConfig` 从主入口导出，外部宿主可配置或替换摘要实现，并须遵守 Core 提供的取消、异步复核及用量记录协议。
+
+`createAgentGroupMemoryModel` 从 `/memory` 导出，构建 `groupMemoryModel` 端口；`GroupMemoryConfig`、`GroupMemoryModel`、`GroupMemoryModelInput` 和 `GroupMemoryProposal` 从主入口导出。平台适配器可实现 `listConversationMembers` 与 `readConversationMember`，返回限定完整目标会话和观测时间的成员快照；缺少可核验成员端口时不接纳教学身份或权限。
+
+同一成员端口也接入独立群仿真的 `memberInfoTool`、`mentionMembersTool` 和显式放通的 `mentionAdminsTool`，沿用原工具策略且仅真人回合执行。成员查询根据本条真实 @、明确本人、核验引用或唯一姓名定位；完整昵称和名片并列匹配，重名或长短姓名冲突须澄清。`ConversationMemberProfile` 从主入口导出，可选字段使用毫秒时间，缺失资料不补默认；列表只保留昵称和名片，单人查询才返回平台提供的其他白名单资料。`simGetGroupMembers` 通过中立端口返回最多40名成员，仍先列近期活跃者。
+
+通知在原群逐个真实 @，最多20人，一条消息算一次配额。管理员集合默认排除机器人与群主；仅本条原话明确要求且模型设置 `includeOwner` 时包含群主，排除对象不唯一则不发送。工具的 `request` 是宿主固定的本条消息、正文、点名与核验引用作者；普通工具不借用旧请求或截断原话。自定义工具可通过可选 `readMember(userId)`、`listMembers()` 与 `sendMessage({text, mentionUserIds})` 使用同一群边界，仍须自己遵守工具权限和请求范围。发送端口复用原队列、净化、去重、配额、取消和未知回执冻结，结束后端口失效；`AgentToolMessage` 和 `AgentToolRequest` 从主入口导出。移除成员端口或在 `simulation.toolPolicy.denyTools` 禁用工具可关闭该能力。
+
+`bl-chat-agent/redis` 导出 `openAgentRedis`，返回可直接注入 Core 的 `storage`、执行租约检查 `isCurrent` 和退出时调用的 `close`。发布包的 `npm-shrinkwrap.json` 随 `npm pack` 保留，可将打包文件安装到其他项目；也可以继续复制发布目录后使用 `npm ci`。
+
+CI 在独立包安装后运行 `tests/agentPackageConsumer.test.js`：重新生成 npm 打包文件，在仓库外的临时项目按发布锁离线安装，严格编译只使用公共导出的 TypeScript 宿主，以测试 Redis 和合成平台消息完成一次确认投递，并检查篡改产物会阻止 CLI 启动。这是包安装和接口集成验证，真实 QQ 与模型联调仍须另行验收。
+
+## 验证范围与继续点
+
+2026-11-15 的工作区构建生成 `.release/agent-IbFPhv`，后端构建、TypeScript 检查、Core 依赖边界和差异空白检查通过。迁移策略、群记忆存储与管理、Core 接入和独立宿主的定向测试共 61 项通过；发布包在仓库外安装后的公共 API、类型声明、启动一致性及群记忆配置与运行测试共 11 项通过，均无跳过。发布包包含当时工作区的未提交实现，其内容以发布清单记录的文件哈希为准。
+
+同日使用已安装 npm 包及仅导入 `bl-chat-agent`、`/qq`、`/redis` 的独立宿主，完成真实 QQ 的提醒迁移和重启恢复验收。来源是一条明确标注的合成操作员提醒，存于临时 Unix socket Redis；预览没有写入，应用保持原编号、排期和已用重试次数，重复应用没有新增记录。到期前停止进程、到期后重启，由 QQ `3094088525` 向已指定好友 `925640859` 确认投递一次，消息 ID 为 `657540026`，并通过平台 `get_msg` 读回正文。第二次重启后未重复投递。此项模型请求数为零。
+
+验收使用独立临时 Redis，生产服务与数据未迁移。临时 NapCat 反向连接已移除，配置恢复后与验收前 SHA256 相同，隔离 Redis 已停止。前序真实模型私聊收发证据单独保留；本次迁移恢复结果不扩展为群学习、群仿真或反思的真实模型验收。`migration:report` 当前源代码边界违规为零，仍报告既有 `functions/functions_tools/WaitTool.js` 缺少迁移基线登记。
+
+随后修复情节使用未标时区 UTC 日期的错误，并生成 `.release/agent-wq2VIQ`。群文字和好友私聊跨午夜测试先在旧产物复现，再在 UTC 与洛杉矶两个进程时区下各通过 2 项；完整 Core 叙事记忆回归 17 项、存储与摘要提供方回归 30 项通过。新包在仓库外安装并编译公共 API 宿主，以及发布目录启动后的摘要、情节恢复和预检共 4 项通过，均无跳过；后端构建、类型检查、Core 边界与差异空白检查通过。这批运行使用隔离 Redis、合成平台和模型服务，未再次发送线上消息，时间修复尚未部署。
+
+本轮补齐显式旧群教学迁移，以及无提取后端时读取和管理已有资料的路径。专项 19 项通过，覆盖 CLI 预览/应用/幂等、隐私与墓碑、原生 QQ 解码后的同来源重入，以及安全审查所发现问题的修复；群资料存储、管理、Core 与迁移策略回归 67 项通过，均无跳过。后端构建、类型检查和 Core 边界通过。发布包在仓库外按锁离线安装后，公共 TypeScript API 宿主的确认投递及实际 CLI 教学迁移的预览/应用/幂等两项验收通过，无跳过。上述测试使用隔离 Redis 和合成平台/模型，真实归档写入器的缺失附件名用例验证留源；没有执行生产教学迁移，也未新增线上发送，测试不替代群教学或通知的真实 QQ 与模型验收。
+
+随后接入独立图片生成与编辑，以及平台无关的可见附图读取和图片交付端口。提供方与配置 37 项、公共图片/网页及工具基类回归 51 项、图片交付与 Core 注册表 13 项、完整仿真运行时 72 项通过，均无跳过。3 项实际 CLI 集成使用隔离 Redis、模拟 OneBot 与 HTTP 图片服务，验证确认送图、未知回执不重发，以及未配置视觉服务时按 `sourceSeq` 读原图并编辑送达；搜索/网页合并装配另有 3 项回归通过。CLI 同时暴露并修复工具基类将整数 schema 当作 JavaScript 类型名的问题，安全整数与范围检查已有定向验证。后端构建、类型检查、Core 边界和差异空白检查通过。发布包在仓库外按锁离线安装后，上述 3 项图片 CLI 流程及公共 TypeScript API 宿主验收共 4 项通过，无跳过，包含 `/images` 公共导出与类型声明；本轮尚无真实图片模型或线上 QQ 图片发送证据。
+
+图片取消后续验证：查询、DNS、来源授权及响应体取消专项与工具/Core 接入共 22 项通过，覆盖 Base64/URL 授权挂起的取消和迟到放行不再下载；授权挂起问题先在旧构建复现失败，再在修复构建通过。QQ 下载/视觉集成与正反向内联图片另选 4 项通过，两个文件内其余 8 项未运行。完整仿真运行时 72 项和图片 CLI 3 项回归通过，均无跳过；后端构建、类型检查、Core 边界和差异空白检查通过。仓库外安装检查使用同一 8 项 OneBot 取消专项、上述 3 项图片 CLI，以及公共 TypeScript API 宿主和篡改启动保护。所有这些图片检查使用合成平台、隔离存储或本地 HTTP/HTTPS 模拟，不替代真实图片服务及线上 QQ 图片验收；本轮未新增线上发送或部署。
+
+随后接通独立 MCP：配置与凭据解析 21 项、真实本地 stdio/HTTP/SSE 及动态注册表专项 14 项、原工具/Core/图片交付与基类回归 32 项、实际 MCP/搜索网页/图片 CLI 流程 6 项通过，均无跳过。覆盖显式真人授权、原始 schema、凭据/环境隔离、列表变化撤销旧定义、初始化失败后等待子进程退出、SSE 断流禁止隐式重连、调用取消与未知结果不重试。实际 wrapper 联调先复现了旧基类误拒合法整数数组，再由同一用例验证修复。后端构建、类型检查、Core 边界和差异空白检查通过；仓库外检查包括已安装包的 MCP CLI 及 `/mcp` 公共 TypeScript 宿主。此处的 MCP 服务、OneBot 和模型均为本地合成验收服务，不代表真实第三方 MCP 或线上 QQ 联调；本轮没有部署及新增线上发送。
+
+随后接通独立同会话语义召回：来源库/并发隐私/后端与配置专项 49 项、实际 Core 与仿真接线 4 项、实际 CLI 重启召回与关闭/检查 2 项通过，均无跳过；记忆与隐私回归 86 项通过，最后运行时检查调整后重跑其中相关 45 项仍通过。后端构建、类型检查、Core 边界和差异空白检查通过。测试分别复现并验证了持久来源删除后旧投影仍有效、文字收件丢失顶层文字段，以及非 durable 仿真调用前遗漏投影复核三个问题的修复。逐次持久化检查确认召回正文及派生回复不写入文字/仿真历史、情节或自动群说法。仓库外从真实 npm 归档按锁离线安装后，重启召回与关闭/检查 CLI 2 项，以及 `/semantic` 公共 TypeScript API、独立宿主确认投递和篡改启动保护 1 项通过。这批证据使用隔离 Redis、合成 OneBot、embedding、rerank 和主模型，不证明真实模型召回质量；本轮未部署、执行生产迁移或新增线上 QQ 发送。
+
+随后接通私聊对话者在同账号、同 Agent 当前可访问群中的本人原文召回。可信私聊查询、原作者、当前群绑定、机器人自身成员资格及持久隐私规则共同决定可用来源；其他作者在关键词、向量和重排前即排除，不读取其他好友私聊。同号消息按完整来源区分，投影每次使用重新授权，相关群换绑会取消在途读取。模型参数兼容重试的验收先复现了撤权后仍第二次外发旧群原文的问题，再由同一用例验证修复：实际 HTTP 从两次降为一次，且没有发送私聊回复。一致性审核、社交许可与后台反思也传递同样的逐请求异步复核，拒绝后不借渠道降级继续外发。
+
+本阶段记忆/隐私/模型与完整仿真回归 181 项、会话记忆/收件/QQ 成员端口回归 32 项、实际模型派发/四个旧宿主 wrapper/Core 语义接线专项 17 项、模型传输 5 项，以及私聊语义/隔离一致性审核实际 CLI 5 项通过，均无跳过。情节测试的完成条件由观察中间历史改为等待实际回合结束，修复后台落盘尚未结束时读取结果的竞态，完整会话记忆回归随后通过。后端构建、类型检查、Core 边界及差异空白检查通过。发布包在仓库外从真实 npm 归档按锁离线安装后，同群和私聊语义 CLI 5 项，以及仅用公共导出的严格 TypeScript 宿主、确认投递及篡改启动保护 1 项通过。上述证据使用隔离 Redis 和本地合成 OneBot、embedding、rerank、主模型与审核服务；不证明真实模型召回质量，本阶段没有部署、生产迁移或新增线上 QQ 发送。
+
+随后接通独立 GitHub 公开仓库查询：固定只读 API、显式匿名/环境变量鉴权、逐请求来源复核与取消、公开身份核对，以及部分失败和样本范围标注。19 项工具边界测试、44 项工具/配置/旧 GitHub/仿真能力回归、4 项实际 CLI 测试均通过，无跳过。首轮专项先复现了字面 Unicode 转义隐藏凭据，以及取消后迟到 Response 未清理的四项失败；修复解析后全量字符串检查和迟到响应取消后，原测试全部通过。后端构建、类型检查、Core 边界及差异空白检查通过。仓库外从真实 npm 归档按锁离线安装后，GitHub CLI 四项，以及 `/repositories` 公共 TypeScript API、四端点调用、独立宿主确认投递和篡改启动保护一项通过。CLI 使用隔离 Redis、合成 OneBot、模型和 GitHub 数据，不代表线上 QQ 或真实 GitHub 成功查询。真实匿名 API 尝试返回 403 且 `x-ratelimit-remaining: 0`，当前出口额度耗尽；未借其他凭据绕过，真实服务成功场景仍待验收。本阶段无部署、生产迁移或新增线上发送。
+
+随后接通独立 Modrinth 公开查询、独立简短翻译、离线 HTML 卡片与中立合并发送端口，保留逐项英文、中文、元数据和项目链接；无 Chromium 时在发送前整批退为双语文字。98 项工具、渲染、QQ bundle、Core 配额/取消/图文净化和旧 Modrinth 回归通过，含本机 Chrome 真实 PNG 与目视检查；6 项实际 CLI 验证通过，均无跳过。专项先复现同节点分片绕过短语/参数过滤、合并检测误伤合法 4000 字分段、真实微秒时区日期误拒，再由同用例验证修复。后端构建、类型、架构边界与差异空白检查通过。仓库外真实 npm 归档按锁离线安装后，6 项 CLI 及公共 TypeScript API/工具/渲染导出/篡改保护一项均通过。首次离线安装因 Puppeteer 的锁定依赖尚未缓存失败，按同版本和完整性补齐缓存后重跑通过。本机直接请求 Modrinth 超时；线上临时目录从真实 npm 归档安装后，公开 API 与显式测试宿主选择的 `glm-5.3-flash` 翻译均返回 200，只发送一项公开英文简介。Linux Chromium 生成 980×1106 PNG 并经目视检查，原文、译文与元数据完整。测试宿主未修改产品默认配置，原插件空的 translation 任务未被当成已配置后端。随后经原 QQ 适配器和 NapCat 调试桥接，向已核验的机器人 `3094088525` 的好友 `925640859` 尝试一批带合成验收标识的卡片；回执为 `unknown`，没有重发。只读查询该好友最近 10 条记录尚未找到对应转发，不能据此证明成功或确定未发送，真实 QQ 交付与读回仍待确认。此证据不替代独立 CLI/Core 群仿真的真实入站模型验收。生产配置哈希前后一致、两项原服务持续 active，未使用生产 Redis，未部署或迁移生产数据。
+
+随后接通独立成员资料查询、精确点名、显式放通的管理员集合通知及中立成员列表。成员工具、真实正反向 WebSocket 适配、Core 注册表与发送、原有仿真运行时等工程回归共193项通过，实际独立 CLI 三项通过，均无跳过。覆盖同一发送配额、未知后禁止补发、能力结束撤销、换绑/撤回迟到结果丢弃，以及账号/群/命名空间/新鲜度/完整性/重复成员的拒绝。专项先复现短昵称误指另一成员、否定或举例仍通知、排除群主却被包含，以及中文紧邻QQ号误拒，再由相同用例验证修复。成员名单仅暴露昵称、名片和角色；单人详情仅返回已确认对象的可选白名单资料，不伪造缺失值或透传原始响应。CLI 同时验证真实入站@优先于模型猜测ID、原生at与正文同条交付、一次配额及管理员默认禁用。测试脚本对工具结果的解析改为在固定运行时回执界标处分离JSON，未知动作测试明确允许模型继续收尾但不执行后续外部工具。
+
+后端构建、类型检查、Core边界与差异空白检查通过。仓库外从真实 npm 归档按锁离线安装后，成员 CLI 三项和公共 TypeScript API/独立宿主确认投递/篡改保护一项均通过；包含新增成员资料、请求及发送上下文类型。这些证据使用隔离 Redis、合成平台与模型，不替代真实 QQ 群成员查询/点名与模型验收。线上另做窄范围只读核查：精确核验原账号与好友，正反顺序各查20条历史，最近记录仍早于原卡片投递窗口，没有找到可核验候选；结论仍为unknown。此轮零新增线上发送、零重试，生产配置哈希未变，远端临时核查目录已清理；未部署或迁移生产数据。
+
+随后接通独立显式历史工具及其有界原文来源库，不依赖 embedding、摘要或画像服务，保留时间范围、分来源分页、真实记忆ID详情与来源覆盖说明。群仿真、群文字和好友私聊均已接线；群内只查当前群原文及可见事实，私聊只查同账号、同Agent当前授权群中的本人原话。读取后及每次模型请求、兼容重试和发送前重新核验来源与隐私；历史结果和本轮派生回复不写入持久模型历史、角色记忆/目标/作品、情节、自动群学习及工具观察。换绑清除旧recent，离线或旧角色分区也按保留期清理原文。旧无来源缓存和完整插件归档未自动导入，不将有界来源视为完整旧历史迁移。
+
+本阶段来源、存储与隐私专项21项，Core实际接线与观察端口专项11项，以及历史/工具/配置/记忆/仿真等回归144项通过，共176项工程检查，无跳过。专项先复现完整JSON预算前丢弃archive证据却漏回分页偏移的问题，改为完整JSON预算内删尾并逐来源回传偏移，同例及单来源重取随后通过；重新启用后的测试改用新时间新来源，避免错误期待旧遗忘记录复活。新增运行时fixture修正了旧工具外壳解码、存储load方法以及合成平台所需发送端口/显式绑定/注册表all清单，最终全部通过。
+
+实际CLI两项验证在无向量和无摘要配置下，重启后仍可跨获准群分页查询本人原文，排除第三人、拒绝群、异Agent与另一接收账号；来源成员权限在含证据HTTP400时撤销后，实际含证据HTTP仅一次，兼容重试与QQ回复均被阻止。仓库外从真实npm归档按锁离线安装后，上述CLI两项及公共TypeScript API宿主/确认投递/篡改保护一项共三项通过，均无跳过。后端构建、类型检查、Core边界与差异空白检查通过，候选包为 `.release/agent-bHuXQO`；最终包仅同步本节进度到README，运行文件与该测试候选保持一致。这些证据使用隔离Redis、合成OneBot与主模型，不证明真实模型查证质量或线上QQ历史验收；本轮未部署、执行生产迁移或新增线上发送。
+
+随后接通独立文字图片和思维导图：新旧文字入口共用完整三模板、代码高亮、Unicode截断和KaTeX排版；独立渲染无cwd临时文件，字体与D3/Markmap资产来自锁定安装包。导图使用显式独立模型，逐次数字用量记账，无主模型或旧插件配置回退。渲染最多20秒，图高/像素在截图前检查，来源/绑定/取消贯穿模型、渲染与当前会话图片交付；未知结果禁止自动补发。
+
+本阶段最终专项及工具/图片/注册表/仿真能力回归118项、原有文字图片回归15项通过，共133项，无跳过。真实Chromium检查document/knowledge公式字体、chat头像解码、导图全部节点与完成fit、零网络/危险DOM、过高画布在截图前拒绝，以及迟到浏览器/页面清理。审查先复现Markdown格式分段和实体解码后拼回禁词/凭据的绕过：旧构建的三模板六场景与导图三场景均未拒绝；现改为原文及实际可见文字双重检查，同例通过且拒绝后不截图。工具单元同时验证取消后迟到模型Response关闭响应体。浏览器缓存缺失改用显式本机Chrome；旧文字测试完成断言后用临时收尾钩子关闭共享浏览器并强制测试进程退出，新渲染器测试自然退出。
+
+最终测试候选包为 `.release/agent-pxvZDH`。仓库外真实npm归档按锁离线安装后，实际CLI文字document/双绑定隔离、独立模型导图/用量及未知发送一次三项，与公共TypeScript API/外部宿主/篡改保护一项共四项通过，无跳过；另只用 `/text-images` 和 `/mindmaps` 公共入口实际生成chat、knowledge和导图PNG，逐张确认尺寸并目视复核。离线安装首次缺少新媒体依赖缓存，按原锁版本和完整性补齐87个当前平台tarball后重新安装通过，未改锁绕过。后端构建、类型、Core边界及差异空白检查通过，CI新增Chromium/中文字体准备及包内渲染验收。最终包仅同步本节进度到README，运行内容与已测候选一致。本阶段使用隔离Redis、本地合成OneBot/模型与真实Chromium，不代表真实思维导图模型质量或线上QQ送图验收；没有部署、生产迁移或新增线上发送。
+
+随后完成可信文件来源与独立 Excel 读取迁移。QQ 文件段保留真实 file_id/busid，平台 URL 和 opaque reference 留在适配器内，Core 入站仅保存有界名称和数量。纯文件、带文文件、可信引用、本人近期文件和当前群目录均可解析；目录每次重列使用稳定且随证据变更的连接私有引用，并受5层、100文件夹、2000总文件和500个Excel文件限制，截断明确显示。上传 notice 不伪造原消息身份，缺上传者/时间或隐私证据的仓库条目保守拒绝。
+
+Excel 保留上述五操作和旧参数，新增可见 sourceSeq/真实 fileIndex；读取工具声明 `dataPolicy: 'ephemeral'`，首次执行前即绕过持久行动回执，非声明工具无文件端口。文件/目录结果及派生答复沿用完整临时隔离；原消息身份、当前请求正文、引用关系、目录证据、隐私、撤回或绑定变化，在下一模型HTTP/兼容重试/发送前失效。公式只读缓存，原查询函数保留；ZIP预检和解析全部在可终止线程，无跨会话缓存。损坏ZIP首次暴露旧yauzl校验流在当前Node上的错误/关闭事件缺失，修复后自行管理实际inflate并等线程退出，五类恶意ZIP与真实忙线程取消/超时反例均已通过。
+
+专项及定向回归共291项通过（其中实际CLI两项），包外真实npm归档按锁离线安装后的公共严格TypeScript/外部宿主/篡改保护、同两条实际CLI流程及签名CDN重定向工作簿共4项通过，均无跳过。工程证据由132项文件/Excel/Core/历史/入站/工具/CLI组合、72项完整角色运行时、28项原Excel策略/查询、58项原QQ接入回归和新增重定向反例组成；最终文件名修复后针对受影响的公共网页/文件、Excel线程和两条CLI再次跑55项，全部通过。三项旧绑定测试改为明确要求新角色模型上下文不保留旧角色近期消息，保留序号递增和两条新入站断言；未放松绑定隔离。后端构建、类型、Core边界与差异空白检查通过。候选包为 `.release/agent-54cEQm`；最终包只同步本节进度到README，运行文件与已测候选一致。发布前审计复现.xlsx链接跳转到无扩展名CDN路径后被误拒；最终读取器优先保留已核验原始URL的安全文件名，该反例先红后绿并在安装包内实际解析通过。包外测试真实运行包内worker，验证本人纯文件→后续真人查询、嵌套目录列表→指定工作簿→当前群答复，Redis/日志/模型请求无文件字节、下载URL或平台文件ID；正文与派生回复未持久化。上述使用隔离Redis、本地合成OneBot/主模型及真实ExcelJS/线程，未部署、执行生产迁移或新增线上发送，不代替真实QQ文件/真实模型验收。
+
+随后完成通用文件文本工具及固定会话文件上传原语。`fileTextTool` 复用已授权文件来源和临时资料模式，支持分页与既有多格式解析；解析子进程受期限、队列和ZIP/XML预算控制，取消后终止整个进程组并清理私有目录。真实PDF小文件使用精确字节视图。审计发现旧PPTX读取的ZIP结束与内容流竞态，修复为顺序读取，PPTX/POTX幻灯片及备注反例随后通过。DOC/RTF/OCR/DXF为固定宿主可选原生能力，缺依赖明确失败；`.xls`真实新增样本为Excel2003 XML，旧CFB二进制XLS仍复用原解析器，未新增该格式的真实样本验收。未发现旧聊天链路实际调用通用抽取helper，因此本次提供显式读取，不宣称恢复旧自动入站行为。
+
+文件上传有独立uploaded/failed/unknown回执，不伪造messageId；与文本和图片共用队列、配额、绑定/撤回复核及未知冻结。专门复现平台已确认上传但本地配额保存失败的反例：旧构建将异常交给producer后可能被误报成功；现改为强制unknown，即使producer捕获错误并声称成功也封锁后续动作，同例先红后绿。独立宿主补上已知凭据的精确和常见编码出站检查，关闭禁词过滤也不绕过；实际CLI验证模型回显主密钥和OneBot token时零QQ发送。QQ适配兼容真实NapCat仅以file字段提供显示名的文件段，真实file_id保持最高优先。
+
+本阶段专项与定向回归164项通过，无跳过：83项Core/工具/Excel/来源/历史/配置回归、55项QQ文件与正反向连接上传、12项通用真实解析与进程/预算、9项上传运行时、5项实际CLI。仓库外真实npm归档按锁离线安装后，12项真实格式/进程检查及5项CLI与1项公共严格TypeScript/宿主/篡改保护，共18项通过，无跳过；真实调用包内child，含DOCX、PPTX/POTX备注、PDF、二进制XLSB、ODF和EPUB。候选包为 `.release/agent-HQkkSD`；后端构建、类型、Core边界与差异空白检查通过。新增107个当前平台依赖tarball按锁定完整性补入离线缓存，未修改依赖锁。上述CLI/模型与OneBot仍为隔离合成服务，不能替代真实模型质量或真实群文件来源验收。
+
+2026-11-15按原会话授权另做一次真实QQ私聊文件验收：核验原机器人3094088525及好友925640859后，通过当前构建的QQ文件适配器和线上NapCat本机WebUI桥接，仅调用一次 `upload_private_file`，发送95字节合成TXT `core-file-acceptance-20261115T130527Z-d0610442af87.txt`。收到明确uploaded文件ID，随后一次好友历史查询精确匹配同一文件ID、名称和机器人发送者。可选下载URL未获得允许访问的结果，没有下载后字节一致性证据；未重发或改走其他发送方式。四份生产配置前后哈希相同，未部署、改生产Redis或服务，远端新临时目录已清理。脱敏证据在本机 `/tmp/bl-core-file-upload-evidence.20261115T130527Z-d0610442af87/result.json`；这是当前适配器真实私聊上传与平台历史读回，不等于完整Core真人入站、真实群仓库/文件抽取或真实模型质量验收。最终包仅同步进度README，运行文件须与上述已测候选保持一致。
+
+随后完成独立 `voiceTool`、火山V3受控字节合成、共享人设守卫，以及固定会话的 `sendAudio/sendVideo` 和 QQ record/video 适配。保留默认80字、五套默认样式、自定义样式、未知样式回normal及守卫轮换；HTTP原始音频、SSE/NDJSON/JSON协议通过真实localhost验证，尾部错误、超限、重定向、撤权和凭据口播均拦截。QQ部署源码审计发现旧文件/文字/bundle将handler异常误当明确失败，本轮改为source证明的schema失败400/1400才可确定未派发，200/1200及其他不明错误为unknown；旧1200断言同步修正，未知后不重试/回退。
+
+本轮工程专项与定向回归174项通过，无跳过：59项新语音/协议及旧语音/人设，20项配置/工具/文件上传回归，72项QQ媒体/文件/bundle/发送节流，16项真实Core媒体运行时，7项实际CLI。Core覆盖固定身份/字节快照、共享预算、双向语音文字去重、临时资料禁止外发、排队撤回/换绑、unknown冻结，以及平台已sent但本地记账保存失败时强制unknown。最终源码修订后受影响的语音/人设/配置63项再次通过；后端构建、类型、Core边界与差异空白检查通过。旧manager对比测试独立保留，neutral工具测试不再静态引用包外legacy模块。
+
+候选包为 `.release/agent-JQoBKl`。仓库外真实npm归档按锁离线安装后，18项真实HTTP协议/工具、7项实际语音CLI和1项公共严格TypeScript/外部宿主/篡改保护，共26项通过，均无跳过。CLI实际将有效WAV交到OneBot record并核验真实message_id；本地TTS pending撤回/换绑会中断HTTP且零晚发，unknown后模型故意重调语音或文字也只派发一次。这些合成服务证据不代表真实火山服务质量或QQ客户端播放。
+
+2026-11-15按原会话授权另做一次真实QQ私聊音频验收，使用当前构建的7模块媒体适配器闭包及本机Tingting生成的84122字节、16kHz单声道16bit WAV（约2.50秒，口播“Core语音验收，无需回复”）。核验机器人3094088525及好友925640859后，仅一次send_private_msg，平台回执为unknown，无真实消息ID，未继续历史查询、未重发或改为文字/文件。四份生产配置前后哈希相同，未部署或改生产Redis，远端临时目录清理完成，永久防重占位保留。脱敏证据在 `/tmp/bl-core-audio-evidence.20261115T132641Z-d1b733fff1ab/result.json`。随后只读检查对应短时间日志窗口未取得可确定的错误线索，不能据此断言转码失败或消息已送达；随后用户在本会话明确确认已收到该条语音且能正常播放，因此这条2.50秒合成WAV的真实QQ客户端收听验收通过；当时原生平台回执仍为unknown且无消息ID，保留防重占位，不重发。该人工确认不代表真实火山合成服务或完整Core真人入站模型验收。
+
+随后完成独立QQ音乐搜索卡片：中立卡片契约与公开 `/music` 入口、固定官方搜索/vkey/试听协议、歌曲第一首与歌手最多20首随机、私有Cookie续期与重启续存、当前群的单次原生custom卡片。Core沿用发送队列、配额、来源/版本绑定与unknown冻结；同曲更换播放签名不能绕过本轮去重，临时资料回合不能借卡片外发。QQ只接受官方页面/封面/播放URL结构，要求非空封面和真实message_id；30秒本地超时实测返回unknown，不声明NapCat签名服务停止或客户端可播放。
+
+本阶段工程专项与定向回归167项通过，无跳过：27项新音乐提供方/工具及旧搜索/共享宿主，40项QQ音乐与真实localhost正反向连接，49项配置/私有续存/动态凭据/公共工具及文件音视频回归，24项仿真入站与工具面，14项Core音乐运行时，13项实际CLI。CLI发现新凭据虽在工具执行前被拒、原参数仍留入agentHistory；新增留存前检查，拒绝调用只留下安全名称/ID、空参数和通用错误，后续模型请求及Redis均无原凭据。同一阶段另先复现Unicode转义经JSON串行化的凭据绕过，修复共享检查后同例通过。最终源码重建后受影响套件重跑通过，类型、Core边界与差异空白检查通过；本机凭据目录0700/文件0600、初始环境指纹隔离及撤权前原子续存另有真实临时文件验证。
+
+测试候选包为 `.release/agent-jDEpii`。仓库外真实npm归档按原锁离线安装后，23项独立协议/工具、13项实际音乐CLI及1项公共严格TypeScript/外部宿主/篡改保护，共37项通过，无跳过。CLI通过固定官方API替身、真实localhost OneBot/模型及隔离Redis执行，涵盖匿名/显式Cookie/歌手查询、启动与点歌合并刷新、新凭据跨公开工具拦截、查询/vkey期间撤回和换绑、unknown后音乐与文字均不补发。最终包只同步本节README，运行文件须与已测候选保持一致；没有部署、生产迁移或新增线上QQ发送。
+
+2026-11-15另从当前编译提供方匿名查询一次“晴天 周杰伦”，仅向固定 `u.y.qq.com` 发出search和vkey两次HTTP，真实返回歌曲“晴天”、歌手“周杰伦”、歌曲ID `0039MnYb0qxYhV`，采用官方c6试听回退；未下载、未播放、未发送QQ卡片。脱敏记录在 `/tmp/bl-core-music-live-provider.json`。这只证明当时匿名搜索及试听引用可取得，不证明会员/vkey质量、真实Cookie登录刷新、平台签名或QQ客户端播放。NapCat签名的默认HTTP地址、备用服务、重定向及迟到发送边界见上节，不扩大本地取消保证。
+
+随后完成独立网易云完整文件提取：群自动分享与完整操作员身份的群/好友引用命令、三种会话模式、官方元数据与有界完整音频准备、独立20MiB音频附件上传，以及完整文件→信息合并转发/文字→record试听。来源每阶段重读，私聊每次核验新鲜好友表；配置变化、来源撤回、换绑、隐私和停机撤销后续许可。持久账本每阶段先登记，unknown及平台确认后本地结算失败停止后续动作，重启遗留尝试不恢复发送；原生JSON、下载引用和音频字节不进入模型或持久资料。
+
+本阶段工程专项与定向回归166项通过，无跳过：16项官方提供方/原生Node连接、51项QQ来源与音频附件、9项旧OneBot连接、22项完整Core流程、10项真实Redis账本、47项配置/工具/文件音视频回归、11项实际CLI。CLI通过真实本地HTTP/WS及隔离Redis核验自动native/JSON分享、群/好友引用、非好友拒绝、每次来源重读、unknown阻断、撤回/换绑确实中断下载socket、默认关闭仍保持普通入站，以及日志/模型/Redis/本地资料无下载引用、音频或宿主凭据。另有准备期间撤销配置、纯卡片群文字入站、可变producer快照、附件与试听字节一致、持久inbox重启重读等Core反例。后端构建、类型、Core边界与差异空白检查通过。
+
+测试候选包为 `.release/agent-tEfKED`。仓库外真实npm归档按原锁离线安装后，16项提供方、11项实际提取CLI与1项公共严格TypeScript/外部宿主/篡改保护，共28项通过，无跳过；CLI运行已安装包的真实入口和生产连接器，仅由测试预加载将固定官方HTTP流量转至本地审计服务，生产配置未新增任意端点。最终包只同步本节README，其他运行文件与已测候选及当前构建核对一致。上述仍是合成音频与本地平台验收，不代表网易云实时可下载、QQ客户端文件完整性或播放验收；本阶段零新增线上发送、零部署或生产迁移。
+
+2026-11-15另对当前编译的网易云提供方执行一次真实匿名完整准备，歌曲ID为186016，零QQ发送。最初读取暴露了Node自动地址族选择与固定DNS回调形状不匹配的问题，补上已核验地址的family后重新读取：官方详情返回200，音频入口经两次官方重定向返回text/html而非音频，格式检查拒绝，未取得可交付音频。脱敏记录在 `/tmp/bl-core-music-extraction-live-provider-final.json`。这证明修复后的原生连接与失败关闭路径，不证明该歌曲或其他歌曲当前可下载，也不代表真实QQ完整文件/介绍/试听验收。
+
+下一阶段的只读定位已完成：自动搬运主链为 `messagePipeline → mediaOutbox → 各provider准备 → QQ deliveryGateway`，保留持久任务、群内串行与准备预热、信息/全文/图集/视频同条混合转发、sending重启转uncertain，以及仅明确未派发时的资源失败重试和降级。当前中立bundle只有text/image、最多12节点且图片2MiB/总12MiB，video最多30MiB，不能直接承载旧B站/YouTube的512MiB、抖音图集配乐或小红书全文/live-photo。基础资源寿命与有序计划合同已有下述实现和验证；QQ临时资源桥与固定目标的混合转发/直发端口已有下述实现；下一步接来源读取、Core守卫和持久队列，再落B站自动搬运完整垂直链及原降级，保留BV/b23/番剧、分段、匿名优先/授权复试、试看保护、缩略图/cleanup和未知冻结；这些业务接线尚未实现。通用VideoAnalysisTool、B站显式高清/账号授权、视频搜索发送、Pixiv搜索后五分钟会话下载及历史媒体重放仍分别计量，不能合并为自动搬运完成。
+
+随后完成完整媒体搬运所需的基础资源合同、流式私有仓库和有序计划校验，并从公共 `/media-relay` 交付；没有接入自动搬运或新增QQ动作。18项真实文件仓库测试与11项计划测试、37项旧bundle/QQ媒体限制及连接回归，共66项通过，无跳过。真实512MiB文件完整写入并校验边界，31MiB逐块读回SHA256一致，32MiB图片边界、并发容量、retained lease、128reader配额、挂起输入/权限取消、最终open撤权、符号链接/改写及自有目录清理均有反例验证。源码复核修复了open返回前撤权双重释放配额、abort后过早移除尚未关闭的reader、未启动迭代器return跳过generator finally，以及外部context/return getter错误逃逸或中断自有清理；专项覆盖并通过。格式检查只证明有界容器头，不是视频解码或客户端播放。
+
+测试候选包为 `.release/agent-83ENnG`。仓库外真实npm归档按原锁离线安装后，18项仓库、11项计划和1项公共严格TypeScript/宿主/篡改保护，共30项通过，无跳过；公共宿主实际stage/open/read/release，释放后拒绝旧ID。后端构建、类型、Core边界与差异空白检查通过。此前音乐提取最终包的278个既有运行/声明文件与本候选逐字节一致，唯一既有变化是Core公共类型声明追加合同；新加入7个资源/计划运行及声明文件。最终包只同步README，其他产物须与该候选保持一致。本阶段没有外部HTTP服务、真实媒体提供方、线上QQ发送、部署或生产迁移。
+
+其后已实现QQ媒体资源桥、原生交付端口和OneBot显式注入：按connection固定account/目标/current，完整stage并核对size/hash，短期资源URL仅进入原生参数；全部视频必须有缩略图，保留混合节点及部分顺序，直发视频一次包含全部视频，端口不自动重试或降级。准备及发送按连接串行、最多4项等待；每项捕获独立调用授权上下文及入口socket，HTTP回调与后续排队任务不能继承其他回合授权。先前缺少包装的Proxy AbortSignal可令原始错误逸出，已用旧构建复现并补统一错误边界及回归。此前保存的NapCat部署源码快照对packet视频转发设100MiB限制，HTTP下载还会整文件缓冲；512MiB不能由当前180秒media、10秒bundle或15分钟旧gateway期限保证，后续实现须按完整字节量采用专用有限预算，并在真实部署重新核验上传期限、内存/磁盘及可达性。保留明确资源预处理失败→一次转发重试→原群信息+完整视频直发→明确失败后原链接；一般handler错误、超时或缺回执仍为unknown并立即停止。容量承载、正确降级与真实512MiB投递/播放分别验收，不能合并计算。
+
+本阶段最终源码构建2064文件、类型、Core边界和差异空白检查通过。21项桥、26项原生端口、14项真实本地HTTP/双向WebSocket整合及54项旧bundle/media/连接回归，共115项通过，无跳过。桥真实stage并完整serve 512MiB校验SHA256；双向OneBot整合各自完整读取101MiB+17字节视频、PNG封面/JPEG缩图，验证顺序和回执、unknown零重试、准备期实际重连零旧发送、排队撤权零后续stage，以及HTTP中途guard/stop/bridge.close断流、路由撤销与临时副本清理。容器头有效的合成字节只证明传输完整性，不是解码或QQ播放。
+
+测试候选包为 `.release/agent-Zhjipb`。真实npm归档在仓库外按原锁离线安装，复制到仓库外的桥/端口/整合测试61项全部通过；另一个真实归档安装通过严格TypeScript公共宿主测试1项，实际调用公开桥stage/fetch/release与公开relay端口，共62项，无跳过。旧资源基础包281个既有产物逐字节一致，变化仅OneBot运行/声明、中立动作/端口/Core公共声明及构建manifest，新增桥与交付实现。最终包只同步README及其发布校验清单，运行与声明文件须与该候选逐字节一致。仍未接B站提供方、自动队列、来源读取与Core配额/隐私守卫，也未装配独立CLI桥配置、进程生命周期或崩溃临时目录清理；下一步从这些接线继续，保留原明确失败降级和任何unknown立即冻结。此次零真实QQ发送、零部署或生产迁移。
+
+随后按用户明确的Core边界实现B站自动搬运垂直链：Core提供方负责官方引用解析、授权复试、完整下载、独立durl资源及中立有序计划，Core持久队列负责准备/FIFO/重试/降级；QQ只负责核验来源协议、资源桥及原生消息转换。缩略图失败不丢中立完整视频，QQ明确拒绝缺缩略图时由Core回退链接。OneBot读取、Core两种群模式、真实Redis账本与独立CLI已接通，默认关闭、凭据环境变量、每连接桥、进程租约及精确owner标记清理均已实现。没有接入其他媒体提供方、私聊自动搬运或任意外部下载工具。
+
+本阶段387项工程专项及定向回归通过，零失败/取消/跳过：B站提供器+outbox86项，真实Redis ledger37项，Core集成24项，QQ来源读取47项，宿主配置/生命周期/CLI9项，共203项新链路；已有QQ媒体桥、交付、网易云来源/音乐/完整音频回归143项，以及Core边界/inbox/旧音乐提取/音视频41项。新链覆盖BV/b23/EP、匿名与授权/试看、分P和多durl真实不同字节、101MiB完整资源与512MiB+1/32MiB+1溢出清理、无缩略图保留完整视频、严格API声明长度、全阶段pending先行/unknown冻结、CAS/ACK丢失、准备并发2/FIFO/预热、取消/停机晚到及精确目录清理。CLI通过真实Redis+本地合成OneBot WS、官方HTTPS/DNS合成响应、完整资源仓库、bridge HTTP字节读回和原生message_id确认，0模型调用；ffmpeg输出及媒体内容是合成夹具，不是视频解码或线上QQ播放证明。
+
+本阶段修复并回归验证了：来源作者/时间/引用变化后错误进入准备重试；初次断线或读来源期间断线提前消费；文字群纯JSON卡片未准入/扩展段丢失；A账号sent/unknown后离线导致B重新搬运；兄弟账号撤回和Redis取消CAS失败未及时中止进程内资源；stop后迟到claim继续打开context。新增物理群来源共享7天归属/撤回栅栏，private与namespace仍隔离。另修复QQ来源Unicode正则的无效转义运行时语法、24小时SPI刷新误拦自身旧设备指纹，以及CDN短body仅凭自身Content-Length冒充API声明完整资源。macOS临时目录别名和测试时钟/周期tick的夹具差异已校正后鲜跑；没有用测试替代真实平台验收。
+
+测试候选包为 `.release/agent-BWfpV2`。真实npm归档在仓库外按原锁离线安装，8组测试复制到仓库外并只读取已安装包，203项全部通过；另一个真实归档安装的严格TypeScript公共API/宿主/篡改保护1项通过，共204项，无跳过。已核对306个运行/声明产物与当前构建逐字节相同。后端构建2094文件、类型、Core边界及差异空白检查均通过。最终包只同步本节README及对应发布校验清单，运行与声明须与该候选逐字节相同。证据：`/tmp/bl-chat-core-provider-runner-review.log`、`/tmp/bl-core-bilibili-{ledger,core-runtime,qq-source,standalone,package-suites,public-consumer}.log` 与 `/tmp/bl-core-bilibili-package-proof.json`。本阶段零真实QQ发送、零部署或生产迁移；真实B站网络/账号授权、真实ffmpeg解码、QQ混合视频/直发/客户端播放仍待外部验收。
+
+随后完成Core磁链下载垂直链：群内真实BTIH→固定缓存/DHT/固定tracker元数据→完整清单或选中文件→独立piece核验→只含所选文件的ZIP→私发原请求者→真实file_id后群内确认。Core持有原人选择、资源与持久阶段，QQ仅做协议来源/中立正文SHA256核验、独立ZIP桥及原生上传转换；默认关闭，宿主显式配置代理/桥/租约和固定aria2c/zip。关键词磁力搜索继续是独立非下载能力。2048文件全部分页、所有页确认后才开放选择，无效选择不变成整包请求，fingerprint变化或来源/选择撤回及换绑/隐私/停机均停止。TEMP私发依赖真实平台上下文，不建立额外私聊绑定或探测发言，不保证任意群成员可达。
+
+本阶段443项工程专项与定向回归通过，零失败/取消/跳过：provider与宿主52项，真实Redis ledger48项/完整workflow22项，Core两种群模式17项，QQ ZIP桥/交付与CLI27项，共166项新链；另80项Core/旧torrent/音乐/inbox/隐私回归及197项QQ文件/音视频/音乐/来源/双向连接回归。50,000,000字节ZIP在双向WebSocket集成中经真实本地HTTP完整读取，原生参数只含URL而非超frame的base64。CLI通过真实Redis、实际系统zip、真实本地OneBot WS和ZIP桥；缓存与aria2 payload是明确的合成夹具，0模型调用，不代表真实P2P或线上QQ收件。
+
+本阶段红例已修并同例复测：整份metadata JSON误被当工具参数净化而拒绝正常结果；长清单固定切片触发trim以及未全部确认就开放选择；无效选择可能退化整包；Core来源读取与QQ首次原生读取间正文替换；另一个媒体ledger取消故障阻断torrent/入站撤回。现在逐名称/路径做文本守卫、按完整行分页和逐批pending、固定中立正文摘要且与QQ共享CQ解析、各撤回链独立完成。Proxy AbortSignal显式拒绝，50MB原生测试的frame度量和连接重置夹具也已校正。公共严格TS消费者首次携带额外ensureCurrent进入闭合发送guard被拒，已改用公开MessageActionOptions字段后复测通过；没有放宽运行边界来迎合测试。
+
+测试候选包为 `.release/agent-IqxEcI`。真实npm归档在仓库外按原锁离线安装，8组复制到仓库外、只读取已安装dist的166项全部通过；另一次真实归档安装的公共严格TypeScript/API/外部宿主/篡改保护1项通过，共167项，零跳过。逐个核对329个运行/声明产物与当前构建一致；后端构建2139文件、完整类型、Core边界、CI YAML解析与差异空白检查通过。最终包仅同步本段README和发布清单，运行/声明须与该候选逐字节一致。证据：`/tmp/bl-core-torrent-{runtime,ledger-workflow,qq-archive,core-regression,qq-regression,package-suites,public-consumer}.log`、`/tmp/bl-chat-torrent-provider-standalone-tests.log`及`/tmp/bl-core-torrent-package-proof.json`。未部署、未修改生产状态、零新增真实QQ发送；真实P2P下载/网络环境、QQ原群成员TEMP私发、客户端ZIP下载/解压和字节核验仍待外部验收。全局Core迁移目标保持进行中。
+
+随后按同一Core边界完成抖音自动搬运：官方短链/作品引用→静态分享页→目标作品受控浏览器回退→完整视频或前20张图集（明确数量和失败位置）→可选配乐轮播→中立计划→共用持久队列与QQ交付。抖音须独立显式启用，旧B站配置不扩大出机；video/note/short的闭合引用、对应provider和作品ID检查、物理来源v1归属及unknown防重均沿用。保留匿名一方Cookie、图集有序节点、配乐失败保图、缩略图失败保完整中立视频，并由QQ明确链接降级。没有迁移其他渠道或接入任意外部解析服务。
+
+本阶段557项本地工程专项及定向回归通过，零失败/取消/跳过：抖音提供器29项（含Unicode代码点描述回归）、真实Chrome隔离2项、引用/真实Redis账本/outbox95项、Core与计划/宿主57项、QQ来源58项/实际抖音CLI3项，另B站提供器及磁链八suite227项、旧QQ媒体桥/交付/双向整合/旧抖音与inbox/隐私86项。真实Chrome通过固定匿名Cookie及签名详情→目标图集、真实本地HTTP流上限/取消及原生STUN隔离；真实Redis、OneBot WS和HTTP桥验证完整字节、节点顺序、unknown冻结及退出清理。CDN/作品内容和CLI缩略图仍是合成夹具；原生子进程边界使用合成可执行文件，宿主缺少ffmpeg/ffprobe，所以HEIC解码、H.264/AAC配乐轮播和缩略图真实编解码未验收，真实抖音反爬/完整下载和QQ客户端播放仍待外部证据。
+
+本阶段发现并修复：缩略图失败丢弃完整中立视频、HTTP206部分响应误作整份资源、短链落到挑战页时丢失已核验作品ID、图集配乐受大小限制提前结束、UTF8分块/astral描述边界，以及匿名Cookie跨会话累计。浏览器HTTP拦截外的STUN UDP本地反例先复现4包；仅历史启动switch仍4包，改为私有profile固定WebRTC偏好并配合引擎/页面及子realm限制后，实际生产launcher无JS拦截的原生RTC反例为0包，签名详情仍成功。profile归Core私有作业和精确owner清理，不宣称OS网络沙箱。Redis快照排序、合成child启动预算、拒绝错误种类和srcdoc脚本假设已按实际边界修正后复跑；没有把尚未返回的试验当最终验收。
+
+测试候选包为 `.release/agent-sx4kE7`。真实npm归档在仓库外按原锁离线安装后，12组测试复制到仓库外、只读取已安装dist，294项全部通过；另一次真实归档安装的公共严格TypeScript/API/外部宿主/篡改保护1项通过，共295项，无跳过。343个运行/声明文件与当前构建逐字节相同，后端构建2160文件、完整类型、Core边界、CI YAML及差异空白检查通过。最终包仅同步本阶段README和发布清单，其余运行/声明须与已测候选一致。证据：`/tmp/bl-chat-douyin-provider-tests-final.log`、`/tmp/bl-core-douyin-{runtime-host,reference-ledger-outbox,bili-torrent-regression,existing-regression,browser-qq-cli-final,package-suites,public-consumer}.log`及`/tmp/bl-core-douyin-package-proof.json`。零生产部署/迁移、零新增真实QQ发送；全局Core迁移保持进行中。
+
+随后按同一边界完成小红书自动搬运：官方作品/短链及QQ分享先归一为安全引用，Core负责目标笔记静态解析、匿名浏览器与受限签名feed POST、全文独立节点、完整视频或前20槽图集/实况、签名图片优先及逐槽失败回退，再交同一中立计划和持久outbox。访问token从原消息临时核验，share/账本不保存查询，入队、显示名、模型引文/展开转发及旧收件消费重新净化；恢复仍回查原平台来源。既有v1物理来源去重、pending/unknown冻结、默认B站启用边界及QQ原有选择优先级不变。
+
+本阶段最终607项不同的本地工程专项与定向回归通过：小红书32提供器/3真实Chrome、引用与真实Redis账本/outbox137项、Core/宿主59项、QQ来源73项与实际小红书CLI3项、旧B站/抖音/QQ媒体及旧小红书189项、inbox/隐私/历史/出站规则111项。真实Chrome覆盖匿名HTTP/JS Cookie、精确目标GET及原始JSON/签名POST→图集/实况、实际launcher原生RTC零UDP，真实本地HTTP覆盖分流、限额和POST取消。CLI使用真实Redis、OneBot WS与HTTP资源桥，正文、媒体字节、槽位顺序、unknown冻结和清理通过；作品内容/CDN/模型与缩略图是明确的合成夹具，不代表线上反爬、HEIC或真实缩略图编解码、QQ客户端播放已验收。
+
+本阶段反例与同例修复包括：逐跳换笔记先请求后检查、空图集漏封面、浏览器向其它笔记带token、短宿主Cookie未保护、来源normal被重定向升级为video；GET-only浏览器缺失旧页面POST能力也先由真实Chrome复现，再通过闭合16KiB目标feed、原body字节/受限签名及匿名父域Cookie补齐。后续复核阻断token改名进签名/其它字段、Cookie/Set-Cookie以及同note GET置换权限。浏览器测试的清理hook顺序已修并复跑；源码修改期间两项历史CLI被产物一致性保护阻止启动，最终构建后两项均单独通过，不把启动失败当业务失败或成功。
+
+测试候选包为 `.release/agent-FU4wLQ`。真实npm归档在仓库外按原锁离线安装后，16组测试复制到仓库外、只读取已安装dist，391项全部通过；另一次真实归档安装的公共严格TypeScript/API/外部宿主/篡改保护1项通过，共392项，零失败/取消/跳过。353个运行/声明文件在归档、安装目录及当前构建间逐字节一致；最终后端构建2175文件、完整类型、Core边界、CI YAML解析及差异空白检查通过。最终包由本段更新后重新打包，除README与发布清单外须与已测候选逐字节一致，具体目录和核对结果见 `/tmp/bl-core-xhs-release-equality.json`。证据：`/tmp/bl-core-xhs-package-proof.json`、`/tmp/bl-core-xhs-{provider-browser-final,reference-outbox,runtime-host,qq-cli,media-regression,privacy-regression,history-retest,package-suites,public-consumer}.log`。本阶段零生产部署/迁移、零新增真实QQ发送；线上小红书反爬、实际媒体下载及QQ客户端播放另行验收，全局Core迁移目标保持进行中。
+
+随后按同一Core边界完成YouTube自动搬运：官方watch/shorts/embed/live/youtu.be引用→固定yt-dlp单视频提取→原作品身份/选定progressive MP4核验→Core独立封面/视频下载→中立计划→共用outbox及QQ。Cookie、PO Token与可选HTTP(S)/SOCKS代理只来自显式环境引用；提取器忽略外部配置、插件和继承环境，授权文件和CONNECT代理归本作业清理。保留30分钟/512MiB、封面、标题/频道/统计/简介及失败页面；缺音轨、HLS/DASH、manifest/fragments不冒充完整MP4。默认B站启用和v1物理来源去重边界不变，PO Token只在当前任务已核验googlevideo播放URL的唯一pot字段使用，不进入输出和持久记录。
+
+本阶段529项本地工程专项及定向回归通过：YouTube提供器47项（含512MiB完整流/读回SHA256）、真实子进程/CONNECT/HTTP与SOCKS/媒体流13项、引用/真实Redis账本/outbox/配置161项、Core与宿主64项、QQ来源81项和实际YouTube CLI3项、旧YouTube/B站/抖音/小红书/outbox/消息管道160项。CLI实际运行Redis、OneBot WS及HTTP资源桥，完整视频、超时长仅元数据及unknown冻结三条链验证原字节/哈希、来源重验、0模型、重复事件不重发、授权文件/提取代理/资源桥退出清理。合成提取器程序验证真实子进程和CONNECT字节传输；CLI的元数据、缩略图及TLS接缝是合成依赖，本机缺少真实yt-dlp、ffmpeg/ffprobe，真实程序版本兼容、线上反爬、编解码与QQ客户端播放另行验收。
+
+复核补齐合法PO query与凭据禁出的字段区分、progressive与分片声明检查、媒体字节跨块秘密检查、尾分号Cookie，以及相对重定向先解析再核验的顺序。公共API的代理语法过宽已在旧产物复现，再统一为2048字符、无原始query/fragment及无解码空白凭据后同例通过。首轮提供器测试使用缺少尺寸SOF的JPEG夹具被真实仓库拒绝，改为有效有界SOF后47项全部通过；网络测试修正升级socket关闭和同步拒绝的捕获方式。首轮CLI3项因代理源码更新被产物一致性保护阻止启动，第二次集中构建后3项全部通过；这些启动拒绝没有计为业务成功。完整类型、Core边界、CI YAML及差异空白检查通过，最终构建2187文件。
+
+测试候选包为 `.release/agent-u2KseS`。真实npm归档在仓库外按原锁离线安装后，20组测试复制到仓库外、只读取已安装dist，497项全部通过；另一次真实归档安装的公共严格TypeScript/API/外部宿主/篡改保护1项通过，共498项，零失败/取消/跳过。361个运行/声明文件在归档、安装目录及当前构建间逐字节一致；最终包仅同步本阶段README与发布清单，运行文件须与已测候选一致，最终目录及核对记录见 `/tmp/bl-core-youtube-release-equality.json`。证据：`/tmp/bl-core-youtube-package-proof.json`、`/tmp/bl-core-youtube-{provider-retest,network-final,reference-outbox,runtime-host,qq-cli,cli-final,media-regression,package-suites,public-consumer}.log`。本阶段零生产部署/迁移、零新增真实QQ发送；真实YouTube访问、实际yt-dlp/ffmpeg版本与编解码、QQ客户端播放另行验收，全局Core迁移保持进行中。
+
+随后按同一Core边界完成Pixiv自动搬运：官方作品引用→原作品详情/分页核验→Core按原页顺序下载→中立介绍/图片计划→共用outbox及QQ。保留前5页、16MiB单图、40MiB总量和90秒单图期限，失败已消费字节同样扣总预算；无效或失败页不移动其他页的位置，超页与预算不足明确说明。受限作品默认只发介绍和页面；无有效受限标记始终只保留元数据。宿主可明确允许已验证的受限作品，Cookie及代理仅环境引用、Cookie仅固定元数据端点。QQ不采用卡片自报ID/标题/CDN，统一公开格式继续供其他渠道兼容。
+
+本阶段548项本地工程专项及定向回归通过：Pixiv提供器30项、网络17项（真实loopback HTTP流、超限和取消，外部Pixiv/TLS为合成或注入接缝）、五提供方引用/plan/真实Redis账本/outbox/配置191项、Core与宿主75项、QQ来源89项及实际Pixiv CLI4项、旧Pixiv/YouTube/B站/抖音/小红书/outbox/消息管道142项。四条CLI链分别验证有序三页、中页失败保留首尾、默认受限零CDN请求、unknown冻结；实际使用独立进程、Redis、OneBot WS和HTTP资源桥，逐图字节/哈希、来源重核、0模型、重复事件不重发、SIGTERM退出和资源清理均有断言。类型、2196文件后端构建、Core边界、CI YAML及差异空白检查通过。
+
+初轮提供器24项中5项失败：一项真实问题为资源仓库封装流错误后丢失超限分类，已改按每图实际消费量识别并保持16/40MiB精确提示；另四项为测试误认仓库空目录泄漏、或忽略含秘密的整份分页元数据会被舍弃并回退首页。初个归档候选使用了这组未冻结测试，出现同样5个失败，不作为最终验收。最终源码和测试冻结后重新构建、完整复跑提供器30项和网络17项全绿，后续归档验证以最终候选为准。红例保留在 `/tmp/bl-core-pixiv-provider-red.log`，同例修复在 `/tmp/bl-core-pixiv-provider-final.log`。
+
+最终测试候选为 `.release/agent-n100Hs`。真实npm归档在仓库外按原锁离线安装后，25组测试复制到仓库外且只读取已安装dist，603项通过；另一次归档安装的公共严格TypeScript/API/外部宿主/篡改保护1项通过，共604项，零失败、取消或跳过。367个运行/声明文件在候选、安装目录及当前构建间逐字节一致。最终包只同步本节README与发布清单，运行文件须与该候选一致，目录及核对记录见 `/tmp/bl-core-pixiv-release-equality.json`。证据：`/tmp/bl-core-pixiv-final-package-proof.json`、`/tmp/bl-core-pixiv-final-package-suites.log`、`/tmp/bl-core-pixiv-public-consumer-final.log`，本地证据为 `/tmp/bl-core-pixiv-{provider-final,network-final,reference-outbox,runtime-host,qq,cli,media-regression}.log`。本阶段零生产部署/迁移、零新增真实QQ发送；真实Pixiv访问、可选代理与QQ客户端图片显示另行验收，全局Core目标保持进行中。
+
+接续时保留 Modrinth 未知投递与语音未知原生回执，不自动重发；该语音已有用户确认收到且可播放，客户端验收通过。可信文件来源、Excel读取/搜索、通用抽取/当前会话上传，以及语音与受控音视频原语、音乐搜索卡片、网易云完整文件提取、B站自动搬运及磁链下载/原请求者ZIP、抖音、小红书、YouTube及Pixiv自动搬运已完成上述各自工程验证；本阶段安装包验证见对应证据。下一步迁移Pixiv显式搜索/热门与画师分支/五分钟选图下载、视频分析、团录导出及QQ动作，并分别完成外部验收；不能把原语或B站一条链路当作全部业务迁移完成。创建/改写Excel仍是新增能力，不能把现有只读路径描述为无损编辑。QQ文件来源、群上传后查询及真实模型结果另需线上证据。显式历史已有上述本地来源与三种会话模式的工程验证，完整旧归档接续以及真实QQ/模型查证另行验收。成员查询/点名通知已完成上述工程接线，真实 QQ 与模型验收单独待办。私聊跨群本人召回已有宿主授权实现，真实语义质量另行验收。旧教学已有上述显式离线接续路径；缺少证据的记录、旧摘要、旧语义索引与情节继续留源。GitHub 成功查询、语义模型质量、MCP、图片、群知识、工作流通知、仿真真人路径及角色反思仍需各自的真实外部服务、QQ 或模型证据；两个原插件记忆模块的时间口径另待核对，独立控制台尚未接通。QQ 取图取消已贯穿查询和下载，当前配置的图片服务为未监听的本机测试地址，不能作为真实图片模型证据。微信、飞书及其他平台当前只保留接入接口。
