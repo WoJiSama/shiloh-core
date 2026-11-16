@@ -1,5 +1,7 @@
 import type {ActionFactsEvent,ActionFactsQuery,TurnActionFacts,TurnTaskFact} from './turnActionFacts.js'
 import type {TurnInteractionContext} from './turnInteraction.js'
+import type {AgentBindingGuard,AgentBindingTurn} from './agentBinding.js'
+import type {ExecutionOptions as ModelExecutionOptions} from './modelExecution.js'
 export interface ToolCall {id?:string;type?:string;function?:{name?:string;arguments?:string};[key:string]:unknown}
 export interface ToolResult {toolName:string;result:unknown;toolCallId?:string}
 export type ToolContinuation = 'direct_result'|'chat_only'|'tool_loop'
@@ -23,7 +25,7 @@ export interface BuiltinManifestPorts {
  PIXIV_SEARCH_TOOL_MANIFEST:ToolManifest;
 }
 
-export interface SemanticEvent {msg?:string; raw_message?:string; _mergedRawCqTexts?:string[]}
+export interface SemanticEvent extends AgentBindingGuard {msg?:string; raw_message?:string; user_id?:string|number; group_id?:string|number; _mergedRawCqTexts?:string[]}
 export interface SemanticMember {user_id?:string|number|null;card?:string;nickname?:string;role?:string;title?:string}
 export interface ToolDefinition {type?:string;function?:{name?:string;description?:string;parameters?:unknown}}
 export interface AvatarReference {qq:string;role:string}
@@ -66,7 +68,8 @@ export interface SemanticToolPorts {
  fetchWithTimeout(url:string,options:RequestInit,timeout:number):Promise<Response>
 }
 
-export interface ExecutionEvent extends SemanticEvent {
+export interface ExecutionEvent extends SemanticEvent, AgentBindingTurn {
+ _isMemoryContextCurrent?:()=>Promise<boolean>;
  group_id?:string|number;user_id?:string|number;message_id?:unknown;self_id?:string|number;bot?:{uin?:string|number};
  _groupContextImagePrompt?:string;_longRunningToolTask?:boolean;_quotedPromptContext?:{text?:string}
 }
@@ -74,6 +77,7 @@ export interface ExecutionMessage {role?:string;content?:string;tool_calls?:Tool
 export interface ExecutionResult {toolCall:ToolCall;toolName:string;result:string;elapsed?:number}
 export interface ExecutionAvatar {images:string[];targets?:{userId:string;label:string}[];promptHint?:string}
 export interface ExecutionSession {
+ toolExecutionBlocked?:boolean;
  rawArgs?:string;rawUserText?:string;interactionContext?:TurnInteractionContext;actionFactsQuery?:ActionFactsQuery;toolDecision?:SemanticDecision|null;executionTools?:ToolDefinition[];userContent?:string;groupContextImagePrompt?:string;tools?:ToolDefinition[];images?:string[];
  imageVerificationNeedsSearch?:boolean;imageVerificationSearchDone?:boolean;imageVerificationMode?:string;imageVerificationFinalInstructionAdded?:boolean;
  taskDedupeToolTouched?:boolean;backgroundTerminalToolTouched?:boolean;toolName?:string|undefined;toolResults?:ExecutionResult[];
@@ -107,7 +111,7 @@ export interface ToolExecutionHost {
  startBackgroundTerminalToolCalls(calls:ToolCall[],event:ExecutionEvent,session:ExecutionSession,role:string|undefined,messages:ExecutionMessage[]):void;
  buildImageVerificationSearchToolCall(results:ExecutionResult[],session:ExecutionSession,event:ExecutionEvent):ToolCall|null;
  handleTextResponse(text:string,event:ExecutionEvent,session:ExecutionSession,messages:ExecutionMessage[],name?:string):Promise<unknown>;
- retryRequest(request:unknown,content:unknown,count:number,name?:string,options?:unknown):Promise<{choices?:{message?:ExecutionMessage}[];error?:unknown}|null>
+ retryRequest(request:unknown,content:unknown,count:number,name?:string,options?:ModelExecutionOptions):Promise<{choices?:{message?:ExecutionMessage}[];error?:unknown}|null>
 }
 export interface ModrinthRanking {items:{projectId:string;[key:string]:unknown}[];[key:string]:unknown}
 export interface ToolExecutionPorts {

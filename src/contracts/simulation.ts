@@ -1,3 +1,4 @@
+import type { PersonMemoryIdentity, PersonMemorySource } from './personMemory.js'
 // 仿真模式（自主仿真会话）类型契约。
 // 设计参考 qq-bridge reserved2「一切皆工具」：消息不自动转发给模型，
 // 由本地触发器决定何时唤醒 agent 回合，模型用工具自主读消息/发言/等待/设置唤醒。
@@ -44,30 +45,43 @@ export interface SimWakeConfig {
   confirmedBy: 'default' | 'agent' | 'admin'
 }
 
+/** Display-only attachment metadata. Provider URLs and references are never retained. */
+export interface SimFileMetadata { name: string }
+
 /** 入站消息在仿真会话中的紧凑存储形态（存储层必须保留全部字段，视图层再压缩） */
 export interface SimMessage {
   seq: number
   /** OneBot 消息 id（引用回复要用），可能为空 */
   messageId: string | number | null
+  /** Stable queue item identity for an interaction without a platform message ID. */
+  ingressId?: string
   userId: string
   name: string
   /** 纯文本（不含引用原文），上限由写入侧截断 */
   text: string
+  /** 已截断的消息不能证明明确社交许可。 */
+  textTruncated?: boolean
   /** epoch ms */
   at: number
   atSelf: boolean
   /** @ 了别的具体成员（不是机器人）——延续触发要跳过这种"明显在跟别人说话" */
   atOther?: boolean
+  /** Specific mentions supplied by the verified incoming platform message. */
+  mentionUserIds?: string[]
   quoteToSelf: boolean
   /** 引用的是别人的话：被引用人昵称 + 原文截断（判断"这句话对谁说"的关键信号） */
   quoteAuthor?: string
   quoteText?: string
+  /** Source ID and privacy watermark for a quote verified in this conversation. */
+  quoteSource?: { messageId: string; invalidatedAt: number; image?: { count: number; authorId: string; occurredAt: number }; file?: { files: SimFileMetadata[]; authorId: string; occurredAt: number } }
   /** 引用回复的目标 QQ（e.source 缺失时从 CQ 串解析的兜底，QQ 引用回复自动 @被回复人；名字可能已并入 quoteAuthor） */
   replyToUserId?: string
   /** 合并转发 id（有则可用 simGetForward 查看内容） */
   forwardId?: string
   /** 媒体摘要标记：图片/表情数量等 */
   imageCount: number
+  /** Bounded names in the original file-part order; only a fresh source read authorizes bytes. */
+  files?: SimFileMetadata[]
   /** 图片 URL（≤2 条，供 simGetMessageImages 取图进多模态回合） */
   imageUrls?: string[]
   /** 被引用消息里的图片 URL（引用别人带图的旧消息时，图在这里；模型经 simGetMessageImages 查看） */
@@ -88,12 +102,21 @@ export type SimHistoryMessage = {
   tool_calls?: { id?: string; type?: string; function?: { name?: string; arguments?: string } }[]
   tool_call_id?: string
   name?: string
+  /** Internal projection metadata. Never sent as provider message fields. */
+  conversationUserId?: string
+}
+
+/** 实际生成的工具协议回复；只读观察不依赖可撤销的对话历史。 */
+export interface SimToolResultObservation {
+  readonly toolCallId: string
+  readonly name: string
+  readonly content: string
 }
 
 export interface SimBudgetState { day: string; turns: number; tokens: number }
 
 /** agent 自管记忆：pendingEvent=待跟进（到期提醒），note=事实/约定，impression=群友印象，meme=本群专属梗 */
-export type SimMemoryKind = 'pendingEvent' | 'note' | 'impression' | 'meme' | 'activeTopic'
+export type SimMemoryKind = 'pendingEvent' | 'note' | 'impression' | 'meme' | 'activeTopic' | 'interaction'
 
 export interface SimMemoryEntry {
   id: string
@@ -103,6 +126,8 @@ export interface SimMemoryEntry {
   aboutUser?: string
   /** pendingEvent 的到期时间（epoch ms）；到期后注入唤醒 prompt 提醒跟进 */
   dueAt?: number
+  /** 运行时核验的邀请来源；旧的模型布尔值不能单独授权主动跟进。 */
+  proactiveSourceSeq?: number
   /** meme 专用：出现/使用次数（注入排序与强化依据） */
   count?: number
   /** meme 专用：出处原话（谁第一次说的） */
@@ -113,6 +138,10 @@ export interface SimMemoryEntry {
   createdAt: number
   updatedAt: number
   source: 'agent' | 'admin'
+  /** Host-bound source for deletion, recall and per-person scene filtering. */
+  memorySource?: PersonMemorySource
+  memoryIdentity?: PersonMemoryIdentity
+  personMemoryId?: string
 }
 
 /** 好感度：0-100，50 起步；按 (群,群友) 维度，随互动小幅移动 */
@@ -128,10 +157,12 @@ export interface SimAffinityEntry {
 export type SimAffinityMap = Record<string, SimAffinityEntry>
 
 export interface SimSessionState {
+  /** Binding that produced the pending simulation work and model continuity. */
+  bindingToken?: string
   sharedSelfFingerprint?: string
   /** Version of the shared revocation key used by this history snapshot. */
   activityVersion?: string
-  /** First bot observed owns this group session. A second account must use a separate runtime. */
+  /** The receiving account that owns this session. */
   botId?: string
   personaId?: string
   /** 本群单调消息序号 */
@@ -150,6 +181,10 @@ export interface SimSessionState {
   lastWakeAt: number
   /** 回合忙时暂存的触发原因（≤20），回合结束补发 */
   pendingWakeReasons: SimWakeReason[]
+  /** Scheduled inbox wake. Removed durably before execution is allowed to begin. */
+  queuedIngressWake?: SimWakeReason
+  /** Platform receipt IDs of this account's confirmed sends, scoped to this conversation. */
+  confirmedMessageIds?: string[]
   /** 唤醒限频滚动窗 */
   wakeTimes: number[]
   /** 发送限频滚动窗 */
@@ -159,6 +194,12 @@ export interface SimSessionState {
   budget: SimBudgetState
   nextProactiveCheckAt: number
   nextReplyCheckAt: number
+  /** 最近一次随机主动检查用过的入站序号。 */
+  lastProactiveCheckedSeq?: number
+  /** 已进入到期社交检查的记忆 ID。入选不代表已发送或处理完。 */
+  offeredFollowUpIds?: string[]
+  /** 同人格上一轮已确认投递的正文，供接话参考。 */
+  lastConfirmedChat?: { at: number; userId?: string; text: string }
   bootstrapSent: boolean
   /** 会话延续状态：机器人最近参与过对话 → 对话对象的新消息即使不点名也值得醒来看（模型自行决定接不接） */
   conversation: { activeUntil: number; interlocutorIds: string[]; lastTriggerUserId?: string }
@@ -168,6 +209,8 @@ export interface SimSessionState {
   qzone?: { lastVisitAt?: number; likes?: { day?: string; count?: number }; comments?: { day?: string; count?: number }; visitedTids?: string[] }
   /** 人物核心档案提取游标（已提取到哪条 seq、上次提取时间） */
   personProfileCursor?: { seq: number; at: number }
+  /** Last source invalidation reflected in persisted conversation context. */
+  personMemoryInvalidatedAt?: number
   /** 群梗自动提取游标：已提取到哪条消息（seq）、上次提取时间 */
   memeCursor?: { seq: number; at: number }
 }

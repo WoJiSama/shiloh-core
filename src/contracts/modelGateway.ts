@@ -11,4 +11,4 @@ export interface ChatFailure { kind: ChatFailureKind; message: string; retryable
 export interface ChatResponseMessage { role?: string; name?: string; tool_calls?: { function?: { name?: string; arguments?: string } }[]; content?: unknown; [field: string]: unknown }
 export interface ChatResponse { error?: unknown; choices?: { message?: ChatResponseMessage; [field: string]: unknown }[]; [field: string]: unknown }
 export interface RetryEvent { failure: ChatFailure; reason: ChatFailureKind; retriesLeft: number; previousRequest: ChatRequestData; requestData: ChatRequestData }
-export interface RecoveryOptions { retries?: number; signal?: AbortSignal; onRetry?: (event: RetryEvent) => void }
+export interface RecoveryOptions { retries?: number; signal?: AbortSignal; isCurrent?: () => boolean; onRetry?: (event: RetryEvent) => void }

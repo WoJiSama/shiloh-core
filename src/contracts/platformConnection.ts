@@ -1,0 +1,126 @@
+import type { ConversationAddress, PlatformConnection, PlatformUserRef } from './agentBinding.js'
+import type { IncomingMessage, MessageActionOptions, MessageActionPort } from './platformMessage.js'
+import type { AgentFileBytes, ConversationFileCatalog, ConversationFileEntry, ConversationFileReadOptions, FileReadGuard, MessageFileReadOptions } from './agentFiles.js'
+import type { AgentMusicShare } from './agentMusicExtraction.js'
+import type { AgentMediaShare, AgentMediaShareAccess } from './agentMediaRelayWorkflow.js'
+
+export type PlatformConversationEvent =
+  | { kind: 'message'; message: IncomingMessage }
+  | { kind: 'recall'; target: ConversationAddress; messageId: string }
+  | PlatformNudgeEvent
+
+/** An interaction directed to this account with no replyable message. */
+export interface PlatformNudgeEvent {
+  readonly kind: 'nudge'
+  readonly target: ConversationAddress
+  readonly sender: PlatformUserRef
+  readonly senderName?: string
+  readonly occurredAt: number
+}
+
+export interface ForwardReference {
+  readonly messageId: string
+  readonly forwardId: string
+}
+
+export interface ForwardContent {
+  readonly entries: readonly {
+    readonly text: string
+    readonly senderName?: string
+    readonly occurredAt?: number
+    readonly depth: number
+  }[]
+  readonly partial: boolean
+}
+
+export interface MessageImage {
+  readonly mime: string
+  readonly base64: string
+}
+
+export interface MessageImageReadOptions extends MessageActionOptions {
+  /** Cancel source lookup, DNS and any in-flight image body read. */
+  readonly signal?: AbortSignal
+  /** The adapter checks the verified source against the caller's policy before retrieving its image. */
+  allowsSource(source: IncomingMessage): Promise<boolean>
+}
+
+export interface MusicShareReadOptions extends MessageActionOptions {
+  readonly signal: AbortSignal
+  /** Authorize the verified source before parsing, and again after asynchronous source-policy work. */
+  allowsSource(source: IncomingMessage): Promise<boolean>
+}
+
+export interface MediaShareReadOptions extends MessageActionOptions {
+  readonly signal: AbortSignal
+  readonly expectedSource: { readonly author: PlatformUserRef; readonly occurredAt: number }
+  allowsSource(source: IncomingMessage): Promise<boolean>
+}
+
+export interface ConversationMemberProfile {
+  readonly nickname?: string
+  readonly conversationName?: string
+  readonly title?: string
+  readonly level?: string
+  /** Verified platform timestamps in milliseconds; missing or zero values are omitted. */
+  readonly joinedAt?: number
+  readonly lastSpokeAt?: number
+  readonly mutedUntil?: number
+  readonly gender?: 'male' | 'female' | 'unknown'
+  readonly age?: number
+  readonly region?: string
+}
+
+export interface ConversationMember {
+  readonly user: PlatformUserRef
+  readonly displayName: string
+  readonly role: 'owner' | 'admin' | 'member' | 'unknown'
+  /** Lists expose only names; individual reads may include additional platform-provided details. */
+  readonly profile?: ConversationMemberProfile
+}
+
+export interface ConversationMemberSnapshot {
+  readonly target: ConversationAddress
+  readonly observedAt: number
+  readonly member: ConversationMember
+}
+
+export interface ConversationMembersSnapshot {
+  readonly target: ConversationAddress
+  readonly observedAt: number
+  readonly members: readonly ConversationMember[]
+  readonly complete: true
+}
+
+export interface ConversationMemberReadOptions extends MessageActionOptions {
+  readonly signal: AbortSignal
+}
+
+export interface PlatformConnectionAdapter extends PlatformConnection {
+  readonly botUserId: string
+  readonly botName: string
+  readonly actions: MessageActionPort
+  /** Synchronously resolve the verified and stable one-to-one peer for this account's private conversation.
+   * Return undefined when unverified. Omission declares that private conversation IDs are the verified participant IDs. */
+  resolvePrivatePeer?(target: ConversationAddress): PlatformUserRef | undefined
+  /** Optional read of one already referenced message. The adapter must verify its full conversation address. */
+  readMessage?(target: ConversationAddress, messageId: string, options?: MessageActionOptions): Promise<IncomingMessage | undefined>
+  /** Read a forwarded bundle attached to a verified message in this conversation. */
+  readForward?(target: ConversationAddress, source: ForwardReference, options?: MessageActionOptions): Promise<ForwardContent | undefined>
+  /** Materialize image parts of one message after verifying its conversation and source. */
+  readMessageImages?(target: ConversationAddress, messageId: string, options: MessageImageReadOptions): Promise<readonly MessageImage[] | undefined>
+  /** Read a bounded official music reference from one verified group or friend-private message. */
+  readMusicShare?(target: ConversationAddress, messageId: string, options: MusicShareReadOptions): Promise<{ readonly message: IncomingMessage; readonly share: AgentMusicShare } | undefined>
+  readMediaShare?(target: ConversationAddress, messageId: string, options: MediaShareReadOptions): Promise<{ readonly message: IncomingMessage; readonly share: AgentMediaShare; readonly access?: AgentMediaShareAccess } | undefined>
+  readMessageFile?(target: ConversationAddress, messageId: string, fileIndex: number, options: MessageFileReadOptions): Promise<AgentFileBytes | undefined>
+  /** Bounded current repository of this exact conversation; no arbitrary platform path/API input. */
+  listConversationFiles?(target: ConversationAddress, options: FileReadGuard): Promise<ConversationFileCatalog | undefined>
+  readConversationFile?(target: ConversationAddress, entry: ConversationFileEntry, options: ConversationFileReadOptions): Promise<AgentFileBytes | undefined>
+  /** Fresh member evidence for this exact account and conversation. Missing evidence never grants authority. */
+  readConversationMember?(target: ConversationAddress, user: PlatformUserRef, options: ConversationMemberReadOptions): Promise<ConversationMemberSnapshot | undefined>
+  /** A complete current member list; unsupported, cancelled or incomplete reads return undefined. */
+  listConversationMembers?(target: ConversationAddress, options: ConversationMemberReadOptions): Promise<ConversationMembersSnapshot | undefined>
+  start(accept: (event: PlatformConversationEvent) => Promise<void>): Promise<void>
+  isReady(): boolean
+  stop(): void
+}

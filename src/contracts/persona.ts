@@ -1,3 +1,5 @@
+import type { AgentBindingSnapshot } from './agentBinding.js'
+
 /** Stable identity and revision of the resolved persona, independent of its display name. */
 export interface PersonaIdentity {
   readonly personaId: string
@@ -17,6 +19,7 @@ export interface PersonaGuardConfig {
 
 /** Captured once before asynchronous turn work; all nested configuration is frozen. */
 export interface PersonaSnapshot extends PersonaScope {
+  readonly binding?: AgentBindingSnapshot
   readonly persona: Readonly<{name?: string; [key: string]: unknown}>
   readonly systemContent: string
   readonly personaGuard?: PersonaGuardConfig

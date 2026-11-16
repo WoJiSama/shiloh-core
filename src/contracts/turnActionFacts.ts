@@ -1,8 +1,11 @@
+import type {AgentBindingTurn} from './agentBinding.js'
+
 /** Read-only projection of runtime-owned task and delivery records, never assistant prose. */
 export interface ActionFactScope {
   botId: string
   conversationId: string
   userId: string
+  bindingToken?: string
 }
 
 export interface TurnTaskFact {
@@ -24,7 +27,7 @@ export interface TurnActionFacts {
   tasks: TurnTaskFact[]
 }
 
-export interface ActionFactsEvent {
+export interface ActionFactsEvent extends AgentBindingTurn {
   self_id?: string | number | null
   bot?: {uin?: string | number | null}
   group_id?: string | number | null

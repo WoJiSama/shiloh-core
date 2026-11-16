@@ -1,8 +1,9 @@
 import type { RuntimeIdentity } from './runtime.js'
+import type { MemoryPersona } from './memoryEngine.js'
 
 export type ConfigSnapshot = Readonly<Record<string, unknown>>
 export interface ConfigPort { read(): ConfigSnapshot }
-export interface MemoryScope { groupId?: RuntimeIdentity; userId?: RuntimeIdentity }
+export interface MemoryScope { groupId?: RuntimeIdentity; userId?: RuntimeIdentity; viewer?:MemoryPersona; isCurrent?:()=>boolean }
 export interface MemoryDeleteResult { deleted: boolean; reason?: string }
 export interface MemoryFact { text: string; tags?: string[]; id?: string }
 export interface MemoryEntry {
@@ -21,7 +22,7 @@ export interface MemoryCommandPort {
   adminDeleteGroupWorkflow(scope: MemoryScope & { id: string }): Promise<MemoryDeleteResult>
   adminDeleteGroupKnowledge(scope: MemoryScope & { id: string }): Promise<MemoryDeleteResult>
   adminDeleteMemory(scope: MemoryScope & { id: string }): Promise<MemoryDeleteResult>
-  clearUserMemory(groupId: RuntimeIdentity, userId: RuntimeIdentity): Promise<{ cleared: number }>
+  clearUserMemory(groupId: RuntimeIdentity, userId: RuntimeIdentity,viewer?:MemoryPersona,isCurrent?:()=>boolean): Promise<{ cleared: number }>
   adminSetUserMemoryEnabled(scope: MemoryScope & { enabled: boolean }): Promise<{ enabled: boolean }>
 }
 export interface SharedRuntime { memoryManager: MemoryCommandPort | null; config: ConfigPort }
