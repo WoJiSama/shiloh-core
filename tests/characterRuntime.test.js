@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { createCharacterSharedSelf } from '../dist/backend/modules/simulation/infrastructure/characterSharedSelf.js'
+import { createCharacterWorkspace } from '../dist/backend/modules/simulation/infrastructure/characterWorkspace.js'
 import test from 'node:test'
 import { createSimulationRuntime } from '../dist/backend/modules/simulation/infrastructure/simulationRuntime.js'
 import { createDefaultSimSession } from '../dist/backend/modules/simulation/domain/simConfig.js'
 import { CHARACTER_MIN_WAKE_MS, addCharacterMemory, beginCharacterGoalAttempt, characterKey, createCharacterGoal, createEmptyCharacterState, deleteCharacterMemory } from '../dist/backend/modules/simulation/domain/characterState.js'
 import { resolveCharacterConsistencyRoute } from '../dist/backend/modules/simulation/infrastructure/characterConsistencyRouting.js'
+import { simulationAddressKey } from '../dist/backend/modules/simulation/infrastructure/simulationAddress.js'
+import { SIMULATION_KNOWN_GROUPS_KEY } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
+import { agentBindingToken, agentConversationKey, createAgentBindingDirectory } from '../dist/backend/modules/runtime/domain/agentBindings.js'
+import { decodeQqIncomingMessage } from '../dist/backend/adapters/qqMessage.js'
 
 const BOT = '3094088525'
 const GROUP = '10086'
@@ -13,6 +19,7 @@ const BASE_AT = 1_790_000_000_000
 const sessionKey = groupId => `shiloh:sim:g:${groupId}`
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 let callSequence = 0
+let incomingMessageId = 0
 const toolCall = (name, args) => ({ id: `test-call-${++callSequence}`, type: 'function', function: { name, arguments: JSON.stringify(name === 'simSendMessage' ? { continuation: 'chat', ...args } : args) } })
 const tools = (...calls) => ({ role: 'assistant', content: '', tool_calls: calls })
 const quiet = () => ({ role: 'assistant', content: '' })
@@ -41,7 +48,10 @@ function fixture({
   kv = new Map(), clock = { value: BASE_AT }, botId = BOT,
   identity = { id: 'shiloh', name: '希洛', systemContent: '喜欢独立游戏' },
   groups = [GROUP], script = () => quiet(), execute, writeFault, onSave, send, review, recordTokens,
-  proactiveProbability = 0, seed = true, maxToolRounds = 8, consistencyEnabled,
+  proactiveProbability = 0, seed = true, maxToolRounds = 8, maxSendsPerTurn, consistencyEnabled,
+  runCharacterWorker, recordToolResult, judgeSocialPermission, getPersona, loadDelegatedMemories,
+  getSelf, handlesTarget, messageActions, getTodaySpendCny, durableIngress, isAccountReady, readFault,
+  describeImages, fetchImageBase64, getForwardContent,
 } = {}) {
   if (seed) for (const groupId of groups) if (!kv.has(sessionKey(groupId))) seedSession(kv, groupId, botId, clock)
   const calls = []
@@ -58,7 +68,7 @@ function fixture({
     },
   }))
   const redis = {
-    async get(key) { return kv.has(key) ? kv.get(key) : null },
+    async get(key) { if (readFault) await readFault(key); return kv.has(key) ? kv.get(key) : null },
     async set(key, value) {
       if (writeFault) await writeFault(key, value)
       writes.push({ key, value })
@@ -71,19 +81,31 @@ function fixture({
   const runtime = createSimulationRuntime({
     redis, now: () => clock.value, random: () => 0.99,
     logger: { info() {}, warn(...args) { errors.push(args.join(' ')) }, error(...args) { errors.push(args.map(String).join(' ')) } },
-    getSelf: () => ({ id: botId, name: identity.name }),
-    getPersona: () => ({ personaId: identity.id, persona: { name: identity.name }, systemContent: identity.systemContent }),
+    getSelf: getSelf ?? (() => ({ id: botId, name: identity.name })),
+    getPersona: getPersona ?? (() => ({ personaId: identity.id, persona: { name: identity.name }, systemContent: identity.systemContent })),
     getSection: () => ({
       enabled: true, allGroups: false, groups,
       ...(consistencyEnabled === undefined ? {} : { consistency: { enabled: typeof consistencyEnabled === 'function' ? consistencyEnabled() : consistencyEnabled } }),
       extraTools: toolDefinitions.map(tool => tool.name), toolPolicy: { mode: 'legacy' },
       wake: { probability: 0, batchWindowMs: 1000, maxWakePerMinute: 100, maxWakePerHour: 100, proactiveProbability, proactiveIdleMs: 60_000 },
-      turn: { maxToolRounds, minSendGapMs: 0, maxTurnsPerDay: 100 },
+      turn: { maxToolRounds, minSendGapMs: 0, maxTurnsPerDay: 100, ...(maxSendsPerTurn === undefined ? {} : { maxSendsPerTurn }) },
       rhythm: { enabled: false }, mood: { enabled: false }, wakeGate: { enabled: false }, userStyle: { enabled: false },
     }),
     getExecutionConfig: () => ({ useTools: true }),
+    ...(durableIngress ? { durableIngress } : {}),
+    ...(isAccountReady ? { isAccountReady } : {}),
     ...(review ? { reviewCharacter: review } : {}),
     ...(recordTokens ? { recordTokens } : {}),
+    ...(getTodaySpendCny ? { getTodaySpendCny } : {}),
+    ...(handlesTarget ? { handlesTarget } : {}),
+    ...(messageActions ? { messageActions } : {}),
+    ...(runCharacterWorker ? { runCharacterWorker } : {}),
+    ...(recordToolResult ? { recordToolResult } : {}),
+    ...(judgeSocialPermission ? { judgeSocialPermission } : {}),
+    ...(loadDelegatedMemories ? { loadDelegatedMemories } : {}),
+    ...(describeImages ? { describeImages } : {}),
+    ...(fetchImageBase64 ? { fetchImageBase64 } : {}),
+    ...(getForwardContent ? { getForwardContent } : {}),
     getExtraTools: names => toolDefinitions.filter(tool => names.includes(tool.name)),
     async YTapi(request) {
       calls.push(structuredClone(request))
@@ -99,9 +121,11 @@ function fixture({
   return {
     runtime, kv, clock, identity, botId, calls, events, sent, errors, writes,
     scope: (groupId = GROUP) => ({ botId, personaId: identity.id, groupId }),
-    async ingest(text = '看看这个游戏', userId = '40000', { at = true, groupId = GROUP } = {}) {
-      return runtime.ingest({ group_id: groupId, self_id: botId, user_id: userId, message_type: 'group', msg: text,
-        atBot: at, message: at ? [{ type: 'at', data: { qq: botId } }, { type: 'text', data: { text } }] : [], sender: { nickname: `群友${userId}` } })
+    async ingest(text = '看看这个游戏', userId = '40000', { at = true, groupId = GROUP, source } = {}) {
+      const incoming = decodeQqIncomingMessage({ group_id: groupId, self_id: botId, user_id: userId, message_id: `test-${groupId}-${++incomingMessageId}`, message_type: 'group', msg: text,
+        atBot: at, message: at ? [{ type: 'at', data: { qq: botId } }, { type: 'text', data: { text } }] : [], sender: { nickname: `群友${userId}` }, ...(source ? { source } : {}) }, {now: clock.value})
+      assert.ok(incoming)
+      return runtime.ingest(incoming)
     },
   }
 }
@@ -109,6 +133,399 @@ function fixture({
 async function idle(harness, minCalls, groupId = GROUP) {
   await waitFor(async () => harness.calls.length >= minCalls && !(await harness.runtime.describeGroup(groupId)).running, `回合结束（模型调用至少 ${minCalls} 次）：${harness.errors.join(' | ')}`)
 }
+
+function qqBinding(revision,agentId='daily') {
+  const account = {platform:'qq', namespace:'global', id:BOT}
+  const address = {account, kind:'group', id:GROUP}
+  return createAgentBindingDirectory({
+    version:1,
+    agents:[{id:'daily', personaId:'default'}, {id:'work', personaId:'default'}],
+    connections:[{id:'qq-main', platform:'qq', namespace:'global', accountId:BOT}],
+    bindings:[{connectionId:'qq-main', kind:'group', conversationId:GROUP, agentId}],
+  }, revision).resolve(address)
+}
+
+test('a QQ binding revision change stops a pending simulation send even when the persona ID is unchanged', async t => {
+  let current = qqBinding('first')
+  const h = fixture({
+    getPersona: () => ({
+      personaId:'agent:daily',
+      persona:{name:'希洛'},
+      systemContent:'',
+      binding:current,
+    }),
+    script: () => {
+      current = qqBinding('next')
+      return tools(toolCall('simSendMessage', {messages:['迟到的仿真回复']}))
+    },
+  })
+  t.after(() => h.runtime.stop())
+  await h.ingest()
+  await idle(h, 1)
+  assert.equal(h.calls.length, 1)
+  assert.deepEqual(h.sent, [])
+  const state = JSON.parse(h.kv.get(sessionKey(GROUP)))
+  assert.deepEqual(state.agentHistory, [])
+  assert.equal(state.lastConfirmedChat, undefined)
+})
+
+for (const type of ['image', 'forward']) {
+  test(`binding changes stop further legacy QQ ${type} downloads and vision requests in a simulation`, async t => {
+    let binding = qqBinding('before-images')
+    const downloads = []
+    let visionCalls = 0
+    const urls = ['https://images.example.test/first.png', 'https://images.example.test/second.png']
+    const h = fixture({
+      getPersona: () => ({ persona: { name: '希洛' }, systemContent: '', binding }),
+      async fetchImageBase64(url) {
+        downloads.push(url)
+        if (downloads.length === 1) binding = qqBinding('after-first-download')
+        return { mime: 'image/png', base64: 'fixture-image' }
+      },
+      getForwardContent: async () => ({ lines: ['转发夹具'], imageUrls: urls }),
+      async describeImages() { visionCalls++; return '旧回合图片描述' },
+      script: (_request, index) => index === 0
+        ? tools(toolCall(type === 'image' ? 'simGetMessageImages' : 'simGetForward', { seq: 1 })) : quiet(),
+    })
+    t.after(() => h.runtime.stop())
+    await h.runtime.ingest({ version: 1, conversation: binding.target, sender: { ...binding.target.account, id: '30000' },
+      messageId: `local-visual-${type}`, occurredAt: h.clock.value, text: '点名看附件', directedToAccount: true, mentions: [],
+      parts: type === 'image' ? urls.map(value => ({ kind: 'image', resource: { kind: 'url', value } })) : [{ kind: 'forward', id: 'attached-forward' }],
+    })
+    await idle(h, 1)
+    assert.deepEqual(downloads, [urls[0]])
+    assert.equal(visionCalls, 0)
+    assert.equal(h.calls.length, 1)
+  })
+}
+
+test('legacy QQ vision keeps its live binding check and drops a late result', async t => {
+  let binding = qqBinding('before-vision')
+  let visionCheck
+  const beganVision = Promise.withResolvers()
+  const finishVision = Promise.withResolvers()
+  const h = fixture({
+    getPersona: () => ({ persona: { name: '希洛' }, systemContent: '', binding }),
+    fetchImageBase64: async () => ({ mime: 'image/png', base64: 'fixture-image' }),
+    async describeImages(_images, { isCurrent }) {
+      visionCheck = isCurrent
+      beganVision.resolve()
+      await finishVision.promise
+      return '失效图片的描述'
+    },
+    script: (_request, index) => index === 0 ? tools(toolCall('simGetMessageImages', { seq: 1 })) : quiet(),
+  })
+  t.after(() => { finishVision.resolve(); h.runtime.stop() })
+  await h.runtime.ingest({ version: 1, conversation: binding.target, sender: { ...binding.target.account, id: '30000' },
+    messageId: 'local-vision-guard', occurredAt: h.clock.value, text: '描述这张图', directedToAccount: true, mentions: [],
+    parts: [{ kind: 'image', resource: { kind: 'url', value: 'https://images.example.test/one.png' } }],
+  })
+  await Promise.race([beganVision.promise, idle(h, 1).then(() => assert.fail('vision did not start'))])
+  const initiallyCurrent = visionCheck?.()
+  binding = qqBinding('after-vision')
+  finishVision.resolve()
+  await idle(h, 1)
+  assert.equal(h.calls.length, 1)
+  assert.equal(initiallyCurrent, true)
+  assert.equal(visionCheck(), false)
+})
+
+test('simulation isolates identical QQ and channel IDs through ingress, budget, recall and restart', async t => {
+  const main = { kind: 'group', id: GROUP, account: { platform: 'qq', namespace: 'global', id: BOT } }
+  const secondary = { ...main, account: { ...main.account, id: '3094088999' } }
+  const channel = { kind: 'channel', id: GROUP, account: { platform: 'fixture', namespace: 'tenant-a', id: secondary.account.id } }
+  const otherTenant = { ...channel, account: { ...channel.account, namespace: 'tenant-b' } }
+  const routes = [main, secondary, channel, otherTenant]
+  const directory = createAgentBindingDirectory({
+    version: 1,
+    agents: [{ id: 'daily', personaId: 'default' }],
+    connections: routes.map(({ account }, index) => ({ id: `connection-${index}`, platform: account.platform, namespace: account.namespace, accountId: account.id })),
+    bindings: routes.map(({ kind, id }, index) => ({ connectionId: `connection-${index}`, kind, conversationId: id, agentId: 'daily' })),
+  }, 'shared-revision')
+  const deliveries = []
+  const spent = new Map()
+  const kv = new Map()
+  const clock = { value: BASE_AT }
+  seedSession(kv, GROUP, BOT, clock)
+  const old = JSON.parse(kv.get(sessionKey(GROUP)))
+  old.recent = [{ seq: 1, text: '老 QQ 会话历史', at: BASE_AT - 1000, userId: '40000', name: '群友', kind: 'text', messageId: 'legacy-1' }]
+  old.seq = 1
+  old.budget.turns = 3
+  kv.set(sessionKey(GROUP), JSON.stringify(old))
+  const options = {
+    kv, clock, seed: false,
+    getSelf: id => ({ id: id || BOT, name: '希洛' }),
+    getPersona: (_group, _account, target) => ({ personaId: 'default', persona: { name: '希洛' }, systemContent: '', binding: directory.resolve(target) }),
+    handlesTarget: target => !!directory.resolve(target),
+    messageActions: { async send(action, guard) {
+      assert.notEqual(guard?.isCurrent?.(), false)
+      deliveries.push(action)
+      return { state: 'sent', messageId: `sent-${deliveries.length}` }
+    } },
+    getTodaySpendCny: key => spent.get(key) || 0,
+  }
+  const input = (target, text, messageId, direct = false) => ({
+    version: 1, conversation: target, sender: { ...target.account, id: target.kind === 'group' ? '40000' : 'member:40000' },
+    text, messageId, occurredAt: clock.value, parts: [{ kind: 'text', text }], mentions: [], directedToAccount: direct,
+    binding: directory.resolve(target),
+  })
+  const h = fixture(options)
+  t.after(() => h.runtime.stop())
+  const keys = await Promise.all(routes.map(target => h.runtime.conversationKey(target)))
+  assert.ok(keys.every(key => typeof key === 'string'))
+  assert.equal(keys[0], GROUP)
+  assert.equal(new Set(keys).size, routes.length)
+  for (const key of keys.slice(2)) await h.runtime.enableGroup(key)
+  await h.runtime.setGroupBudget(keys[1], 2)
+  await h.runtime.setGroupReplyMode(keys[2], 'atOnly')
+  spent.set(keys[1], 2)
+  const texts = ['原账号新消息', '新 QQ 账号的消息', '甲租户频道消息', '乙租户频道消息']
+  assert.deepEqual(await Promise.all(routes.map((target, i) => h.runtime.ingest(input(target, texts[i], 'same-message-id', true)))), [true, true, true, true])
+  const groupState = key => JSON.parse(kv.get(sessionKey(key)))
+  assert.deepEqual(keys.map(key => groupState(key).unread.map(message => message.text)), texts.map(text => [text]))
+  // A configured role cannot inherit unversioned legacy conversation sources.
+  // Account-route identity and budget continuity are checked independently below.
+  assert.deepEqual(groupState(keys[0]).recent.map(message => message.text), [texts[0]])
+  assert.deepEqual(new Set(JSON.parse(kv.get('shiloh:sim:known'))), new Set(keys))
+  assert.equal(await h.runtime.handleRecall({ message_id: 'same-message-id' }, channel), true)
+  assert.deepEqual(groupState(keys[2]).recent, [])
+  assert.equal(groupState(keys[3]).recent[0].text, texts[3])
+  h.runtime.stop()
+
+  for (const key of [keys[0], keys[1], keys[3]]) {
+    const state = groupState(key)
+    state.pendingWakeReasons = [{ kind: 'atMention', seq: state.seq }]
+    kv.set(sessionKey(key), JSON.stringify(state))
+  }
+  const restarted = fixture({ ...options, script: request => {
+    if (request.messages.some(message => message.role === 'tool')) return quiet()
+    const context = request.messages.map(message => String(message.content)).join('\n')
+    if (context.includes(texts[3])) return tools(toolCall('simSendMessage', { messages: ['乙租户恢复成功'], atUserIds: ['member:40000'], replyToSeq: 1 }))
+    return quiet()
+  } })
+  t.after(() => restarted.runtime.stop())
+  await restarted.runtime.sweepOnce()
+  await idle(restarted, 3, keys[3])
+  assert.equal(groupState(keys[0]).budget.turns, 4)
+  assert.equal(groupState(keys[1]).budget.turns, 0)
+  assert.equal(groupState(keys[2]).budget.turns, 0)
+  assert.equal(groupState(keys[3]).budget.turns, 1)
+  assert.equal((await restarted.runtime.describeGroup(keys[1])).budget.dailyCostCny, 2)
+  assert.equal((await restarted.runtime.describeGroup(keys[2])).replyMode, 'atOnly')
+  const channelDelivery = deliveries.find(action => action.target.kind === 'channel')
+  assert.deepEqual(channelDelivery.target, otherTenant)
+  assert.equal(channelDelivery.replyTo, 'same-message-id')
+  assert.deepEqual(channelDelivery.parts[0], { kind: 'mention', user: { platform: 'fixture', namespace: 'tenant-b', id: 'member:40000' } })
+  assert.ok(restarted.calls.every(request => request.messages.every(message => !String(message.content).includes(texts[1]) && !String(message.content).includes(texts[2]))))
+  assert.ok(restarted.calls.every(request => request.messages.every(message => !String(message.content).includes('老 QQ 会话历史'))))
+  assert.ok(restarted.calls.every(request => request.tools?.every(tool => !['simQzoneInteract', 'simSendPoke'].includes(tool.function.name)) || !request.messages.some(message => String(message.content).includes(texts[3]))))
+  assert.deepEqual(new Set((await restarted.runtime.overview()).groups.map(group => group.groupId)), new Set(keys))
+
+  const runOptions = { taskId: 'account-scoped-commitment', botId: secondary.account.id, isCurrent: async () => true, beforeExecution: async () => true }
+  assert.equal((await restarted.runtime.wakeForCommitment(GROUP, '按原账号履约', runOptions, main)).status, 'cancelled')
+  let claimed = 0
+  await restarted.runtime.wakeForCommitment(GROUP, '按原账号履约', { ...runOptions, beforeExecution: async () => { claimed++; return true } }, secondary)
+  assert.equal(claimed, 1)
+  assert.equal(groupState(keys[1]).budget.turns, 1)
+  assert.equal(groupState(keys[0]).budget.turns, 4)
+})
+
+test('stale queued and persisted simulation wakes never run as the new role', async t => {
+  const old = qqBinding('first')
+  const current = qqBinding('second','work')
+  let binding = old
+  const getPersona = () => ({personaId:`agent:${binding.agentId}`,persona:{name:'希洛'},systemContent:'',binding})
+  const first = fixture({getPersona})
+  t.after(() => first.runtime.stop())
+  await first.ingest('排队等待旧角色的消息')
+  binding = current
+  await waitFor(() => first.writes.some(item => item.key.startsWith('shiloh:sim:busy:')), '旧唤醒已出队')
+  await waitFor(async () => !(await first.runtime.describeGroup(GROUP)).running, '旧唤醒已处理')
+  assert.deepEqual(first.calls,[])
+  first.runtime.stop()
+
+  const oldState = JSON.parse(first.kv.get(sessionKey(GROUP)))
+  oldState.pendingWakeReasons=[{kind:'atMention',seq:oldState.seq}]
+  oldState.agentHistory=[{role:'assistant',content:'旧角色上下文'}]
+  oldState.wakeConfig.mode='active'
+  oldState.wakeConfig.sleepUntil=first.clock.value-1
+  first.kv.set(sessionKey(GROUP),JSON.stringify(oldState))
+  const afterRestart = fixture({getPersona,kv:first.kv,clock:first.clock})
+  t.after(() => afterRestart.runtime.stop())
+  await afterRestart.runtime.sweepOnce()
+  const cleared = JSON.parse(first.kv.get(sessionKey(GROUP)))
+  assert.equal(cleared.bindingToken,agentBindingToken(current))
+  assert.deepEqual(cleared.pendingWakeReasons,[])
+  assert.deepEqual(cleared.agentHistory,[])
+  assert.equal(cleared.wakeConfig.sleepUntil,undefined)
+  assert.deepEqual(cleared.unread,[])
+  assert.deepEqual(cleared.recent,[], 'binding replacement removes the old role sources as well as its queued work')
+  await afterRestart.ingest('现在给新角色的消息')
+  await idle(afterRestart,1)
+  assert.ok(afterRestart.calls[0].messages.some(message=>String(message.content).includes('现在给新角色的消息')))
+  assert.ok(afterRestart.calls.every(request=>request.messages.every(message=>!String(message.content).includes('旧角色上下文') && !String(message.content).includes('排队等待旧角色的消息'))))
+})
+
+async function verifyInterruptedWake(t, interruptedDuring) {
+  const binding = qqBinding('disconnect-before-model')
+  const getPersona = () => ({ persona:{name:'希洛'}, systemContent:'', binding })
+  let connected = true
+  let interrupted = false
+  let release
+  const held = new Promise(resolve => { release = resolve })
+  async function interrupt() {
+    if (interrupted) return
+    interrupted = true
+    await held
+  }
+  let scopedKey
+  const h = fixture({
+    durableIngress: true, getPersona, seed: false, isAccountReady: () => connected,
+    readFault: async key => {
+      if (interruptedDuring === 'context read' && key.startsWith('shiloh:person-memory:v1:') && key.endsWith(':scope')
+        && [...h.kv.keys()].some(key => key.startsWith('shiloh:sim:busy:'))) await interrupt()
+    },
+    onSave: async (key, value) => {
+      if (interruptedDuring === 'claim write' && key === scopedKey && !JSON.parse(value).queuedIngressWake) await interrupt()
+    },
+  })
+  t.after(async () => { release(); h.runtime.stop(); await h.runtime.drain() })
+  scopedKey = sessionKey(await h.runtime.conversationKey(binding.target))
+  await h.ingest('断线期间应保留这条点名')
+  await waitFor(() => interrupted, `唤醒抵达 ${interruptedDuring}`)
+  connected = false
+  release()
+  await h.runtime.drain()
+  const saved = () => JSON.parse(h.kv.get(scopedKey))
+  assert.equal(h.calls.length, 0)
+  assert.equal(saved().queuedIngressWake?.seq, 1)
+  assert.equal(saved().budget.turns, 0)
+  assert.deepEqual(saved().agentHistory, [])
+
+  connected = true
+  await h.runtime.sweepOnce()
+  await waitFor(() => h.calls.length === 1 && saved().queuedIngressWake === undefined, '已恢复入站唤醒')
+  await h.runtime.drain()
+  assert.equal(saved().budget.turns, 1)
+  await h.runtime.sweepOnce()
+  assert.equal(h.calls.length, 1)
+  assert.equal(saved().queuedIngressWake, undefined)
+}
+
+test('a QQ wake interrupted before model submission stays durable and recovers once', async t => {
+  await t.test('while reading context', step => verifyInterruptedWake(step, 'context read'))
+  await t.test('while claiming the wake in Redis', step => verifyInterruptedWake(step, 'claim write'))
+})
+
+test('a durable simulation deadline survives a competing wake and fires after restart', async t => {
+  const binding = qqBinding('scheduled-timeout')
+  const address = simulationAddressKey(binding.target)
+  const key = sessionKey(address)
+  const deadline = BASE_AT + 60_000
+  const state = createDefaultSimSession(BASE_AT)
+  state.botId = BOT
+  state.personaId = 'agent:daily'
+  state.bindingToken = agentBindingToken(binding)
+  state.bootstrapSent = true
+  state.wakeConfig.mode = 'active'
+  state.wakeConfig.sleepUntil = deadline
+  const kv = new Map([[key, JSON.stringify(state)], [SIMULATION_KNOWN_GROUPS_KEY, JSON.stringify([address])]])
+  const clock = { value: deadline - 1 }
+  const options = { kv, clock, groups: [GROUP], seed: false, durableIngress: true,
+    getPersona: () => ({ persona: { name: '希洛' }, systemContent: '', binding }) }
+  const first = fixture(options)
+  t.after(() => first.runtime.stop())
+  const saved = () => JSON.parse(kv.get(key))
+  await first.runtime.sweepOnce()
+  assert.equal(saved().queuedIngressWake, undefined)
+  assert.equal(saved().wakeConfig.sleepUntil, deadline)
+
+  clock.value = deadline
+  state.pendingWakeReasons.push({ kind: 'admin' })
+  kv.set(key, JSON.stringify(state))
+  await first.runtime.sweepOnce()
+  assert.deepEqual(saved().queuedIngressWake, { kind: 'admin' })
+  assert.equal(saved().wakeConfig.sleepUntil, deadline)
+  await idle(first, 1, address)
+  await first.runtime.drain()
+  first.runtime.stop()
+
+  const restarted = fixture(options)
+  t.after(() => restarted.runtime.stop())
+  await restarted.runtime.sweepOnce()
+  assert.deepEqual(saved().queuedIngressWake, { kind: 'timeout' })
+  assert.equal(saved().wakeConfig.sleepUntil, undefined)
+  await idle(restarted, 1, address)
+  await restarted.runtime.drain()
+  assert.equal(saved().lastWakeReason.kind, 'timeout')
+  await restarted.runtime.sweepOnce()
+  assert.equal(saved().queuedIngressWake, undefined)
+  assert.equal(saved().budget.turns, 2)
+  assert.equal(restarted.calls.length, 1)
+})
+
+test('messages for a new binding wait for the previous live turn and preserve both inbound messages', async t => {
+  let binding=qqBinding('first')
+  let release,enter
+  const entered=new Promise(resolve=>enter=resolve)
+  const waiting=new Promise(resolve=>release=resolve)
+  const h=fixture({
+    getPersona:()=>({personaId:`agent:${binding.agentId}`,persona:{name:'希洛'},systemContent:'',binding}),
+    script:async(_request,index)=>{
+      if(index===0){enter();await waiting}
+      return quiet()
+    },
+  })
+  t.after(()=>{release();h.runtime.stop()})
+  await h.ingest('旧角色等待中的消息')
+  await entered
+  binding=qqBinding('second','work')
+  const one=h.ingest('新角色第一条')
+  const two=h.ingest('新角色第二条')
+  release()
+  await Promise.all([one,two])
+  const state=JSON.parse(h.kv.get(sessionKey(GROUP)))
+  assert.equal(state.bindingToken,agentBindingToken(binding))
+  assert.deepEqual(state.unread.map(message=>message.text),['新角色第一条','新角色第二条'])
+  assert.deepEqual(state.recent.map(message=>message.text),['新角色第一条','新角色第二条'])
+  assert.equal(new Set(state.recent.map(message=>message.seq)).size,2)
+  assert.equal(state.seq,3, 'source sequence numbers keep increasing across ownership changes')
+  await idle(h,2)
+  assert.ok(h.calls.slice(1).every(request=>request.messages.every(message=>!String(message.content).includes('旧角色等待中的消息'))))
+  assert.deepEqual(h.sent,[])
+})
+
+test('the running simulation reads the scoped memory and delegated inputs of the captured role', async t => {
+  let current=qqBinding('first')
+  const other=qqBinding('second','work')
+  const memoryKey=binding=>`shiloh:sim:memories:v2:${encodeURIComponent(agentConversationKey(binding))}`
+  const note=content=>JSON.stringify([{id:content,kind:'note',aboutUser:'40000',content,createdAt:BASE_AT,updatedAt:BASE_AT}])
+  const kv=new Map([
+    [`${sessionKey(GROUP)}:memories`,note('旧群独立笔记')],
+    [memoryKey(current),note('角色 A 独立笔记')],
+    [memoryKey(other),note('角色 B 独立笔记')],
+  ])
+  const readScopes=[]
+  const h=fixture({kv,getPersona:()=>({personaId:`agent:${current.agentId}`,persona:{name:'希洛'},systemContent:'',binding:current}),
+    loadDelegatedMemories:scope=>{readScopes.push(agentConversationKey(scope));return [{id:'dlg-synthetic',owner:'40000',content:`托付-${scope.agentId}`,createdAt:BASE_AT}]},
+  })
+  t.after(()=>h.runtime.stop())
+  await h.ingest('读取当前角色的东西')
+  await idle(h,1)
+  const first=JSON.stringify(h.calls[0].messages)
+  assert.match(first,/角色 A 独立笔记/)
+  assert.match(first,/托付-daily/)
+  assert.doesNotMatch(first,/角色 B 独立笔记|旧群独立笔记/)
+  current=other
+  await h.ingest('读取更换后角色的东西')
+  await idle(h,2)
+  const second=JSON.stringify(h.calls.at(-1).messages)
+  assert.match(second,/角色 B 独立笔记/)
+  assert.match(second,/托付-work/)
+  assert.doesNotMatch(second,/角色 A 独立笔记|托付-daily|旧群独立笔记/)
+  assert.deepEqual(readScopes,[agentConversationKey(qqBinding('first')),agentConversationKey(other)])
+  assert.match(kv.get(`${sessionKey(GROUP)}:memories`),/旧群独立笔记/)
+})
 
 function toolResult(request, name) {
   return [...request.messages].reverse().find(message => message.role === 'tool' && message.name === name)?.content
@@ -148,6 +565,254 @@ test('当前请求给出动态阶段、剩余轮数和可见来源，普通聊�
 
 const finishMemory = { kind: 'interest', content: '我对连贯线索设计保持兴趣', epistemic: 'inferred', evidenceRefs: ['message:1'] }
 const finishGoal = { title: '收尾中保存的研究计划', motivation: '这符合我的线索设计兴趣', nextStep: '核对公开介绍', completionCriteria: '取得公开介绍并核对', stopConditions: ['管理员取消', '来源不可用'], evidenceRefs: ['message:1'], nextCheckInMinutes: 30 }
+
+test('correcting a shared source retains the correction through overview cleanup and prevents stale history', async () => {
+  const observed = []
+  const finish = toolCall('simFinishTurn', { choice: 'chat', reason: '修正原观点', memories: [{ kind: 'opinion', content: '更正后的观点', epistemic: 'inferred', supersedes: 'old', evidenceRefs: ['memory:old', 'message:1'] }] })
+  const h = fixture({ script: (_r, i) => i === 0 ? tools(finish) : quiet(), recordToolResult: result => observed.push(result) })
+  const scope = h.scope(), key = characterKey(scope)
+  h.kv.set(key, JSON.stringify(addCharacterMemory(createEmptyCharacterState(scope), { id: 'old', kind: 'opinion', content: '旧观点', epistemic: 'inferred', evidenceRefs: ['message:1'] }, ['message:1'], BASE_AT)))
+  const redis = { get: async key => h.kv.get(key) ?? null, set: async (key, value) => { h.kv.set(key, value); return 'OK' } }
+  const shared = createCharacterSharedSelf({ redis, scope, now: () => BASE_AT })
+  const workspace = createCharacterWorkspace({ redis, scope, now: () => BASE_AT })
+  const oldWork = await workspace.write({ title: '依赖旧观点的草稿', kind: 'research', content: '旧结论', evidenceRefs: ['memory:old'] })
+  const id = await shared.propose('old'); await shared.approve(id)
+  try {
+    await h.ingest(); await idle(h, 1)
+    await h.runtime.describeGroup(GROUP)
+    await h.runtime.describeGroup(GROUP)
+    const state = JSON.parse(h.kv.get(key))
+    assert.ok(state.memories.some(memory => memory.supersedes === 'old'))
+    assert.deepEqual(await shared.projection(), [])
+    assert.deepEqual(await workspace.list(), [])
+    await assert.rejects(workspace.restore(oldWork.id, 1, 1), /不存在/)
+    assert.deepEqual(JSON.parse(h.kv.get(sessionKey(GROUP))).agentHistory, [])
+    assert.equal(observed.length, 1)
+    assert.equal(observed[0].toolCallId, finish.id)
+    assert.equal(observed[0].name, 'simFinishTurn')
+    const closure = JSON.parse(observed[0].content)
+    assert.equal(closure.saved, true)
+    assert.equal(closure.memories[0].id, state.memories.find(memory => memory.supersedes === 'old').id)
+  } finally { h.runtime.stop() }
+})
+
+test('tool result observers cannot mutate protocol replies or interrupt execution when they throw or reject', async () => {
+  for (const asynchronous of [false, true]) {
+    const observed = []
+    const finish = toolCall('simFinishTurn', { choice: 'chat', reason: '观察失败不影响执行', messages: ['这条消息只发送一次'] })
+    const h = fixture({ script: () => tools(finish), recordToolResult: result => {
+      assert.equal(Object.isFrozen(result), true)
+      observed.push(result)
+      assert.throws(() => { result.content = 'forged success' }, TypeError)
+      if (asynchronous) return Promise.reject(new Error('observer rejection'))
+      throw new Error('observer failure')
+    } })
+    try {
+      const result = await h.runtime.wakeForCommitment(GROUP, '观察者故障', { taskId: `observer-failure-${asynchronous}`, botId: BOT, isCurrent: async () => true, beforeExecution: async () => true })
+      assert.equal(result.status, 'succeeded')
+      assert.equal(h.sent.length, 1)
+      assert.equal(observed.length, 1)
+      const stored = storedToolReply(h, finish)
+      assert.equal(stored.content, observed[0].content)
+      assert.equal(JSON.parse(stored.content).sendStatus, 'succeeded')
+    } finally { h.runtime.stop() }
+  }
+})
+
+test('independent commitment claims execute separately and return confirmed outcomes', async () => {
+  let claims = 0
+  const h = fixture({ script: request => {
+    const prompt = JSON.stringify(request.messages)
+    const label = prompt.includes('COMMIT_B') ? '承诺乙已执行' : '承诺甲已执行'
+    return tools(toolCall('simFinishTurn', { choice: 'chat', reason: '履行当前托付', messages: [label] }))
+  } })
+  const options = taskId => ({ taskId, botId: BOT, isCurrent: async () => true, beforeExecution: async () => { claims++; return true } })
+  try {
+    const a = h.runtime.wakeForCommitment(GROUP, 'COMMIT_A', options('a'))
+    const b = h.runtime.wakeForCommitment(GROUP, 'COMMIT_B', options('b'))
+    const results = await Promise.all([a, b])
+    assert.deepEqual(results.map(result => result.status), ['succeeded', 'succeeded'])
+    assert.deepEqual(results.map(result => result.sent), [1, 1])
+    assert.equal(claims, 2)
+    assert.equal(h.sent.length, 2)
+    assert.ok(JSON.stringify(h.calls[0]).includes('COMMIT_A'))
+    assert.ok(JSON.stringify(h.calls[1]).includes('COMMIT_B'))
+  } finally { h.runtime.stop() }
+})
+
+test('a bound commitment waits through disconnect and can start an empty session on the original account', async () => {
+  const binding = qqBinding('original')
+  const target = binding.target
+  const groupKey = simulationAddressKey(target)
+  let connected = true
+  let claims = 0
+  let checked = 0
+  const deliveries = []
+  const h = fixture({ seed: false, groups: [GROUP], durableIngress: true,
+    isAccountReady: () => connected,
+    getPersona: () => ({ persona: { name: '希洛' }, systemContent: '', binding }),
+    messageActions: { async send(action) { deliveries.push(action); return { state: 'sent', messageId: 'commitment-confirmed' } } },
+    script: (request, index) => {
+      assert.ok(JSON.stringify(request).includes('迁入的待执行托付'))
+      return index === 0 ? tools(toolCall('simSendMessage', { continuation: 'chat', messages: ['到时间了，记得喝水'] })) : quiet()
+    },
+  })
+  try {
+    const opts = { taskId: 'cold-claim', botId: BOT,
+      isCurrent: async () => { if (++checked === 2) connected = false; return true },
+      beforeExecution: async () => { claims++; return true },
+    }
+    assert.equal((await h.runtime.wakeForCommitment(GROUP, '迁入的待执行托付', opts, target)).status, 'deferred')
+    assert.equal(claims, 0)
+    assert.equal(h.calls.length, 0)
+    assert.equal(h.kv.has(sessionKey(groupKey)), false)
+    connected = true
+    const result = await h.runtime.wakeForCommitment(GROUP, '迁入的待执行托付', { ...opts, isCurrent: async () => true }, target)
+    assert.equal(result.status, 'succeeded')
+    assert.equal(claims, 1)
+    assert.deepEqual(deliveries.map(action => action.target), [target])
+    const state = JSON.parse(h.kv.get(sessionKey(groupKey)))
+    assert.equal(state.botId, BOT)
+    assert.equal(state.personaId, 'agent:daily')
+    assert.equal(state.budget.turns, 1)
+    assert.equal(state.bootstrapSent, true)
+    assert.deepEqual(state.recent, [])
+  } finally { h.runtime.stop() }
+})
+
+test('a first group message is retained when it arrives during commitment session initialization', async () => {
+  const binding = qqBinding('first-message')
+  const groupKey = simulationAddressKey(binding.target)
+  const heldRead = Promise.withResolvers()
+  let preparing = false
+  let reads = 0
+  const seen = []
+  const h = fixture({
+    seed: false, durableIngress: true,
+    getPersona: () => ({ persona: { name: '希洛' }, systemContent: '', binding }),
+    messageActions: { async send(action) { seen.push(action); return { state: 'sent', messageId: 'first-message-confirmed' } } },
+    readFault: async key => {
+      if (!preparing || key !== sessionKey(groupKey)) return
+      reads++
+      if (reads === 1) await heldRead.promise
+    },
+    script: (_request, index) => index === 0
+      ? tools(toolCall('simFinishTurn', { choice: 'chat', reason: '执行到期承诺', messages: ['现在提醒你喝水'] }))
+      : quiet(),
+  })
+  try {
+    const task = h.runtime.wakeForCommitment(GROUP, '保留同时到达的群消息', {
+      taskId: 'concurrent-first-message', botId: BOT, isCurrent: async () => { preparing = true; return true },
+    }, binding.target)
+    await waitFor(() => reads > 0, '承诺已开始读取会话')
+    const first = h.ingest('在承诺初始化时到达的第一条群消息', '40000', { at: false })
+    await waitFor(() => reads > 1, '第一条消息已进入会话路由')
+    heldRead.resolve()
+    assert.equal(await first, true)
+    assert.equal((await task).status, 'succeeded')
+    assert.deepEqual(seen.map(action => action.target), [binding.target])
+    const state = JSON.parse(h.kv.get(sessionKey(groupKey)))
+    assert.equal(state.seq, 1)
+    assert.equal(state.recent[0].text, '在承诺初始化时到达的第一条群消息')
+    assert.equal(state.budget.turns, 1)
+  } finally { heldRead.resolve(); h.runtime.stop() }
+})
+
+test('commitment ownership, cancellation, empty turns and unknown delivery are distinguished', async () => {
+  for (const kind of ['cancelled', 'wrong-bot', 'empty', 'unknown', 'failed']) {
+    let calls = 0
+    const h = fixture({ script: () => kind === 'empty' ? quiet() : tools(toolCall('simFinishTurn', { choice: 'chat', reason: '执行', messages: ['本次托付结果'] })), send: async () => { if (kind === 'unknown') return { ok: false, unknown: true }; return { ok: false, error: 'explicit rejection' } } })
+    try {
+      const result = await h.runtime.wakeForCommitment(GROUP, '独立托付', { taskId: kind, botId: kind === 'wrong-bot' ? 'another' : BOT, isCurrent: async () => kind !== 'cancelled', beforeExecution: async () => { calls++; return true } })
+      assert.equal(result.status, ['cancelled', 'wrong-bot'].includes(kind) ? 'cancelled' : kind === 'unknown' ? 'unknown' : 'failed', kind)
+      assert.equal(result.sent, 0)
+      assert.equal(calls, ['cancelled', 'wrong-bot'].includes(kind) ? 0 : 1)
+    } finally { h.runtime.stop() }
+  }
+})
+
+test('commitments wait for an ordinary turn and concurrent duplicate claims execute once', async () => {
+  let release, entered
+  const held = new Promise(resolve => { release = resolve }), modelEntered = new Promise(resolve => { entered = resolve })
+  const h = fixture({ script: async (_request, index) => {
+    if (index === 0) { entered(); await held; return quiet() }
+    return tools(toolCall('simFinishTurn', { choice: 'chat', reason: '兑现独立托付', messages: [`结果 ${index}`] }))
+  } })
+  let claims = 0
+  const options = taskId => ({ taskId, botId: BOT, isCurrent: async () => true, beforeExecution: async () => { claims++; return true } })
+  try {
+    await h.ingest(); await modelEntered
+    const first = h.runtime.wakeForCommitment(GROUP, 'queued-a', options('queued-a'))
+    const duplicate = h.runtime.wakeForCommitment(GROUP, 'queued-a', options('queued-a'))
+    const second = h.runtime.wakeForCommitment(GROUP, 'queued-b', options('queued-b'))
+    await sleep(80)
+    assert.equal(claims, 0)
+    release()
+    const results = await Promise.all([first, duplicate, second])
+    assert.deepEqual(results.map(result => result.status), ['succeeded', 'succeeded', 'succeeded'])
+    assert.equal(claims, 2); assert.equal(h.sent.length, 2); assert.equal(h.calls.length, 3)
+  } finally { release(); h.runtime.stop() }
+})
+
+test('commitment external tool unknown and partial success with a later failure cannot be retried', async () => {
+  for (const partial of [false, true]) {
+    const h = fixture({
+      script: (_request, index) => index === 0
+        ? tools(...(partial ? [toolCall('simSendMessage', { messages: ['已发送的一部分'] })] : []), toolCall('searchInformationTool', {})) : quiet(),
+      execute: async () => partial ? { kind: 'tool_outcome', status: 'error', error: { message: 'explicit rejection' } } : { kind: 'tool_outcome', status: 'unknown', error: { message: 'accepted then disconnected' } },
+    })
+    try {
+      const result = await h.runtime.wakeForCommitment(GROUP, '可能部分执行的托付', { taskId: `partial-${partial}`, botId: BOT, isCurrent: async () => true, beforeExecution: async () => true })
+      assert.equal(result.status, 'unknown')
+      assert.equal(result.sent, partial ? 1 : 0)
+    } finally { h.runtime.stop() }
+  }
+})
+
+test('an unknown worker result blocks repeated external actions and finish announcements while preserving reads and saved closure', async () => {
+  const workers = []
+  const task = { kind: 'research', instruction: '研究来源里的游戏', evidenceRefs: ['memory:worker-source'] }
+  const h = fixture({
+    script: (_request, index) => index === 0
+      ? tools(toolCall('simWorkerTask', task), toolCall('simWorkerTask', task), toolCall('simWorkspace', { action: 'list' }))
+      : tools(toolCall('simFinishTurn', { choice: 'chat', reason: '结果未知，停止外部动作', messages: ['这条公告不应发送'], throughSeq: 0 })),
+    runCharacterWorker: async task => { workers.push(task); return { status: 'unknown', summary: '已提交但回执丢失' } },
+  })
+  h.kv.set(characterKey(h.scope()), JSON.stringify(addCharacterMemory(createEmptyCharacterState(h.scope()), {
+    id: 'worker-source', kind: 'interest', content: '想研究的游戏', epistemic: 'inferred', evidenceRefs: ['message:1'],
+  }, ['message:1'], BASE_AT)))
+  try {
+    const result = await h.runtime.wakeForCommitment(GROUP, '独立研究托付', { taskId: 'unknown-worker-repeat', botId: BOT, isCurrent: async () => true, beforeExecution: async () => true })
+    assert.equal(workers.length, 1, 'unknown result cannot cause another worker submission with a fresh id')
+    assert.equal(result.status, 'unknown'); assert.equal(h.sent.length, 0)
+    const history = JSON.parse(h.kv.get(sessionKey(GROUP))).agentHistory
+    assert.match(history.find(message => message.role === 'tool' && message.name === 'simWorkspace').content, /"ok":true/)
+    const closure = JSON.parse(history.find(message => message.role === 'tool' && message.name === 'simFinishTurn').content)
+    assert.equal(closure.saved, true); assert.equal(closure.sendStatus, 'failed'); assert.equal(closure.readStatus, 'failed'); assert.match(closure.error, /未知/)
+  } finally { h.runtime.stop() }
+})
+
+test('worker artifact persistence failure preserves unknown and blocks a second external execution', async () => {
+  const workers = []
+  let failWorkspace = false
+  const task = { kind: 'research', instruction: '研究来源里的游戏', evidenceRefs: ['memory:worker-save-source'] }
+  const h = fixture({
+    script: (_request, index) => index === 0 ? tools(toolCall('simWorkerTask', task), toolCall('simWorkerTask', task)) : quiet(),
+    runCharacterWorker: async task => { workers.push(task); failWorkspace = true; return { status: 'succeeded', summary: '外部已执行', artifact: { title: '研究结果', content: '已得到正文' } } },
+    writeFault: async key => { if (failWorkspace && key.endsWith(':workspace')) throw new Error('workspace storage failure') },
+  })
+  h.kv.set(characterKey(h.scope()), JSON.stringify(addCharacterMemory(createEmptyCharacterState(h.scope()), {
+    id: 'worker-save-source', kind: 'interest', content: '想研究的游戏', epistemic: 'inferred', evidenceRefs: ['message:1'],
+  }, ['message:1'], BASE_AT)))
+  try {
+    const result = await h.runtime.wakeForCommitment(GROUP, '研究托付但作品保存失败', { taskId: 'worker-save-failure-repeat', botId: BOT, isCurrent: async () => true, beforeExecution: async () => true })
+    assert.equal(workers.length, 1, 'successful external execution cannot be repeated when its artifact save failed')
+    assert.equal(result.status, 'unknown'); assert.equal(result.actions, 1)
+    const history = JSON.parse(h.kv.get(sessionKey(GROUP))).agentHistory
+    assert.match(history.find(message => message.role === 'tool' && message.name === 'simWorkerTask').content, /"status":"unknown"/)
+    assert.equal(JSON.parse(h.kv.get(characterKey(h.scope()))).receipts.find(receipt => receipt.toolName === 'simWorkerTask').status, 'unknown')
+  } finally { h.runtime.stop() }
+})
 
 test('finish 的目标和记忆在发送 adapter 前已落盘，发送标读后按真实 call id 保存收尾结果并停止', async () => {
   let observed = false, h
@@ -338,7 +1003,7 @@ test('finish 提交后目标被取消、人设切换或源记忆删除时不能�
       }
     } })
     try {
-      await h.ingest('本轮此前已有的兴趣来源', '30000', { at: false })
+      await h.ingest('本轮此前已有的兴趣来源', '40000', { at: false })
       const source = addCharacterMemory(createEmptyCharacterState(h.scope()), { id: 'source-before-close', kind: 'interest', content: '我持续关注的线索设计', epistemic: 'inferred', evidenceRefs: ['message:1'] }, ['message:1'], h.clock.value)
       const originalKey = characterKey(h.scope())
       h.kv.set(originalKey, JSON.stringify(source))
@@ -514,6 +1179,166 @@ test('主动空闲唤醒无 user_id，管理员工具和伪 sim 前缀工具既�
   } finally { h.runtime.stop() }
 })
 
+test('已明确欢迎的到期待办只唤醒一次，重启后空回音和相同入站不会再次唤醒', async () => {
+  const memoryKey = `shiloh:sim:g:${GROUP}:memories`
+  const h = fixture({ proactiveProbability: 1, script: () => tools(toolCall('simFinishTurn', {
+    choice: 'chat', reason: '只问这一回', messages: ['纸灯展布置得怎么样？'],
+  })) })
+  try {
+    await h.ingest('明天展览布置完，欢迎到群里问我一句', '40000', { at: false })
+    h.kv.set(memoryKey, JSON.stringify([
+      { id: 'old', kind: 'pendingEvent', content: '旧待办没有主动许可', aboutUser: '40000', dueAt: BASE_AT + 3600_000 },
+      { id: 'welcome', kind: 'pendingEvent', content: '问纸灯展布展情况', aboutUser: '40000', dueAt: BASE_AT + 86400_000, proactiveSourceSeq: 1 },
+    ]))
+    h.clock.value += 86460_000
+    await h.runtime.sweepOnce()
+    await idle(h, 1)
+    const saved = JSON.parse(h.kv.get(sessionKey(GROUP)))
+    assert.deepEqual(saved.offeredFollowUpIds, ['welcome'])
+    assert.equal(h.sent.length, 1)
+    assert.match(h.calls[0].messages.map(message => message.content).join('\n'), /问纸灯展布展情况.*这次主动检查的事/)
+    assert.ok(!JSON.parse(h.kv.get(memoryKey)).find(memory => memory.id === 'welcome').done)
+  } finally { h.runtime.stop() }
+  const restarted = fixture({ kv: h.kv, clock: h.clock, proactiveProbability: 1 })
+  try {
+    h.clock.value += 7200_000
+    await restarted.runtime.sweepOnce()
+    await sleep(1150)
+    assert.equal(restarted.calls.length, 0)
+    assert.equal(JSON.parse(h.kv.get(sessionKey(GROUP))).nextReplyCheckAt, 0)
+    await restarted.ingest('新话题，聊聊纸灯怎么折', '40001')
+    await idle(restarted, 1)
+  } finally { restarted.runtime.stop() }
+})
+
+test('本群相处习惯和已发送回复用于原对话对象，不冒充其他人的互动', async () => {
+  const h = fixture({ script: (_request, index) => {
+    if (index === 0) return tools(
+      toolCall('simRemember', { kind: 'interaction', aboutUser: '40000', content: '对方说不喜欢被叫宝', sourceSeq: 1, sourceQuote: '叫我阿晓就行，别叫我宝' }),
+      toolCall('simUpdateAffinity', { userId: '40000', delta: 1, reason: '对方直接说清了喜欢的称呼' }),
+    )
+    if (index === 1) return tools(toolCall('simFinishTurn', { choice: 'chat', reason: '回应对方', messages: ['行，那就叫你阿晓'] }))
+    return quiet()
+  } })
+  try {
+    await h.ingest('叫我阿晓就行，别叫我宝')
+    await idle(h, 2)
+    assert.equal(h.sent.length, 1, JSON.stringify({ errors: h.errors, history: JSON.parse(h.kv.get(sessionKey(GROUP))).agentHistory.filter(message => message.role === 'tool') }))
+    assert.ok(!h.writes.some(write => write.key === 'shiloh:sim:person:40000'), '相处习惯不写跨群档案')
+    await h.ingest('对，就是这样叫', '40000')
+    await idle(h, 3)
+    const same = h.calls[2].messages.filter(message => message.role === 'user').at(-2)?.content || ''
+    assert.match(same, /对方说不喜欢被叫宝/)
+    assert.match(same, /你上一轮给此人的已发送消息.*\n.*那就叫你阿晓/)
+    await h.ingest('你怎么称呼我？', '40001')
+    await idle(h, 4)
+    const other = h.calls[3].messages.filter(message => message.role === 'user').at(-2)?.content || ''
+    assert.doesNotMatch(other, /你上一轮给此人的已发送消息/)
+  } finally { h.runtime.stop() }
+})
+
+test('点名接话隔离另一人的快照和历史，引用及显式查阅仍能看见原话', async () => {
+  const h = fixture({ script: (_request, index) => {
+    if (index === 0) return tools(toolCall('simFinishTurn', { choice: 'chat', reason: '接梗', messages: ['两块饼干成交'], throughSeq: 1 }))
+    if (index === 2) return tools(toolCall('simFinishTurn', { choice: 'chat', reason: '继续接梗', messages: ['第三块一人一半'] }))
+    if (index === 3) return tools(toolCall('simGetMessageDetail', { seq: 2 }))
+    return quiet()
+  } })
+  try {
+    await h.ingest('我给你两块饼干当工资')
+    await idle(h, 1)
+    await h.ingest('烤箱旁边是蓝色计时器', '40001')
+    await idle(h, 2)
+    await h.ingest('第三块你分我一半', '40000')
+    await idle(h, 3)
+    const direct = h.calls[2].messages.map(m => m.content).join('\n')
+    assert.match(direct, /第三块你分我一半/)
+    assert.match(direct, /两块饼干成交/)
+    assert.doesNotMatch(direct, /烤箱|蓝色计时器/)
+    assert.deepEqual(turnContext(h.calls[2]).visibleEvidenceRefs.filter(ref => ref.startsWith('message:')), ['message:1', 'message:3'])
+    await h.ingest('请再查第二条，烤箱旁边是什么？', '40000', { source: { user_id: '40001', text: '烤箱旁边是蓝色计时器' } })
+    await idle(h, 5)
+    assert.match(h.calls[3].messages.map(m => m.content).join('\n'), /引用.*蓝色计时器/)
+    assert.match(toolResult(h.calls[4], 'simGetMessageDetail'), /蓝色计时器/)
+    assert.ok(turnContext(h.calls[4]).visibleEvidenceRefs.includes('message:2'))
+  } finally { h.runtime.stop() }
+})
+
+test('合并窗内两个群友分别点名会获得独立回合', async () => {
+  const h = fixture({ script: (_request, index) => tools(toolCall('simFinishTurn', {
+    choice: 'chat', reason: '回答当前群友', messages: [index === 0 ? '饼干成交' : '看看烤箱说明'], throughSeq: index + 1,
+  })) })
+  try {
+    await h.ingest('给你两块饼干，成交吗？', '40000')
+    await h.ingest('新烤箱怎么设置？', '40001')
+    await idle(h, 2)
+    const first = h.calls[0].messages.map(message => message.content).join('\n')
+    const second = h.calls[1].messages.map(message => message.content).join('\n')
+    assert.match(first, /饼干/)
+    assert.doesNotMatch(first, /新烤箱/)
+    assert.match(second, /新烤箱/)
+    assert.doesNotMatch(second, /饼干成交|两块饼干/)
+    assert.equal(h.sent.length, 2)
+  } finally { h.runtime.stop() }
+})
+
+test('误填主动许可和社交目标均不能用模型改写替代当事人原话', async () => {
+  const original = '明天面试完，碰巧聊到你再问一句，别特意催'
+  const judgments = []
+  const h = fixture({ proactiveProbability: 1, judgeSocialPermission: async request => {
+    judgments.push(JSON.parse(request.messages[1].content))
+    const verdict = judgments.at(-1).action === 'follow_up' ? 'explicit_invitation' : 'conversation_only'
+    return { choices: [{ message: { content: JSON.stringify({ verdict, quote: original }) } }] }
+  }, script: (_request, index) => {
+    if (index === 0) return tools(toolCall('simRemember', { kind: 'pendingEvent', content: '对方允许明天主动问', dueInMinutes: 1440, welcomeProactiveFollowUp: true, sourceSeq: 1, sourceQuote: original }))
+    if (index === 1) return tools(toolCall('simFinishTurn', { choice: 'schedule', reason: '等对方露面', goal: finishGoal }))
+    return tools(toolCall('simFinishTurn', { choice: 'chat', reason: '普通接续', messages: ['聊到了再问'] }))
+  } })
+  try {
+    await h.ingest(original)
+    await idle(h, 3)
+    assert.deepEqual(judgments.map(item => [item.action, item.original]), [['follow_up', original], ['goal', original]])
+    const saved = JSON.parse(h.kv.get(`shiloh:sim:g:${GROUP}:memories`))[0]
+    assert.equal(saved.proactiveSourceSeq, undefined)
+    assert.match(toolResult(h.calls[1], 'simRemember'), /"proactiveApproved":false/)
+    assert.equal((await h.runtime.describeGroup(GROUP)).character.goals.length, 0)
+    h.clock.value += 86460_000
+    await h.runtime.sweepOnce()
+    await sleep(1150)
+    assert.equal(h.calls.length, 3)
+    assert.equal(h.sent.length, 1)
+  } finally { h.runtime.stop() }
+})
+
+test('直接点名回合把回答正文漏写到收尾参数外时可以纠正一次', async () => {
+  const h = fixture({ script: (_request, index) => index === 0
+    ? { ...tools(toolCall('simFinishTurn', { choice: 'chat', reason: '回答了对方' })), content: '看说明书的上下管独立控温一栏。' }
+    : tools(toolCall('simFinishTurn', { choice: 'chat', reason: '回答烤箱设置', messages: ['看看说明书的上下管独立控温一栏。'] })) })
+  try {
+    await h.ingest('新烤箱怎么设置？')
+    await idle(h, 2)
+    assert.match(toolResult(h.calls[1], 'simFinishTurn'), /群友看不到/)
+    assert.equal(h.sent.length, 1)
+  } finally { h.runtime.stop() }
+})
+
+test('触发原话被截断时不能授予主动跟进', async () => {
+  let reviewed = false
+  const h = fixture({
+    judgeSocialPermission: async () => { reviewed = true; throw new Error('不应审核被截断的发言') },
+    script: (_request, index) => index === 0
+      ? tools(toolCall('simRemember', { kind: 'pendingEvent', content: '对方允许明天主动问', dueInMinutes: 1440, welcomeProactiveFollowUp: true }))
+      : quiet(),
+  })
+  try {
+    await h.ingest(`明天你可以主动问我。${'补充内容'.repeat(80)}不过碰巧聊到再问`)
+    await idle(h, 2)
+    assert.equal(reviewed, false)
+    assert.match(toolResult(h.calls[1], 'simRemember'), /需要本轮可见且完整的真实用户消息/)
+    assert.equal(h.kv.has(`shiloh:sim:g:${GROUP}:memories`), false)
+  } finally { h.runtime.stop() }
+})
+
 test('simDecide silent 后普通最终文本不会触发提醒、兜底发送或任何群消息', async () => {
   const h = fixture({ script: (_request, index) => index === 0
     ? tools(toolCall('simDecide', { kind: 'silent', reason: '我更想先听大家聊' }))
@@ -608,7 +1433,7 @@ for (const wake of ['atMention', 'commitment']) {
       if (wake === 'atMention') await h.ingest()
       else {
         await h.ingest('承诺的消息来源', '30000', { at: false })
-        await h.runtime.wakeForCommitment(GROUP, '分享刚才整理的游戏看法')
+        await h.runtime.wakeForCommitment(GROUP, '分享刚才整理的游戏看法', { taskId: 'fallback-text', botId: BOT, isCurrent: async () => true, beforeExecution: async () => true })
       }
       await idle(h, 2)
       assert.equal(h.calls.length, 2)
@@ -994,6 +1819,97 @@ test('工具 reply 文本数组拒绝参数 JSON 和内部路径，普通数组�
         assert.equal(h.sent[0].groupId, GROUP)
         assert.equal((await h.runtime.describeGroup(GROUP)).character.receipts.find(receipt => receipt.toolName === 'searchInformationTool').status, 'succeeded')
       }
+    } finally { h.runtime.stop() }
+  }
+})
+
+const agentToolImage = { mime: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6d8AAAAASUVORK5CYII=' }
+
+test('Agent 图片使用平台无关交付口并与工具文字共用发送配额和持久记账', async () => {
+  const actions = [], receipts = [], refusals = []
+  const h = fixture({
+    maxSendsPerTurn: 1,
+    messageActions: { async send(action, guard) {
+      assert.equal(guard.isCurrent(), true)
+      actions.push(action)
+      return { state: 'sent', messageId: 'image-confirmed' }
+    } },
+    script: (_request, index) => index === 0 ? tools(toolCall('searchInformationTool', {})) : quiet(),
+    async execute(_name, _args, event) {
+      const results = await Promise.allSettled([event._sendAgentToolImage(agentToolImage), event._sendAgentToolImage(agentToolImage)])
+      for (const result of results) {
+        if (result.status === 'fulfilled') receipts.push(result.value)
+        else refusals.push(result.reason.message)
+      }
+      try { await event.reply('图片后不应绕过配额补发文字') } catch (error) { refusals.push(error.message) }
+      return { ok: true, result: 'Image confirmed' }
+    },
+  })
+  try {
+    await h.ingest('请给我一张图片')
+    await idle(h, 2)
+    assert.deepEqual(receipts, [{ state: 'sent', messageId: 'image-confirmed' }])
+    assert.equal(actions.length, 1)
+    assert.deepEqual(actions[0].parts, [{ kind: 'image', resource: { kind: 'reference', value: `base64://${agentToolImage.base64}` } }])
+    assert.deepEqual(actions[0].target, { account: { platform: 'qq', namespace: 'global', id: BOT }, kind: 'group', id: GROUP })
+    assert.equal(h.sent.length, 0, '图片交付不走legacy native transport')
+    assert.equal(refusals.length, 2)
+    assert.ok(refusals.every(reason => reason.includes('上限')))
+    const saved = JSON.parse(h.kv.get(sessionKey(GROUP)))
+    assert.deepEqual(saved.sendTimes, [h.clock.value])
+    assert.equal(saved.lastAiSendAt, h.clock.value)
+  } finally { h.runtime.stop() }
+})
+
+test('图片发送结果未知会冻结后续图片和文字，明确失败不消耗发送配额', async () => {
+  for (const status of ['unknown', 'interrupted', 'failed']) {
+    let attempts = 0
+    const receipts = [], refusals = []
+    const h = fixture({
+      messageActions: { async send() {
+        attempts++
+        if (status === 'interrupted') throw new Error('private-adapter-detail')
+        return status === 'failed' ? { state: 'failed', code: 'explicit-rejection' } : { state: 'unknown' }
+      } },
+      script: (_request, index) => index === 0 ? tools(toolCall('searchInformationTool', {})) : quiet(),
+      async execute(_name, _args, event) {
+        receipts.push(await event._sendAgentToolImage(agentToolImage))
+        try { receipts.push(await event._sendAgentToolImage(agentToolImage)) } catch (error) { refusals.push(error.message) }
+        if (status !== 'failed') try { await event.reply('未知送达后不得重发') } catch (error) { refusals.push(error.message) }
+        return { ok: false, error: 'Image unconfirmed' }
+      },
+    })
+    try {
+      await h.ingest(`图片回执 ${status}`)
+      await idle(h, 2)
+      assert.equal(attempts, status === 'failed' ? 2 : 1)
+      assert.equal(refusals.length, status === 'failed' ? 0 : 2)
+      assert.ok(refusals.every(reason => reason.includes('未知')))
+      assert.ok(receipts.every(receipt => receipt.state === (status === 'failed' ? 'failed' : 'unknown')))
+      assert.equal(h.sent.length, 0)
+      assert.deepEqual(JSON.parse(h.kv.get(sessionKey(GROUP))).sendTimes, [])
+    } finally { h.runtime.stop() }
+  }
+})
+
+test('沉默或暂缓决定会阻止 Agent 图片交付', async () => {
+  for (const kind of ['silent', 'deferred']) {
+    let attempts = 0, refusal
+    const h = fixture({
+      messageActions: { async send() { attempts++; return { state: 'sent', messageId: 'must-not-send' } } },
+      script: (_request, index) => index === 0 ? tools(toolCall('simDecide', { kind, reason: '先保留想法，不发送' }))
+        : index === 1 ? tools(toolCall('searchInformationTool', {})) : quiet(),
+      async execute(_name, _args, event) {
+        try { await event._sendAgentToolImage(agentToolImage) } catch (error) { refusal = error.message }
+        return { ok: false, error: 'Image refused' }
+      },
+    })
+    try {
+      await h.ingest(`暂不发送图片 ${kind}`)
+      await idle(h, 3)
+      assert.equal(attempts, 0)
+      assert.equal(h.sent.length, 0)
+      assert.match(refusal, /沉默或暂缓/u)
     } finally { h.runtime.stop() }
   }
 })

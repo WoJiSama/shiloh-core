@@ -5,6 +5,7 @@ import { createDefaultSimSession } from '../dist/backend/modules/simulation/doma
 import { addCharacterMemory, characterKey, createCharacterGoal, createEmptyCharacterState } from '../dist/backend/modules/simulation/domain/characterState.js'
 import { createCharacterStore } from '../dist/backend/modules/simulation/infrastructure/characterStore.js'
 import { createCharacterSharedSelf } from '../dist/backend/modules/simulation/infrastructure/characterSharedSelf.js'
+import { decodeQqIncomingMessage } from '../dist/backend/adapters/qqMessage.js'
 
 const BOT = '3094088525'
 const GROUP = '10086'
@@ -80,8 +81,10 @@ function fixture({ groups = [GROUP], script = () => quiet(), fetchCharacterFeed,
       }, ['message:1'], clock.value))
     },
     async ingest(text = '请看看这个解谜游戏', { groupId = GROUP, at = true } = {}) {
-      return runtime.ingest({ group_id: groupId, self_id: BOT, user_id: '40000', message_type: 'group', msg: text,
-        atBot: at, message: at ? [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text } }] : [], sender: { nickname: '群友' } })
+      const incoming = decodeQqIncomingMessage({ group_id: groupId, self_id: BOT, user_id: '40000', message_type: 'group', msg: text,
+        atBot: at, message: at ? [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text } }] : [], sender: { nickname: '群友' } }, {now: clock.value})
+      assert.ok(incoming)
+      return runtime.ingest(incoming)
     },
   }
 }

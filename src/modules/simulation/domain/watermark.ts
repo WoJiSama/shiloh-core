@@ -17,7 +17,7 @@ export function readThroughSeq(state: Pick<SimSessionState, 'unread' | 'lastRead
   return cursor
 }
 
-export function noteModelSeen(state: SimSessionState, seqs: number[]): void {
+export function noteModelSeen(state: Pick<SimSessionState, 'unread' | 'modelSeenSeqs'>, seqs: number[]): void {
   const window = new Set(state.unread.map(m => m.seq))
   const all = seqs.length ? [...state.modelSeenSeqs, ...seqs] : state.modelSeenSeqs
   state.modelSeenSeqs = [...new Set(all.filter(seq => window.has(seq)))].sort((a, b) => a - b)

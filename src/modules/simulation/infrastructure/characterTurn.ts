@@ -1,5 +1,6 @@
 import type { CharacterState, CharacterMemory, CharacterGoal, CharacterDecision } from '../../../contracts/character.js'
 import { AbstractTool, type ParameterSchema } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { isQqSimulationUserId } from '../domain/simConfig.js'
 import { createCharacterTools, type CharacterToolContext } from './characterTools.js'
 
 export const CHARACTER_TURN_CHOICES = ['chat', 'interest_only', 'silent', 'cannot', 'unauthorized', 'unwilling', 'deferred', 'schedule', 'wait', 'complete', 'abandon'] as const
@@ -17,8 +18,9 @@ export interface CharacterTurnFinishResult {
   throughSeq?: number
 }
 
-export interface CharacterTurnToolContext extends Pick<CharacterToolContext, 'now' | 'read' | 'update' | 'visibleEvidenceRefs' | 'makeId' | 'sharedSourceIds'> {
+export interface CharacterTurnToolContext extends Pick<CharacterToolContext, 'now' | 'read' | 'update' | 'visibleEvidenceRefs' | 'makeId' | 'sharedSourceIds' | 'memoryInvalidatedAt'> {
   ensureActive(): Promise<void>
+  platformUserId?(value: string): boolean
   review?(input: { candidate: Record<string, unknown>; state: CharacterState }): Promise<void>
   finish(result: CharacterTurnFinishResult): Promise<unknown>
 }
@@ -57,7 +59,7 @@ interface TurnInput extends Omit<CharacterTurnFinishResult, 'state' | 'memories'
   goal?: Record<string, unknown>
 }
 
-function parse(input: Record<string, unknown>, memoryFields: string[], goalFields: string[]): TurnInput {
+function parse(input: Record<string, unknown>, memoryFields: string[], goalFields: string[], isUserId: (value: string) => boolean): TurnInput {
   object(input, TOP_FIELDS, '收尾参数')
   if (typeof input.choice !== 'string' || !CHARACTER_TURN_CHOICES.includes(input.choice as CharacterTurnChoice)) throw new Error('choice 必须是明确的允许选项')
   if (typeof input.reason !== 'string' || !input.reason.trim() || input.reason.length > 600) throw new Error('reason 必须是非空、至多 600 字符的简短理由，不写思考过程')
@@ -80,7 +82,7 @@ function parse(input: Record<string, unknown>, memoryFields: string[], goalField
   let atUserIds: string[] | undefined
   if (Object.hasOwn(input, 'atUserIds')) {
     const values = input.atUserIds
-    if (!Array.isArray(values) || values.length > 3 || values.some(value => typeof value !== 'string' || !/^\d{1,12}$/u.test(value))) throw new Error('atUserIds 必须是至多 3 个 QQ 号数字字符串')
+    if (!Array.isArray(values) || values.length > 3 || values.some(value => typeof value !== 'string' || !isUserId(value))) throw new Error('atUserIds 必须是当前平台的成员 ID，至多 3 个字符串')
     atUserIds = values as string[]
   }
   if (!messages && (replyToSeq !== undefined || atUserIds !== undefined)) throw new Error('replyToSeq/atUserIds 只能与 messages 一起使用')
@@ -94,6 +96,7 @@ function parse(input: Record<string, unknown>, memoryFields: string[], goalField
 
 /** Validate with the existing tools on a private draft, then commit once. No transport is owned here. */
 export function createCharacterTurnTool(ctx: CharacterTurnToolContext): AbstractTool {
+  const isUserId = ctx.platformUserId ?? isQqSimulationUserId
   const schemas = createCharacterTools({ ...ctx,
     selectGoal: async () => { throw new Error('收尾不支持 focus') }, onDecision: () => {},
   })
@@ -111,22 +114,22 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
         type: 'object', additionalProperties: false, required: ['choice', 'reason'], properties: {
           choice: { type: 'string', enum: [...CHARACTER_TURN_CHOICES] },
           reason: { type: 'string', minLength: 1, maxLength: 600, description: '本轮选择的简短理由，不写思考链。' },
-          memories: { type: 'array', maxItems: 2, description: '每项只执行 remember，不传 action 或新记录 id。', items: nestedSchema(memoryTool) },
+          memories: { type: 'array', maxItems: 2, description: '仅角色自己的经历、兴趣、观点。社交待办 pendingEvent 和本群相处习惯 interaction 请在收尾前单独调用 simRemember。每项不传 action 或新记录 id。', items: nestedSchema(memoryTool) },
           goal: { ...nestedSchema(goalTool), description: `仅 schedule/wait/complete/abandon 使用，操作由 choice 固定，不传 action。${goalTool.description}` },
           messages: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', minLength: 1, maxLength: 500 }, description: '可选的最终群消息；兼容单个字符串。silent/deferred 禁止。' },
           replyToSeq: { type: 'number', minimum: 1, description: '可选：引用已展示的消息序号，须为整数。' },
-          atUserIds: { type: 'array', maxItems: 3, items: { type: 'string', pattern: '^\\d{1,12}$' } },
+          atUserIds: { type: 'array', maxItems: 3, items: { type: 'string', ...(ctx.platformUserId ? { minLength: 1, maxLength: 128 } : { pattern: '^\\d{1,12}$' }) } },
           throughSeq: { type: 'number', minimum: 0, description: '可选：显式标读到实际看过的连续消息位置，须为整数。' },
         },
       }
     }
     override normalizeParameters(params: unknown) { return object(params, TOP_FIELDS, '收尾参数') }
     override validateParameters(params: Record<string, unknown>) {
-      try { parse(params, memoryFields, goalFields); return true }
+      try { parse(params, memoryFields, goalFields, isUserId); return true }
       catch (error) { return error instanceof Error ? error.message : '收尾参数无效' }
     }
     override async func(params: Record<string, unknown>): Promise<unknown> {
-      const input = parse(params, memoryFields, goalFields)
+      const input = parse(params, memoryFields, goalFields, isUserId)
       await ctx.ensureActive()
       const snapshot = structuredClone(await ctx.read())
       let draft = structuredClone(snapshot), changed = false
@@ -136,6 +139,7 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
         update: async mutate => { draft = mutate(structuredClone(draft)); changed = true; return structuredClone(draft) },
         visibleEvidenceRefs: () => [...visible], makeId: ctx.makeId,
         ...(ctx.sharedSourceIds ? { sharedSourceIds: ctx.sharedSourceIds } : {}),
+        ...(ctx.memoryInvalidatedAt ? { memoryInvalidatedAt: ctx.memoryInvalidatedAt } : {}),
         selectGoal: async () => { throw new Error('收尾不支持 focus') }, onDecision: () => {},
       })
       const apply = async (name: string, value: Record<string, unknown>) => {

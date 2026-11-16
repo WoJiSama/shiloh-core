@@ -23,11 +23,12 @@ const messageIdCache = new Map<string, true>() // LRU
 const MESSAGE_ID_CACHE_MAX = 500
 
 /** 消息是否已处理过（true=重复，应跳过） */
-export function isDuplicateMessageId(messageId: unknown): boolean {
+export function isDuplicateMessageId(messageId: unknown, scope?: readonly string[]): boolean {
   const id = String(messageId ?? '')
   if (!id || id === 'null') return false // 无 id 的消息不去重（无法判重）
-  if (messageIdCache.has(id)) return true
-  messageIdCache.set(id, true)
+  const key = JSON.stringify([scope ?? [], id])
+  if (messageIdCache.has(key)) return true
+  messageIdCache.set(key, true)
   if (messageIdCache.size > MESSAGE_ID_CACHE_MAX) {
     const oldest = messageIdCache.keys().next().value
     if (oldest !== undefined) messageIdCache.delete(oldest)

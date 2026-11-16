@@ -10,6 +10,9 @@ const MAX_WORKS = 24, MAX_VERSIONS = 12, MAX_CONTENT = 12_000
 const MAX_LIST_CHARS = 3500, MAX_READ_CHARS = 2000
 const WORK_KINDS = ['note', 'research', 'story'] as const
 type WorkKind = typeof WORK_KINDS[number]
+const REDACTED_WORK_TITLE = '来源已整理的作品'
+
+export const characterWorkspaceKey = (scope: CharacterScope) => `${characterKey(scope)}:workspace`
 
 function fail(field: string): never { throw new Error(`作品空间无效：${field}`) }
 function object(value: unknown, fields: readonly string[], field: string): Record<string, unknown> {
@@ -73,18 +76,33 @@ function work(value: unknown): CharacterWork {
   return result
 }
 
+export function validateCharacterWorkspace(value: unknown, scope: CharacterScope): CharacterWorkState {
+  const raw = object(value, ['schemaVersion', 'scope', 'works'], 'state')
+  if (raw.schemaVersion !== 1 || !Array.isArray(raw.works) || raw.works.length > MAX_WORKS) fail('state')
+  const works = raw.works.map(work)
+  if (new Set(works.map(w => w.id)).size !== works.length) fail('重复作品 id')
+  return { schemaVersion: 1, scope: sameScope(raw.scope, scope), works }
+}
+
+export function projectCharacterWorkspace(source: CharacterWorkState, availableEvidence: ReadonlySet<string>): CharacterWorkState {
+  const works = source.works.flatMap(item => {
+    const versions = item.versions.filter(version => !version.sharedSources?.length &&
+      version.evidenceRefs.every(ref => !ref.startsWith('message:') && availableEvidence.has(ref)))
+    if (!versions.length) return []
+    // Restoring a version does not restore its title. Gaps or discarded
+    // versions make it impossible to prove the current title's source.
+    const completeTitleHistory = versions.length === item.revision && versions.every((version, index) => version.revision === index + 1)
+    return [{ ...item, title: completeTitleHistory ? item.title : REDACTED_WORK_TITLE, versions }]
+  })
+  return { ...source, works }
+}
+
 export function createCharacterWorkspace({ redis, scope: requestedScope, now = Date.now }: { redis: CharacterRedis; scope: CharacterScope; now?: () => number }) {
   const scope = validateCharacterScope(requestedScope)
   const store = createScopedStateStore<CharacterWorkState>({
-    redis, key: `${characterKey(scope)}:workspace`,
+    redis, key: characterWorkspaceKey(scope),
     empty: () => ({ schemaVersion: 1, scope: { ...scope }, works: [] }),
-    validate(value) {
-      const raw = object(value, ['schemaVersion', 'scope', 'works'], 'state')
-      if (raw.schemaVersion !== 1 || !Array.isArray(raw.works) || raw.works.length > MAX_WORKS) fail('state')
-      const works = raw.works.map(work)
-      if (new Set(works.map(w => w.id)).size !== works.length) fail('重复作品 id')
-      return { schemaVersion: 1, scope: sameScope(raw.scope, scope), works }
-    },
+    validate: value => validateCharacterWorkspace(value, scope),
   })
   function target(state: CharacterWorkState, rawId: unknown): CharacterWork {
     const checkedId = id(rawId)
@@ -168,7 +186,7 @@ export function createCharacterWorkspace({ redis, scope: requestedScope, now = D
         for (const item of state.works) {
           const retained = item.versions.filter(v => v.evidenceRefs.every(ref => !/^(?:memory|receipt):/u.test(ref) || valid.has(ref)))
           if (retained.length !== item.versions.length) {
-            item.versions = retained; item.title = '来源已整理的作品'; item.revision += 1; item.updatedAt = at(item)
+            item.versions = retained; item.title = REDACTED_WORK_TITLE; item.revision += 1; item.updatedAt = at(item)
           }
         }
         state.works = state.works.filter(item => item.versions.length)
@@ -181,7 +199,7 @@ export function createCharacterWorkspace({ redis, scope: requestedScope, now = D
         for (const item of state.works) {
           const retained = item.versions.filter(v => (v.sharedSources || []).every(source => active.has(source)))
           if (retained.length !== item.versions.length) {
-            item.versions = retained; item.title = '来源已整理的作品'; item.revision += 1; item.updatedAt = at(item)
+            item.versions = retained; item.title = REDACTED_WORK_TITLE; item.revision += 1; item.updatedAt = at(item)
           }
         }
         state.works = state.works.filter(item => item.versions.length)

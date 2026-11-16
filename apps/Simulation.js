@@ -1,5 +1,7 @@
 // 仿真模式命令插件：.仿真 开/关/状态/重置/帮助 + 戳一戳入流
 import { simulationRuntime, parseSimulationCommand, isSimulationManager, SIMULATION_COMMAND_HELP } from '../utils/simulationRuntime.js'
+import { resolveQqConversationAddress } from '../dist/backend/adapters/qqIdentity.js'
+import { decodeQqNudge, decodeQqRecall } from '../dist/backend/adapters/qqMessage.js'
 
 export class SimulationCommandPlugin extends plugin {
   constructor() {
@@ -23,8 +25,10 @@ export class SimulationCommandPlugin extends plugin {
       await e.reply('只有群管理或主人可以管理仿真模式', true)
       return true
     }
-    const groupId = String(e.group_id)
     try {
+      const target = resolveQqConversationAddress(e)
+      const groupId = target && await simulationRuntime.conversationKey(target)
+      if (!groupId) return false
       if (parsed.action === '开') await e.reply(await simulationRuntime.enableGroup(groupId), true)
       else if (parsed.action === '关') await e.reply(await simulationRuntime.disableGroup(groupId), true)
       else if (parsed.action === '模式') {
@@ -45,7 +49,10 @@ export class SimulationCommandPlugin extends plugin {
   async handleAffinity(e) {
     if (!e.group_id) return false
     try {
-      await e.reply(await simulationRuntime.listAffinity(String(e.group_id), String(e.user_id || '')), true)
+      const target = resolveQqConversationAddress(e)
+      const groupId = target && await simulationRuntime.conversationKey(target)
+      if (!groupId) return false
+      await e.reply(await simulationRuntime.listAffinity(groupId, String(e.user_id || '')), true)
     } catch (error) {
       await e.reply(`好感度查询失败：${error?.message || error}`, true)
     }
@@ -69,13 +76,9 @@ export class SimulationRecallPlugin extends plugin {
   }
 
   async handleRecall(e) {
-    if (!e.group_id) return false
-    if (e.notice_type !== 'group_recall' && e.sub_type !== 'recall') return false
     try {
-      await simulationRuntime.handleRecall({
-        group_id: e.group_id,
-        message_id: e.message_id,
-      })
+      const recall = decodeQqRecall(e)
+      if (recall?.target.kind === 'group') await simulationRuntime.handleRecall({ message_id: recall.messageId }, recall.target)
     } catch (error) {
       globalThis.logger?.warn?.(`[仿真] 撤回处理失败：${error?.message || error}`)
     }
@@ -98,17 +101,9 @@ export class SimulationPokePlugin extends plugin {
   }
 
   async handlePoke(e) {
-    if (e.notice_type !== 'notify' && e.notice_type !== 'poke') return false
-    if (String(e.sub_type || '') !== 'poke') return false
-    if (!e.group_id) return false
     try {
-      await simulationRuntime.ingestPoke({
-        group_id: e.group_id,
-        user_id: e.user_id,
-        self_id: e.self_id || e.bot?.uin,
-        target_id: e.target_id,
-        sender: e.sender,
-      })
+      const event = decodeQqNudge(e)
+      if (event) await simulationRuntime.ingestNudge(event)
     } catch (error) {
       globalThis.logger?.warn?.(`[仿真] 戳一戳入流失败：${error?.message || error}`)
     }

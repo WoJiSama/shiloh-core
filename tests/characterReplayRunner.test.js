@@ -409,6 +409,19 @@ test('workspace revisions and feed updates require matching current tool or fixt
   assert.equal(assessEvent({ expect: expected }, result).newFeedItemCommitted, false)
 })
 
+test('opinion revision captures the final runtime reply even when obsolete context is discarded', async t => {
+  const report = await main(['--dry-run', '--scenario', 'opinion-revision', '--output-dir', path.join(scratch(t), 'evidence')], {
+    log: noLog, turnTimeoutMs: 5000,
+  })
+  assert.equal(report.exitCode, 0, JSON.stringify(report.summary))
+  const revision = report.results[1]
+  assert.equal(revision.toolResultCapture.complete, true)
+  const finish = revision.toolResults.find(result => result.name === 'simFinishTurn')
+  assert.ok(finish, 'the actual final tool reply must survive evidence capture without restoring obsolete context')
+  assert.equal(JSON.parse(finish.content).saved, true)
+  assert.equal(revision.behavior.opinionRevisionPersisted, true)
+})
+
 test('all scripted scenarios exercise cross-day continuity and repeat with isolated stores', async t => {
   const dir = scratch(t), output = path.join(dir, 'evidence'), privateRoot = path.join(dir, 'must-not-read')
   const code = `

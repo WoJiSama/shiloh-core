@@ -1,5 +1,5 @@
 import type { CharacterDecision, CharacterGoal, CharacterState } from '../../../contracts/character.js'
-import { addCharacterMemory, createCharacterGoal, setCharacterDecision, transitionCharacterGoal } from '../domain/characterState.js'
+import { activeCharacterMemories, characterMemoryVisibility, addCharacterMemory, createCharacterGoal, setCharacterDecision, transitionCharacterGoal } from '../domain/characterState.js'
 import { AbstractTool, type ToolParameters } from '../../toolSupport/infrastructure/AbstractTool.js'
 
 /** The runtime binds this interface to one captured bot/persona/group scope. */
@@ -12,6 +12,7 @@ export interface CharacterToolContext {
   onDecision(kind: CharacterDecision['kind']): void
   makeId(prefix: string): string
   sharedSourceIds?(): string[]
+  memoryInvalidatedAt?(): number
   reviewMemory?(candidate: Record<string, unknown>, draft: CharacterState): Promise<void>
 }
 
@@ -118,7 +119,7 @@ export function createCharacterTools(ctx: CharacterToolContext): AbstractTool[] 
       const action = choice(input, 'action', ['list', 'remember'])
       if (action === 'list') {
         fields(input, ['action', 'beforeId'])
-        return page((await ctx.read()).memories, input.beforeId, 'memories')
+        return page(characterMemoryVisibility(await ctx.read(), ctx.memoryInvalidatedAt?.() ?? 0).memories, input.beforeId, 'memories')
       }
       fields(input, ['action', 'kind', 'content', 'epistemic', 'evidenceRefs', 'supersedes'])
       const id = ctx.makeId('memory')
@@ -165,7 +166,7 @@ export function createCharacterTools(ctx: CharacterToolContext): AbstractTool[] 
       if (action === 'list') {
         fields(input, ['action', 'beforeId'])
         const state = await ctx.read()
-        return page(state.goals, input.beforeId, 'goals', { paused: state.paused })
+        return page(characterMemoryVisibility(state, ctx.memoryInvalidatedAt?.() ?? 0).goals, input.beforeId, 'goals', { paused: state.paused })
       }
       if (action === 'create') {
         fields(input, ['action', 'title', 'motivation', 'nextStep', 'completionCriteria', 'stopConditions', 'evidenceRefs', 'nextCheckInMinutes', 'expiresInHours', 'maxAttempts'])
@@ -190,6 +191,7 @@ export function createCharacterTools(ctx: CharacterToolContext): AbstractTool[] 
         return { ok: true, goal: state.goals.find(item => item.id === id) }
       }
       const id = text(input, 'id')
+      if (!characterMemoryVisibility(await ctx.read(), ctx.memoryInvalidatedAt?.() ?? 0).goals.some(goal => goal.id === id)) throw new Error('目标来源已失效或本轮不可见')
       if (action === 'focus') {
         fields(input, ['action', 'id'])
         await ctx.selectGoal(id)

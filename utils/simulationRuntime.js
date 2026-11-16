@@ -1,8 +1,13 @@
 // 仿真模式（自主仿真会话）单例装配：dist 工厂 + Yunzai 全局注入。
 // 借鉴 qq-bridge reserved2「一切皆工具」——消息不自动转发，AI 用工具自主读/发/等/设唤醒。
+import { formatSimulationDelivery } from '../dist/backend/modules/simulation/domain/messageDelivery.js'
 import { createSimulationRuntime } from '../dist/backend/modules/simulation/infrastructure/simulationRuntime.js'
 import { resolveCharacterConsistencyRoute } from '../dist/backend/modules/simulation/infrastructure/characterConsistencyRouting.js'
 import { createPersonaLibrary } from '../dist/backend/modules/conversation/infrastructure/personaLibrary.js'
+import { resolveQqAgentBinding } from '../dist/backend/adapters/qqAgentBinding.js'
+import { findQqAccount } from '../dist/backend/adapters/qqIdentity.js'
+import { createQqMessageActionPort } from '../dist/backend/adapters/qqMessageDelivery.js'
+import { encodeQqLegacyParts } from '../dist/backend/adapters/qqMessage.js'
 import { decodeHostConfig } from '../dist/backend/modules/host/infrastructure/hostConfig.js'
 import { getMidtermMemoryManager } from '../dist/backend/modules/memory/infrastructure/MidtermSummaryManager.js'
 import { recallEpisodes, buildEpisodicPrompt, recordEpisode } from '../dist/backend/modules/memory/infrastructure/episodicMemory.js'
@@ -61,18 +66,8 @@ function currentBot() {
   return { id: String(primary ?? ''), name: nickname }
 }
 
-function botById(hint) {
-  const Bot = globalThis.Bot
-  if (!Bot?.bots) return null
-  const entry = Object.values(Bot.bots).find(b => b && String(b.uin) === String(hint))
-  return entry || null
-}
-
 function scopedBot(selfId) {
-  if (!selfId) return globalThis.Bot
-  const account = botById(selfId)
-  if (account) return account
-  return String(globalThis.Bot?.uin || '') === String(selfId) ? globalThis.Bot : null
+  return selfId ? findQqAccount(globalThis.Bot, selfId) : globalThis.Bot
 }
 
 // bot 进程用 Yunzai 全局 redis;独立控制台进程没有 globalThis.redis——按需自建本机连接(与 bot 同实例,键互通)。
@@ -100,6 +95,7 @@ export function lazyRedis() {
 export const simulationRuntime = createSimulationRuntime({
   logger,
   redis: lazyRedis(),
+  readHealthStyleMemory: async () => JSON.parse(await fs.promises.readFile(path.join(pluginRoot, 'data', 'global_style_learning', 'style_memory.json'), 'utf8')),
   getStyleBotUserIds: () => {
     try {
       const ids = [...(readPluginSettings().botUserIds || [])]
@@ -131,20 +127,26 @@ export const simulationRuntime = createSimulationRuntime({
     const personaName = String(readPluginSettings().persona?.name || '').trim()
     const hint = String(selfIdHint ?? '')
     if (hint) {
-      const entry = botById(hint)
+      const entry = scopedBot(hint)
+      if (globalThis.Bot && !entry) return { id: '', name: '' }
       return { id: hint, name: personaName || String(entry?.nickname || currentBot().name || '') }
     }
     const bot = currentBot()
     return { id: bot.id, name: personaName || bot.name || '' }
   },
-  YTapi: (requestData, execConfig) => YTapi(requestData, execConfig),
-  reflectCharacter: (requestData, execConfig, signal) => YTapi(requestData, { ...execConfig, useTools: false }, undefined, undefined, {
-    taskBackend: 'memory', signal, generation: { maxOutputTokens: 1200 },
+  handlesTarget: target => target.kind === 'group' && target.account.platform === 'qq' && target.account.namespace === 'global'
+    && (!globalThis.Bot || Boolean(scopedBot(target.account.id))),
+  YTapi: (requestData, execConfig, signal, isCurrent, ensureCurrent) => YTapi(requestData, execConfig, undefined, undefined, { signal, isCurrent, ensureCurrent }),
+  reflectCharacter: (requestData, execConfig, signal, isCurrent, ensureCurrent) => YTapi(requestData, { ...execConfig, useTools: false }, undefined, undefined, {
+    taskBackend: 'memory', signal, isCurrent, ensureCurrent, generation: { maxOutputTokens: 1200 },
   }),
-  reviewCharacter: (requestData, execConfig, signal) => {
+  judgeSocialPermission: (requestData, execConfig, signal, isCurrent, ensureCurrent) => YTapi(requestData, { ...execConfig, useTools: false }, undefined, undefined, {
+    taskBackend: 'memory', signal, isCurrent, ensureCurrent, generation: { maxOutputTokens: 300 },
+  }),
+  reviewCharacter: (requestData, execConfig, signal, isCurrent, ensureCurrent) => {
     const route = resolveCharacterConsistencyRoute(execConfig)
     return YTapi(requestData, route.config, undefined, undefined, {
-      taskBackend: route.taskBackend, signal, generation: { maxOutputTokens: 900 },
+      taskBackend: route.taskBackend, signal, isCurrent, ensureCurrent, generation: { maxOutputTokens: 900 },
     })
   },
   characterWorkerAvailable: () => {
@@ -238,38 +240,35 @@ export const simulationRuntime = createSimulationRuntime({
       { type: 'text', text: `用中文简洁描述这几张图片的关键信息(每张一行,总共不超过120字),供群聊机器人接话参考:${context?.label || ''}` },
       ...images.map(image => ({ type: 'image_url', image_url: { url: `data:${image.mime};base64,${image.base64}` } }))
     ]
-    const result = await sideLLMCall({ url: cfg.analysisApiUrl, apikey: cfg.analysisApiKey, model: cfg.analysisApiModel, messages: [{ role: 'user', content }], temperature: 0.2, maxTokens: 300, timeoutMs: 30000 })
+    const result = await sideLLMCall({ url: cfg.analysisApiUrl, apikey: cfg.analysisApiKey, model: cfg.analysisApiModel, messages: [{ role: 'user', content }],
+      temperature: 0.2, maxTokens: 300, timeoutMs: 30000, signal: context?.signal, isCurrent: context?.isCurrent })
     return result.ok ? result.content : null
   },
-  sendGroupMessage: async (groupId, segments, selfId) => {
+  messageActions: createQqMessageActionPort({ getBotRoot: () => globalThis.Bot }),
+  sendGroupMessage: async (groupId, segments, selfId, sendOptions) => {
     // B2 排队动作发送前重查权限：入队时的校验约束不了排队等待期间的变化
     // （qq-bridge 5551e74：guard 在实际发送前重查静默/暂停/总开关）
     const settings = readPluginSettings()
     const simCfg = settings.simulation || {}
     if (simCfg.enabled === false) return { ok: false, error: '仿真模式已关闭' }
-    if (Array.isArray(simCfg.groups) && simCfg.groups.length > 0 && !simCfg.groups.map(String).includes(String(groupId))) {
-      // allGroups 模式不检查群清单，只有显式清单才检查
+    const target = {
+      account:{platform:'qq', namespace:'global', id:String(selfId || '')},
+      kind:'group', id:String(groupId),
     }
-    let attempted = false
-    try {
-      const group = scopedBot(selfId)?.pickGroup?.(Number(groupId))
-      if (!group?.sendMsg) return { ok: false, error: '群对象不可用' }
-      attempted = true
-      const ret = await group.sendMsg(segments)
-      // 回执 message_id：表情包等额外工具靠它确认投递（TRSS sendMsg 返回 {message_id} 或 {data:{message_id}}）
-      const messageId = ret?.message_id ?? ret?.data?.message_id ?? null
-      return { ok: true, ...(messageId !== null && messageId !== undefined ? { messageId: String(messageId) } : {}) }
-    } catch (error) {
-      // Once handed to the platform, an exception cannot prove non-delivery.
-      return { ok: false, ...(attempted ? { unknown: true } : {}), error: error?.message || String(error) }
-    }
+    const {parts, resolveExtension} = encodeQqLegacyParts(segments)
+    const port = createQqMessageActionPort({getBotRoot:()=>scopedBot(selfId), resolveExtension})
+    const binding = sendOptions?.binding
+    return formatSimulationDelivery(await port.send({
+      version:1, kind:'message.send', target, parts, ...(binding ? {binding} : {}),
+    }, sendOptions))
   },
   getPersona: (groupId, selfId) => {
     const settings = readPluginSettings()
-    const resolved = personaLibrary.resolve({ messageType: 'group', groupId: String(groupId), selfId: String(selfId) })
+    const resolved = resolveQqAgentBinding(personaLibrary, {message_type: 'group', group_id: groupId, self_id: selfId})
     return {
-      personaId: resolved?.id || 'default',
-      persona: resolved?.persona || settings.persona || {},
+      personaId: resolved.scopeId,
+      persona: resolved.selected.persona,
+      binding: resolved.binding,
       systemContent: String(settings.systemContent || ''),
     }
   },
@@ -332,38 +331,40 @@ export const simulationRuntime = createSimulationRuntime({
     return text
   },
   // 中期记忆的"本群近期主线"
-  getGroupDigest: (groupId) => {
+  getGroupDigest: (groupId, options) => {
     try {
-      return getMidtermMemoryManager()?.getSummaryPrompt?.(String(groupId)) || ''
+      return getMidtermMemoryManager()?.getSummaryPrompt?.(String(groupId), options) || ''
     } catch {
       return ''
     }
   },
   // 近两天情节时间线（"这两天聊过/做过什么"）
-  getRecentEpisodesText: (groupId) => {
+  getRecentEpisodesText: (groupId, options) => {
     try {
-      const episodes = recallEpisodes({ groupId: String(groupId), days: 2, limit: 6 })
-      return episodes.length ? buildEpisodicPrompt(episodes) : ''
+      const viewer = options?.viewer
+      const episodes = recallEpisodes({ groupId: String(groupId), days: 2, limit: 6, after: options?.after, viewer })
+      return episodes.length ? buildEpisodicPrompt(episodes, { viewer }) : ''
     } catch {
       return ''
     }
   },
   // 委托记忆（群友托付记的事，原文锚定）：独立控制台进程没有 redis 时降级为空
-  loadDelegatedMemories: async (groupId) => {
+  loadDelegatedMemories: async (scope) => {
     try {
       const { delegatedMemoryStore } = await import('../functions/functions_tools/DelegateMemoryTool.js')
-      return await delegatedMemoryStore.load(String(groupId))
+      return await delegatedMemoryStore.load(scope)
     } catch {
       return []
     }
   },
   // 长程语义召回：混合检索"两天情节窗之外"的更早相关片段（runtime 侧 1s 预算兜底，这里再给检索器 850ms）
-  getSemanticRecall: async (groupId, query) => {
+  getSemanticRecall: async (groupId, query, options) => {
     try {
       const { getSemanticMemoryRuntime } = await import('../dist/backend/modules/memory/infrastructure/semanticRuntime.js')
       const runtime = getSemanticMemoryRuntime()
       if (!runtime?.retriever) return ''
-      const result = await runtime.retriever.search(String(groupId), String(query || ''), { topK: 2, timeoutMs: 850 })
+      const result = await runtime.retriever.search(String(groupId), String(query || ''), { topK: 2, timeoutMs: 850,
+        botId: options?.botId, personaId: options?.personaId, allowLegacySourceIdentity: true, filterSource: options?.filterSource })
       const items = Array.isArray(result?.items) ? result.items : []
       const lines = items.map(item => {
         const text = String(item?.chunk?.text || '').replace(/\s+/g, ' ').trim().slice(0, 200)
@@ -383,6 +384,7 @@ export const simulationRuntime = createSimulationRuntime({
         ...(input.userName ? { userName: input.userName } : {}),
         summary: input.summary,
         reply: input.reply,
+        ...(input.source ? {source: input.source} : {}),
       })
     } catch (error) {
       logger?.warn?.(`[仿真] 情节补记失败：${error?.message || error}`)
@@ -395,16 +397,15 @@ export const simulationRuntime = createSimulationRuntime({
   // 仿真回合表情冷却：与主链路同参（emojiSystem.postSendCooldownMs，默认 90s）
   getEmojiCooldownMs: () => Number(readPluginSettings().emojiSystem?.postSendCooldownMs) || 90000,
   // 图片下载（simGetMessageImages）：限 http(s)、2MB、15s 超时
-  fetchImageBase64: async url => {
+  fetchImageBase64: async (url, options) => {
     try {
       const target = String(url || '')
       if (!/^https?:\/\//.test(target)) return { error: '仅支持 http(s) 图片' }
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 15000)
-      const response = await fetch(target, { signal: controller.signal })
-      clearTimeout(timer)
+      if (options?.isCurrent?.() === false) return { error: '图片来源或角色绑定已改变' }
+      const response = await fetch(target, { signal: AbortSignal.timeout(15000) })
       if (!response.ok) return { error: `下载失败 ${response.status}` }
       const buffer = Buffer.from(await response.arrayBuffer())
+      if (options?.isCurrent?.() === false) return { error: '图片来源或角色绑定已改变' }
       if (buffer.length > 2 * 1024 * 1024) return { error: '图片超过 2MB' }
       const mime = response.headers.get('content-type')?.split(';')[0] || 'image/jpeg'
       if (!String(mime).startsWith('image/')) return { error: `非图片内容 ${mime}` }
@@ -485,22 +486,29 @@ export const simulationRuntime = createSimulationRuntime({
   },
 
   // 人物核心档案提取：侧路小模型 + 保守口径提示词（跨群身份级事实：称呼/长期爱好/雷点）
-  personProfileExtract: async (messages) => {
+  personProfileExtract: async (messages, isCurrent, context) => {
     const cfg = readPluginSettings().memoryAiConfig || {}
     if (!cfg.memoryAiUrl || !cfg.memoryAiApikey || !cfg.memoryAiModel) throw new Error('memoryAiConfig 未配置')
     const { buildPersonProfileExtractPrompt } = await import('../dist/backend/modules/simulation/domain/personProfile.js')
-    const { system, user } = buildPersonProfileExtractPrompt(messages)
-    const result = await sideLLMCall({ url: cfg.memoryAiUrl, apikey: cfg.memoryAiApikey, model: cfg.memoryAiModel, temperature: 0.1, maxTokens: 2000, timeoutMs: 60000, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] })
+    const { system, user } = buildPersonProfileExtractPrompt([...messages])
+    await context?.ensureCurrent()
+    const result = await sideLLMCall({ url: cfg.memoryAiUrl, apikey: cfg.memoryAiApikey, model: cfg.memoryAiModel, temperature: 0.1, maxTokens: 2000, timeoutMs: 60000,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }], isCurrent, signal: context?.signal })
     if (!result.ok) throw new Error(result.error)
+    if (result.usage !== undefined) context?.recordUsage?.(cfg.memoryAiModel, result.usage)
+    await context?.ensureCurrent()
     return result.content
   },
 
   // QQ空间互动：QQApi 走 NapCat get_credentials 拿 qzone 域凭据（与发说说同链路）。
   // visit 返回紧凑说说列表（tid/时间/文本/赞数），like/comment 直通。
-  qzoneInteract: async ({ action, userId, tid, text }) => {
+  qzoneInteract: async ({ action, userId, tid, text }, target, options) => {
     try {
       const { QQApi } = await import('./QQApi.js')
-      const api = new QQApi({})
+      const bot = scopedBot(target.account.id)
+      if (!bot) return { ok: false, error: '当前 QQ 账号不可用' }
+      const api = new QQApi({ bot, self_id: target.account.id, group_id: target.id, message_type: 'group',
+        _agentBinding: options?.binding, _isAgentBindingCurrent: options?.isCurrent })
       if (action === 'visit') {
         const raw = await api.getQzoneFeed(String(userId || ''), 10, 0)
         const msglist = (raw && typeof raw === 'object' ? raw.msglist : null) || []
@@ -533,7 +541,7 @@ export const simulationRuntime = createSimulationRuntime({
 
   // 唤醒预判闸：便宜模型（缺省 memoryAi 的 flash 档）+ 紧凑上下文判断低信号唤醒值不值得进完整回合。
   // 返回 null = 预判不可用 → runtime fail-open 放行。
-  wakeGateJudge: async ({ reason, messages }) => {
+  wakeGateJudge: async ({ reason, messages }, isCurrent) => {
     try {
       const settings = readPluginSettings()
       const mem = settings.memoryAiConfig || {}
@@ -547,6 +555,7 @@ export const simulationRuntime = createSimulationRuntime({
         temperature: 0.1,
         maxTokens: 64,
         timeoutMs: 8000,
+        isCurrent,
         messages: [
           {
             role: 'system',
@@ -582,13 +591,15 @@ export const simulationRuntime = createSimulationRuntime({
     return out
   },
   // 合并转发内容（OneBot get_forward_msg → 纯函数渲染：媒体标记化、内嵌转发可递归）
-  getForwardContent: async (forwardId, selfId) => {
+  getForwardContent: async (forwardId, selfId, options) => {
     try {
       const Bot = scopedBot(selfId)
       const { renderForwardTree } = await import('../dist/backend/modules/simulation/domain/forwardView.js')
       // 递归展开整棵转发（≤3 层）：内嵌 id 自动跟随，适配器拉不到的层在结果里明确标注
       const rendered = await renderForwardTree(async id => {
+        if (options?.isCurrent?.() === false) throw new Error('转发来源或角色绑定已改变')
         const raw = await (Bot?.getForwardMsg?.(id) ?? Bot?.pickFriend?.(0)?.getForwardMsg?.(id))
+        if (options?.isCurrent?.() === false) throw new Error('转发来源或角色绑定已改变')
         const nodes = Array.isArray(raw) ? raw : Array.isArray(raw?.message) ? raw.message : []
         if (!nodes.length) throw new Error('转发内容为空或解析失败')
         return nodes

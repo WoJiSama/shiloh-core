@@ -30,6 +30,8 @@ test('pending preferences stay private to their source group until source-group 
   await own.approve(id)
   const projection = await other.projection()
   assert.deepEqual(projection, await own.projection())
+  assert.deepEqual(await own.contextProjection(), [], 'the source group never re-ingests its own shared projection')
+  assert.deepEqual(await other.contextProjection(), projection)
   assert.equal(projection[0].content, '我偏爱有探索感的独立游戏')
   assert.equal('sourceScope' in projection[0], false)
   assert.equal('sourceMemoryId' in projection[0], false)

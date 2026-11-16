@@ -27,7 +27,7 @@ export function isDirectAddressKind(kind: unknown): boolean {
 const PROMISE_WAKE_KINDS: readonly string[] = ['commitment']
 
 /** 唤醒限频（1 分钟/1 小时两窗）+ 每群每日回合预算 + 当日金额预算（读令牌账本）。超限只能延后不能丢弃（由调用方重试）。 */
-export function checkWakeBudget(state: SimSessionState, config: SimRuntimeConfig, now: number, todayCostCny = 0, reason: SimWakeReason | null = null, groupId = ''): WakeBudgetVerdict {
+export function checkWakeBudget(state: SimSessionState, config: SimRuntimeConfig, now: number, todayCostCny = 0, reason: SimWakeReason | null = null, groupId = '', carriedTurns = 0): WakeBudgetVerdict {
   rollBudgetDay(state, now)
   if (!DIRECT_ADDRESS_WAKE_KINDS.includes(String(reason?.kind || ''))) {
     const minuteWindow = pruneWindow(state.wakeTimes, now, 60_000, 200)
@@ -45,8 +45,9 @@ export function checkWakeBudget(state: SimSessionState, config: SimRuntimeConfig
   }
   // 按群覆盖(-1=不限)优先于全局默认:回合与金额同规则
   const turnsCap = config.turn.groups?.[groupId] ?? config.turn.maxTurnsPerDay
-  if (turnsCap >= 0 && state.budget.turns >= turnsCap) {
-    return { allowed: false, reason: `dailyTurns:${state.budget.turns}/${turnsCap}` }
+  const usedTurns = state.budget.turns + carriedTurns
+  if (turnsCap >= 0 && usedTurns >= turnsCap) {
+    return { allowed: false, reason: `dailyTurns:${usedTurns}/${turnsCap}` }
   }
   const dailyCap = config.budget.groups?.[groupId] ?? config.budget.dailyCostCny
   if (dailyCap > 0 && todayCostCny >= dailyCap) {

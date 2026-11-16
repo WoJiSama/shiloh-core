@@ -3,7 +3,8 @@ import test from 'node:test'
 import { createSimulationRuntime } from '../dist/backend/modules/simulation/infrastructure/simulationRuntime.js'
 import { createDefaultSimSession } from '../dist/backend/modules/simulation/domain/simConfig.js'
 import { characterKey } from '../dist/backend/modules/simulation/domain/characterState.js'
-import { hostSimulationSender } from './helpers/simulationHostSender.mjs'
+import { hostSimulationActions, hostSimulationSender } from './helpers/simulationHostSender.mjs'
+import { decodeQqIncomingMessage } from '../dist/backend/adapters/qqMessage.js'
 
 const BOT = '3094088525'
 const GROUP = '10086'
@@ -16,8 +17,16 @@ const response = (...calls) => ({ role: 'assistant', content: '', tool_calls: ca
 const finish = messages => call('simFinishTurn', { choice: 'chat', reason: '回应当前话题', messages, throughSeq: 1 })
 const send = messages => call('simSendMessage', { continuation: 'chat', messages })
 
+test('production host sender respects platform rejection and missing receipts', async () => {
+  for (const [receipt, expected] of [[false, 'failed'], [undefined, 'unknown'], [{ status: 'failed', retcode: 100 }, 'failed'], [{ status: 'ok', retcode: 0, data: { message_id: 7 } }, 'sent']]) {
+    const sender = hostSimulationSender({ bot: () => ({ pickGroup: () => ({ sendMsg: async () => receipt }) }) })
+    const result = await sender(GROUP, [{ type: 'text', data: { text: '正文' } }], BOT)
+    assert.equal(result.ok ? 'sent' : result.unknown ? 'unknown' : 'failed', expected)
+  }
+})
+
 /** Uses the compiled production runtime with isolated storage and captured QQ transport. */
-function fixture({ script, transport, hostTransport, maxSendsPerTurn = 5, extraTools = [], card = false, poke, qzone } = {}) {
+function fixture({ script, transport, hostTransport, messageActions, inboundMessageId, maxSendsPerTurn = 5, extraTools = [], card = false, poke, qzone } = {}) {
   const state = createDefaultSimSession(AT)
   state.bootstrapSent = true
   state.botId = BOT
@@ -53,8 +62,9 @@ function fixture({ script, transport, hostTransport, maxSendsPerTurn = 5, extraT
       const message = await script(request, requests.length - 1)
       return { choices: [{ message, finish_reason: message.tool_calls?.length ? 'tool_calls' : 'stop' }], usage: { total_tokens: 10 }, model: 'isolated-delivery-test' }
     },
-    async sendGroupMessage(groupId, segments) {
-      const receipt = hostTransport ? await hostTransport(groupId, segments, BOT) : transport ? await transport({ groupId, segments, kv, sent }) : { ok: true, messageId: `sent-${sent.length + 1}` }
+    ...(messageActions ? {messageActions} : {}),
+    async sendGroupMessage(groupId, segments, selfId, options) {
+      const receipt = hostTransport ? await hostTransport(groupId, segments, selfId, options) : transport ? await transport({ groupId, segments, kv, sent }) : { ok: true, messageId: `sent-${sent.length + 1}` }
       if (receipt.ok) sent.push({ groupId, segments })
       return receipt
     },
@@ -64,8 +74,10 @@ function fixture({ script, transport, hostTransport, maxSendsPerTurn = 5, extraT
     session: () => JSON.parse(kv.get(SESSION_KEY)),
     reply: tool => JSON.parse(kv.get(SESSION_KEY)).agentHistory.find(item => item.role === 'tool' && item.tool_call_id === tool.id)?.content,
     async run(minCalls = 1) {
-      await runtime.ingest({ group_id: GROUP, self_id: BOT, user_id: '40000', message_type: 'group', atBot: true,
-        msg: '聊聊刚才的话题', message: [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: '聊聊刚才的话题' } }], sender: { nickname: '群友' } })
+      const incoming = decodeQqIncomingMessage({ group_id: GROUP, self_id: BOT, user_id: '40000', message_type: 'group', atBot: true,
+        msg: '聊聊刚才的话题', message_id:inboundMessageId, message: [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: '聊聊刚才的话题' } }], sender: { nickname: '群友' } }, {now: AT})
+      assert.ok(incoming)
+      await runtime.ingest(incoming)
       const deadline = Date.now() + 6000
       while (Date.now() < deadline) {
         if (requests.length >= minCalls && !(await runtime.describeGroup(GROUP)).running) return
@@ -75,6 +87,27 @@ function fixture({ script, transport, hostTransport, maxSendsPerTurn = 5, extraT
     },
   }
 }
+
+test('simulation text emits an action with an exact QQ destination, quote and mention', async t => {
+  const text = '回复带引用和点名的消息'
+  const sent = []
+  const bot = {uin:BOT,pickGroup(id) { return {sendMsg(segments) { sent.push({id,segments}); return {data:{message_id:88}} }} }}
+  const initial = call('simSendMessage', {continuation:'chat', messages:[text], replyToSeq:1, atUserIds:['40000']})
+  const h = fixture({
+    messageActions:hostSimulationActions(() => ({bots:{[BOT]:bot}})),
+    inboundMessageId:'-777',
+    transport:async () => assert.fail('text must use the message action port'),
+    script:(_request,index) => index === 0 ? response(initial) : response(finish([text])),
+  })
+  t.after(() => h.runtime.stop())
+  await h.run(2)
+  assert.deepEqual(sent,[{id:Number(GROUP),segments:[
+    {type:'reply',data:{id:'-777'}},
+    {type:'at',data:{qq:'40000'}},
+    {type:'text',data:{text}},
+  ]}])
+  assert.match(h.reply(initial), /"status":"succeeded"/)
+})
 
 test('同回合收尾去重使用完整正文，百字后不同的消息仍各发送一次', async () => {
   const prefix = '这段共同的上下文'.repeat(16)
@@ -264,13 +297,15 @@ test('宿主发送前明确拒绝仍允许同回合修正，不能误锁为未�
 
 for (const first of ['text', 'reply', 'card']) test(`真实宿主 ${first} 回执未知后所有出站均停止，不经其他工具绕过`, async () => {
   let attempts = 0, pokes = 0, interactions = 0
-  const hostTransport = hostSimulationSender({ bot: () => ({ pickGroup: () => ({ async sendMsg() { attempts++; throw new Error('accepted by gateway before timeout') } }) }) })
+  const bot = {uin:BOT,pickGroup:() => ({ async sendMsg() { attempts++; throw new Error('accepted by gateway before timeout') } })}
+  const hostTransport = hostSimulationSender({ bot: () => bot })
+  const messageActions = hostSimulationActions(() => ({bots:{[BOT]:bot}}))
   const text = '可能已经被平台接受的文本'
   const external = { name: 'deliveryReplyTool', description: '隔离工具', parameters: { type: 'object', properties: {}, required: [] }, async execute(_args, event) { await event.reply(text); return { ok: true } } }
   const cardCall = () => call('simShareVideoCard', { url: 'https://www.bilibili.com/video/BVtest' })
   const initial = first === 'text' ? send([text]) : first === 'reply' ? call(external.name, {}) : cardCall()
   const closing = finish([text])
-  const h = fixture({ hostTransport, card: true, extraTools: [external],
+  const h = fixture({ hostTransport, messageActions, card: true, extraTools: [external],
     poke: async () => { pokes++; return { ok: true } },
     qzone: async () => { interactions++; return { ok: true } },
     script: (_request, index) => index === 0 ? response(initial, send([text]), cardCall(), call(external.name, {}), call('simSendPoke', { userId: '40000' }), call('simQzoneInteract', { action: 'comment', userId: '40000', tid: 'one', text: '这条评论不应发出' })) : response(closing),

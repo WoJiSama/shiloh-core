@@ -1,7 +1,8 @@
 import { randomUUID, createHash } from 'node:crypto'
 import type { CharacterScope } from '../../../contracts/character.js'
-import { characterKey, validateCharacterScope } from '../domain/characterState.js'
+import { activeCharacterMemories, characterMemoryVisibility, characterKey, validateCharacterScope } from '../domain/characterState.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { createPersonMemoryStore } from '../../memory/infrastructure/personMemoryStore.js'
 import { createScopedStateStore } from './scopedStateStore.js'
 import { createCharacterStore, type CharacterRedis } from './characterStore.js'
 
@@ -12,6 +13,7 @@ export interface SharedSelfProjection { id: string; kind: 'opinion' | 'interest'
 export function createCharacterSharedSelf({ redis, scope, now = Date.now }: { redis: CharacterRedis; scope: CharacterScope; now?: () => number }) {
   validateCharacterScope(scope)
   const characters = createCharacterStore({ redis, now })
+  const personMemory = createPersonMemoryStore({ redis, now })
   const key = `shiloh:shared-self:v1:${encodeURIComponent(scope.botId)}:${encodeURIComponent(scope.personaId)}`
   const store = createScopedStateStore<SharedState>({ redis, key,
     empty: () => ({ schemaVersion: 1, botId: scope.botId, personaId: scope.personaId, entries: [] }),
@@ -32,7 +34,8 @@ export function createCharacterSharedSelf({ redis, scope, now = Date.now }: { re
     if (visited.has(entry.id)) return false
     const path = new Set([...visited,entry.id])
     const source = await characters.load(entry.sourceScope)
-    const memory = source.memories.find(m => m.id === entry.sourceMemoryId && m.kind === entry.kind && !source.memories.some(next => next.supersedes === m.id))
+    const cutoff = (await personMemory.getSceneRedactions({ identity: entry.sourceScope, scene: { kind: 'group', id: entry.sourceScope.groupId } })).invalidatedAt
+    const memory = characterMemoryVisibility(source, cutoff).memories.find(m => m.id === entry.sourceMemoryId && m.kind === entry.kind)
     if (!memory) return false
     for (const id of memory.sharedSources || []) {
       const parent = entries.find(item => item.id === id && item.approved)
@@ -48,10 +51,16 @@ export function createCharacterSharedSelf({ redis, scope, now = Date.now }: { re
   async function projection(): Promise<SharedSelfProjection[]> {
     return (await liveEntries()).filter(e => e.approved).map(({ id, kind, content, createdAt }) => ({ id, kind, content, createdAt }))
   }
+  // The source group already owns the canonical memory. Feeding its projection
+  // back into the same group would make a correction depend on its old version.
+  async function contextProjection(): Promise<SharedSelfProjection[]> {
+    return (await liveEntries()).filter(e => e.approved && e.sourceScope.groupId !== scope.groupId).map(({ id, kind, content, createdAt }) => ({ id, kind, content, createdAt }))
+  }
   async function pending() { return (await liveEntries()).filter(e => !e.approved && e.sourceScope.groupId === scope.groupId).map(({ id, content, kind, sourceMemoryId, createdAt }) => ({ id, content, kind, sourceMemoryId, createdAt })) }
   async function propose(memoryId: string) {
     const source = await characters.load(scope)
-    const memory = source.memories.find(m => m.id === memoryId && ['opinion', 'interest'].includes(m.kind) && !source.memories.some(next => next.supersedes === m.id))
+    const cutoff = (await personMemory.getSceneRedactions({ identity: scope, scene: { kind: 'group', id: scope.groupId } })).invalidatedAt
+    const memory = characterMemoryVisibility(source, cutoff).memories.find(m => m.id === memoryId && ['opinion', 'interest'].includes(m.kind))
     if (!memory || memory.content.length > 600) throw new Error('只能提议本群当前有效的短观点或兴趣')
     const live = new Set((await liveEntries()).map(e => e.id))
     const result = await store.update(state => {
@@ -73,8 +82,8 @@ export function createCharacterSharedSelf({ redis, scope, now = Date.now }: { re
     })
   }
   async function remove(id: string) { await store.update(state => { if (!state.entries.some(e => e.id === id)) throw new Error('共享偏好不存在'); state.entries = state.entries.filter(e => e.id !== id); return state }) }
-  async function fingerprint() { return createHash('sha256').update(JSON.stringify(await projection())).digest('hex') }
-  return { projection, pending, propose, approve, remove, fingerprint }
+  async function fingerprint() { return createHash('sha256').update(JSON.stringify(await contextProjection())).digest('hex') }
+  return { projection, contextProjection, pending, propose, approve, remove, fingerprint }
 }
 
 export function createSharedSelfTools({ shared, ensureActive, visibleEvidenceRefs }: {
@@ -91,7 +100,7 @@ export function createSharedSelfTools({ shared, ensureActive, visibleEvidenceRef
       if (args.action === 'list' && args.memoryId === undefined) {
         const offset = args.offset ?? 0
         if (!Number.isSafeInteger(offset) || Number(offset) < 0) throw new Error('offset无效')
-        const all = await shared.projection(), selected = all.slice(Number(offset), Number(offset) + 4)
+        const all = await shared.contextProjection(), selected = all.slice(Number(offset), Number(offset) + 4)
         return { ok: true, shared: selected, hasMore: Number(offset) + selected.length < all.length, nextOffset: Number(offset) + selected.length }
       }
       if (args.action !== 'propose' || args.offset !== undefined || typeof args.memoryId !== 'string' || !visibleEvidenceRefs().includes(`memory:${args.memoryId}`)) throw new Error('仅可提议本轮可见的观点/兴趣')

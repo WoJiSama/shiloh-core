@@ -1,5 +1,20 @@
 import type { SimRuntimeConfig, SimSessionState } from '../../../contracts/simulation.js'
+import type { DeliveryReceipt } from '../../../contracts/delivery.js'
+import { normalizeDeliveryReceipt } from '../../messaging/domain/deliveryReceipt.js'
 import { checkSendAllowance, recordSend } from './budget.js'
+
+export type PlatformDeliveryReceipt = { ok: true; messageId: string } | { ok: false; error: string; unknown?: boolean }
+
+/** Only a valid message id confirms delivery; explicit platform failure wins. */
+export function normalizePlatformDeliveryReceipt(value: unknown): PlatformDeliveryReceipt {
+  return formatSimulationDelivery(normalizeDeliveryReceipt(value))
+}
+
+export function formatSimulationDelivery(receipt: DeliveryReceipt): PlatformDeliveryReceipt {
+  if (receipt.state === 'sent') return { ok: true, messageId: receipt.messageId }
+  if (receipt.state === 'failed') return { ok: false, error: `平台明确拒绝发送${receipt.code ? `（${receipt.code}）` : ''}` }
+  return { ok: false, unknown: true, error: '平台未返回有效消息回执，是否送达未知' }
+}
 
 export interface MessageDeliveryInput {
   /** Exact text after all existing outbound cleaning; no semantic matching. */

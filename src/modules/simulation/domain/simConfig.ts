@@ -155,13 +155,21 @@ function normalizeKeywordList(value: unknown): string[] {
   return [...new Set(list.map(item => String(item || '').trim()).filter(Boolean))].slice(0, SIM_KEYWORDS_LIMIT)
 }
 
-function normalizeSpeakerList(value: unknown): string[] {
+export function isSimulationUserId(value: string): boolean {
+  return value.length > 0 && value.length <= 128 && value.trim() === value && !/[\u0000-\u001f\u007f]/u.test(value)
+}
+
+export function isQqSimulationUserId(value: string): boolean {
+  return /^\d{1,12}$/.test(value)
+}
+
+function normalizeSpeakerList(value: unknown, isUserId: (value: string) => boolean): string[] {
   const list = Array.isArray(value) ? value : []
-  return [...new Set(list.map(item => String(item || '').trim()).filter(item => /^\d{1,12}$/.test(item)))].slice(0, SIM_SPEAKER_LIMIT)
+  return [...new Set(list.map(item => String(item || '').trim()).filter(isUserId))].slice(0, SIM_SPEAKER_LIMIT)
 }
 
 /** 唤醒配置归一化：只信白名单字段，数值全部夹取；非法输入回落默认。 */
-export function normalizeSimWakeConfig(input: unknown): SimWakeConfig {
+export function normalizeSimWakeConfig(input: unknown, isUserId = isQqSimulationUserId): SimWakeConfig {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {}
   const rawTriggers = raw.triggers && typeof raw.triggers === 'object' && !Array.isArray(raw.triggers) ? raw.triggers as Record<string, unknown> : {}
   const triggers: SimWakeTriggers = {
@@ -171,7 +179,7 @@ export function normalizeSimWakeConfig(input: unknown): SimWakeConfig {
     question: rawTriggers.question !== false,
     poke: rawTriggers.poke !== false,
     anyMessage: rawTriggers.anyMessage === true,
-    speakerIds: normalizeSpeakerList(rawTriggers.speakerIds),
+    speakerIds: normalizeSpeakerList(rawTriggers.speakerIds, isUserId),
     probability: clamp(Number(rawTriggers.probability ?? DEFAULT_SIM_WAKE_TRIGGERS.probability), 0, 1),
   }
   const mode = raw.mode === 'active' ? 'active' : 'diving'

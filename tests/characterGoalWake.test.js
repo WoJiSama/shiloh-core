@@ -4,6 +4,7 @@ import { createSimulationRuntime } from '../dist/backend/modules/simulation/infr
 import { createDefaultSimSession } from '../dist/backend/modules/simulation/domain/simConfig.js'
 import { characterKey, createCharacterGoal, createEmptyCharacterState } from '../dist/backend/modules/simulation/domain/characterState.js'
 import { mergeWakeReason } from '../dist/backend/modules/simulation/domain/wakeTrigger.js'
+import { decodeQqIncomingMessage } from '../dist/backend/adapters/qqMessage.js'
 
 const BOT = '3094088525', GROUP = '10086', BASE_AT = 1_790_000_000_000
 const SESSION_KEY = `shiloh:sim:g:${GROUP}`
@@ -57,9 +58,11 @@ function fixture() {
     runtime, kv, clock, requests, events,
     character: () => JSON.parse(kv.get(characterKey(SCOPE))),
     async ingest(at = false) {
-      await runtime.ingest({ group_id: GROUP, self_id: BOT, user_id: '40000', message_type: 'group', atBot: at,
+      const incoming = decodeQqIncomingMessage({ group_id: GROUP, self_id: BOT, user_id: '40000', message_type: 'group', atBot: at,
         msg: at ? '请先处理我的问题' : '刚才聊到的公开玩法资料',
-        message: at ? [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: '请先处理我的问题' } }] : [], sender: { nickname: '群友' } })
+        message: at ? [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: '请先处理我的问题' } }] : [], sender: { nickname: '群友' } }, {now: clock.value})
+      assert.ok(incoming)
+      await runtime.ingest(incoming)
     },
     seedDueGoal({ replyCheck = true } = {}) {
       const character = createCharacterGoal(createEmptyCharacterState(SCOPE), {

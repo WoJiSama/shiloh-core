@@ -16,14 +16,15 @@ test('真实宿主包装保留 sendMsg 已开始后的未知结果，不能降�
 test('宿主调用前关闭或无群对象是明确失败，仍可修正后发送并保留 message_id', async () => {
   let enabled = false, available = false, attempts = 0
   const sender = hostSimulationSender({ settings: () => ({ simulation: { enabled } }), bot: selfId => ({ pickGroup: groupId => available ? { async sendMsg() { attempts++; return { data: { message_id: `${selfId}:${groupId}` } } } } : null }) })
-  const closed = await sender('10086', [], '3094088525')
+  const message = [{type:'text', data:{text:'正文'}}]
+  const closed = await sender('10086', message, '3094088525')
   assert.equal(closed.ok, false); assert.notEqual(closed.unknown, true)
   enabled = true
-  const missing = await sender('10086', [], '3094088525')
+  const missing = await sender('10086', message, '3094088525')
   assert.equal(missing.ok, false); assert.notEqual(missing.unknown, true)
   assert.equal(attempts, 0)
   available = true
-  const sent = await sender('10086', [], '3094088525')
+  const sent = await sender('10086', message, '3094088525')
   assert.equal(sent.ok, true); assert.equal(sent.messageId, '3094088525:10086'); assert.equal(attempts, 1)
 })
 

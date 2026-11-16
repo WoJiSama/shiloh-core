@@ -1,13 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createSimulationRuntime } from '../dist/backend/modules/simulation/infrastructure/simulationRuntime.js'
+import { decodeQqIncomingMessage } from '../dist/backend/adapters/qqMessage.js'
 
 const SELF_ID = '3094088525'
 const GROUP = '10086'
 const SESSION_KEY = `shiloh:sim:g:${GROUP}`
 
 const BASE_AT = 1770000000000
-function buildRuntime({ atOnly = [], activeUntil = 0, randomValue = 0.99, responses, now = () => BASE_AT, judge, batchWindowMs } = {}) {
+function buildRuntime({ atOnly = [], activeUntil = 0, randomValue = 0.99, responses, now = () => BASE_AT, judge, batchWindowMs,
+  getPersona = () => ({ persona: {}, systemContent: '' }),
+} = {}) {
   const kv = new Map()
   // 预置 overrides（atOnly/活跃助推用）；留空则运行时按 groups 种子
   if (atOnly.length || activeUntil) {
@@ -20,7 +23,7 @@ function buildRuntime({ atOnly = [], activeUntil = 0, randomValue = 0.99, respon
     usage: { total_tokens: 10 },
     model: 'test',
   })
-  const runtime = createSimulationRuntime({
+  const engine = createSimulationRuntime({
     redis: {
       async get(key) { return kv.has(key) ? kv.get(key) : null },
       async set(key, value) { kv.set(key, value); return 'OK' },
@@ -34,11 +37,16 @@ function buildRuntime({ atOnly = [], activeUntil = 0, randomValue = 0.99, respon
       ? async () => { modelCalls.push(modelCalls.length); return reply(responses[Math.min(modelCalls.length - 1, responses.length - 1)]) }
       : async () => { throw new Error('ingest 路径不应触达模型') },
     sendGroupMessage: async (_groupId, segments) => { sent.push(segments); return { ok: true, messageId: 'm1' } },
-    getPersona: () => ({ persona: {}, systemContent: '' }),
+    getPersona,
     ...(judge ? { wakeGateJudge: judge } : {}),
     now,
     random: () => randomValue,
   })
+  const runtime = { ...engine, ingest: event => {
+    const message = decodeQqIncomingMessage({self_id:SELF_ID, ...event}, {now: now()})
+    assert.ok(message, 'QQ fixture must resolve to a message')
+    return engine.ingest(message)
+  } }
   return { runtime, kv, modelCalls, sent }
 }
 
@@ -301,6 +309,36 @@ test('唤醒预判闸：拦截低信号唤醒不进完整回合；被@旁路；�
   }
 })
 
+test('a stale QQ wake verdict cannot mark messages read or start the main model after rebinding', async () => {
+  const enterGate = Promise.withResolvers()
+  const releaseGate = Promise.withResolvers()
+  let personaId = 'agent:old'
+  const fixture = buildRuntime({
+    randomValue: 0.001, batchWindowMs: 100, responses: ['[SILENT]'],
+    getPersona: () => ({ personaId, persona: {}, systemContent: '' }),
+    judge: async (_input, isCurrent) => {
+      enterGate.resolve(isCurrent)
+      await releaseGate.promise
+      return { engage: false }
+    },
+  })
+  try {
+    await seedConversation(fixture.runtime)
+    await fixture.runtime.ingest({ group_id: GROUP, message_type: 'group', user_id: '30000', msg: '普通聊天触发预判', message: [] })
+    assert.ok(await waitFor(() => fixture.kv.has(`shiloh:sim:busy:${GROUP}`)), 'wake is in progress')
+    const check = await enterGate.promise
+    const beganCurrent = check?.()
+    const watermark = JSON.parse(fixture.kv.get(SESSION_KEY)).lastReadThroughSeq
+    personaId = 'agent:next'
+    releaseGate.resolve()
+    assert.ok(await waitFor(() => !fixture.kv.has(`shiloh:sim:busy:${GROUP}`)), 'old wake has finished')
+    assert.equal(JSON.parse(fixture.kv.get(SESSION_KEY)).lastReadThroughSeq, watermark)
+    assert.deepEqual(fixture.modelCalls, [])
+    assert.equal(beganCurrent, true)
+    assert.equal(check(), false)
+  } finally { releaseGate.resolve(); fixture.runtime.stop() }
+})
+
 test('活跃为长期档：设置后一直生效不回落；临时短窗口到期仍兜底（历史数据兼容）', async () => {
   let clock = BASE_AT
   // 场景一：历史短窗口数据到期后不再兜底（存量兼容）
@@ -415,7 +453,7 @@ test('人物档案存储：合并去重、上限截断、跨 runtime 实例共�
   } finally { r.stop() }
 })
 
-test('simRemember 双轨协同：关于某人的稳定事实自动同步跨群档案，时间性内容不同步', async () => {
+test('simRemember 人物笔记保持场景边界，不按时间词自动提升跨群档案', async () => {
   const { createSimTools } = await import('../dist/backend/modules/simulation/infrastructure/simTools.js')
   const savedFacts = []
   let memories = []
@@ -437,23 +475,21 @@ test('simRemember 双轨协同：关于某人的稳定事实自动同步跨群�
   const remember = tools.find(t => t.name === 'simRemember')
   assert.ok(remember, '工具应注册')
 
-  // 稳定事实（关于TA、无时间词）→ 同步档案
+  // 没有时间词也不能证明这件事适合跨群公开
   let out = await remember.func({ kind: 'note', content: '小鱼养了两只猫', aboutUser: '1001' })
-  assert.equal(savedFacts.length, 1)
-  assert.equal(savedFacts[0].userId, '1001')
-  assert.equal(savedFacts[0].fact, '小鱼养了两只猫')
-  assert.match(out, /跨群档案/)
+  assert.equal(savedFacts.length, 0)
+  assert.match(out, /本群/)
   assert.equal(memories.length, 1, '本群记忆同样保存')
 
   // 时间性内容（明天）→ 只进本群记忆，不进档案
   out = await remember.func({ kind: 'note', content: '小鱼明天要考四级', aboutUser: '1001' })
-  assert.equal(savedFacts.length, 1, '时间性内容不同步')
+  assert.equal(savedFacts.length, 0, '时间性内容不同步')
   assert.equal(memories.length, 2)
   assert.doesNotMatch(out, /跨群档案/)
 
   // pendingEvent 即便带 aboutUser 也不进档案
   await remember.func({ kind: 'pendingEvent', content: '小鱼下周生日，记得说一句', aboutUser: '1001', dueInMinutes: 60 })
-  assert.equal(savedFacts.length, 1)
+  assert.equal(savedFacts.length, 0)
   assert.equal(memories.length, 3)
 
   // 无 savePersonFact 能力（人物档案功能关闭）→ 不崩，记忆照常
@@ -463,7 +499,7 @@ test('simRemember 双轨协同：关于某人的稳定事实自动同步跨群�
   assert.doesNotMatch(out, /跨群档案/)
 })
 
-test('simRemember scope=self：性格沉淀进全局自我记忆，list 合并双域，done/remove 可操作', async () => {
+test('simRemember scope=self：自我笔记保存到本群角色域，list 合并双域，done/remove 可操作', async () => {
   const { createSimTools } = await import('../dist/backend/modules/simulation/infrastructure/simTools.js')
   let group = []
   let self = []
@@ -484,9 +520,10 @@ test('simRemember scope=self：性格沉淀进全局自我记忆，list 合并�
   const remember = createSimTools(ctx).find(t => t.name === 'simRemember')
 
   let out = await remember.func({ kind: 'note', content: '我的口头禅：绷不住了', scope: 'self' })
-  assert.match(out, /跨群一致/)
+  assert.match(out, /本群自我笔记/)
+  assert.match(out, /跨群共享须.*管理员批准/)
   assert.equal(self.length, 1)
-  assert.equal(group.length, 0, 'self 不进群级记忆')
+  assert.equal(group.length, 0, 'self 不混入本群的社交记忆列表')
 
   // scope=self 带 aboutUser 拒绝（那是关于群友的，不是自己的沉淀）
   out = await remember.func({ kind: 'note', content: '小鱼很可爱', scope: 'self', aboutUser: '1001' })
@@ -506,7 +543,7 @@ test('simRemember scope=self：性格沉淀进全局自我记忆，list 合并�
   assert.equal(self[0].done, true)
 })
 
-test('simUpdateAffinity 理由进全局镜像；结束信号走 closePersonFacts 新陈代谢', async () => {
+test('simUpdateAffinity 记录当前互动；simRemember 不按结束词删除其他人物事实', async () => {
   const { createSimTools } = await import('../dist/backend/modules/simulation/infrastructure/simTools.js')
   const bumps = []
   const closed = []
@@ -536,17 +573,17 @@ test('simUpdateAffinity 理由进全局镜像；结束信号走 closePersonFacts
   assert.equal(bumps.length, 1)
   assert.equal(bumps[0].reason, '连续三天一起打肉鸽', '理由随全局镜像走')
 
-  // 普通稳定事实仍走 savePersonFact
+  // 普通事实只保留本群，不调用旧无来源档案入口
   await remember.func({ kind: 'note', content: '小鱼养了两只猫', aboutUser: '1001' })
-  assert.equal(saved.length, 1)
+  assert.equal(saved.length, 0)
   assert.equal(closed.length, 0)
 
-  // 结束信号 → closePersonFacts（移除旧事实）而不是新增
+  // 结束信号也不能凭词匹配删除其他来源事实
   const out = await remember.func({ kind: 'note', content: '小鱼考完了N2，解放了', aboutUser: '1001' })
-  assert.equal(closed.length, 1)
-  assert.equal(closed[0].userId, '1001')
-  assert.equal(saved.length, 1, '结束信号不再当新事实入库')
-  assert.match(out, /旧事实已移除/)
+  assert.equal(closed.length, 0)
+  assert.equal(saved.length, 0)
+  assert.match(out, /本群/)
+  assert.doesNotMatch(out, /旧事实已移除/)
 })
 
 test('存储层：自我记忆全局键往返；closedFacts 新陈代谢；全局好感理由', async () => {
@@ -575,8 +612,7 @@ test('存储层：自我记忆全局键往返；closedFacts 新陈代谢；全�
   await store.bumpGlobalAffinity('1001', 2, '一起打肉鸽')
   await store.bumpGlobalAffinity('1001', 1, '帮我装系统')
   const notes = await store.loadGlobalAffinityNotes(['1001'])
-  assert.equal(notes['1001'].length, 2)
-  assert.equal(notes['1001'][0], '帮我装系统', '最近在前')
+  assert.deepEqual(notes, {}, '原场景互动原因不能成为跨群人物卡正文')
   const score = (await store.loadGlobalAffinity(['1001']))['1001']
   assert.ok(score > 50, '分数照常镜像: ' + score)
 })
