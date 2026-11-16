@@ -753,22 +753,25 @@ export class MCPClientManager {
       throw new Error(`MCP 服务器 ${entry.serverName} 已断开连接`)
     }
 
+    const abort = new AbortController()
+    const timeoutMs = Number(clientInfo.config?.toolCallTimeoutMs || this.settings.toolCallTimeoutMs)
+    const timer = setTimeout(() => abort.abort(), timeoutMs)
     try {
       this.logger.info(`[MCP] 执行工具: ${entry.alias} -> ${entry.serverName}/${entry.realName}, 参数: ${JSON.stringify(args)}`)
       const result = await withTimeout(
         clientInfo.client.callTool({
           name: entry.realName,
           arguments: args
-        }),
-        Number(clientInfo.config?.toolCallTimeoutMs || this.settings.toolCallTimeoutMs),
+        }, undefined, {signal:abort.signal}),
+        timeoutMs,
         `MCP 工具 ${entry.alias} 执行超时`
       )
       this.logger.info(`[MCP] 工具 ${entry.alias} 执行完成`)
-      return this.formatMCPResultForModel(result)
+      return JSON.stringify({kind:'tool_outcome',status:result.isError?'error':'success',tool:alias,content:this.formatMCPResultForModel(result)})
     } catch (error) {
       this.logger.error(`[MCP] 执行工具 ${entry.alias} 失败:`, error)
-      throw error
-    }
+      throw Object.assign(new Error(errorText(error)),{uncertain:true})
+    } finally { clearTimeout(timer) }
   }
 
   async executeTool(toolName:string, args:Record<string,unknown> = {}) {
@@ -1086,7 +1089,7 @@ export class MCPClientManager {
 
     return results.map((result, index) => ({
       toolName: toolCalls[index]!.name,
-      success: result.status === "fulfilled",
+      success: result.status === "fulfilled" && mcpRecord(JSON.parse(result.value)).status === 'success',
       result: result.status === "fulfilled" ? result.value : null,
       error: result.status === "rejected" ? errorText(result.reason) : null
     }))

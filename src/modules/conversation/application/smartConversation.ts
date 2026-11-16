@@ -1,4 +1,6 @@
-import {smartConversationKey} from '../domain/conversationIdentity.js'
+import {configuredConversationKey, smartConversationKey} from '../domain/conversationIdentity.js'
+import { isAgentBindingCurrent, type AgentBindingTurn } from '../../../contracts/agentBinding.js'
+import type { IncomingMessage } from '../../../contracts/platformMessage.js'
 import type { MessageSegment, ChatMember } from '../../../contracts/chatEvent.js'
 import type { SmartRuntimeState } from '../../../contracts/runtime.js'
 import type {PersonaSnapshot,PersonaScope} from '../../../contracts/persona.js'
@@ -8,7 +10,8 @@ import { getReplySender, summarizeForLog } from '../domain/messageContext.js'
 import { collectMentionTargetIds } from '../domain/mentionTargets.js'
 import { isAiConversationEnabled } from '../domain/aiConversationGate.js'
 import { markProactiveReply } from '../domain/proactiveReplyFreshness.js'
-export interface ConversationEvent {
+export interface ConversationEvent extends AgentBindingTurn {
+ _incomingMessage?:IncomingMessage;
  _personaSnapshot?:PersonaSnapshot; _pendingPersonaSnapshot?:PersonaSnapshot;
  _pendingSocialState?:{state:SocialTurnState;rawUserText:string;groupId:string;userId:string;persona:PersonaScope};
  group_id: string|number; user_id?:string|number; self_id?:string|number; bot?:{uin?:string|number;nickname?:string}; sender?:ChatMember;
@@ -53,10 +56,12 @@ const {logger,updateGroupTopic,updateGroupSocial,detectAttentionHook,anchorEvent
 const now=ports.now ?? Date.now
 let smartLockTokenCounter = 0
 async function handleRandomReplySmart(host:SmartConversationHost, e:ConversationEvent) {
+    if (!isAgentBindingCurrent(e)) return false
     delete e._pendingSocialState
     delete e._pendingPersonaSnapshot
     if (!isAiConversationEnabled(host.config)) return false
     const groupId = e.group_id
+    const groupContextKey = configuredConversationKey(e._agentBinding) ?? groupId
     if (host.isUserBlacklisted(e)) {
       logger.info(`[用户黑名单] smart group=${groupId} user=${e.user_id} msg="${summarizeForLog(e.msg || "")}"`)
       return false
@@ -84,11 +89,11 @@ async function handleRandomReplySmart(host:SmartConversationHost, e:Conversation
       }
       // 轻量上下文状态：话题关键词 + 人际互动边（Gate 与主链路共用，零模型调用）
       if (host.config?.groupContextState?.topicEnabled !== false && repeatText) {
-        updateGroupTopic({ groupId, text: repeatText })
+        updateGroupTopic({ groupId: groupContextKey, text: repeatText })
       }
       if (host.config?.groupContextState?.socialEnabled !== false) {
         updateGroupSocial({
-          groupId,
+          groupId: groupContextKey,
           fromUserId: e.user_id,
           atTargetIds: collectMentionTargetIds(e, e?.bot?.uin || ports.bot().uin),
           replyToUserId: (() => { try { return getReplySender(e?.source || e?.reply) || "" } catch { return "" } })()
@@ -223,7 +228,7 @@ async function handleRandomReplySmart(host:SmartConversationHost, e:Conversation
       // 注意力漂移(strong 档):群里刚冒出爆发新话题时降一档门槛,更容易被吸引插话
       const driftCfg = host.config?.smartTrigger?.attentionDrift || {}
       if (driftCfg.enabled !== false && String(driftCfg.level) === "strong" && threshold > 1) {
-        const hook = detectAttentionHook({ groupId, windowMs: (Number(driftCfg.windowMinutes) || 5) * 60 * 1000 })
+        const hook = detectAttentionHook({ groupId: groupContextKey, windowMs: (Number(driftCfg.windowMinutes) || 5) * 60 * 1000 })
         if (hook) {
           threshold = Math.max(1, threshold - 1)
           logger.info(`[注意力漂移] group=${groupId} 新话题「${hook.word}」爆发(${hook.count}次),阈值降为 ${threshold}`)
@@ -252,6 +257,7 @@ async function handleRandomReplySmart(host:SmartConversationHost, e:Conversation
         gateResult = { decision: 'no_action', reason: 'error' }
       }
 
+      if (!isAgentBindingCurrent(e)) return false
       const decision = gateResult?.decision || 'no_action'
       logger.info(`[TimingGate] group=${groupId} decision=${decision} phase=${phase} pending=${state.pendingCount}/${threshold} forceContinue=${state.forceContinue} forceGate=${state.forceGateCheck} reason=${gateResult?.reason || ''}`)
 
@@ -305,7 +311,7 @@ async function handleRandomReplySmart(host:SmartConversationHost, e:Conversation
         if (!wasForced) markProactiveReply(e, e?._incomingMessageAt || lastIncomingMsgAt.get(smartConversationKey(groupId,e)) || now())
         state.lastBotReplyToUserId = e?.user_id ? String(e.user_id) : null
         // force 路径（@/名字提及/proactive 等"必回"场景）跳过 debounce 立即回复；其余先 debounce 看有没有新消息
-        if (!wasForced && !(await host.applyReplyDebounce(e))) {
+        if ((!wasForced && !(await host.applyReplyDebounce(e))) || !isAgentBindingCurrent(e)) {
           logger.info(`[SmartSkip] group=${groupId} reason=debounce_interrupted phase=${phase} msg="${summarizeForLog(e?.msg || "")}"`)
           // 让步后回滚 focusReplyCount（这次实际没回复）
           if (!wasForced) state.focusReplyCount = Math.max(0, (state.focusReplyCount || 0) - 1)

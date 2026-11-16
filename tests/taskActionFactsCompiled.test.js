@@ -30,6 +30,22 @@ test('action facts isolate bot, requester, group and private scopes without migr
  assert.equal((await host.getTurnActionFacts(e,query)).tasks[0].taskId,'job-30')
 })
 
+test('a new QQ binding revision cannot borrow action facts from the old turn or the compatibility scope',async()=>{
+ const {host}=fixture()
+ const target={account:{platform:'qq',namespace:'global',id:'99'},kind:'group',id:'10'}
+ const first={source:'configured',id:JSON.stringify(['qq','global','99','group','10']),target,agentId:'daily',personaId:'default',connectionId:'qq-main',revision:'first'}
+ const old=event({_agentBinding:first}),legacy=event()
+ const current=event({_agentBinding:{...first,revision:'second'}})
+ const other=event({_agentBinding:{...first,agentId:'work'}})
+ await put(host,legacy,fact({taskId:'compat'}))
+ await put(host,old,fact({taskId:'original'}))
+ assert.equal((await host.getTurnActionFacts(old,query)).tasks[0]?.taskId,'original')
+ assert.equal((await host.getTurnActionFacts(legacy,query)).tasks[0]?.taskId,'compat')
+ assert.deepEqual((await host.getTurnActionFacts(current,query)).tasks,[])
+ assert.deepEqual((await host.getTurnActionFacts(other,query)).tasks,[])
+ assert.equal((await host.getTurnActionFacts({...old,_isAgentBindingCurrent:()=>false},query)).lookup,'unavailable')
+})
+
 test('explicit references are exact and never fall back to a recent task',async()=>{
  const {host}=fixture(),e=event();await put(host,e)
  assert.equal((await host.getTurnActionFacts(e,{referenceMessageId:'missing',recentRequestMessageIds:['30']})).tasks.length,0)
@@ -78,9 +94,9 @@ test('legacy draw shortcut cannot bypass scope or expiry and never promises unre
  assert.equal(await host.handleActiveDrawStatusQuestion({...e,reply_id:'missing'},'图呢'),false)
 })
 
-function bananaFixture(host){
+function bananaFixture(host,extra={}){
  const ports={getBridge:()=>host,getRedis:()=>null,getBot:()=>null,normalizeImageUrls:async x=>x,guardReply:x=>x,segment:{image:buffer=>({type:'image',buffer}),at:id=>({type:'at',qq:id})},logger,resolveImageBuffer:async()=>Buffer.from('fixture'),getImageBufferMetadata:async()=>({width:1,height:1,format:'png'}),formatMessageSendFailure:()=> 'explicit rejection',isMessageSendFailed:()=>false,isUrlAvailable:async()=>false,imageService:{}}
- return new BananaTool({},ports)
+ return new BananaTool({},{...ports,...extra})
 }
 
 test('actual image send persists terminal product receipt and excludes earlier progress',async()=>{
@@ -90,6 +106,25 @@ test('actual image send persists terminal product receipt and excludes earlier p
  await tool.replyImageToRequester(e,'image')
  const actual=(await host.getTurnActionFacts(e,query)).tasks[0]
  assert.equal(actual.execution,'completed');assert.equal(actual.result,'available');assert.deepEqual(actual.delivery,{state:'sent',messageId:'40'})
+})
+
+test('durable drawing marks the attempt before reaching the original transport',async()=>{
+ const {host,rows,store}=fixture()
+ const tool=bananaFixture(host,{getRedis:()=>store})
+ tool.performDraw=async (_options,e,{beforeDelivery})=>{
+  await tool.replyImageToRequester(e,'fixture',{beforeDelivery})
+  return '图片生成成功'
+ }
+ let calls=0
+ const e=event({reply:async()=>{
+  calls++
+  assert.equal(JSON.parse(rows.get(tool.getDurableJobKey('delivery-job'))).deliveryAttempted,true)
+  return {message_id:40}
+ }})
+ await tool.runDrawJob({id:'delivery-job',opts:{prompt:'fixture'},e,scopeKey:tool.getDrawScopeKey(e),requesterId:'20',messageId:30})
+ assert.equal(calls,1)
+ assert.equal(rows.has(tool.getDurableJobKey('delivery-job')),false)
+ assert.equal((await host.getTurnActionFacts(e,query)).tasks[0].delivery.messageId,'40')
 })
 
 test('image exceptions and unknown receipts stop retries, preserving product separately',async()=>{

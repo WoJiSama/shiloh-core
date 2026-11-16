@@ -1,5 +1,5 @@
-import type { QqToolEvent, QqToolBot, QqToolGroup, QqMember, QqToolPorts, PbObject, PbValue } from '../../../contracts/qqTools.js'
-import { apiOk, asRecord, errorText, eventBot } from './qqToolRuntime.js'
+import type { QqToolEvent, QqToolPorts, PbObject, PbValue } from '../../../contracts/qqTools.js'
+import { apiOk, captureQqToolScope, errorText, requireQqToolBot } from './qqToolRuntime.js'
 import { AbstractTool } from "../../toolSupport/infrastructure/AbstractTool.js"
 
 export function createSendGiftTool(ports: QqToolPorts) {
@@ -110,9 +110,10 @@ class SendGiftTool extends AbstractTool {
       return `error: 未知的礼物类型 ${giftType}`
     }
 
-    const bot = eventBot(e,ports)
-    // 获取发送者信息：优先使用参数，其次使用机器人信息
-    const senderQQ = String(opts.senderQQ || bot.uin || e?.self_id || "10000")
+    const scope = captureQqToolScope(e)
+    const bot = requireQqToolBot(scope, ports)
+    // 已绑定的回合由实际发出礼物的账号署名。
+    const senderQQ = String((scope.bound ? bot.uin : opts.senderQQ) || bot.uin || e?.self_id || "10000")
     const senderNickname = String(opts.senderNickname || bot.nickname || "机器人").trim()
     
     const pbData = {
@@ -166,10 +167,10 @@ class SendGiftTool extends AbstractTool {
       const encoded = this.encodePB(packet)
       const hex = this.bytesToHex(encoded)
 
-      const result = await bot.sendApi('send_packet', {
+      const result = await scope.effect(() => bot.sendApi('send_packet', {
         cmd: 'MessageSvc.PbSendMsg',
         data: hex
-      })
+      }), bot)
 
       if (apiOk(result)) {
         return `成功向 ${targetNickname}(${targetQQ}) 发送 ${giftConfig.name}（${giftConfig.coinValue}金币）`

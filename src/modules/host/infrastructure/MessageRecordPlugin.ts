@@ -8,6 +8,7 @@ import YAML from 'yaml';
 import { buildBilibiliArchiveRelaySegments, cleanupBilibiliArchiveRelayFiles } from '../../media/infrastructure/bilibiliMediaRelay.js';
 import { downloadOfficialMusicShare, extractNeteaseMusicShare, resolveNeteaseTextShare, scheduleMusicShareCleanup } from '../../media/infrastructure/musicShareRelay.js';
 import { buildVisibleFailureDetail } from '../../models/domain/visibleFailure.js';
+import { hasConflictingQqAccount, qqId } from '../../../adapters/qqIdentity.js';
 
 export function createMessageRecordPlugin(Plugin:HostPluginBase,ports:MessageHostPorts){
 const {MessageManager,archiveManager:messageArchiveManager,getBase64Image,getInstalledMessagePipeline,sendCompleteLocalFile,logger,segment}=ports
@@ -594,7 +595,8 @@ return class MessageRecordPlugin extends Plugin {
         }
 
         try {
-            const messages = await this.messageManager.getMessages(type, id);
+            const accountId = type === 'private' && !hasConflictingQqAccount(e) ? qqId(e.self_id) ?? qqId(e.bot?.uin) : null;
+            const messages = await this.messageManager.getMessages(type, id, type === 'private' ? { accountId: accountId ?? '' } : {});
 
             if (!messages || messages.length === 0) {
                 await e.reply('暂无消息记录');
@@ -654,7 +656,8 @@ return class MessageRecordPlugin extends Plugin {
         const id = type === 'group' ? e.group_id : e.user_id;
 
         try {
-            await this.messageManager.clearMessages(type, id);
+            const accountId = type === 'private' && !hasConflictingQqAccount(e) ? qqId(e.self_id) ?? qqId(e.bot?.uin) : null;
+            await this.messageManager.clearMessages(type, id, type === 'private' ? { accountId: accountId ?? '', throwOnError: true } : {});
             e.reply(`已清除${type === 'group' ? '群聊' : '私聊'}消息记录`);
         } catch (error) {
             logger.error(`清除消息记录失败: ${error}`);

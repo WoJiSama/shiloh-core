@@ -1,6 +1,7 @@
-import {qqViewApiSucceeded,qqViewRecord,qqViewEvent,qqViewBot,callQqViewApi} from '../../../contracts/qqToolViews.js'
-import type {QqViewEvent,QqViewMember,QqViewPorts} from '../../../contracts/qqToolViews.js'
+import {qqViewApiSucceeded,qqViewRecord,qqViewEvent} from '../../../contracts/qqToolViews.js'
+import type {QqViewPorts} from '../../../contracts/qqToolViews.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js';
+import { captureQqToolScope, qqToolViewApi, QqToolBindingChanged } from './qqToolRuntime.js'
 
 /**
  * 消息撤回工具类，用于撤回机器人发送的消息
@@ -25,11 +26,6 @@ class RecallTool extends AbstractTool {
   }
 
   /**
-   * 调用OneBotv11 API
-   */
-  async callApi(action:string, params:Record<string,unknown> = {}, event:QqViewEvent = qqViewEvent({})) {return callQqViewApi(event,ports,action,params)}
-
-  /**
    * 执行撤回操作
    * @param {Object} opts - 参数选项
    * @param {Object} e - 事件对象
@@ -47,27 +43,30 @@ class RecallTool extends AbstractTool {
         targetMessageId = String(e.source.message_id);
       } else if (e.reply_id) {
         targetMessageId = String(e.reply_id);
-      } else if (e.source?.seq) {
-        // 尝试通过seq获取message_id
-        try {
-          const msgInfo = await this.callApi('get_msg', { message_id: String(e.source.seq) },e);
-          if (qqViewRecord(msgInfo.data).message_id) {
-            targetMessageId = String(qqViewRecord(msgInfo.data).message_id);
-          }
-        } catch (err) {
-          // 忽略错误
-        }
       }
     }
-
-    if (!targetMessageId) {
+    if (!targetMessageId && !e.source?.seq) {
       return '未指定要撤回的消息ID，请提供message_id或引用要撤回的消息';
     }
 
     try {
-      const response = await this.callApi('delete_msg', {
+      const callApi = qqToolViewApi(captureQqToolScope(event), ports);
+      if (!targetMessageId && e.source?.seq) {
+        // 尝试通过seq获取message_id
+        try {
+          const msgInfo = await callApi('get_msg', { message_id: String(e.source.seq) });
+          if (qqViewRecord(msgInfo.data).message_id) {
+            targetMessageId = String(qqViewRecord(msgInfo.data).message_id);
+          }
+        } catch (err) {
+          if (err instanceof QqToolBindingChanged) throw err;
+          // 忽略错误
+        }
+      }
+      if (!targetMessageId) return '未指定要撤回的消息ID，请提供message_id或引用要撤回的消息';
+      const response = await callApi('delete_msg', {
         message_id: targetMessageId
-      },e);
+      });
 
       if (qqViewApiSucceeded(response)) {
         return {
@@ -85,6 +84,7 @@ class RecallTool extends AbstractTool {
         };
       }
     } catch (error) {
+      if (error instanceof QqToolBindingChanged) return `error: ${error.message}`;
       console.error('撤回消息失败:', error);
       return `撤回消息失败: ${error instanceof Error?error.message:String(error)}`;
     }

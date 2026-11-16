@@ -1,6 +1,7 @@
 interface IntentBackend {intentAiUrl?:string;intentAiApikey?:string|string[];intentAiModel?:string;toolsAiUrl?:string;toolsAiApikey?:string|string[];toolsAiModel?:string}
-interface IntentOptions {text?:string;hasImages?:boolean;config?:{intentAiConfig?:IntentBackend;toolsAiConfig?:IntentBackend};fetchImpl?:typeof fetch;timeoutMs?:number;signal?:AbortSignal;now?:()=>number}
+interface IntentOptions {text?:string;hasImages?:boolean;config?:{intentAiConfig?:IntentBackend;toolsAiConfig?:IntentBackend};fetchImpl?:typeof fetch;timeoutMs?:number;signal?:AbortSignal;isCurrent?:()=>boolean;now?:()=>number}
 function record(value:unknown):Record<string,unknown>{return value && typeof value==='object' && !Array.isArray(value)?value as Record<string,unknown>:{}}
+import { isModelRequestCurrent } from '../../../contracts/modelExecution.js'
 import { resolveChatCompletionUrl } from "../../models/domain/chatCompletionUrl.js"
 import {parseSocialInterpretation, socialInterpretationInstruction} from '../domain/turnInteractionContext.js'
 import type {SocialInterpretation} from '../domain/turnInteractionContext.js'
@@ -57,6 +58,7 @@ export async function classifyIntentWithModel({
   fetchImpl = fetch,
   timeoutMs = 6000,
   signal,
+  isCurrent,
   now = Date.now
 }:IntentOptions = {}): Promise<ModelIntentResult> {
   const content = String(text || "").trim()
@@ -76,7 +78,7 @@ export async function classifyIntentWithModel({
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const response = await fetchImpl(endpoint, {
+    const request = {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
@@ -91,9 +93,12 @@ export async function classifyIntentWithModel({
         response_format: { type: "json_object" }
       }),
       signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
-    })
+    }
+    if (!isModelRequestCurrent(isCurrent)) return { intent: 'unavailable', confidence: 0, reason: 'binding_changed' }
+    const response = await fetchImpl(endpoint, request)
     if (!response.ok) return { intent: "unavailable", confidence: 0, reason: `HTTP ${response.status}` }
     const data=record(await response.json())
+    if (!isModelRequestCurrent(isCurrent)) return { intent: 'unavailable', confidence: 0, reason: 'binding_changed' }
     const first=Array.isArray(data.choices)?record(data.choices[0]):{}
     const raw=String(record(first.message).content || "").trim()
     const match = raw.match(/\{[\s\S]*\}/)

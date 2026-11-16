@@ -5,9 +5,7 @@ import { anchorEventConversation } from '../../utils/forbiddenWordGuard.js'
 import { getRedBagType, isExclusiveForUser } from '../../utils/redBagUtils.js'
 import { toolConfigHasName } from './conversationUtils.js'
 import { simulationRuntime } from '../../utils/simulationRuntime.js'
-const runtime = createStrictConversation({logger:globalThis.logger,bot:()=>globalThis.Bot || {},diceManager,globalStyleLearnerManager,anchorEventConversation,getRedBagType,isExclusiveForUser,toolConfigHasName,
-  // 仿真模式分流：isCapture 判定走运行时缓存的启用群清单；未启用时零开销直落原链路
-  simulation:{isCapture:e=>simulationRuntime.isCapture(e),ingest:e=>simulationRuntime.ingest(e)}})
+const runtime = createStrictConversation({logger:globalThis.logger,bot:()=>globalThis.Bot || {},diceManager,globalStyleLearnerManager,anchorEventConversation,getRedBagType,isExclusiveForUser,toolConfigHasName,simulation:simulationRuntime})
 export const setTrackingWithTimer = runtime.setTrackingWithTimer
 export const joinRepeat = runtime.joinRepeat
 export const detectGroupRepeat = runtime.detectGroupRepeat

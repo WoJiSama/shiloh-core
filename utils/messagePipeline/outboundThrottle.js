@@ -2,7 +2,8 @@
 import { readUserSettings } from '../configWriter.js'
 import { defaultMonitor } from './riskSignalMonitor.js'
 import { createOutboundThrottleModule } from '../../dist/backend/modules/messaging/application/outboundThrottle.js'
-const throttle = createOutboundThrottleModule({ readUserSettings, getBotRoot: () => globalThis.Bot, logger:globalThis.logger, signalMonitor:defaultMonitor,
+import { queuedDeliveryAllowed } from '../../dist/backend/modules/messaging/infrastructure/deliveryScope.js'
+const throttle = createOutboundThrottleModule({ readUserSettings, getBotRoot: () => globalThis.Bot, logger:globalThis.logger, signalMonitor:defaultMonitor, queuedDeliveryAllowed,
  recordCode: (botId,groupId,code) => { try { globalThis[Symbol.for('shiloh-plugin.message-pipeline.runtime')]?.stats?.recordFailure?.({botId,groupId,channel:'risk_throttle',code}) } catch {} }
 })
 export const isSendAction = throttle.isSendAction

@@ -1,7 +1,8 @@
 import {normalizeDeliveryReceipt} from '../../messaging/domain/deliveryReceipt.js'
-import {qqViewRecord,qqViewEvent,qqViewBot,callQqViewApi} from '../../../contracts/qqToolViews.js'
-import type {QqViewEvent,QqViewMember,QqViewPorts} from '../../../contracts/qqToolViews.js'
+import {qqViewRecord,qqViewEvent} from '../../../contracts/qqToolViews.js'
+import type {QqViewPorts} from '../../../contracts/qqToolViews.js'
 import { AbstractTool } from "../../toolSupport/infrastructure/AbstractTool.js"
+import { captureQqToolScope, qqToolBindingChanged, qqToolMentionGroup } from './qqToolRuntime.js'
 
 export function createMentionAdminsTool(ports:QqViewPorts = {}){
 class MentionAdminsTool extends AbstractTool {
@@ -38,11 +39,10 @@ class MentionAdminsTool extends AbstractTool {
   async func(input:unknown = {}, event:unknown = {}) {
     const options=qqViewRecord(input), e=qqViewEvent(event)
     if (!e.group_id) return "error: 只能在群聊中艾特管理员"
-    const group = e.group || await e?.bot?.pickGroup?.(e.group_id)
-    if (!group?.getMemberMap) return "error: 当前适配器无法读取群成员角色"
-
-    const members = await group.getMemberMap()
-    const botId = String(e?.bot?.uin || qqViewBot(ports.getBot?.())?.uin || "")
+    const scope = captureQqToolScope(event)
+    const { botId: readBotId, members, send } = await qqToolMentionGroup(scope, e, ports)
+    if (!members) return "error: 当前适配器无法读取群成员角色"
+    const botId = readBotId()
     const roles = options.includeOwner === true ? new Set(["admin", "owner"]) : new Set(["admin"])
     const exclusions = Array.isArray(options.excludeTargets) ? options.excludeTargets : []
     const normalizedExclusions = exclusions.map(value => String(value || "").trim()).filter(Boolean)
@@ -74,9 +74,8 @@ class MentionAdminsTool extends AbstractTool {
     const message = String(options.message || "").trim()
     if (message) segments.push({ type: "text", data: { text: message } })
 
-    const receipt = typeof group.sendMsg === 'function' ? await group.sendMsg(segments)
-      : typeof e.reply === 'function' ? await e.reply(segments) : null
-    const delivery=normalizeDeliveryReceipt(receipt)
+    const delivery=normalizeDeliveryReceipt(await send(segments))
+    if (delivery.state === 'failed' && delivery.code === 'binding_changed') return `error: ${qqToolBindingChanged}`
     if (delivery.state === 'failed') return 'error: 群消息发送失败'
     if (delivery.state === 'unknown') return JSON.stringify({action:'mention_delivery',deliveryState:'unknown',message:'发送结果未确认，请勿自动重发'})
 

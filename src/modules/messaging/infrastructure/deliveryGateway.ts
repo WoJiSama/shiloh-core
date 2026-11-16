@@ -250,7 +250,9 @@ class DeliveryGateway {
     const root = typeof this.botRoot === "function" ? this.botRoot() : this.botRoot
     if (!root) return null
     const key = String(botId || "")
-    const candidate = root.bots?.[key] || root[key] || root
+    const scoped = key ? root.bots?.[key] || root[key] : undefined
+    const rootId = String(root.uin ?? root.self_id ?? root.bot_id ?? "")
+    const candidate = scoped || (!key || rootId === key ? root : null)
     return typeof record(candidate).sendApi === "function" ? candidate as BotClient : null
   }
 

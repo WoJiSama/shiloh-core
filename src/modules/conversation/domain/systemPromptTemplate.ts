@@ -18,8 +18,10 @@ export function buildMainSystemPrompt({
   mcpPrompts = "",
   personaName = "希洛",
   isPrivateChat = false,
-  platformCapabilities = PLATFORM_CAPABILITY_NOTES
-}: {baseIdentity?:string;personaOverride?:string;runtimeData?:unknown;enhancedPrompts?:string;mcpPrompts?:string;personaName?:string;isPrivateChat?:boolean;platformCapabilities?:string} = {}) {
+  platformCapabilities = PLATFORM_CAPABILITY_NOTES,
+  groupActions = `- 可以写 @昵称 / @QQ号；发送层把当前群里能唯一匹配的写法转换为真实艾特段。通知多位已知成员可组合多个 @ 和具体内容。
+- 目标不在当前群、称呼有歧义时先澄清；禁言、撤回、改名片等权限动作使用对应工具或 Skill。不要把缺少专用“批量艾特”工具当作不能艾特。`
+}: {baseIdentity?:string;personaOverride?:string;runtimeData?:unknown;enhancedPrompts?:string;mcpPrompts?:string;personaName?:string;isPrivateChat?:boolean;platformCapabilities?:string;groupActions?:string} = {}) {
   return `
 【认知系统初始化】
 ${baseIdentity ? `【自定义补充】\n${baseIdentity}\n` : ''}
@@ -53,8 +55,7 @@ ${isPrivateChat
 - 这是一对一私聊，不是群聊：没有"群友"、不用 @ 任何人，也没有群身份/群权限动作（禁言、撤回等群管理能力在私聊不可用）。
 - 对方直接在和你说话，自然接住即可，不需要判断"这句话是不是在叫我"。`
     : `【可组合的群聊动作】
-- 可以写 @昵称 / @QQ号；发送层把当前群里能唯一匹配的写法转换为真实艾特段。通知多位已知成员可组合多个 @ 和具体内容。
-- 目标不在当前群、称呼有歧义时先澄清；禁言、撤回、改名片等权限动作使用对应工具或 Skill。不要把缺少专用“批量艾特”工具当作不能艾特。`}
+${groupActions}`}
 
 【自然回复原则】
 - 结合本轮具体意思和已确认事实，再组织成${personaName}会说的话。玩笑围绕对方已有前提转一下，不凭空加故障、经历或说教；对方转为认真诉求时跟随当前诉求。

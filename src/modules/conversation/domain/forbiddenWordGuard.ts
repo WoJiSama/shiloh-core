@@ -1,5 +1,14 @@
+import type { AgentBindingSnapshot } from '../../../contracts/agentBinding.js'
+import { configuredConversationKey } from './conversationIdentity.js'
+
 export interface ForbiddenConfig { words?: unknown[]; enabled?: boolean; blockOutput?: boolean }
-export interface ForbiddenEvent { group_id?: unknown; user_id?:unknown; message_type?:string; _forbiddenAnchorAt?:number }
+export interface ForbiddenEvent {
+  group_id?: unknown
+  user_id?: unknown
+  message_type?: string
+  _agentBinding?: AgentBindingSnapshot
+  _forbiddenAnchorAt?: number
+}
 interface CompiledWords {plains:string[];regexes:{source:string;re:RegExp}[]}
 export function createForbiddenWordGuard(ports:{warn(message:string):void}) {
 // 违禁词黑名单:命中后立即中断该群当前对话。
@@ -60,8 +69,10 @@ function findForbiddenWord(text: unknown, cfg: ForbiddenConfig = {}) {
 
 // —— 会话中断状态 ——
 
-// 会话作用域键:群聊用群号,私聊用用户号——同一套中断/锚点语义两个场景通用
+// 已配置会话使用捕获的完整绑定；兼容会话继续使用原群号或私聊用户号。
 function chatScopeKey(e: ForbiddenEvent = {}) {
+  const configured = configuredConversationKey(e._agentBinding)
+  if (configured) return configured
   const group = String(e?.group_id || "")
   if (group) return group
   return e?.message_type === "private" ? `private:${String(e?.user_id || "")}` : ""

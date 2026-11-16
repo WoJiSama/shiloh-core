@@ -1,5 +1,5 @@
-import type { QqToolEvent, QqToolBot, QqToolGroup, QqMember, QqToolPorts, PbObject, PbValue } from '../../../contracts/qqTools.js'
-import { apiOk, asRecord, errorText, eventBot } from './qqToolRuntime.js'
+import type { QqToolEvent, QqToolBot, QqMember, QqToolPorts } from '../../../contracts/qqTools.js'
+import { apiOk, asRecord, captureQqToolScope, errorText, QqToolBindingChanged, requireQqToolBot, type QqToolScope } from './qqToolRuntime.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js';
 
 /**
@@ -39,11 +39,8 @@ class PokeTool extends AbstractTool {
   }
 
 
-  async callApi(bot: QqToolBot, action: string, params: Record<string, unknown> = {}) {
-    return bot.sendApi(action, params)
-  }
-  async getGroupMemberList(groupId: string|number, bot: QqToolBot) {
-    const response = asRecord(await this.callApi(bot,'get_group_member_list',{group_id:groupId}))
+  async getGroupMemberList(groupId: string|number, bot: QqToolBot, scope: QqToolScope) {
+    const response = asRecord(await scope.effect(() => bot.sendApi('get_group_member_list',{group_id:groupId}), bot))
     if (!apiOk(response) || !Array.isArray(response.data)) throw new Error('获取群成员列表失败')
     const members: QqMember[]=[]
     for (const item of response.data) {
@@ -53,9 +50,9 @@ class PokeTool extends AbstractTool {
     }
     return members
   }
-  async sendGroupPoke(groupId: string|number,userId: number,bot: QqToolBot) {
+  async sendGroupPoke(groupId: string|number,userId: number,bot: QqToolBot,scope: QqToolScope) {
     // A timeout does not prove non-delivery; never switch to another send API.
-    const response=await this.callApi(bot,'send_group_poke',{group_id:groupId,user_id:userId})
+    const response=await scope.effect(() => bot.sendApi('send_group_poke',{group_id:groupId,user_id:userId}), bot)
     if (!apiOk(response)) throw new Error('戳一戳响应未确认成功，请勿重复执行')
     return true
   }
@@ -65,38 +62,40 @@ class PokeTool extends AbstractTool {
     if (!query) return undefined
     return members.find(m=>[m.card,m.nickname].some(n=>n?.toLowerCase()===query)) ?? members.find(m=>[m.card,m.nickname].some(n=>n?.toLowerCase().includes(query)))
   }
-  async pokeSingleUser(groupId:string|number,target:string,members:QqMember[],pokeCount:number,bot:QqToolBot) {
+  async pokeSingleUser(groupId:string|number,target:string,members:QqMember[],pokeCount:number,bot:QqToolBot,scope:QqToolScope) {
     const member=this.findMember(target,members)
     if(!member)return {target,success:false,error:`未找到用户 ${target}`}
     let count=0
     try {
       for(let i=0;i<pokeCount;i++) {
-        await this.sendGroupPoke(groupId,member.user_id,bot)
+        await this.sendGroupPoke(groupId,member.user_id,bot,scope)
         count++
         if(i<pokeCount-1)await new Promise(resolve=>setTimeout(resolve,1500))
       }
       return {target,targetQQ:member.user_id,targetName:member.card||member.nickname,times:count,requestedTimes:pokeCount,success:true}
     } catch(error) {
-      return {target,targetQQ:member.user_id,targetName:member.card||member.nickname,times:count,requestedTimes:pokeCount,success:false,error:`投递未确认，已停止后续发送：${errorText(error)}`}
+      return {target,targetQQ:member.user_id,targetName:member.card||member.nickname,times:count,requestedTimes:pokeCount,success:false,
+        error:error instanceof QqToolBindingChanged ? error.message : `投递未确认，已停止后续发送：${errorText(error)}`}
     }
   }
   async func(opts:Record<string,unknown>,e:QqToolEvent) {
     const groupId=e.group_id
     if(!groupId)return '此功能仅支持群聊使用'
     try {
-      const bot=eventBot(e,ports),members=await this.getGroupMemberList(groupId,bot)
+      const scope=captureQqToolScope(e),bot=requireQqToolBot(scope,ports),members=await this.getGroupMemberList(groupId,bot,scope)
       const pokeCount=typeof opts.times==='number'&&Number.isFinite(opts.times)?Math.min(Math.max(1,Math.floor(opts.times)),10):1
       let targets=typeof opts.target==='string'?[opts.target]:Array.isArray(opts.target)?opts.target.filter((v):v is string=>typeof v==='string'):[]
       if(!targets.length||opts.random===true) {
-        const available=members.filter(m=>m.user_id!==bot.uin&&String(m.user_id)!==String(e.user_id??e.sender?.user_id))
+        const available=members.filter(m=>String(m.user_id)!==String(bot.uin)&&String(m.user_id)!==String(e.user_id??e.sender?.user_id))
         const chosen=available[Math.floor(Math.random()*available.length)]
         if(!chosen)return '群内没有可戳的成员'
         targets=[String(chosen.user_id)]
       }
-      const results=await Promise.all(targets.map(t=>this.pokeSingleUser(groupId,t,members,pokeCount,bot)))
+      const results=[]
+      for (const target of targets) results.push(await this.pokeSingleUser(groupId,target,members,pokeCount,bot,scope))
       const success=results.filter(r=>r.success),failed=results.filter(r=>!r.success)
-      return {action:'poke',success:{count:success.length,targets:success.map(r=>({target:r.target,qq:r.targetQQ,name:r.targetName,times:r.times}))},errors:failed.map(r=>({target:r.target,error:r.error}))}
-    } catch(error){return `戳一戳操作失败: ${errorText(error)}`}
+      return {action:'poke',success:{count:success.length,targets:success.map(r=>({target:r.target,qq:r.targetQQ,name:r.targetName,times:r.times}))},errors:failed.map(r=>({target:r.target,error:r.error,...(r.times ? {times:r.times} : {})}))}
+    } catch(error){return error instanceof QqToolBindingChanged ? `error: ${error.message}` : `戳一戳操作失败: ${errorText(error)}`}
   }
 }
 return {PokeTool}

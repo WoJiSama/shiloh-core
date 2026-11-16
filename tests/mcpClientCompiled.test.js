@@ -34,10 +34,20 @@ test('MCP compiled execution preserves real names and structured results; batch 
  const alias=manager.getAllTools()[0].function.name
  const results=await manager.executeToolsBatch([{name:alias,args:{count:1}},{name:'mcp_missing'}])
  assert.equal(results[0].success,true)
- assert.match(results[0].result,/structuredContent: {"count":1}\nhello/)
+ assert.equal(JSON.parse(results[0].result).status,'success')
+ assert.match(JSON.parse(results[0].result).content,/structuredContent: {"count":1}\nhello/)
  assert.equal(results[1].success,false)
  assert.match(results[1].error,/工具不存在/)
  assert.deepEqual(calls,[{name:'actual-name',arguments:{count:1}}])
+})
+
+test('MCP explicit failure remains failed even when the remote call resolves',async()=>{
+ const manager=new MCPClientManager()
+ manager.clients.set('server',{client:{async callTool(){return {isError:true,content:[{type:'text',text:'refused'}]}}},config:{},type:'fake'})
+ await manager.refreshServerToolsFromNotification('server',[{name:'write',inputSchema:{type:'object'}}])
+ const [result]=await manager.executeToolsBatch([{name:manager.getAllTools()[0].function.name}])
+ assert.equal(result.success,false)
+ assert.equal(JSON.parse(result.result).status,'error')
 })
 
 test('MCP compiled close clears live tools and stale reconnect tokens cannot reconnect',async()=>{
@@ -68,4 +78,12 @@ test('MCP compiled prompt filters and result truncation preserve public behavior
  assert.equal(manager.getMCPSystemPrompts({groupId:'456',message:'help'}),'')
  assert.match(manager.formatMCPResultForModel({isError:true,content:[{type:'image',mimeType:'image/png'}]}),/error: MCP 工具返回错误/)
  assert.match(manager.formatMCPResultForModel('a'.repeat(200),100),/已截断/)
+})
+
+test('MCP timeout aborts the local request and reports unknown rather than retryable failure',async()=>{
+ const manager=new MCPClientManager();let signal,calls=0
+ manager.clients.set('server',{client:{callTool(_args,_schema,options){calls++;signal=options.signal;return new Promise(()=>{})}},config:{toolCallTimeoutMs:15},type:'fake'})
+ await manager.refreshServerToolsFromNotification('server',[{name:'write',inputSchema:{type:'object'}}])
+ await assert.rejects(manager.executeToolByAlias(manager.getAllTools()[0].function.name,{}),error=>error.uncertain===true)
+ assert.equal(signal.aborted,true);assert.equal(calls,1)
 })

@@ -1,6 +1,7 @@
 import type {ToolExecutionHost,ToolExecutionPorts,ExecutionMessage,ExecutionSession,ExecutionEvent,ExecutionResult,ToolCall,LocalExecutableTool,ToolExecutorPort} from "../../../contracts/toolExecution.js"
 import {toolRecord} from "../../../contracts/toolExecution.js"
-import {validateMemberQueryTarget} from '../domain/memberMemoryIntent.js'
+import {isAgentBindingCurrent} from "../../../contracts/agentBinding.js"
+import {validateMemberQueryTarget,validatePrivateHistoryTarget} from '../domain/memberMemoryIntent.js'
 import {isToolActionDenied} from '../../conversation/domain/toolActionPolicy.js'
 import type {TurnEvidence} from '../../../contracts/turnInteraction.js'
 import type {TurnTaskFact} from '../../../contracts/turnActionFacts.js'
@@ -12,7 +13,7 @@ import {safeTruncateUnicode} from "../../models/domain/unicodeText.js"
 import {joinIntentParts} from "../../conversation/domain/messageContext.js"
 import {replaceCqMentions} from "../../conversation/domain/mentionTargets.js"
 import {buildVisibleFailureDetail} from "../../models/domain/visibleFailure.js"
-import {buildToolGroundingInstruction,hasUsableToolResult,buildUnavailableToolReply,classifyToolResult} from "../domain/toolResultGrounding.js"
+import {buildToolGroundingInstruction,hasUsableToolResult,buildUnavailableToolReply,classifyToolResult,isUnknownToolResult} from "../domain/toolResultGrounding.js"
 import {decideToolContinuation,formatDirectToolResult} from "../domain/toolContinuationPolicy.js"
 import {activeDedupeToolRuns,LOCAL_EMOJI_TOOL_NAME} from "../../conversation/domain/splitState.js"
 export function createToolExecution(ports:ToolExecutionPorts) {
@@ -42,7 +43,7 @@ function serializeToolResult(host: ToolExecutionHost, result: unknown) {
     if (typeof result === "string") return result
 
     const record = toolRecord(result)
-    if (Array.isArray(record.content)) {
+    if (Array.isArray(record.content) && !['kind','status','ok','success','isError','error'].some(key=>Object.hasOwn(record,key))) {
       return record.content
         .map((raw:unknown) => {const item=toolRecord(raw);return item.type === "text" ? String(item.text || "") : JSON.stringify(item)})
         .join("\n")
@@ -175,7 +176,7 @@ function startBackgroundTerminalToolCalls(host: ToolExecutionHost, toolCalls: To
             return
           }
 
-          if (isImageDeliveryToolName(result.toolName) && e?.group_id) {
+          if (!isUnknownToolResult(result.result) && isImageDeliveryToolName(result.toolName) && e?.group_id) {
             recordDrawTextFallback(e.group_id, session?.rawArgs || e?.msg || "")
           }
           logger.warn(`[工具调用] 后台终态工具 ${result.toolName} 执行失败，发送拟人化失败提示 result=${String(result.result || "").slice(0, 240)}`)
@@ -200,7 +201,7 @@ function startBackgroundTerminalToolCalls(host: ToolExecutionHost, toolCalls: To
                 e,
                 session,
                 stage: "background_terminal_tool_exception",
-                error: error.message
+                error
               }),
               e,
               session,
@@ -217,6 +218,12 @@ async function runToolCall(host: ToolExecutionHost, toolCall: ToolCall, e: Execu
     if (type !== "function" || !funcData?.name) return null
 
     const toolName = funcData.name
+    if (!isAgentBindingCurrent(e)) return {toolCall,toolName,result:'error: 角色绑定已改变，本回合未执行工具。'}
+    if (e._isMemoryContextCurrent && !await e._isMemoryContextCurrent().catch(() => false)) {
+      session.toolExecutionBlocked = true
+      return {toolCall,toolName,result:'error: 本回合记忆来源已变更，已停止使用旧上下文执行工具。'}
+    }
+    if(session.toolExecutionBlocked)return {toolCall,toolName,result:JSON.stringify({kind:'tool_outcome',status:'unknown',tool:toolName,error:{message:'前序工具结果未知，本回合已停止后续工具执行，需先核实。'}})}
     if (isToolActionDenied(session.rawArgs || e.msg || '', toolName)) return {toolCall, toolName, result: 'error: 当前消息明确要求不执行此工具操作。'}
     const isMCPTool = mcpManager.isMCPTool(toolName)
     const isLocalTool = !isMCPTool && host.toolInstances[toolName]
@@ -245,7 +252,8 @@ async function runToolCall(host: ToolExecutionHost, toolCall: ToolCall, e: Execu
       const text = session.rawArgs || e.msg || ''
       const memberContext = {atQq: session.atQq, memberMap: session.memberMap, currentUserId: e.user_id,
         replyTargetUserId: session.groupContextAssets?.replyTargetUserId, rawText: e.raw_message || text, botId: e.self_id || e.bot?.uin}
-      const target = validateMemberQueryTarget(text, params, memberContext)
+      const target = toolName==='chatHistoryTool'&&!e.group_id&&e.user_id!==undefined
+        ?validatePrivateHistoryTarget(text,params,memberContext):validateMemberQueryTarget(text, params, memberContext)
       const reject = (message: string, status = 'needs_clarification') => ({toolCall, toolName,
         result: JSON.stringify({action: toolName === 'memberInfoTool' ? 'member_info' : 'chat_history', success: false, status, message})})
       if (target.status === 'needs_clarification' || target.status === 'invalid_target') return reject(target.message, target.status)
@@ -417,10 +425,13 @@ async function runToolCall(host: ToolExecutionHost, toolCall: ToolCall, e: Execu
         ? await host.executeTool(toolName, params, e)
         : await host.executeTool(host.toolInstances[toolName], params, toolEvent)
       const serializedResult = host.serializeToolResult(rawResult)
+      const classified = classifyToolResult(serializedResult)
+      const uncertainResult=isUnknownToolResult(serializedResult)
+      if(uncertainResult)session.toolExecutionBlocked=true
       // Tool output is fed back into another model and may later be shown to
       // the user. Normalize every failing result here, including legacy tools
       // that still return a raw error string instead of throwing.
-      const result = host.isRawToolFailure(serializedResult)
+      const result = classified.parsed===undefined && host.isRawToolFailure(serializedResult)
         ? `error: ${buildVisibleFailureDetail(serializedResult)}`
         : serializedResult
       logger.info(`[工具耗时] group=${e?.group_id || ""} ${formatTurnPlanLog(session.turnPlan)} tool=${toolName} elapsed=${Date.now() - toolStartedAt}ms`)
@@ -438,7 +449,7 @@ async function runToolCall(host: ToolExecutionHost, toolCall: ToolCall, e: Execu
           toolName,
           error: failed ? result : "",
           event:e,
-          actionFacts:{...actionFact,observedAt:Date.now(),execution:failed?'failed':'completed',followUp:{state:'none'}}
+          actionFacts:{...actionFact,observedAt:Date.now(),execution:uncertainResult?'unknown':failed?'failed':'completed',followUp:{state:'none'}}
         })
       }
       return {
@@ -448,6 +459,9 @@ async function runToolCall(host: ToolExecutionHost, toolCall: ToolCall, e: Execu
         result: result?.trim() ? result : `工具 ${toolName} 执行成功`
       }
     } catch (error) {
+      const uncertain=toolRecord(error).uncertain===true
+      if(uncertain)session.toolExecutionBlocked=true
+      const detail=buildVisibleFailureDetail(error)
       if (requestMessageId) {
         await host.saveTaskStatus({
           groupId: e.group_id,
@@ -455,9 +469,9 @@ async function runToolCall(host: ToolExecutionHost, toolCall: ToolCall, e: Execu
           messageId: toolRunValue.messageId,
           status: dedupeEnabled ? "tool_failed" : "",
           toolName,
-          error: buildVisibleFailureDetail(error),
+          error: uncertain?`执行结果未知，停止自动重试：${detail}`:detail,
           event:e,
-          actionFacts:{...actionFact,observedAt:Date.now(),execution:'failed',followUp:{state:'none'}}
+          actionFacts:{...actionFact,observedAt:Date.now(),execution:uncertain?'unknown':'failed',followUp:{state:'none'}}
         })
       }
       logger.error(`[工具调用] ${toolName} 执行失败:`, error)
@@ -466,7 +480,7 @@ async function runToolCall(host: ToolExecutionHost, toolCall: ToolCall, e: Execu
         toolCall,
         toolName,
         elapsed: Date.now() - toolStartedAt,
-        result: `error: ${buildVisibleFailureDetail(error)}`
+        result: uncertain?JSON.stringify({kind:'tool_outcome',status:'unknown',tool:toolName,error:{message:`执行结果未知，可能已产生外部动作；停止自动重试，需先核实。${detail}`}}):`error: ${detail}`
       }
     } finally {
       if (dedupeEnabled && activeDedupeToolRuns.get(toolRunKey) === toolRunValue) {
@@ -486,6 +500,8 @@ function dedupeToolCalls(host: ToolExecutionHost, toolCalls: ToolCall[] = []) {
   }
 
 async function processToolCalls(host: ToolExecutionHost, message: ExecutionMessage, e: ExecutionEvent, session: ExecutionSession, groupUserMessages: ExecutionMessage[], atQq: unknown, senderRole?: string, options: {syntheticToolCall?:boolean} = {}) {
+    const isCurrent = () => isAgentBindingCurrent(e)
+    if (!isCurrent()) return
     // Standalone executor entries freeze before their first await as well.
     // Registry updates may replace session.tools during execution or summary.
     const executionTools = session.toolDecision?.intent === "chat" ? [] : session.executionTools ?? [...(session.tools || [])]
@@ -537,6 +553,7 @@ async function processToolCalls(host: ToolExecutionHost, message: ExecutionMessa
           })
         })
       )).filter((result): result is ExecutionResult => result !== null)
+      if (!isAgentBindingCurrent(e)) return
       // 跨回合连甩防护:表情发送成功后开一个较短冷却(默认90s,explicit 请求不受限),
       // 避免 30 秒内两个回合各甩一张的刷屏节奏
       if (validResults.some(result => result.toolName === "sendLocalEmojiTool" && !/^error:|跳过本次表情/.test(String(result.result || "")))) {
@@ -546,6 +563,7 @@ async function processToolCalls(host: ToolExecutionHost, message: ExecutionMessa
       if (validResults.length === 0) break
 
       allToolResults.push(...validResults)
+      if(validResults.some(result=>isUnknownToolResult(result.result)))session.toolExecutionBlocked=true
       session.toolName = validResults[validResults.length - 1]?.toolName
       const roundToolOk = validResults.map(({ result }) => !host.isToolResultError(result))
       validResults.forEach(({ toolName: outcomeToolName, elapsed }, index) => {
@@ -588,7 +606,7 @@ async function processToolCalls(host: ToolExecutionHost, message: ExecutionMessa
         }
       }
 
-      const imageVerificationSearchCall = host.buildImageVerificationSearchToolCall(validResults, session, e)
+      const imageVerificationSearchCall = !session.toolExecutionBlocked && host.buildImageVerificationSearchToolCall(validResults, session, e)
       if (imageVerificationSearchCall) {
         currentMessage = {
           role: "assistant",
@@ -617,7 +635,7 @@ async function processToolCalls(host: ToolExecutionHost, message: ExecutionMessa
         currentMessages.push({ role: "system", content: buildModrinthBilingualReplyInstruction() })
       }
 
-      const continuationMode = decideToolContinuation(validResults, options)
+      const continuationMode = session.toolExecutionBlocked ? 'chat_only' : decideToolContinuation(validResults, options)
       if (continuationMode === "direct_result") {
         session.toolResults = allToolResults
         const directText = validResults
@@ -635,7 +653,7 @@ async function processToolCalls(host: ToolExecutionHost, message: ExecutionMessa
         return
       }
 
-	      if (validResults.every(r => TERMINAL_TOOL_NAMES.has(r.toolName))) {
+	      if (!session.toolExecutionBlocked && validResults.every(r => TERMINAL_TOOL_NAMES.has(r.toolName))) {
 		        session.toolResults = allToolResults
 			        const failedResult = validResults.find(r => host.isToolResultError(r.result))
 		        if (failedResult) {
@@ -699,6 +717,8 @@ async function processToolCalls(host: ToolExecutionHost, message: ExecutionMessa
           const translations = new Map(cached)
           if (missing.length) {
             const compactMessages = buildModrinthTranslationMessages(missing)
+            if (e._isMemoryContextCurrent && !await e._isMemoryContextCurrent().catch(() => false)) return
+            if (!isAgentBindingCurrent(e)) return
             const compactResponse = await host.retryRequest(
               {
                 model: host.config?.taskAiConfig?.translation?.model || host.config?.chatAiConfig?.chatApiModel,
@@ -712,9 +732,11 @@ async function processToolCalls(host: ToolExecutionHost, message: ExecutionMessa
               {
                 taskBackend: "translation",
                 routeLabel: "Modrinth 简介翻译",
-                generation: { temperature: 0, maxOutputTokens: 1200 }
+                generation: { temperature: 0, maxOutputTokens: 1200 },
+                isCurrent,
               }
             )
+            if (!isAgentBindingCurrent(e)) return
             collectThinking(session, compactResponse?.choices?.[0]?.message, e)
             const compactContent = compactResponse?.choices?.[0]?.message?.content
             const translated = parseModrinthTranslationResponse(compactContent, missing.map(item => item.projectId))
@@ -748,7 +770,10 @@ async function processToolCalls(host: ToolExecutionHost, message: ExecutionMessa
         session.toolResults = allToolResults
         const finalRequest = buildChatRequestData(host.config, currentMessages, [], "none")
         const finalStartedAt = Date.now()
-        const finalResponse = await host.retryRequest(finalRequest, session.toolContent, 1, session.toolName)
+        if (e._isMemoryContextCurrent && !await e._isMemoryContextCurrent().catch(() => false)) return
+        if (!isAgentBindingCurrent(e)) return
+        const finalResponse = await host.retryRequest(finalRequest, session.toolContent, 1, session.toolName, { isCurrent })
+        if (!isAgentBindingCurrent(e)) return
         collectThinking(session, finalResponse?.choices?.[0]?.message, e)
         session?.turnTrace?.addModelCall("final", Date.now() - finalStartedAt)
         const finalContent = finalResponse?.choices?.[0]?.message?.content
@@ -768,7 +793,10 @@ async function processToolCalls(host: ToolExecutionHost, message: ExecutionMessa
       }
 
 	      const nextRequest = buildChatRequestData(host.config, currentMessages, executionTools, "auto")
-	      const nextResponse = await host.retryRequest(nextRequest, session.toolContent, 1, session.toolName)
+	      if (e._isMemoryContextCurrent && !await e._isMemoryContextCurrent().catch(() => false)) return
+	      if (!isAgentBindingCurrent(e)) return
+	      const nextResponse = await host.retryRequest(nextRequest, session.toolContent, 1, session.toolName, { isCurrent })
+	      if (!isAgentBindingCurrent(e)) return
 	      const nextMessage = nextResponse?.choices?.[0]?.message
         collectThinking(session, nextMessage, e)
 	      if (!nextMessage) {
@@ -797,7 +825,10 @@ async function processToolCalls(host: ToolExecutionHost, message: ExecutionMessa
     session.toolResults = allToolResults
     const finalRequest = buildChatRequestData(host.config, currentMessages, [], "none")
     const finalStartedAt = Date.now()
-    const finalResponse = await host.retryRequest(finalRequest, session.toolContent, 1, session.toolName)
+    if (e._isMemoryContextCurrent && !await e._isMemoryContextCurrent().catch(() => false)) return
+    if (!isAgentBindingCurrent(e)) return
+    const finalResponse = await host.retryRequest(finalRequest, session.toolContent, 1, session.toolName, { isCurrent })
+    if (!isAgentBindingCurrent(e)) return
     collectThinking(session, finalResponse?.choices?.[0]?.message, e)
     session?.turnTrace?.addModelCall("final", Date.now() - finalStartedAt)
 
@@ -821,6 +852,7 @@ async function processToolCalls(host: ToolExecutionHost, message: ExecutionMessa
 	  }
 
 async function executeTool(host: ToolExecutionHost, tool: string|LocalExecutableTool|undefined, params: Record<string,unknown>, e: ExecutionEvent, isRetry = false) {
+    if (!isAgentBindingCurrent(e)) throw new Error('角色绑定已改变，本回合未执行工具。')
     try {
       if (typeof tool === "string" && mcpManager.isMCPTool(tool)) {
         const executor: ToolExecutorPort = {execute: (name, arguments_) => mcpManager.executeToolByAlias(name, arguments_)}
@@ -834,7 +866,8 @@ async function executeTool(host: ToolExecutionHost, tool: string|LocalExecutable
       return null
     } catch (error) {
       if(toolRecord(error).uncertain===true)throw error
-      if (!isRetry) {
+      // A thrown exception does not establish that an external side effect did not happen.
+      if (!isRetry && toolRecord(error).safeToRetry===true) {
         return host.executeTool(tool, params, e, true)
       }
       throw error

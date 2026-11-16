@@ -1,4 +1,5 @@
 import type { ChatRequestData, ChatResponse, ChatFailure, RecoveryOptions } from '../../../contracts/modelGateway.js'
+import { isModelRequestCurrent } from '../../../contracts/modelExecution.js'
 
 const TOOL_CHOICE_COMPATIBILITY_PATTERN = /thinking mode does not support this tool_choice/i
 const TIMEOUT_PATTERN = /timeout|timed?\s*out|aborterror|超时|超过\s*\d+\s*秒/i
@@ -84,17 +85,20 @@ export async function executeChatRequestWithRecovery(sendRequest: (request: Chat
 
   while (true) {
     options.signal?.throwIfAborted()
+    if (!isModelRequestCurrent(options.isCurrent)) return null
     let response: ChatResponse
     let thrown = false
     try {
       response = await sendRequest(currentRequest)
     } catch (error) {
       options.signal?.throwIfAborted()
+      if (!isModelRequestCurrent(options.isCurrent)) return null
       thrown = true
       response = { error: errorTextFrom(error) || "请求异常" }
     }
 
     options.signal?.throwIfAborted()
+    if (!isModelRequestCurrent(options.isCurrent)) return null
     const failure = classifyChatRequestFailure(response, { thrown })
     if (!failure) return response
 

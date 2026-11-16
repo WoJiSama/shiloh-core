@@ -1,7 +1,8 @@
 import {normalizeDeliveryReceipt} from '../../messaging/domain/deliveryReceipt.js'
-import {qqViewRecord,qqViewEvent,qqViewBot,callQqViewApi} from '../../../contracts/qqToolViews.js'
-import type {QqViewEvent,QqViewMember,QqViewPorts} from '../../../contracts/qqToolViews.js'
+import {qqViewRecord,qqViewEvent} from '../../../contracts/qqToolViews.js'
+import type {QqViewMember,QqViewPorts} from '../../../contracts/qqToolViews.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { captureQqToolScope, qqToolBindingChanged, qqToolMentionGroup } from './qqToolRuntime.js'
 
 function memberLabel(member:Partial<QqViewMember> = {}) {
   return String(member.card || member.nickname || member.user_id || '').trim()
@@ -37,9 +38,9 @@ class MentionMembersTool extends AbstractTool {
   async func(input:unknown = {}, event:unknown = {}) {
     const options=qqViewRecord(input), e=qqViewEvent(event)
     if (!e.group_id) return 'error: 只能在群聊中艾特成员'
-    const group = e.group || await e?.bot?.pickGroup?.(e.group_id)
-    if (!group?.getMemberMap) return 'error: 当前适配器无法读取群成员'
-    const members = await group.getMemberMap()
+    const scope = captureQqToolScope(event)
+    const { members, send } = await qqToolMentionGroup(scope, e, ports)
+    if (!members) return 'error: 当前适配器无法读取群成员'
     const requested = [...new Set((Array.isArray(options.targets) ? options.targets : []).map(value => String(value || '').trim()).filter(Boolean))]
     if (!requested.length) return 'error: 没有指定要艾特的成员'
 
@@ -69,9 +70,8 @@ class MentionMembersTool extends AbstractTool {
     if (message) segments.push({ type: 'text', data: { text: message } })
     if (missing.length) segments.push({ type: 'text', data: { text: `（未艾特：${missing.join('、')}，当前不在群或名称有歧义）` } })
 
-    const receipt = typeof group.sendMsg === 'function' ? await group.sendMsg(segments)
-      : typeof e.reply === 'function' ? await e.reply(segments) : null
-    const delivery=normalizeDeliveryReceipt(receipt)
+    const delivery=normalizeDeliveryReceipt(await send(segments))
+    if (delivery.state === 'failed' && delivery.code === 'binding_changed') return `error: ${qqToolBindingChanged}`
     if (delivery.state === 'failed') return 'error: 群消息发送失败'
     if (delivery.state === 'unknown') return JSON.stringify({action:'mention_delivery',deliveryState:'unknown',message:'发送结果未确认，请勿自动重发'})
     return JSON.stringify({ action: 'mention_members', count: resolved.length, skipped: missing, targets: resolved.map(member => ({ userId: String(member.user_id), name: memberLabel(member) })) })

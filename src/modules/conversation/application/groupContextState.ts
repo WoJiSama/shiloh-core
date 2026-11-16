@@ -1,5 +1,5 @@
-interface Topic {keywords:Map<string,{count:number;at:number;firstAt:number}>;recentCount:number}
-interface Social {speakers:{id:string;name:string;at:number}[];edges:Map<string,{count:number;at:number;from:string;target:string}>}
+interface Topic {keywords:Map<string,{count:number;at:number;firstAt:number}>;recentCount:number;updatedAt:number}
+interface Social {speakers:{id:string;name:string;at:number}[];edges:Map<string,{count:number;at:number;from:string;target:string}>;updatedAt:number}
 import { extractChatKeywords } from "../domain/messageIntent.js"
 
 // 群聊轻量上下文状态：话题 + 人际互动。纯启发式、零模型调用，
@@ -25,8 +25,9 @@ export function updateGroupTopic({ groupId = "", text = "" }: {groupId?:string|n
   const key = String(groupId || "")
   const content = String(text || "").trim()
   if (!key || !content) return
-  const state:Topic = topicByGroup.get(key) || { keywords: new Map(), recentCount: 0 }
   const now = Date.now()
+  const state:Topic = topicByGroup.get(key) || { keywords: new Map(), recentCount: 0, updatedAt: now }
+  state.updatedAt = now
   state.recentCount += 1
   for (const word of extractChatKeywords(content, 4)) {
     const entry = state.keywords.get(word) || { count: 0, at: 0, firstAt: now }
@@ -79,8 +80,9 @@ export function updateGroupSocial({ groupId = "", fromUserId = "", atTargetIds =
   const key = String(groupId || "")
   const from = String(fromUserId || "")
   if (!key || !from) return
-  const state:Social = socialByGroup.get(key) || { speakers: [], edges: new Map() }
   const now = Date.now()
+  const state:Social = socialByGroup.get(key) || { speakers: [], edges: new Map(), updatedAt: now }
+  state.updatedAt = now
   const name = namesById[from] || displayName(from, namesById)
   state.speakers.push({ id: from, name, at: now })
   if (state.speakers.length > SOCIAL_MAX_SPEAKERS) state.speakers.splice(0, state.speakers.length - SOCIAL_MAX_SPEAKERS)
@@ -126,6 +128,21 @@ export function getGroupSocialPrompt(groupId:string|number = "") {
 export function resetGroupContextStateForTests() {
   topicByGroup.clear()
   socialByGroup.clear()
+}
+
+export function sweepGroupContextState(now = Date.now()) {
+  let removed = 0
+  for (const [key, state] of topicByGroup) {
+    if (now - state.updatedAt <= TOPIC_WINDOW_MS) continue
+    topicByGroup.delete(key)
+    removed++
+  }
+  for (const [key, state] of socialByGroup) {
+    if (now - state.updatedAt <= SOCIAL_WINDOW_MS) continue
+    socialByGroup.delete(key)
+    removed++
+  }
+  return removed
 }
 
 // 只读快照:给群运行时门面(groupRuntime)组合用,不改变任何维护逻辑

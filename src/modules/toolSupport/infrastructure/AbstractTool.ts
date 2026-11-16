@@ -6,6 +6,8 @@ export interface ToolParameters {type:string;properties:Record<string,ParameterS
 import { buildVisibleFailureDetail } from "../../models/domain/visibleFailure.js"
 
 export class AbstractTool {
+ /** Captured only by the platform-neutral host tool bridge. */
+ agentDataPolicy?: 'ephemeral';
  name:string;parameters:ToolParameters;description:string;skill:Record<string,unknown>|null;
   constructor() {
     this.name = '';
@@ -75,8 +77,9 @@ export class AbstractTool {
   
         // 如果定义了数组元素类型，验证每个元素
         if (schema.items && schema.items.type) {
-          const invalidItem = value.find(item => typeof item !== schema.items?.type);
-          if (invalidItem !== undefined) {
+          const invalidItem = value.some(item => schema.items?.type === 'integer'
+            ? !Number.isSafeInteger(item) : typeof item !== schema.items?.type);
+          if (invalidItem) {
             return `参数 ${key} 的数组元素类型错误，应为 ${schema.items.type}`;
           }
         }
@@ -84,7 +87,10 @@ export class AbstractTool {
       }
   
       // 处理其他类型
-      if (schema.type && typeof value !== schema.type) {
+      if (schema.type === 'integer' && (typeof value !== 'number' || !Number.isSafeInteger(value))) {
+        return `参数 ${key} 类型错误，应为 integer`;
+      }
+      if (schema.type && schema.type !== 'integer' && typeof value !== schema.type) {
         // 自动类型转换
         if (schema.type === 'string' && typeof value === 'number') {
           params[key] = String(value);
@@ -159,6 +165,9 @@ export class AbstractTool {
     try {
       return await this.func(normalizedParams, event);
     } catch (error) {
+      if (error !== null && typeof error === 'object' && 'uncertain' in error && error.uncertain === true) {
+        return {kind:'tool_outcome',status:'unknown',tool:this.name,error:{message:`执行结果未知，可能已产生外部动作；核实前不重复执行。${buildVisibleFailureDetail(error)}`}};
+      }
       // 返回错误信息而不是抛出错误
       return `error: 工具 ${this.name} 执行失败: ${buildVisibleFailureDetail(error)}`;
     }

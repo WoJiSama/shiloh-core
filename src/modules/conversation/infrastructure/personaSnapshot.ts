@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto'
+import type {AgentBindingSnapshot} from '../../../contracts/agentBinding.js'
 import type {PersonaGuardConfig, PersonaSnapshot} from '../../../contracts/persona.js'
 import {resolvePersonaName} from '../domain/personaSource.js'
 
@@ -16,12 +17,13 @@ function copyConfig(value: unknown): unknown {
   return value
 }
 
-export function createPersonaSnapshot({botId, personaId = 'default', persona = {}, systemContent = '', personaGuard}: {
+export function createPersonaSnapshot({botId, personaId = 'default', persona = {}, systemContent = '', personaGuard, binding}: {
   botId: string | number
   personaId?: string
   persona?: {name?: string; [key: string]: unknown}
   systemContent?: string
   personaGuard?: PersonaGuardConfig
+  binding?: AgentBindingSnapshot
 }): PersonaSnapshot {
   const capturedPersona = copyConfig(persona) as PersonaSnapshot['persona']
   const capturedGuard = personaGuard === undefined ? undefined : copyConfig(personaGuard) as PersonaGuardConfig
@@ -34,6 +36,7 @@ export function createPersonaSnapshot({botId, personaId = 'default', persona = {
     personaName: resolvePersonaName(capturedPersona),
     persona: capturedPersona,
     systemContent: content,
+    ...(binding === undefined ? {} : {binding}),
     ...(capturedGuard === undefined ? {} : {personaGuard: capturedGuard})
   })
 }

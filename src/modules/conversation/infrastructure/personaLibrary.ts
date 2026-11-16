@@ -197,6 +197,12 @@ export function createPersonaLibrary({
       return { id: entry.id, source: "library", persona: mergePersona(getBasePersona(), entry) }
     },
 
+    detailById(id: string) {
+      if (id === "default") return { id, source: "default", persona: { ...getBasePersona() } }
+      const entry = findBound(id)
+      return entry ? { id: entry.id, source: "library", persona: mergePersona(getBasePersona(), entry) } : null
+    },
+
     // 以名字为准 upsert:重名覆盖旧条目(保留原 id,绑定关系不断)
     upsert(persona:PersonaEntry, { preferId = "" } = {}) {
       const name = String(persona?.name || "").trim()

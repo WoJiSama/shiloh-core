@@ -1,4 +1,5 @@
 import type {ChatMember} from "../../../contracts/chatEvent.js"
+import { isToolActionDenied } from './toolActionPolicy.js'
 function normalizeText(text = "") {
   return String(text || "")
     .replace(/\[CQ:[^\]]+\]/g, " ")
@@ -15,6 +16,15 @@ const OWNER_WITH_OTHER_ROLES_RE = /群主\s*(?:和|、|，|,|及|以及|还有|�
 export function isExplicitAdminCollectionMentionRequest(text = "") {
   const content = normalizeText(text)
   return MENTION_ACTION_RE.test(content) && ADMIN_COLLECTION_RE.test(content)
+}
+
+/** Restrict an already model-selected notification; this does not route intent. */
+export function isExplicitOwnerInAdminCollectionMentionRequest(text = '') {
+  const content = normalizeText(text)
+  if (!isExplicitAdminCollectionMentionRequest(content) || !OWNER_WITH_OTHER_ROLES_RE.test(content) ||
+      isToolActionDenied(content, 'mentionAdminsTool')) return false
+  const ownerClauses = content.split(/[，,。；;！？!?\n]+/u).filter(clause => clause.includes('群主'))
+  return !ownerClauses.some(clause => ['不', '别', '除外', '排除'].some(denial => clause.includes(denial)))
 }
 
 export function isSingularOwnerMentionRequest(text = "") {

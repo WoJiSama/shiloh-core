@@ -8,4 +8,32 @@ test('host event keeps adapter read-only uin getter instead of crashing on assig
 test('host event tolerates read-only host properties from merged prototype events',async()=>{const groupHandle={async getMemberMap(){return new Map([['2',{user_id:2,nickname:'member'}],['3',null]])},pickMember(id){return {user_id:id,info:Promise.resolve(undefined)}}};const bot={get uin(){return 3},pickGroup(){return groupHandle}};const latest={msg:'hi',user_id:2,group_id:1,self_id:3,sender:{user_id:2,nickname:'member'},bot,reply(payload){return payload}};Object.defineProperty(latest,'group',{value:groupHandle});const merged=Object.create(latest);merged.msg='merged';const event=normalizeHostChatEvent(merged,{pickGroup(){throw Error('wrong bot')}});assert.equal(event.group,groupHandle);assert.equal(event.bot,bot);const members=await event.group.getMemberMap();assert.equal(members.size,1);assert.equal(members.get(2).nickname,'member');assert.equal(await event.group.pickMember(2).info,undefined);assert.equal(await event.reply('ok'),'ok');const frozenSender={msg:'hi',user_id:'1',reply(){},sender:{user_id:1}};Object.defineProperty(frozenSender,'sender',{value:frozenSender.sender,writable:false,configurable:false});assert.equal(normalizeHostChatEvent(frozenSender,{pickGroup(){}}).sender.user_id,1)})
 test('reply adapter preserves dynamic flags and binds original receiver',async()=>{const raw={_proactiveReply:true,reply(payload){assert.equal(this,raw);return payload}};const event=decodeReplyEvent(raw);assert.equal(event,raw);assert.equal(event._proactiveReply,true);assert.equal(await event.reply('sent'),'sent')})
 
+test('guarded QQ replies preserve native payloads and stop the rest of the event after an unknown outcome',async()=>{
+ const calls=[]
+ const raw={group_id:42,user_id:2,self_id:99,message_id:-10,reply(payload,quote){
+  assert.equal(this,raw)
+  calls.push({payload,quote})
+  return calls.length===1?{data:{message_id:23}}:undefined
+ }}
+ const event=normalizeHostChatEvent(raw,{uin:99,pickGroup(){}},true)
+ const native=[{type:'image',file:Buffer.from('native-image')},'正文']
+ assert.deepEqual(await event.reply(native,true),{data:{message_id:23}})
+ assert.equal(calls[0].payload,native)
+ assert.equal(calls[0].quote,true)
+ assert.deepEqual(await event.reply('结果未知'),{state:'unknown'})
+ assert.deepEqual(await event.reply('后续消息'),{state:'unknown'})
+ assert.equal(calls.length,2)
+})
+
+test('a transport error reaches the existing caller and stops simultaneous replies to that event',async()=>{
+ let attempts=0
+ const error=Error('connection closed after sending')
+ const raw={group_id:42,user_id:2,self_id:99,async reply(){attempts++;throw error}}
+ const event=normalizeHostChatEvent(raw,{uin:99,pickGroup(){}},true)
+ const [first,second]=await Promise.allSettled([event.reply('首条'),event.reply('下一条')])
+ assert.deepEqual(first,{status:'rejected',reason:error})
+ assert.deepEqual(second,{status:'fulfilled',value:{state:'unknown'}})
+ assert.equal(attempts,1)
+})
+
 test('failure adapter keeps session identity and normalizes partial tool messages',async()=>{const {normalizeFailureSession,normalizeFailureMessages,normalizeFailureEvent}=await import('../dist/backend/modules/host/infrastructure/toolFailureContext.js');const session={groupUserMessages:[{role:'assistant',tool_calls:[]},{content:'hello'}],outboundArbiter:{markFailure(){}}};const normalized=normalizeFailureSession(session);assert.equal(normalized,session);assert.deepEqual(normalizeFailureMessages(session.groupUserMessages),[{role:'assistant',content:''},{role:'user',content:'hello'}]);normalized.lastFinalReply='done';assert.equal(session.lastFinalReply,'done');const event={message_id:{bad:true},reply:async()=>null};assert.equal(normalizeFailureEvent(event),event);assert.equal(event.message_id,undefined)})

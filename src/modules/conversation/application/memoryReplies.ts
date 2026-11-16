@@ -1,12 +1,12 @@
 import {extractDeliveryMessageId} from '../../messaging/domain/deliveryObservability.js'
 import {safeTruncateUnicode,splitUnicodeText} from '../../models/domain/unicodeText.js'
-export interface Fact {text:string;tags?:string[];confidence?:number;authority?:string;eventAt?:unknown}
+export interface Fact {text:string;tags?:string[];confidence?:number;authority?:string;eventAt?:unknown;id?:string}
 interface MemoryReplyHost<Event> {memoryAuthoritySource(authority?:string):string;formatMemoryFactLines(facts:Fact[]):string[];sendObservedReply(event:Event,payload:unknown):Promise<unknown>}
 export function createMemoryReplies<Event>(ports:{factShortId(text:string):string;makeForwardMsg(event:Event,messages:string[],title:string):Promise<unknown>;warn(...args:unknown[]):void}) {
 
 function formatMemoryFactLines(host:Pick<MemoryReplyHost<Event>,"memoryAuthoritySource">,facts:Fact[] = []) {
     return (Array.isArray(facts) ? facts : []).map(fact => {
-      const shortId = ports.factShortId(fact.text)
+      const shortId = fact.id || ports.factShortId(fact.text)
       const category = (Array.isArray(fact.tags) && fact.tags[0]) || "未分类"
       const confidence = Number(fact.confidence ?? 0).toFixed(2)
       const source = host.memoryAuthoritySource(fact.authority)

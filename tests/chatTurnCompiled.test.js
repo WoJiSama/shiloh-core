@@ -77,6 +77,27 @@ test('compiled private turn handles history without querying missing group',asyn
  assert.equal(f.groupQueries,0)
 })
 
+test('QQ turn carries its captured binding through the main and empty-task fallback model calls', async () => {
+ const f = fixture(), routes = []
+ let current = true
+ f.e._isAgentBindingCurrent = () => current
+ f.api = createChatTurn({ ...f.ports, deriveTurnPlanRequest: () => ({ toolChoice: 'none', requestOptions: { taskBackend: 'fixture' } }) })
+ f.host.retryRequest = async (_request, _content, _retries, _name, options) => {
+  routes.push(options)
+  assert.equal(options.isCurrent(), true)
+  if (routes.length === 1) return { choices: [{ message: {} }] }
+  current = false
+  assert.equal(options.isCurrent(), false)
+  return { choices: [{ message: { content: '不能处理的旧角色回复' } }] }
+ }
+ assert.equal(await f.api.handleToolInner(f.host, f.e), false)
+ assert.equal(routes.length, 2)
+ assert.equal(routes[0].taskBackend, 'fixture')
+ assert.equal(routes[1].forceChatBackend, true)
+ assert.deepEqual(f.sent, [])
+ assert.equal(f.finished.length, 1)
+})
+
 for (const scenario of [
  {name:'unambiguous chat skips understanding',text:'你好呀',targetKind:'bot',profile:'chat',briefCalls:0,needsDisambiguation:false},
  {name:'ambiguous chat reuses understanding before composing',text:'这个呢',targetKind:'bot',profile:'chat',briefCalls:1,needsDisambiguation:true},

@@ -22,6 +22,7 @@ export interface TurnSession {
   replyGrounding?: unknown
   toolDecision?: SemanticDecision | null
   executionTools?: ToolDefinition[]
+  toolExecutionBlocked?: boolean
   userContent?: unknown
   turnPlan?: unknown
   turnTrace?: unknown
@@ -138,6 +139,7 @@ export const TURN_SESSION_FIELDS = [
   { name: "lastFinalReply", owner: "最终回复文本(供延续判定)" },
   { name: "taskContext", owner: "任务上下文" },
   { name: "taskDedupeToolTouched", owner: "任务去重:工具已触碰标记" },
+  { name: "toolExecutionBlocked", owner: "工具执行:未知结果后阻止本回合后续动作" },
   { name: "responseAttempted", owner: "本回合已尝试过回复" },
   { name: "initialExecutionRoute", owner: "回合初始执行路由" },
   { name: "outboundArbiter", owner: "出站仲裁器(messagePipeline)" },

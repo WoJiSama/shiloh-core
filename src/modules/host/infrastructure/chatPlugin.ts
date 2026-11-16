@@ -1,9 +1,17 @@
+import {classifyToolResult,isUnknownToolResult} from '../../tools/domain/toolResultGrounding.js'
 import {decodeHostModelResponse} from './hostModelResponse.js'
 import {normalizeHostChatEvent,decodeReplyEvent} from './hostEvent.js'
 import {decodeHostConfig} from './hostConfig.js'
 import type {ActionFactsEvent,ActionFactsQuery,TurnActionFacts} from '../../../contracts/turnActionFacts.js'
-import {validateTurnActionFacts} from '../../conversation/domain/turnActionFacts.js'
+import {unknownTurnActionFacts,validateTurnActionFacts} from '../../conversation/domain/turnActionFacts.js'
 import type {ChatTurnEvent} from '../../../contracts/chatTurn.js'
+import {isAgentBindingCurrent,type RestoreDeferredAgentBinding} from '../../../contracts/agentBinding.js'
+import {isModelRequestCurrent} from '../../../contracts/modelExecution.js'
+import {captureQqBinding, resolveQqAgentBinding, restoreQqDeferredBinding} from '../../../adapters/qqAgentBinding.js'
+import {findQqAccount, hasConflictingQqAccount, qqId, resolveQqConversationAddress} from '../../../adapters/qqIdentity.js'
+import {decodeQqIncomingMessage} from '../../../adapters/qqMessage.js'
+import {extractDeliveryMessageId} from '../../messaging/domain/deliveryObservability.js'
+import {agentBindingToken} from '../../runtime/domain/agentBindings.js'
 import {normalizeFailureMessages,normalizeFailureSession,normalizeFailureEvent,type ToolFailureContext} from './toolFailureContext.js'
 function modrinthRecord(value:unknown):Record<string,unknown>{return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{}}
 function presentationKind(value:unknown){return modrinthRecord(modrinthRecord(value).presentation).kind}
@@ -19,6 +27,8 @@ import {createConversationScheduling} from '../../conversation/infrastructure/co
 import {lastIncomingMsgAt} from '../../conversation/domain/splitState.js'
 import {LOCAL_EMOJI_TOOL_NAME} from '../../conversation/domain/splitState.js'
 import {smartConversationKey} from '../../conversation/domain/splitState.js'
+import {configuredConversationKey} from '../../conversation/domain/conversationIdentity.js'
+import type {ConversationIdentity} from '../../conversation/domain/conversationIdentity.js'
 import {looksLikeEducationalExplanation} from '../../conversation/domain/textPolicy.js'
 import {looksLikeDiagnosticExplanation} from '../../conversation/domain/textPolicy.js'
 import {looksLikeCodeOrMarkdown} from '../../conversation/domain/textPolicy.js'
@@ -213,6 +223,12 @@ const {handleTextResponse,updateEnhancedSystems,getFriendlyFailureMessage,sendFi
 const groupContext=createHostGroupContext({getBot:ports.getBot,debug:logger.debug})
 const _path = process.cwd()
 
+function qqBotFallback(event: unknown) {
+  const root = ports.getBot?.()
+  const id = qqId(modrinthRecord(event).self_id)
+  return id ? findQqAccount(root, id) : root
+}
+
 // 自动抢红包配置
 
 
@@ -376,17 +392,22 @@ class ExamplePlugin extends ports.Plugin {
   // 回合持久化外壳：进行中的 AI 回合落 Redis，崩溃/重启后启动恢复可补跑。
   // 媒体自动交付事件(auto_media)有独立 outbox 幂等，beginTurn 内部会跳过。
   async handleTool(input: unknown):Promise<unknown> {
-    const e=normalizeHostChatEvent(input,ports.getBot())
+    if (hasConflictingQqAccount(input)) return false
+    const fallback = modrinthRecord(input).bot ?? qqBotFallback(input)
+    if (!fallback) return false
+    const e=normalizeHostChatEvent(input,fallback,true)
+    if (!this.prepareQqTurn(e)) return false
     // 违禁词:工具/指令路径同样受黑名单约束;命中即中断当前对话,不开新回合
     if (this.handleForbiddenWordHit(e)) return false
     this.handleMemorySelfCorrection(e)
     anchorEventConversation(e)
     const durability = this.chatTurnDurability
-    if (!durability) return await this.handleToolInner(e)
+    if (!durability) return await handleToolInnerFn(this,e)
     const turnEvent = e
     await durability.beginTurn(turnEvent)
     try {
-      return await this.handleToolInner(e)
+      if (!isAgentBindingCurrent(e)) return false
+      return await handleToolInnerFn(this,e)
     } finally {
       await durability.completeTurn(turnEvent)
     }
@@ -394,6 +415,7 @@ class ExamplePlugin extends ports.Plugin {
 
   /** 出站幂等入口：sendSegmentedMessage 每次发送前认领，防补跑重复回复 */
   async claimTurnReply(e: Parameters<ReturnType<ChatPluginPorts['createChatTurnDurability']>['claimReply']>[0]) {
+    if (!isAgentBindingCurrent(e)) return { claimed: false }
     return await this.chatTurnDurability?.claimReply(e) || { claimed: true }
   }
 
@@ -411,7 +433,9 @@ class ExamplePlugin extends ports.Plugin {
             return
           }
           logger.info(`[回合持久化] 补跑未完成回合 group=${envelope.group_id} user=${envelope.user_id} msg="${String(envelope.msg || "").slice(0, 30)}"`)
-          await this.handleToolInner(e)
+          if (await this.handleToolInner(e) === false && envelope.agentBindingToken) {
+            logger.info(`[回合持久化] 未恢复原绑定回合 group=${envelope.group_id}`)
+          }
         }
       }).catch(error => logger.error("[回合持久化] 恢复调度失败:", error))
     }, delayMs)
@@ -626,8 +650,9 @@ class ExamplePlugin extends ports.Plugin {
     }
     const forward = await group.makeForwardMsg(nodes)
     const result = await this.sendObservedReply(e, forward, false, "agent_forward")
-    logger.info(`[Modrinth] 已发送合并转发，共 ${nodes.length} 个模组节点`)
-    return modrinthRecord(result).message_id
+    const messageId = extractDeliveryMessageId(result)
+    if (messageId !== null) logger.info(`[Modrinth] 已发送合并转发，共 ${nodes.length} 个模组节点`)
+    return messageId
   }
 
   async sendModrinthForwardCards(e:import('../../conversation/application/finalReply.js').FinalEvent, cards:unknown[] = []) {
@@ -668,8 +693,9 @@ class ExamplePlugin extends ports.Plugin {
     }))
     const forward = await group.makeForwardMsg(nodes)
     const result = await this.sendObservedReply(e, forward, false, "agent_forward")
-    logger.info(`[Modrinth] 已发送 HTML 卡面合并转发，共 ${nodes.length} 个模组节点`)
-    return modrinthRecord(result).message_id
+    const messageId = extractDeliveryMessageId(result)
+    if (messageId !== null) logger.info(`[Modrinth] 已发送 HTML 卡面合并转发，共 ${nodes.length} 个模组节点`)
+    return messageId
   }
 
   /**
@@ -745,8 +771,7 @@ class ExamplePlugin extends ports.Plugin {
    */
   async isMutedInGroup(e: Parameters<typeof mutedGroupPolicy.isMutedInGroup>[0]) {return await mutedGroupPolicy.isMutedInGroup(e)}
 
-  getSmartState(groupId: string|number|undefined, e?: {self_id?:string|number;bot?:{uin?:string|number}}) {
-    // 群运行时状态统一门面:smart 状态存储已迁 core/runtime/groupRuntime.js(行为不变)
+  getSmartState(groupId: string|number|undefined, e?: ConversationIdentity) {
     return getSmartRuntimeState(smartConversationKey(groupId ?? "", e))
   }
 
@@ -774,7 +799,7 @@ class ExamplePlugin extends ports.Plugin {
 
   scheduleMergedToolRequest(e:ChatTurnEvent, handler:(event:ChatTurnEvent)=>Promise<void>) {
     if (e.group_id === undefined && e.message_type !== "private") return null
-    const normalized=normalizeHostChatEvent(e,ports.getBot())
+    const normalized=normalizeHostChatEvent(e,ports.getBot(),true)
     const {_triggerContext,reply,group_id,...scope}=normalized
     // 私聊(无私聊群号)不写 group_id,exactOptionalPropertyTypes 下不允许显式 undefined
     const scheduled={...scope,...(group_id!==undefined?{group_id}:{}),...(typeof reply==='function'?{reply:(...args:unknown[])=>reply(args[0],typeof args[1]==='boolean'?args[1]:undefined)}:{}),...(_triggerContext?.mode?{_triggerContext:{mode:_triggerContext.mode}}:{})}
@@ -784,7 +809,10 @@ class ExamplePlugin extends ports.Plugin {
   /**
    * smart 模式触发入口：每条群消息进入此函数，按 talkValue 阈值/空窗补偿/强制覆盖三种条件决定是否调 Timing Gate
    */
-  async handleRandomReplySmart(...args: Tail<Parameters<typeof handleRandomReplySmartFn>>) { return await handleRandomReplySmartFn(this,...args) }
+  async handleRandomReplySmart(...args: Tail<Parameters<typeof handleRandomReplySmartFn>>) {
+    if (!isAgentBindingCurrent(args[0])) return false
+    return await handleRandomReplySmartFn(this,...args)
+  }
 
   shouldReleaseSmartLockForLongTask(e: {msg?:string} = {}) {
     return resolveLongTaskFeedbackPolicy(String(e?.msg || ""))?.releaseSmartLock === true
@@ -870,10 +898,12 @@ class ExamplePlugin extends ports.Plugin {
 
   async getTurnActionFacts(e:ActionFactsEvent,query:ActionFactsQuery={}) {
     const tasks=await getTurnActionFacts(this,e,query)
+    if(!isAgentBindingCurrent(e))return unknownTurnActionFacts(e)
     const reminder=this.toolInstances?.reminderTool
     if(!reminder||typeof reminder!=='object'||!('getActionFacts' in reminder)||typeof reminder.getActionFacts!=='function')return tasks
     try {
       const scheduled=validateTurnActionFacts(await Reflect.apply(reminder.getActionFacts,reminder,[e,query]) as TurnActionFacts,e,Date.now(),query)
+      if(!isAgentBindingCurrent(e))return unknownTurnActionFacts(e)
       return {...tasks,lookup:tasks.lookup==='ok'&&scheduled.lookup==='ok'?'ok' as const:'unavailable' as const,tasks:[...tasks.tasks,...scheduled.tasks]}
     } catch {return {...tasks,lookup:'unavailable' as const}}
   }
@@ -899,20 +929,23 @@ class ExamplePlugin extends ports.Plugin {
   formatTaskStatusForPrompt(...args: Tail<Parameters<typeof formatTaskStatusForPrompt>>) { return formatTaskStatusForPrompt(this,...args) }
 
   getToolRunKey(groupId:unknown, userId:unknown, toolName:unknown, event?:ActionFactsEvent) {
+    const scope = configuredConversationKey(event?._agentBinding)
+    if (scope) return JSON.stringify([scope, String(userId), String(toolName)])
     const botId=event?.self_id||event?.bot?.uin
     return `${botId?`bot:${botId}:`:""}${groupId}:${userId}:${toolName}`
   }
 
-  async beginConversationTask(e:Pick<ChatTurnEvent,"group_id"|"user_id"|"message_id">) {
+  async beginConversationTask(e:ActionFactsEvent) {
     const groupId = e.group_id
     const userId = e.user_id
     const messageId=typeof e.message_id==='string'||typeof e.message_id==='number'?e.message_id:null
-    if (!groupId || !userId) return { groupId, userId, messageId }
+    if ((!groupId && e._agentBinding?.source !== 'configured') || !userId) return { groupId, userId, messageId, event:e }
 
     const task = {
       groupId,
       userId,
       messageId,
+      event:e,
       startedAt: Date.now()
     }
 
@@ -921,6 +954,7 @@ class ExamplePlugin extends ports.Plugin {
         groupId,
         userId,
         messageId: task.messageId,
+        event:e,
         status: "processing"
       })
     }
@@ -929,13 +963,13 @@ class ExamplePlugin extends ports.Plugin {
   }
 
   async finishConversationTask(task:Awaited<ReturnType<ExamplePlugin["beginConversationTask"]>>|null|undefined, session:{taskDedupeToolTouched?:boolean}|null|undefined) {
-    if (!task?.groupId || !task?.userId) return
+    if (!task?.userId || (!task.groupId && task.event._agentBinding?.source !== 'configured')) return
 
     if (!task.messageId || session?.taskDedupeToolTouched) return
 
-    const status = await this.getTaskStatus(task.groupId, task.messageId)
+    const status = await this.getTaskStatus(task.groupId, task.messageId, task.event)
     if (!status || status.status === "processing") {
-      await this.clearTaskStatus(task.groupId, task.messageId)
+      await this.clearTaskStatus(task.groupId, task.messageId, task.event)
     }
   }
 
@@ -944,22 +978,11 @@ class ExamplePlugin extends ports.Plugin {
   }
 
   isToolResultError(result:unknown) {
-    const text = typeof result === "string" ? result : JSON.stringify(result || "")
-    try {
-      const parsed = JSON.parse(text)
-      if (parsed && typeof parsed === 'object') {
-        if (parsed.success === false) return true
-        if (['chat_history', 'member_info'].includes(parsed.action) && parsed.success === true) return false
-      }
-    } catch {}
-    return /^error[:：]/i.test(text.trim()) || /"error"\s*:/.test(text) || /失败|错误|失敗|錯誤/.test(text)
+    return classifyToolResult(result).kind === 'error'
   }
 
   isRawToolFailure(result:unknown) {
-    const text = typeof result === "string" ? result.trim() : JSON.stringify(result || "").trim()
-    return /^error[:：]/i.test(text) ||
-      /^\{\s*"error"\s*:/i.test(text) ||
-      /^(?:[^\n]{0,48})(?:请求|查询|分析|下载|解析|发送|处理|执行|生成|编辑).{0,20}(?:失败|错误|异常|超时)/i.test(text)
+    return classifyToolResult(result).kind === 'error'
   }
 
   syncDedupeToolConfig(...args: Tail<Parameters<typeof toolAssembly.syncDedupeToolConfig>>) { return toolAssembly.syncDedupeToolConfig(this,...args) }
@@ -1005,13 +1028,10 @@ class ExamplePlugin extends ports.Plugin {
   getPersonaFor(e:unknown) {
     const event=modrinthRecord(e)
     const snapshot = event._personaSnapshot as PersonaSnapshot | undefined
-    if (snapshot?.persona && snapshot.botId === String(event.self_id || modrinthRecord(event.bot).uin || '')) return snapshot.persona
+    const accountId = resolveQqConversationAddress(event)?.account.id ?? String(event.self_id || modrinthRecord(event.bot).uin || '')
+    if (snapshot?.persona && snapshot.botId === accountId) return snapshot.persona
     try {
-      return this.personaLibrary?.resolve({
-        messageType: String(event.message_type || ""),
-        groupId: String(event.group_id || ""),
-        selfId: String(event.self_id || modrinthRecord(event.bot).uin || "")
-      })?.persona || this.config?.persona || {}
+      return resolveQqAgentBinding(this.personaLibrary, event).selected.persona
     } catch {
       return this.config?.persona || {}
     }
@@ -1031,15 +1051,44 @@ class ExamplePlugin extends ports.Plugin {
 
   getPersonaSnapshotFor(e:unknown): PersonaSnapshot {
     const event = modrinthRecord(e)
-    const botId = String(event.self_id || modrinthRecord(event.bot).uin || '')
-    const resolved = this.personaLibrary?.resolve({messageType: String(event.message_type || ''), groupId: String(event.group_id || ''), selfId: botId})
+    const rawBotId = String(event.self_id || modrinthRecord(event.bot).uin || '')
+    const resolved = this.personaLibrary && resolveQqAgentBinding(this.personaLibrary, event)
+    const botId = resolved?.binding?.target.account.id ?? qqId(rawBotId) ?? rawBotId
     return createPersonaSnapshot({
       botId,
-      personaId: resolved?.id || 'default',
-      persona: resolved?.persona || this.config.persona || {},
+      personaId: resolved?.scopeId || 'default',
+      persona: resolved?.selected.persona || this.config.persona || {},
+      ...(resolved?.binding ? {binding: resolved.binding} : {}),
       systemContent: this.config.systemContent || '',
       ...(this.config.personaGuard ? {personaGuard: this.config.personaGuard} : {})
     })
+  }
+
+  restoreDeferredAgentBinding(...args:Parameters<RestoreDeferredAgentBinding>):ReturnType<RestoreDeferredAgentBinding> {
+    return this.personaLibrary ? restoreQqDeferredBinding(this.personaLibrary, ...args) : 'unavailable'
+  }
+
+  prepareQqTurn(e:ChatTurnEvent):boolean {
+    if (hasConflictingQqAccount(e)) return false
+    try {
+      const current = this.getPersonaSnapshotFor(e)
+      const binding = current.binding
+      const incoming = decodeQqIncomingMessage(e, binding ? {binding} : {})
+      if (!incoming) return false
+      e._incomingMessage = incoming
+      if (!binding) return e._expectedAgentBindingToken === undefined
+      if ('_turnRecovery' in e && e._turnRecovery === true && e._expectedAgentBindingToken === undefined && binding.source === 'configured') return false
+      const token = agentBindingToken(binding)
+      const pending = e._pendingPersonaSnapshot
+      const preserveGate = pending?.binding && agentBindingToken(pending.binding) === token
+      if (pending?.binding && !preserveGate) return false
+      if (!captureQqBinding(this.personaLibrary, e, binding)) return false
+      e._pendingPersonaSnapshot = preserveGate ? pending : current
+      return true
+    } catch (error) {
+      logger.warn?.(`[角色绑定] QQ 回合未执行：${error instanceof Error ? error.message : '无法解析角色绑定'}`)
+      return false
+    }
   }
 
   mergeConfig(defaults:Record<string,unknown>, user:unknown) {
@@ -1151,9 +1200,30 @@ class ExamplePlugin extends ports.Plugin {
    */
   async fallbackToSingleJudgment(...args: Tail<Parameters<typeof fallbackToSingleJudgment>>) { return await fallbackToSingleJudgment(this,...args) }
 
-  async handleRandomReply(...args: Tail<Parameters<typeof handleRandomReply>>) { return await handleRandomReply(this,...args) }
+  async handleRandomReply(...args: Tail<Parameters<typeof handleRandomReply>>) {
+    const [event] = args
+    const input = event.bot ? event : Object.assign(Object.create(event), {bot:qqBotFallback(event)})
+    try {
+      const {binding} = resolveQqAgentBinding(this.personaLibrary, input)
+      if (!binding || !captureQqBinding(this.personaLibrary, input, binding)) return false
+      const incoming = decodeQqIncomingMessage(input, {binding})
+      if (!incoming) return false
+      input._incomingMessage = incoming
+    } catch (error) {
+      logger.warn?.(`[角色绑定] QQ 消息未进入聊天链路：${error instanceof Error ? error.message : '无法解析角色绑定'}`)
+      return false
+    }
+    return await handleRandomReply(this,input)
+  }
 
-  async handleToolInner(event:unknown):Promise<unknown> {return await handleToolInnerFn(this,normalizeHostChatEvent(event,ports.getBot()))}
+  async handleToolInner(event:unknown):Promise<unknown> {
+    if (hasConflictingQqAccount(event)) return false
+    const fallback = modrinthRecord(event).bot ?? qqBotFallback(event)
+    if (!fallback) return false
+    const e = normalizeHostChatEvent(event,fallback,true)
+    if (!this.prepareQqTurn(e)) return false
+    return await handleToolInnerFn(this,e)
+  }
 
   formatMessages(...args: Tail<Parameters<typeof formatMessages>>) {
     return (formatMessages(this,...args)||[]).map(message=>({...message,content:typeof message.content==='string'?message.content:''}))
@@ -1163,12 +1233,18 @@ class ExamplePlugin extends ports.Plugin {
    * 格式化工具返回结果（截断过长内容）
    */
 
-	  async retryRequest(...args: Tail<Parameters<typeof toolAssembly.retryRequest>>) { return decodeHostModelResponse(await toolAssembly.retryRequest(this,...args)) }
+	  async retryRequest(...args: Tail<Parameters<typeof toolAssembly.retryRequest>>) {
+      const response = await toolAssembly.retryRequest(this, ...args)
+      return response === null ? null : decodeHostModelResponse(response)
+    }
 
   getFriendlyFailureMessage(name = '', context: Partial<import('../../../contracts/toolExecution.js').ExecutionFailureContext> = {}) {return getFriendlyFailureMessage(name,{error:context.error,...(context.e?{e:context.e}:{}),...(context.session?{session:normalizeFailureSession(context.session)}:{})})}
 
   async composeToolFailureReply(toolName = "", context:ToolFailureContext = {}) {
     const fallback = context.factualReply || this.getFriendlyFailureMessage(toolName,context)
+    const isCurrent = () => isAgentBindingCurrent(context.e)
+    if (!isCurrent()) return fallback
+    if (context.e?._isMemoryContextCurrent && !await context.e._isMemoryContextCurrent().catch(() => false)) return fallback
     const messages = selectAgentReplyContext(context.messages).filter((item):item is NonNullable<typeof item>=>Boolean(item)).map(item=>({role:item.role || "user",content:String(item.content || "")}))
     if (!messages.length) return fallback
 
@@ -1183,9 +1259,11 @@ class ExamplePlugin extends ports.Plugin {
         toolName,
         {
           routeLabel: "工具失败自然回复",
-          generation: { temperature: 0.55, maxOutputTokens: 240 }
+          generation: { temperature: 0.55, maxOutputTokens: 240 },
+          isCurrent,
         }
       )
+      if (!isCurrent()) return fallback
       const content = String(response?.choices?.[0]?.message?.content || "").trim()
       if (content && !containsInternalStatusLeak(content)) return content
     } catch (error) {
@@ -1195,12 +1273,11 @@ class ExamplePlugin extends ports.Plugin {
   }
 
   // P4 主判定：模型意图优先（6s 超时，confidence<0.7 或失败返回 null 走正则兜底）
-  async resolvePrimaryModelIntent(text:string, { hasImages = false, timeoutMs = 6000, signal }: {hasImages?:boolean;timeoutMs?:number;signal?:AbortSignal} = {}) {
-    const ai = this.config?.intentAiConfig || this.config?.toolsAiConfig || {}
+  async resolvePrimaryModelIntent(text:string, { hasImages = false, timeoutMs = 6000, signal, isCurrent }: {hasImages?:boolean;timeoutMs?:number;signal?:AbortSignal;isCurrent?:()=>boolean} = {}) {
     if (!this.config.intentAiConfig?.intentAiUrl && !this.config.toolsAiConfig?.toolsAiUrl) return null
     try {
-      const result = await classifyIntentWithModel({ text, hasImages, config: this.config, timeoutMs, ...(signal ? {signal} : {}) })
-      if (result.intent === "unavailable" || result.confidence < 0.7) return null
+      const result = await classifyIntentWithModel({ text, hasImages, config: this.config, timeoutMs, ...(signal ? {signal} : {}), ...(isCurrent ? {isCurrent} : {}) })
+      if (!isModelRequestCurrent(isCurrent) || result.intent === "unavailable" || result.confidence < 0.7) return null
       logger.info(`[意图主判定] model=${result.intent} conf=${result.confidence} text=${String(text).slice(0, 30)}`)
       return result
     } catch {
@@ -1221,6 +1298,7 @@ class ExamplePlugin extends ports.Plugin {
   }
 
   async handleToolFailureResponse(toolName = "", context:ToolFailureContext = {}) {
+    if (!isAgentBindingCurrent(context.e)) return
     // 出站仲裁：工具已失败，扣住的承诺类文案直接丢弃，只发事实性失败说明
     const arbiter=modrinthRecord(context.session?.outboundArbiter);if(typeof arbiter.markFailure==='function')Reflect.apply(arbiter.markFailure,context.session?.outboundArbiter,[])
     // 表情包是锦上添花的反应形态：限流/文件缺失/发送失败时不再起一次润色模型道歉——
@@ -1230,6 +1308,11 @@ class ExamplePlugin extends ports.Plugin {
       return
     }
     if (!context.e || !context.session) return
+    const unknownResult = [context.error, context.failedResult, ...(context.session.toolResults || []).map(result => result.result)].find(isUnknownToolResult)
+    if (unknownResult !== undefined) {
+      const factualReply = this.getFriendlyFailureMessage(toolName, {...context, error: unknownResult})
+      return await this.handleTextResponse(factualReply, normalizeFailureEvent(context.e), normalizeFailureSession(context.session), normalizeFailureMessages(context.messages), toolName)
+    }
     if (isImageDeliveryToolName(toolName) && context?.e?.group_id) {
       recordDrawTextFallback(context.e.group_id, context?.session?.rawArgs || context?.e?.msg || "")
     }
@@ -1240,6 +1323,7 @@ class ExamplePlugin extends ports.Plugin {
       return await this.handleTextResponse(factualReply, normalizeFailureEvent(context.e), normalizeFailureSession(context.session), normalizeFailureMessages(context.messages), toolName)
     }
     const output = await this.composeToolFailureReply(toolName, context)
+    if (!isAgentBindingCurrent(context.e)) return
     return await this.handleTextResponse(output, normalizeFailureEvent(context.e), normalizeFailureSession(context.session), normalizeFailureMessages(context.messages), toolName)
   }
 

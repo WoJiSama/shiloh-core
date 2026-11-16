@@ -57,7 +57,7 @@ test('官方旧模板拼装后只保留当前人格与公共规则，原配置�
 
 test('任务人物画像保留群和对话者信息，不再重复投影自身人格；历史机器人标签不硬编码名字', async () => {
   const persona={enabled:true,name:'安序',identity:'冷静克制',tone:'简练',notes:'备注哨兵'}
-  const PersonProfile=createPersonProfileClass({getConfig:()=>({persona,personProfileInjection:{enabled:true},groupProfiles:[{groupId:123,atmosphere:'讨论技术'}]}),getPersonaFor:()=>persona,getMessages:async()=>[{sender:{user_id:202},content:'讨论数据库'}]})
+  const PersonProfile=createPersonProfileClass({filterRecentMessages:async(_group,messages)=>messages,getConfig:()=>({persona,personProfileInjection:{enabled:true},groupProfiles:[{groupId:123,atmosphere:'讨论技术'}]}),getPersonaFor:()=>persona,getMessages:async()=>[{sender:{user_id:202},content:'讨论数据库'}]})
   const profile=await new PersonProfile().build(123,202,{sender:{nickname:'群友'}})
   assert.ok(profile.includes('讨论技术'))
   assert.ok(profile.includes('讨论数据库'))

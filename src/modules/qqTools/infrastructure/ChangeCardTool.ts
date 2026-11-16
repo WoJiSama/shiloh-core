@@ -1,5 +1,5 @@
-import type { QqToolEvent, QqToolBot, QqToolGroup, QqMember, QqToolPorts, PbObject, PbValue } from '../../../contracts/qqTools.js'
-import { apiOk, asRecord, errorText, eventBot } from './qqToolRuntime.js'
+import type { QqToolEvent, QqMember, QqToolPorts } from '../../../contracts/qqTools.js'
+import { apiOk, captureQqToolScope, errorText, qqToolGroup, QqToolBindingChanged, requireQqToolBot } from './qqToolRuntime.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js';
 
 // ChangeCardTool.js
@@ -60,7 +60,6 @@ class ChangeCardTool extends AbstractTool {
   async func(opts: Record<string, unknown>, e: QqToolEvent) {
     const target = typeof opts.target==='string'?opts.target:'';
     const cardName = typeof opts.cardName==='string'?opts.cardName:'';
-    const bot = eventBot(e,ports);
     if (!target) {
       return '无法获取到要修改的目标qq号';
     }
@@ -70,17 +69,11 @@ class ChangeCardTool extends AbstractTool {
     // if (!['owner', 'admin'].includes(senderRole)) {
     //   return '不能修改群主和管理员的群聊名称';
     // }
-    // 获取群对象
-    let group;
     try {
-      group = e.group || await bot.pickGroup(groupId);
-    } catch (error) {
-      console.error('获取群信息失败:', error);
-      return `未找到群 ${groupId}`;
-    }
-
-    try {
-      const members = await group.getMemberMap();
+      const scope = captureQqToolScope(e);
+      const bot = requireQqToolBot(scope, ports);
+      const group = await qqToolGroup(scope, e, bot, groupId);
+      const members = await scope.effect(() => group.getMemberMap(), bot);
 
       const foundMember = this.findMember(target, members);
 
@@ -90,16 +83,16 @@ class ChangeCardTool extends AbstractTool {
 
       if (String(foundMember.qq) !== String(e.sender?.user_id ?? e.user_id) && !['owner','admin'].includes(e.sender?.role ?? '')) return '只有群主或管理员可以修改其他成员的群名片';
       // 检查机器人权限
-      const botMember = members.get(bot.uin);
-      if (!['owner','admin'].includes(botMember?.role ?? '') && foundMember.qq !== bot.uin) {
+      const botMember = members.get(Number(bot.uin));
+      if (!['owner','admin'].includes(botMember?.role ?? '') && String(foundMember.qq) !== String(bot.uin)) {
         return `失败了，我在这个群聊 ${groupId} 没有权限修改别人的群聊名称`;
       }
 
-      const resData = await bot.sendApi('set_group_card', {
+      const resData = await scope.effect(() => bot.sendApi('set_group_card', {
         "group_id": groupId,
         "user_id": Number(foundMember.qq),
         "card": cardName
-      });
+      }), bot);
 
       if (apiOk(resData)) {
         return `修改目标用户${target}群聊昵称成功`;
@@ -108,6 +101,7 @@ class ChangeCardTool extends AbstractTool {
       }
 
     } catch (error) {
+      if (error instanceof QqToolBindingChanged) return `error: ${error.message}`;
       console.error(`修改群聊名称操作失败:`, error);
       return `修改群聊名称操作失败: ${errorText(error)}`;
     }

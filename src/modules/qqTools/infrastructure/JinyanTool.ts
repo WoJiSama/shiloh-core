@@ -1,5 +1,5 @@
-import type { QqToolEvent, QqToolBot, QqToolGroup, QqMember, QqToolPorts, PbObject, PbValue } from '../../../contracts/qqTools.js'
-import { apiOk, asRecord, errorText, eventBot } from './qqToolRuntime.js'
+import type { QqToolEvent, QqToolBot, QqToolGroup, QqMember, QqToolPorts } from '../../../contracts/qqTools.js'
+import { apiOk, captureQqToolScope, errorText, qqToolGroup, QqToolBindingChanged, requireQqToolBot, type QqToolScope } from './qqToolRuntime.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js';
 
 /**
@@ -125,7 +125,6 @@ class JinyanTool extends AbstractTool {
    * @returns {Promise<Object|string>} - 操作结果或错误信息
    */
   async func(opts: Record<string, unknown>, e: QqToolEvent) {
-    const bot = eventBot(e, ports)
     const target = typeof opts.target === 'string' ? opts.target : Array.isArray(opts.target) ? opts.target.filter((v):v is string=>typeof v==='string') : undefined
     const time = typeof opts.time === 'number' && Number.isFinite(opts.time) ? opts.time : 300
     const random = opts.random === true, confirm = opts.confirm === true
@@ -144,20 +143,14 @@ class JinyanTool extends AbstractTool {
       return '该群员不是群主或管理员，无权命令我执行禁言操作';
     }
 
-    // 获取群对象
-    let group;
     try {
-      group = e.group || await bot.pickGroup(groupId);
-    } catch (error) {
-      console.error('获取群信息失败:', error);
-      return `未找到群 ${groupId}`;
-    }
-
-    try {
-      const members = await group.getMemberMap();
+      const scope = captureQqToolScope(e);
+      const bot = requireQqToolBot(scope, ports);
+      const group = await qqToolGroup(scope, e, bot, groupId);
+      const members = await scope.effect(() => group.getMemberMap(), bot);
       
       // 检查机器人权限
-      const botMember = members.get(bot.uin);
+      const botMember = members.get(Number(bot.uin));
       if (!['owner','admin'].includes(botMember?.role ?? '')) {
         return `失败了，我在这个群聊 ${groupId} 没有权限${operationType}别人`;
       }
@@ -167,7 +160,7 @@ class JinyanTool extends AbstractTool {
         if (!confirm && !isUnmute) {
           return '执行全体禁言需要额外确认，请添加 confirm 参数';
         }
-        const response = await group.muteAll(muteTime);
+        const response = await scope.effect(() => group.muteAll(muteTime), bot);
         if (!apiOk(response)) return '全体禁言响应未确认成功，请查看群状态，勿重复执行';
         return {
           action: isUnmute ? 'unmuteAll' : 'muteAll',
@@ -179,12 +172,12 @@ class JinyanTool extends AbstractTool {
 
       // 处理随机操作
       if (!target || random) {
-        return await this.handleRandomOperation(e, group, members, muteTime);
+        return await this.handleRandomOperation(e, group, members, muteTime, scope, bot);
       }
 
       // 处理指定目标操作
       const targets = Array.isArray(target) ? target : [target];
-      const results = await this.handleBatchOperation(targets, group, members, muteTime);
+      const results = await this.handleBatchOperation(targets, group, members, muteTime, scope, bot);
 
       // 统计成功和失败数量
       const successCount = results.filter(r => r.success).length;
@@ -204,6 +197,7 @@ class JinyanTool extends AbstractTool {
       };
 
     } catch (error) {
+      if (error instanceof QqToolBindingChanged) return `error: ${error.message}`;
       console.error(`${operationType}操作失败:`, error);
       return `${operationType}操作失败: ${errorText(error)}`;
     }
@@ -217,7 +211,7 @@ class JinyanTool extends AbstractTool {
    * @param {number} muteTime - 禁言时长
    * @returns {Promise<Object>} - 操作结果
    */
-  async handleRandomOperation(e: QqToolEvent, group: QqToolGroup, members: Map<number,QqMember>, muteTime: number) {
+  async handleRandomOperation(e: QqToolEvent, group: QqToolGroup, members: Map<number,QqMember>, muteTime: number, scope: QqToolScope, bot: QqToolBot) {
     const isUnmute = muteTime === 0;
     let availableMembers: [number,QqMember][];
 
@@ -232,7 +226,7 @@ class JinyanTool extends AbstractTool {
       // 禁言模式：获取可以被禁言的普通成员
       availableMembers = Array.from(members.entries())
         .filter(([id, member]) =>
-          id !== eventBot(e, ports).uin &&
+          String(id) !== String(bot.uin) &&
           member.role === 'member' &&
           String(id) !== String(e.sender?.user_id ?? e.user_id)
         );
@@ -249,7 +243,7 @@ class JinyanTool extends AbstractTool {
     const [targetQQ, targetMember] = selected;
 
     try {
-      if (!apiOk(await group.muteMember(targetQQ, muteTime))) throw new Error('操作响应未确认成功，请查看群状态，勿重复执行');
+      if (!apiOk(await scope.effect(() => group.muteMember(targetQQ, muteTime), bot))) throw new Error('操作响应未确认成功，请查看群状态，勿重复执行');
       return {
         action: isUnmute ? 'unmute' : 'mute',
         targetQQ,
@@ -281,7 +275,7 @@ class JinyanTool extends AbstractTool {
    * @param {number} muteTime - 禁言时长
    * @returns {Promise<Array>} - 操作结果数组
    */
-  async handleBatchOperation(targets: string[], group: QqToolGroup, members: Map<number,QqMember>, muteTime: number) {
+  async handleBatchOperation(targets: string[], group: QqToolGroup, members: Map<number,QqMember>, muteTime: number, scope: QqToolScope, bot: QqToolBot) {
     const isUnmute = muteTime === 0;
     const results = [];
 
@@ -327,7 +321,7 @@ class JinyanTool extends AbstractTool {
       }
 
       try {
-        if (!apiOk(await group.muteMember(targetQQ, muteTime))) throw new Error('操作响应未确认成功，请查看群状态，勿重复执行');
+        if (!apiOk(await scope.effect(() => group.muteMember(targetQQ, muteTime), bot))) throw new Error('操作响应未确认成功，请查看群状态，勿重复执行');
         results.push({
           target,
           targetQQ,

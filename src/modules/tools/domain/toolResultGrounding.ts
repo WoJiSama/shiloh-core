@@ -1,10 +1,16 @@
 import {toolRecord} from '../../../contracts/toolExecution.js'
 import type {ToolResult} from '../../../contracts/toolExecution.js'
-const ERROR_PATTERN = /^(?:error|错误|失败)[:：]|"error"\s*:|(?:请求|查询|分析|下载|解析|发送).{0,16}(?:失败|错误|异常|超时)|链接已过期|无效的.+链接|未检测到有效/i
-const NOT_FOUND_PATTERN = /(?:未找到|没有找到|没找到|未查到|没有查到|没查到|未命中|无匹配|没有匹配|没有相关结果|未找到相关结果|匹配数量\s*[:：]\s*0|结果数量\s*[:：]\s*0)/i
+// Legacy tools expose status as a leading label. Payload prose is never a status signal.
+const ERROR_PATTERN = /^(?:(?:error|错误|失败)[:：]|(?:请求|查询|搜索|分析|下载|解析|发送|处理|执行|生成|编辑)(?:失败|错误|异常|超时)[:：\s]|链接已过期|无效的.{0,16}链接|未检测到有效)/i
+const NOT_FOUND_PATTERN = /^(?:未找到|没有找到|没找到|未查到|没有查到|没查到|未命中|无匹配|没有匹配|没有相关结果|匹配数量\s*[:：]\s*0|结果数量\s*[:：]\s*0)/i
 
 function parseJson(text = "") {
   try { return JSON.parse(text) as unknown } catch { return undefined }
+}
+
+export function isUnknownToolResult(result:unknown):boolean {
+  const value=toolRecord(typeof result==='string'?parseJson(result):result)
+  return value.status==='unknown'||value.unknown===true||value.uncertain===true
 }
 function hasMeaningfulValue(value:unknown):boolean {
   if (value === undefined || value === null) return false
@@ -26,6 +32,7 @@ export function classifyToolResult(result:unknown) {
   if (!text) return { kind: "empty", text: "" }
   const parsed = parseJson(text)
   const structured = toolRecord(parsed)
+  if(isUnknownToolResult(result))return {kind:'error',text,parsed}
   if (structured.action === 'chat_history' || structured.action === 'member_info') {
     if (structured.status === 'not_found') return {kind: 'not_found', text, parsed}
     if (structured.status === 'unavailable') return {kind: 'empty', text, parsed}
@@ -35,13 +42,19 @@ export function classifyToolResult(result:unknown) {
   }
   if (toolRecord(parsed).kind === "tool_outcome") {
     const status = String(toolRecord(parsed).status || "").toLowerCase()
-    if (["error", "failed", "timeout"].includes(status)) return { kind: "error", text, parsed }
+    if (["error", "failed", "timeout", "unknown"].includes(status)) return { kind: "error", text, parsed }
     if (["not_found", "missing"].includes(status)) return { kind: "not_found", text, parsed }
     if (["empty", "unavailable"].includes(status)) return { kind: "empty", text, parsed }
     if (status === "success") return { kind: "success", text, parsed }
   }
-  if (ERROR_PATTERN.test(text)) return { kind: "error", text, parsed }
-  if (NOT_FOUND_PATTERN.test(text)) return { kind: "not_found", text }
+  if (parsed !== undefined) {
+    if (structured.ok === false || structured.success === false || structured.isError === true || ['failed','error','timeout','unknown'].includes(String(structured.status || '')) || hasMeaningfulValue(structured.error)) return {kind:'error',text,parsed}
+    if (structured.status === 'not_found') return {kind:'not_found',text,parsed}
+    if (['empty','unavailable'].includes(String(structured.status || ''))) return {kind:'empty',text,parsed}
+  } else {
+    if (ERROR_PATTERN.test(text)) return { kind: "error", text, parsed }
+    if (NOT_FOUND_PATTERN.test(text)) return { kind: "not_found", text }
+  }
   if (parsed !== undefined && !hasMeaningfulValue(parsed)) return { kind: "empty", text, parsed }
   return { kind: "success", text, parsed }
 }
@@ -55,6 +68,7 @@ export function buildToolGroundingInstruction(results:ToolResult[] = []) {
     "【本轮工具结果事实边界】",
     "最终回复只能陈述本轮工具结果中明确出现的事实。聊天历史、旧回复、记忆和常识只能帮助理解指代，绝不能用来填补本轮工具的空白。",
     "如果某项结果是 empty、not_found 或 error，必须明确说本轮没有拿到/没有找到，禁止回忆旧答案、猜测数值、补全名称或假装查到了。",
+    "若结构化状态为 unknown，外部动作可能已经发生，只能说明结果未确认；不得断言没有执行或自动重试同一动作，须先核实。",
     `本轮状态: ${statuses.map(item => `${item.toolName}=${item.kind}`).join("；")}`
   ].join("\n")
 }
@@ -62,6 +76,7 @@ export function buildToolGroundingInstruction(results:ToolResult[] = []) {
 export function buildUnavailableToolReply(results:ToolResult[] = []) {
   const classified = results.map(result => ({ toolName: String(result?.toolName || ""), state: classifyToolResult(result?.result) }))
   const kinds = classified.map(result => result.state.kind)
+  if(results.some(result=>isUnknownToolResult(result.result)))return '这次执行结果没能确认，动作可能已经发生。我先停下，核实前不重复执行。'
   const imageFailure = classified.find(result => result.toolName === "googleImageAnalysisTool" && result.state.kind !== "success")
   if (imageFailure) {
     const code = String(toolRecord(toolRecord(imageFailure.state.parsed).error).code || "")

@@ -1,11 +1,13 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
+import { createQqMessageActionPort } from "../dist/backend/adapters/qqMessageDelivery.js"
 import {
   bucketKeyForHelper,
   censorOutbound,
   computeDelayMs,
   createTokenBuckets,
   isSendAction,
+  installOutboundThrottle,
   readRiskControlConfig
 } from "../utils/messagePipeline/outboundThrottle.js"
 
@@ -119,4 +121,31 @@ test("桶键按群/私聊维度生成", () => {
   assert.equal(bucketKeyForHelper("send_group_msg", { group_id: 123 }, "42"), "g:42:123")
   assert.equal(bucketKeyForHelper("send_private_msg", { user_id: 999 }, "42"), "p:42:999")
   assert.equal(bucketKeyForHelper("send_msg", {}, "42"), "")
+})
+
+test("host queue drops a revoked action immediately before sending and keeps simultaneous actions isolated", async t => {
+  const account = {platform:"qq", namespace:"global", id:"99"}
+  const calls = []
+  const bot = {
+    uin:99,
+    async sendApi(action, params) { calls.push({action, params}); return {message_id:77} },
+    pickGroup(groupId) {
+      return {sendMsg: message => bot.sendApi("send_group_msg", {group_id:groupId, message})}
+    },
+  }
+  const root = {bots:{99:bot}}
+  t.after(installOutboundThrottle({
+    getBotRoot:() => root,
+    getSettings:() => ({riskControl:{enabled:true,delayMinMs:5,delayMaxMs:5}}),
+    signalMonitor:{quietFactor:() => 1,detectResponse() {}},
+  }))
+  const port = createQqMessageActionPort({getBotRoot:() => root})
+  const action = id => ({version:1,kind:"message.send",target:{account,kind:"group",id},parts:[{kind:"text",text:"正文"}]})
+  let current = true
+  const stale = port.send(action("42"), {isCurrent:() => current})
+  const fresh = port.send(action("43"), {isCurrent:() => true})
+  current = false
+  assert.deepEqual(await stale, {state:"failed",code:"binding_changed"})
+  assert.deepEqual(await fresh, {state:"sent",messageId:"77"})
+  assert.deepEqual(calls,[{action:"send_group_msg",params:{group_id:43,message:[{type:"text",data:{text:"正文"}}]}}])
 })

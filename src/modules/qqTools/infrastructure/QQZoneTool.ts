@@ -1,5 +1,6 @@
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js';
 import {qqViewRecord} from '../../../contracts/qqToolViews.js'
+import { captureQqToolScope, QqToolBindingChanged } from './qqToolRuntime.js'
 interface QzoneApi {setQzone(text:string,images:unknown):Promise<unknown>;getQzone(count:number,start:number):Promise<unknown>;delQzone(tid:string,source:string):Promise<unknown>}
 export function createQQZoneTool(createApi:(event:unknown)=>QzoneApi){
 // QqZone.js
@@ -34,13 +35,14 @@ class QQZoneTool extends AbstractTool {
   async func(input:unknown, event:unknown) {
     const opts=qqViewRecord(input), e=qqViewRecord(event)
     const text=String(opts.text || ""), type=opts.type===true, pos=opts.pos===undefined?1:Number(opts.pos);
-    if (!type) {
-      try {
-        if (!text) return {
-          status: 'error',
-          message: "发送说说失败，没有要发送的内容"
-        };
-        const result = qqViewRecord(await createApi(event).setQzone(text, e.img))
+    if (!type && !text) return { status: 'error', message: '发送说说失败，没有要发送的内容' };
+    if (type && (!Number.isInteger(pos) || pos < 1)) return '❎ 请描述要删除第几个说说'
+
+    try {
+      const scope = captureQqToolScope(event)
+      const api = scope.effect(() => createApi(event))
+      if (!type) {
+        const result = qqViewRecord(await scope.effect(() => api.setQzone(text, e.img)))
         if (result.code != 0) return {
           status: 'error',
           message: `❎ 说说发表失败\n${JSON.stringify(result)}`
@@ -50,32 +52,28 @@ class QQZoneTool extends AbstractTool {
           message: `✅ 说说发表成功，内容：\n", ${result.content}`
         };
       }
-      catch (error) {
-        return {
-          status: 'error',
-          message: `发送说说失败，${error}`
-        };
-      }
-    } else {
-      if (!Number.isInteger(pos) || pos < 1) return "❎ 请描述要删除第几个说说"
       // 获取说说列表
-      const list = qqViewRecord(await createApi(event).getQzone(1, pos - 1))
+      const list = qqViewRecord(await scope.effect(() => api.getQzone(1, pos - 1)))
 
       if (!Array.isArray(list.msglist) || !list.msglist.length) return "❎ 未获取到该说说"
 
       // 要删除的说说
       const domain = qqViewRecord(list.msglist[0])
-      if (typeof domain.tid!=="string" || typeof domain.t1_source!=="string") return "❎ 说说数据无效"
+      const { tid, t1_source: source } = domain
+      if (typeof tid !== 'string' || typeof source !== 'string') return '❎ 说说数据无效'
       // 请求接口
-      const result = qqViewRecord(await createApi(event).delQzone(domain.tid, domain.t1_source))
+      const result = qqViewRecord(await scope.effect(() => api.delQzone(tid, source)))
       if (!result) return "❎删除说说失败"
 
       if (result.subcode != 0) return "❎ 未知错误" + JSON.stringify(result)
       // 发送结果
       return `✅ 删除说说成功：\n ${pos}.${domain.content} \n - [${domain.secret ? "私密" : "公开"}]${Array.isArray(domain.commentlist)?domain.commentlist.length:0} 条评论`
 
+    } catch (error) {
+      if (error instanceof QqToolBindingChanged) return { status: 'error', error: error.message }
+      if (type) throw error
+      return { status: 'error', message: `发送说说失败，${error}` }
     }
-
   }
 }
 return QQZoneTool

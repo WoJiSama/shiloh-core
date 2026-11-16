@@ -1,7 +1,9 @@
 import type {ConversationEvent,ConversationState,GateResult,Prefilter} from '../application/smartConversation.js'
+import {isAgentBindingCurrent} from '../../../contracts/agentBinding.js'
 import { sideLLMCall } from '../../../adapters/sideLLM.js'
 import { resolveChatCompletionUrl as normalizeChatCompletionUrl } from '../../models/domain/chatCompletionUrl.js'
 import { hasBotTextAnchor, getReplySender, messageQuotesUser } from '../domain/messageContext.js'
+import { configuredConversationKey } from '../domain/conversationIdentity.js'
 import { collectMentionTargetIds, getMentionTargetId, messageMentionsUser } from '../domain/mentionTargets.js'
 import {buildPersonaParticipationPrompt, type PersonaText} from '../domain/personaSource.js'
 import {createPersonaSnapshot} from './personaSnapshot.js'
@@ -40,6 +42,7 @@ const {logger,resolvePersonaName,computeAddresseeSignal,buildPersonaTonePrompt,g
 const now=ports.now ?? Date.now
 const callModel=ports.sideLLMCall ?? sideLLMCall
 async function runTimingGate(host:TimingGateHost, e:ConversationEvent, state:ConversationState, ctx:{phase?:string;prefilter?:Prefilter;threshold?:number} = {}):Promise<GateResult> {
+    if (!isAgentBindingCurrent(e)) return { decision: 'no_action', reason: 'binding_changed' }
     const smartCfg = host.config.smartTrigger || {}
     const ctxSize = Math.max(5, Math.min(100, Number(smartCfg.gateContextSize) || 20))
     // 账号人设名优先:门控判定与提示词必须用本账号的名字,不能拿主号昵称串台
@@ -139,11 +142,13 @@ async function runTimingGate(host:TimingGateHost, e:ConversationEvent, state:Con
     const promptHintBusyGroupRate = Number(smartCfg.promptHintBusyGroupRate) || 30
     const promptHintRateLimitWarn = Number(smartCfg.promptHintRateLimitWarn) || 5
 
+    const groupContextKey = configuredConversationKey(e._agentBinding) ?? e.group_id
+    const groupTopic = getGroupTopicPrompt(groupContextKey)
     // 注意力漂移:刚冒出且正在爆发的新话题 → 注入"容易被吸引"提示(零模型调用,纯话题统计)
     const driftCfg = smartCfg.attentionDrift || {}
     const attentionHint = driftCfg.enabled !== false
       ? formatAttentionHint(detectAttentionHook({
-          groupId: e?.group_id,
+          groupId: groupContextKey,
           windowMs: (Number(driftCfg.windowMinutes) || 5) * 60 * 1000
         }), driftCfg.level)
       : ""
@@ -205,8 +210,8 @@ ${e.sender?.card || e.sender?.nickname || '用户'}: ${e.msg || ''}
 - 群最近 5 分钟消息数：${groupMsgRate5min}
 - 当前时段：${hhmm}（${isLateNight ? '深夜' : '日间'}）
 
-${getGroupTopicPrompt(e?.group_id) ? "\n【群话题】" + getGroupTopicPrompt(e?.group_id).replace("【群话题】", "") : ""}${attentionHint ? "\n" + attentionHint : ""}
-${getGroupSocialPrompt(e?.group_id)}
+${groupTopic ? '\n【群话题】' + groupTopic.replace('【群话题】', '') : ''}${attentionHint ? '\n' + attentionHint : ''}
+${getGroupSocialPrompt(groupContextKey)}
 【对话状态】
 - 当前焦点：${phase}（focus=刚参与话题中；fading=余热；cold=未参与）
 - 触发原因：${triggerReason}
@@ -219,6 +224,7 @@ ${getGroupSocialPrompt(e?.group_id)}
 ${specialSignalsBlock}
 请输出 JSON 决策。`
 
+    if (!isAgentBindingCurrent(e)) return { decision: 'no_action', reason: 'binding_changed' }
     const result = await callModel({
       url: useCfg.url,
       apikey: useCfg.apikey,
@@ -228,8 +234,10 @@ ${specialSignalsBlock}
         { role: 'user', content: userPrompt }
       ],
       temperature: 0.3,
-      timeoutMs: 15000
+      timeoutMs: 15000,
+      isCurrent: () => isAgentBindingCurrent(e),
     })
+    if (!isAgentBindingCurrent(e)) return { decision: 'no_action', reason: 'binding_changed' }
     if (!result.ok) {
       logger.warn(`[TimingGate] 请求失败 group=${e?.group_id || ''} ${result.error}`)
       return { decision: 'no_action', reason: 'request_failed' }

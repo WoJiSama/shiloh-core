@@ -1,18 +1,26 @@
 
+import { captureQqToolScope, type QqToolScope } from '../../qqTools/infrastructure/qqToolRuntime.js'
+import type { AgentBindingTurn } from '../../../contracts/agentBinding.js'
 
 interface RequestOptions {headers?:Record<string,string>;params?:Record<string,unknown>;data?:unknown;responseType?:'json'|'text'}
 export interface QQBot {uin?:string|number;cookies?:Record<string,string>;sendApi?(name:string,params:Record<string,unknown>):Promise<unknown>}
-interface QQEvent {bot?:QQBot}
+interface QQEvent extends AgentBindingTurn {bot?:QQBot;self_id?:string|number;group_id?:string|number;user_id?:string|number;message_type?:string}
 interface Cookie {name:string;value:string;domain:string;path:string;expires:number}
 function record(value:unknown):Record<string,unknown>{return value && typeof value==='object' && !Array.isArray(value)?value as Record<string,unknown>:{}}
-export function createQQApi(ports:{bot():QQBot;request:{get(url:string,options:RequestOptions):Promise<unknown>;post(url:string,options:RequestOptions):Promise<unknown>}}) {
+export function createQQApi(ports:{bot():unknown;request:{get(url:string,options:RequestOptions):Promise<unknown>;post(url:string,options:RequestOptions):Promise<unknown>}}) {
 const request=ports.request
 /** QQ接口 */
 class QQApi {
- e:QQEvent;Bot:QQBot;headers:Record<string,string>
+ readonly e:QQEvent
+ readonly Bot:QQBot
+ readonly headers:Record<string,string>
+ readonly #scope: QqToolScope
   constructor(e:QQEvent) {
     this.e = e
-    this.Bot = e.bot ?? ports.bot()
+    this.#scope = captureQqToolScope(e)
+    const bot = this.#scope.resolveBot(() => ports.bot())
+    if (this.#scope.bound && !bot) throw new Error('未找到事件机器人')
+    this.Bot = (bot ?? {}) as QQBot
     this.headers = {
       "Content-type": "application/json;charset=UTF-8",
       "Cookie": this.Bot.cookies?.["qun.qq.com"] || "",
@@ -39,7 +47,8 @@ class QQApi {
    */
   getck(data:string,bot?:QQBot,transformation?:false):Record<string,string>
   getck(data:string,bot:QQBot|undefined,transformation:true):Cookie[]
-  getck(data:string,bot:QQBot=ports.bot(),transformation=false):Record<string,string>|Cookie[] {
+  getck(data:string,bot:QQBot=this.Bot,transformation=false):Record<string,string>|Cookie[] {
+    this.#scope.assertCurrent()
     let cookie = bot.cookies?.[data] || ""
     function parseCkString(str:string) {
       // 使用分号和等号分割字符串
@@ -79,10 +88,14 @@ class QQApi {
 
   async getToken():Promise<{cookies:string;token:string|number}> {
     if(!this.Bot.sendApi)throw new Error('当前机器人不支持 QQ 凭据查询')
-    const response=record(await this.Bot.sendApi('get_credentials',{domain:'qzone.qq.com'}))
+    const response=record(await this.#scope.effect(() => this.Bot.sendApi!('get_credentials',{domain:'qzone.qq.com'}), this.Bot))
     const data=record(response.data)
     if(typeof data.cookies !== 'string'|| !data.cookies || (typeof data.token !== 'string' && typeof data.token !== 'number'))throw new Error('QQ 凭据响应无效')
     return {cookies:data.cookies,token:data.token}
+  }
+
+  #dispatch(method: 'get' | 'post', url: string, options: RequestOptions) {
+    return this.#scope.effect(() => request[method](url, options), this.Bot)
   }
 
   /**
@@ -94,7 +107,7 @@ class QQApi {
   async getQzone(num = 20, pos = 0) {
     const url = "https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6"
     const tokenInfo = await this.getToken()
-    return await request.get(url, {
+    return await this.#dispatch('get', url, {
       headers: {
         Cookie: tokenInfo.cookies
       },
@@ -123,7 +136,7 @@ class QQApi {
     const url = "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_delete_v6"
     const tokenInfo = await this.getToken()
     // 发送请求
-    return await request.post(url, {
+    return await this.#dispatch('post', url, {
       headers: {
         "Cookie": tokenInfo.cookies,
         "Content-Type": "application/x-www-form-urlencoded"
@@ -150,7 +163,7 @@ class QQApi {
   async setQzone(con:string, img?:unknown) {
     const url = "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6"
     const tokenInfo = await this.getToken()
-    return request.post(url, {
+    return this.#dispatch('post', url, {
       headers: {
         "Cookie": tokenInfo.cookies,
         "Content-Type": "application/x-www-form-urlencoded"
@@ -178,7 +191,7 @@ class QQApi {
   async getQzoneFeed(targetUin: string | number, num = 10, pos = 0) {
     const url = "https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6"
     const tokenInfo = await this.getToken()
-    return await request.get(url, {
+    return await this.#dispatch('get', url, {
       headers: { Cookie: tokenInfo.cookies },
       params: {
         uin: this.Bot.uin,
@@ -202,7 +215,7 @@ class QQApi {
     const url = "https://user.qzone.qq.com/proxy/domain/w.qzone.qq.com/cgi-bin/likes/internal_dolike_appbar"
     const tokenInfo = await this.getToken()
     const botUin = String(this.Bot.uin || "")
-    return request.post(url, {
+    return this.#dispatch('post', url, {
       headers: {
         Cookie: tokenInfo.cookies,
         "Content-Type": "application/x-www-form-urlencoded"
@@ -229,7 +242,7 @@ class QQApi {
   async commentQzoneFeed(targetUin: string | number, tid: string, content: string) {
     const url = "https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_re_feeds"
     const tokenInfo = await this.getToken()
-    return request.post(url, {
+    return this.#dispatch('post', url, {
       headers: {
         Cookie: tokenInfo.cookies,
         "Content-Type": "application/x-www-form-urlencoded"
@@ -271,7 +284,7 @@ class QQApi {
   async getQzoneMsgb(num = 0, start = 0) {
     const url = "https://user.qzone.qq.com/proxy/domain/m.qzone.qq.com/cgi-bin/new/get_msgb"
     const tokenInfo = await this.getToken()
-    return await request.get(url, {
+    return await this.#dispatch('get', url, {
       params: {
         uin: this.Bot.uin,
         hostUin: this.Bot.uin,
@@ -299,7 +312,7 @@ class QQApi {
   async delQzoneMsgb(id:string|number, uinId:string|number) {
     const url = "https://h5.qzone.qq.com/proxy/domain/m.qzone.qq.com/cgi-bin/new/del_msgb"
     const tokenInfo = await this.getToken()
-    return await request.post(url, {
+    return await this.#dispatch('post', url, {
       headers: {
         "Cookie": tokenInfo.cookies,
         "Content-Type": "application/x-www-form-urlencoded"

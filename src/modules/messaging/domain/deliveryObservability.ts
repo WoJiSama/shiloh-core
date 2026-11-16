@@ -1,3 +1,5 @@
+import { normalizeDeliveryReceipt, validDeliveryMessageId } from './deliveryReceipt.js'
+
 export interface DeliveryLog { status?: string; channel?: string; groupId?: string | number; userId?: string | number; turnId?: string; messageId?: string | number | null; parts?: number; error?: unknown }
 function compactError(error: unknown = "") {
   return String((error instanceof Error ? error.message : error) || "unknown")
@@ -7,10 +9,12 @@ function compactError(error: unknown = "") {
 }
 
 export function extractDeliveryMessageId(result: unknown): string | number | null {
+ const outcome = normalizeDeliveryReceipt(result)
+ if (outcome.state !== 'sent') return null
  const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' ? value as Record<string, unknown> : {}
  const receipt = object(result)
- const id = receipt.message_id ?? receipt.messageId ?? object(receipt.data).message_id
- return typeof id === 'string' || typeof id === 'number' ? id : null
+ const id = object(receipt.data).message_id ?? receipt.message_id ?? receipt.messageId
+ return validDeliveryMessageId(id) ? id : outcome.messageId
 }
 
 export function logDeliveryOutcome(logger: {info?(message:string):void;warn?(message:string):void} | null | undefined, {

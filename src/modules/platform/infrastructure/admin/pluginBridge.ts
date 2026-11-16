@@ -1,8 +1,10 @@
 import type {HostSharedState} from '../../../host/infrastructure/hostSharedState.js'
 import type {createPersonaLibrary} from '../../../conversation/infrastructure/personaLibrary.js'
+import type {RestoreDeferredAgentBinding} from '../../../../contracts/agentBinding.js'
 export interface PluginBridgeInstance {
  config:Record<string,unknown>;
  personaLibrary?:ReturnType<typeof createPersonaLibrary>;
+ restoreDeferredAgentBinding?:RestoreDeferredAgentBinding;
  getPersonaFor?(event:unknown):unknown;
  sendSegmentedMessage?(event:unknown,message:string,interval:number):Promise<unknown>;
  scheduleWaitReply?(event:unknown,seconds:number,reason:unknown):unknown;

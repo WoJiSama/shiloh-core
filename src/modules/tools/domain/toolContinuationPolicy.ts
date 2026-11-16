@@ -1,5 +1,6 @@
 import {toolRecord} from '../../../contracts/toolExecution.js'
 import type {ToolResult,ToolContinuation} from '../../../contracts/toolExecution.js'
+import {classifyToolResult} from './toolResultGrounding.js'
 const DIRECT_RESULT_TOOLS = new Set(["excelWorkbookTool", "forgetGroupKnowledgeTool", "memberInfoTool"])
 
 function parseMaybeJson(text = "") {
@@ -36,7 +37,7 @@ export function formatDirectToolResult(toolName = "", serialized = "") {
 export function decideToolContinuation(validResults:ToolResult[] = [], options:{syntheticToolCall?:boolean} = {}):ToolContinuation {
   const toolNames = validResults.map(result => String(result?.toolName || "")).filter(Boolean)
   // 已知事实类结果直接回复、不经润色模型；但失败结果不能直发原文，交给后续失败路径
-  const allSucceeded = validResults.every(result => !/^error:/i.test(String(result?.result || "")))
+  const allSucceeded = validResults.every(result => classifyToolResult(result?.result).kind !== 'error')
   if (toolNames.length && allSucceeded && toolNames.every(toolName => DIRECT_RESULT_TOOLS.has(toolName))) {
     return "direct_result"
   }

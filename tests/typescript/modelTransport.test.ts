@@ -20,6 +20,26 @@ test('pre-cancelled side channel requests never invoke transport', async () => {
     fetchImpl: async () => { assert.fail('cancelled request must not be sent') } })
   assert.deepEqual(result, { ok: false, error: '模型请求已取消' })
 })
+test('side model transport checks a captured session after preparing the request and after reading the provider response', async () => {
+  const input = { url: 'https://fixture.invalid', apikey: 'fixture', model: 'fixture' }
+  const revoked = { ok: false, error: '角色绑定已改变，模型请求已停止' }
+  let current = true
+  const result = await sideLLMCall({ ...input, isCurrent: () => current,
+    messages: [{ role: 'user', content: { toJSON() { current = false; return 'test' } } }],
+    fetchImpl: async () => { assert.fail('stale request must not be sent') },
+  })
+  assert.deepEqual(result, revoked)
+
+  current = true
+  const response = sideLLMCall({ ...input, isCurrent: () => current, messages: [{ role: 'user', content: 'test' }],
+    fetchImpl: async () => {
+      const pending = new Response(null, { status: 400 })
+      pending.text = async () => { current = false; return 'provider error with stale content' }
+      return pending
+    },
+  })
+  assert.deepEqual(await response, revoked)
+})
 test('thinking removal and Unicode normalization preserve visible text', () => {
   assert.equal(ThinkingProcessor.removeThinking('<think>hidden</think> visible'), 'visible')
   assert.equal(safeTruncateUnicode('😀a', 1), '😀')

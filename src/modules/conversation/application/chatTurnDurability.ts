@@ -1,6 +1,8 @@
+import type {AgentBindingTurn} from '../../../contracts/agentBinding.js'
+
 function decodeSender(value:unknown):import('../../../contracts/chatEvent.js').ChatMember {const raw=value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};const sender:import('../../../contracts/chatEvent.js').ChatMember={};if(typeof raw.user_id==='string'||typeof raw.user_id==='number')sender.user_id=raw.user_id;for(const key of ['card','nickname','role','title'] as const)if(typeof raw[key]==='string')sender[key]=raw[key];return sender}
-interface Envelope {msg?:string;raw_message?:string;message?:unknown[];sender?:import('../../../contracts/chatEvent.js').ChatMember;user_id?:string|number|undefined;group_id?:string|number|undefined;message_id?:string|number|undefined;time?:number;self_id?:string|number;triggerContext?:{mode?:string}|null;turnStartedAt?:number}
-interface Event extends Omit<Envelope,'message_id'> {message_id?:unknown;bot?:{uin?:string|number};_triggerContext?:{mode?:string};_replyClaimed?:boolean}
+interface Envelope {msg?:string;raw_message?:string;message?:unknown[];sender?:import('../../../contracts/chatEvent.js').ChatMember;user_id?:string|number|undefined;group_id?:string|number|undefined;message_id?:string|number|undefined;time?:number;self_id?:string|number;triggerContext?:{mode?:string}|null;turnStartedAt?:number;agentBindingToken?:string}
+interface Event extends Omit<Envelope,'message_id'>, AgentBindingTurn {message_id?:unknown;bot?:{uin?:string|number};_triggerContext?:{mode?:string};_replyClaimed?:boolean}
 interface Store {set(key:string,value:string,options:{EX:number;NX?:boolean}):Promise<unknown>;get(key:string):Promise<unknown>;del(key:string):Promise<unknown>;scanIterator?(options:{MATCH:string}):AsyncIterable<unknown>}
 interface Logger {warn?(message:string):void;info?(message:string):void;error?(message:string):void}
 interface Config {enabled?:boolean;staleSeconds?:number;recoverDelayMs?:number;ttlSeconds?:number}
@@ -12,7 +14,9 @@ function parseEnvelope(value:unknown):Envelope|null {
  if(typeof r.group_id!=='string' && typeof r.group_id!=='number')return null
  const id=(v:unknown)=>typeof v==='string'||typeof v==='number'?v:undefined
  const trigger=r.triggerContext && typeof r.triggerContext==='object'?r.triggerContext as Record<string,unknown>:{}
- return {msg:typeof r.msg==='string'?r.msg:'',raw_message:typeof r.raw_message==='string'?r.raw_message:'',message:Array.isArray(r.message)?r.message:[],sender:decodeSender(r.sender),user_id:id(r.user_id),group_id:r.group_id,message_id:id(r.message_id),time:typeof r.time==='number'?r.time:0,self_id:id(r.self_id)||'',triggerContext:{mode:typeof trigger.mode==='string'?trigger.mode:''},turnStartedAt:typeof r.turnStartedAt==='number'?r.turnStartedAt:0}
+ const token = r.agentBindingToken
+ if (token !== undefined && (typeof token !== 'string' || !token || token.length > 4096)) return null
+ return {msg:typeof r.msg==='string'?r.msg:'',raw_message:typeof r.raw_message==='string'?r.raw_message:'',message:Array.isArray(r.message)?r.message:[],sender:decodeSender(r.sender),user_id:id(r.user_id),group_id:r.group_id,message_id:id(r.message_id),time:typeof r.time==='number'?r.time:0,self_id:id(r.self_id)||'',triggerContext:{mode:typeof trigger.mode==='string'?trigger.mode:''},turnStartedAt:typeof r.turnStartedAt==='number'?r.turnStartedAt:0,...(token === undefined ? {} : {agentBindingToken:token})}
 }
 export function createChatTurnDurabilityModule(ports:{getBot(selfId?:string|number):HostBot|null|undefined;getRedis():Store|null|undefined;logger?:Logger}) {
 // 聊天回合持久化（P1 高可用）：
@@ -26,6 +30,18 @@ const DEFAULT_TTL_SECONDS = 600
 const DEFAULT_STALE_SECONDS = 150
 const DEFAULT_RECOVER_DELAY_MS = 30000
 
+async function pendingTurnKeys(store: Store): Promise<Set<string>> {
+  const keys = new Set<string>()
+  if (typeof store.scanIterator !== "function") return keys
+  // Host clients may yield one key at a time or an array per Redis scan page.
+  for await (const page of store.scanIterator({ MATCH: `${TURN_PREFIX}*` })) {
+    for (const key of Array.isArray(page) ? page : [page]) {
+      if (typeof key === "string" && key.startsWith(TURN_PREFIX)) keys.add(key)
+    }
+  }
+  return keys
+}
+
 function fallbackHash(value = "") {
   let hash = 2166136261
   for (const ch of String(value)) {
@@ -38,10 +54,13 @@ function fallbackHash(value = "") {
 function buildChatTurnKey(e:Event = {}) {
   const groupId = String(e?.group_id || "")
   if (!groupId) return ""
+  const accountId = String(e.self_id || e.bot?.uin || '')
+  const scope = (e._agentBindingToken || e.agentBindingToken) && accountId
+    ? `qq:${encodeURIComponent(accountId)}:${groupId}` : groupId
   const messageId = String(e?.message_id || "").trim()
-  if (messageId && messageId !== "-1") return `${groupId}:${messageId}`
+  if (messageId && messageId !== "-1") return `${scope}:${messageId}`
   const seed = `${e?.user_id || ""}|${typeof e?.msg === "string" ? e.msg : JSON.stringify(e?.message || "")}|${Number(e?.time) || 0}`
-  return `${groupId}:h${fallbackHash(seed)}`
+  return `${scope}:h${fallbackHash(seed)}`
 }
 
 /** 只保留可 JSON 序列化的入站信封字段，供重启后重建事件 */
@@ -57,7 +76,8 @@ function serializeChatTurnEnvelope(e:Event = {}):Envelope {
     message_id: typeof e?.message_id==='string'||typeof e?.message_id==='number'?e.message_id:undefined,
     time: Number(e?.time) || Math.floor(Date.now() / 1000),
     self_id: e?.self_id || e?.bot?.uin || "",
-    triggerContext: e?._triggerContext || null
+    triggerContext: e?._triggerContext || null,
+    ...(e._agentBindingToken ? {agentBindingToken:e._agentBindingToken} : {}),
   }
 }
 
@@ -75,6 +95,7 @@ function rebuildChatTurnEvent(envelope:Event = {}) {
     bot,
     group,
     _turnRecovery: true,
+    ...(envelope.agentBindingToken ? {_expectedAgentBindingToken:envelope.agentBindingToken, _agentBindingToken:envelope.agentBindingToken} : {}),
     ...(envelope.triggerContext ? {_triggerContext:envelope.triggerContext} : {}),
     reply: async (payload:unknown, quote?:boolean) => await group.sendMsg(payload, quote),
     runtime: undefined
@@ -167,10 +188,9 @@ function createChatTurnDurability({ redis:redisSource = ports.getRedis, logger =
     const counts = { redispatched: 0, stale: 0, replied: 0, invalid: 0 }
     if (typeof redispatch !== "function") return counts
     const instance = client()
-    if (!instance || typeof instance.scanIterator !== "function") return counts
+    if (!instance) return counts
     try {
-      const keys = []
-      for await (const key of instance.scanIterator({ MATCH: `${TURN_PREFIX}*` })) keys.push(String(key))
+      const keys = await pendingTurnKeys(instance)
       for (const fullKey of keys) {
         let envelope:Envelope|null = null
         try {
@@ -217,12 +237,7 @@ function createChatTurnDurability({ redis:redisSource = ports.getRedis, logger =
   async function pendingTurnCount() {
     try {
       const instance = client()
-      if (!instance || typeof instance.scanIterator !== "function") return 0
-      let count = 0
-      for await (const key of instance.scanIterator({ MATCH: `${TURN_PREFIX}*` })) {
-        if (String(key).startsWith(TURN_PREFIX)) count += 1
-      }
-      return count
+      return instance ? (await pendingTurnKeys(instance)).size : 0
     } catch {
       return 0
     }

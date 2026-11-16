@@ -1,10 +1,11 @@
 import type { SemanticToolHost, SemanticToolPorts, ToolSemanticContext, SemanticDecision, SemanticEvent } from "../../../contracts/toolExecution.js"
 import {toolRecord} from "../../../contracts/toolExecution.js"
+import {isAgentBindingCurrent} from '../../../contracts/agentBinding.js'
 import { normalizeIntentText, isRealtimeInfoRequest, isExplicitSearchRequest, isExplicitToolIntent, SEMANTIC_TOOL_INTENTS, SEMANTIC_TOOL_INTENT_MIN_CONFIDENCE, SEMANTIC_TOOL_INTENT_TIMEOUT_MS } from "../../conversation/domain/messageIntent.js"
 import {safeTruncateUnicode} from "../../models/domain/unicodeText.js"
 import {joinIntentParts,formatMemberDisplayName} from "../../conversation/domain/messageContext.js"
 import {replaceCqMentions} from "../../conversation/domain/mentionTargets.js"
-import {validateMemberQueryTarget} from '../domain/memberMemoryIntent.js'
+import {validateMemberQueryTarget,validatePrivateHistoryTarget} from '../domain/memberMemoryIntent.js'
 import {isExplicitNoToolAction,isToolActionDenied} from '../../conversation/domain/toolActionPolicy.js'
 export function createSemanticToolIntent(ports:SemanticToolPorts) {
 const {logger,isExplicitAdminCollectionMentionRequest,selectToolIntentCandidates,normalizeToolSkillParams,resolveMemberAvatarReferences,buildToolSkillCatalog,resolvePersonaName,hasSemanticPlannerCandidate,shouldRunSemanticToolPlanner,fetchWithTimeout}=ports
@@ -56,7 +57,9 @@ function normalizeToolDecision(host: SemanticToolHost, decision: Record<string,u
       const params = toolRecord(decision.params || decision.arguments)
       if (requestedToolName === 'memberInfoTool' || requestedToolName === 'chatHistoryTool') {
         const userText = context.currentIntentText || context.args || context.msg || ''
-        const target = validateMemberQueryTarget(userText, params, {...context, rawText: context.rawText || context.e?.raw_message || userText})
+        const memberContext={...context,rawText:context.rawText||context.e?.raw_message||userText}
+        const target = requestedToolName==='chatHistoryTool'&&context.e?.user_id!==undefined&&!context.e.group_id
+          ?validatePrivateHistoryTarget(userText,params,{...memberContext,currentUserId:context.e.user_id}):validateMemberQueryTarget(userText,params,memberContext)
         if (target.status === 'needs_clarification' || target.status === 'invalid_target') return {...noToolDecision, goal: target.message}
         if (target.status === 'resolved') { params.user_id = target.userId; delete params.nickname }
         else if (target.status === 'lookup_by_name') {
@@ -216,6 +219,7 @@ function extractJsonObject(host: SemanticToolHost, text = "") {
   }
 
 async function classifySemanticToolIntent(host: SemanticToolHost, context: ToolSemanticContext = {}) {
+    if (!isAgentBindingCurrent(context.e)) return null
     const trace = context.session?.turnTrace
     const plannerStatus = (status:string, reason?:string) => trace?.setToolRouting?.({planner: {status, ...(reason ? {reason} : {})}})
     // 分类需要低延迟:优先独立的 intentAiConfig(可指向快速模型),回落 tools 模型。
@@ -262,7 +266,7 @@ async function classifySemanticToolIntent(host: SemanticToolHost, context: ToolS
     const classifyStartedAt = Date.now()
     plannerStatus('running')
     try {
-      const response = await fetchWithTimeout(url, {
+      const request = {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -323,9 +327,12 @@ async function classifySemanticToolIntent(host: SemanticToolHost, context: ToolS
             }
           ]
         })
-      }, SEMANTIC_TOOL_INTENT_TIMEOUT_MS)
+      }
+      if (!isAgentBindingCurrent(context.e)) return null
+      const response = await fetchWithTimeout(url, request, SEMANTIC_TOOL_INTENT_TIMEOUT_MS)
 
       const text = await response.text()
+      if (!isAgentBindingCurrent(context.e)) return null
       if (!response.ok) {
         plannerStatus('error', `http_${response.status}`)
         logger.warn(`[语义工具分类] 请求失败: ${response.status} ${text.slice(0, 240)}`)

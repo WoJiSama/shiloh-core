@@ -20,3 +20,8 @@ test("routes synthetic tool calls to chat-only summary instead of a thinking too
 test("keeps provider-native tool calls in the normal tool loop", () => {
   assert.equal(decideToolContinuation([{ toolName: "searchInformationTool" }]), "tool_loop")
 })
+
+test("structured failure cannot take the direct-success path", () => {
+  assert.equal(decideToolContinuation([{toolName:'memberInfoTool',result:JSON.stringify({success:false,message:'暂不可用'})}]),'tool_loop')
+  assert.equal(decideToolContinuation([{toolName:'memberInfoTool',result:JSON.stringify({success:true,data:{nickname:'失败乃成功之母'}})}]),'direct_result')
+})

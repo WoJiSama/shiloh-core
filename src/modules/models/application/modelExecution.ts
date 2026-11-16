@@ -3,6 +3,7 @@ import { sanitizeJsonValue } from '../domain/unicodeText.js'
 import { parseChatResponse } from '../domain/chatResponse.js'
 import type { ChatMessage, ChatRequestData, ChatResponse } from '../../../contracts/modelGateway.js'
 import type { Backend, ChatBackendConfig, ExecutionConfig, ExecutionOptions, ModelExecutionPorts } from '../../../contracts/modelExecution.js'
+import { awaitModelRequestAuthority, isModelRequestCurrent } from '../../../contracts/modelExecution.js'
 // A provider may require a flat named choice on the wire. Keep that shape at
 // this boundary instead of weakening the application's nested tool contract.
 interface ProviderChatRequestData {
@@ -19,15 +20,22 @@ function sourceFailure(url: string, model: unknown, detail: string): string {
  try { host = new URL(url).hostname } catch {}
  return `【渠道=${host}；模型=${buildVisibleFailureDetail(String(model || '未知'))}】${buildVisibleFailureDetail(detail)}`
 }
+const bindingChanged = '角色绑定已改变，模型请求已停止'
+
 export function createModelExecutor(ports: ModelExecutionPorts) {
  const { fetch, logger, removeToolPromptsFromMessages, resolveChatCompletionUrl, resolveAgentBackend, shouldAcceptPlannerTextResponse, summarizeToolResultForAgent } = ports
 
 async function fetchWithGenerationCompatibility(url: string, headers: Record<string, string>, requestData: ProviderChatRequestData, options: ExecutionOptions) {
-    const sendRequest = () => {
+    const sendRequest = async () => {
         options.signal?.throwIfAborted()
+        if (!isModelRequestCurrent(options.isCurrent)) throw new Error(bindingChanged)
+        if (options.ensureCurrent) await options.ensureCurrent()
+        options.signal?.throwIfAborted()
+        const body = JSON.stringify(sanitizeJsonValue(requestData))
+        if (!isModelRequestCurrent(options.isCurrent)) throw new Error(bindingChanged)
         return fetch(url, {
             method: 'POST', headers,
-            body: JSON.stringify(sanitizeJsonValue(requestData)),
+            body,
             ...(options.signal ? { signal: options.signal } : {})
         })
     }
@@ -35,6 +43,7 @@ async function fetchWithGenerationCompatibility(url: string, headers: Record<str
     if (response.ok) return { response, errorText: "" }
 
     let errorText = await response.text().catch(() => '无法读取错误内容')
+    if (!isModelRequestCurrent(options.isCurrent)) throw new Error(bindingChanged)
     const optionalFields = ["temperature", "top_p", "max_tokens", "max_completion_tokens", "reasoning_effort", "response_format"]
         .filter(field => Object.hasOwn(requestData, field))
     // Tool-choice recovery has its own contract and must retain the effort.
@@ -65,6 +74,23 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
     const provider = config.providers?.toLowerCase();
 
     options.signal?.throwIfAborted()
+    const checkCurrent = options.isCurrent
+    const checkAuthority = options.ensureCurrent
+    let revoked = false
+    const current = () => {
+        revoked ||= !isModelRequestCurrent(checkCurrent)
+        return !revoked
+    }
+    if (checkCurrent || checkAuthority) options = { ...options, isCurrent: current,
+      ...(checkAuthority ? { async ensureCurrent() {
+        try {
+          if (!current()) throw new Error(bindingChanged)
+          await awaitModelRequestAuthority(checkAuthority, options.signal)
+          if (!current()) throw new Error(bindingChanged)
+        } catch { revoked = true; throw new Error(bindingChanged) }
+      } } : {}),
+    }
+    if (!current()) return { error: bindingChanged }
     try {
         let url: string, headers: Record<string, string>, finalRequestData: ChatRequestData, selectedTextBackend: Backend | null = null;
 
@@ -98,6 +124,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
                 // logger.error('已触发全局AI对话', config.toolsAiConfig?.toolsAiApikey, config.toolsAiConfig?.toolsAiModel)
                 const sent = await fetchWithGenerationCompatibility(openaiUrl, openaiHeaders, openaiRequestData, options)
                 openaiResponse = sent.response
+                if (!current()) return { error: bindingChanged }
 
                 if (!openaiResponse.ok) {
                     const failure = sourceFailure(openaiUrl, config.toolsAiConfig?.toolsAiModel, `OpenAI API 请求失败：${openaiResponse.status} ${openaiResponse.statusText} - ${sent.errorText}`);
@@ -105,7 +132,8 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
                     return await fallbackFromToolsBackend(requestData, config, toolContent, toolName, options, failure);
                 }
             } catch (openaiFetchError) {
-            options.signal?.throwIfAborted()
+                options.signal?.throwIfAborted()
+                if (!current()) return { error: bindingChanged }
                 const failure = sourceFailure(openaiUrl, config.toolsAiConfig?.toolsAiModel, `OpenAI API 请求失败：${errorMessage(openaiFetchError)}`);
                 logger.error("OpenAI API 请求失败:", openaiFetchError);
                 return await fallbackFromToolsBackend(requestData, config, toolContent, toolName, options, failure);
@@ -114,8 +142,10 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
             let openaiData;
             try {
                 openaiData = processResponse(await openaiResponse.json());
+                if (!current()) return { error: bindingChanged }
                 logger.error('OpenAI 响应:', JSON.stringify(openaiData, null, 2));
             } catch (openaiJsonError) {
+                if (!current()) return { error: bindingChanged }
                 logger.error("解析 OpenAI 响应 JSON 失败:", openaiJsonError);
                 return { error: sourceFailure(openaiUrl, config.toolsAiConfig?.toolsAiModel, `解析 OpenAI 响应 JSON 失败：${errorMessage(openaiJsonError)}`) };
             }
@@ -192,11 +222,13 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
         finalRequestData.messages = moveFinalToolPromptToEnd(
             removeToolPromptsFromMessages(finalRequestData.messages || requestData.messages || [])
         )
+        if (!current()) return { error: bindingChanged }
         logger.info('最终请求体:', finalRequestData);
         options = preserveReasoningEffort(options, finalRequestData.reasoning_effort)
         try {
             const sent = await fetchWithGenerationCompatibility(url, headers, finalRequestData, options)
             response = sent.response
+            if (!current()) return { error: bindingChanged }
 
             if (!response.ok) {
                 const failure = sourceFailure(selectedTextBackend?.apiUrl || url, selectedTextBackend?.model || finalRequestData.model, `API 请求失败：${response.status} ${response.statusText} - ${sent.errorText}`);
@@ -214,6 +246,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
             }
         } catch (fetchError) {
             options.signal?.throwIfAborted()
+            if (!current()) return { error: bindingChanged }
             const failure = sourceFailure(selectedTextBackend?.apiUrl || url, selectedTextBackend?.model || finalRequestData.model, `${provider || 'API'} 请求失败：${errorMessage(fetchError)}`);
             logger.error(`${provider || 'API'} 请求失败:`, fetchError);
             const fallback = await fallbackFromTextBackend(
@@ -231,15 +264,18 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
         let responseData;
         try {
             responseData = await response.json();
+            if (!current()) return { error: bindingChanged }
             logger.info(`${provider || 'API'} 响应:`, JSON.stringify(responseData, null, 2));
         } catch (jsonError) {
+            if (!current()) return { error: bindingChanged }
             logger.error(`解析 ${provider || 'API'} 响应 JSON 失败:`, jsonError);
             return { error: sourceFailure(selectedTextBackend?.apiUrl || url, selectedTextBackend?.model || finalRequestData.model, `解析 ${provider || 'API'} 响应 JSON 失败：${errorMessage(jsonError)}`) };
         }
         return processResponse(responseData);
 
     } catch (error) {
-            options.signal?.throwIfAborted()
+        options.signal?.throwIfAborted()
+        if (!current()) return { error: bindingChanged }
         logger.error('YTapi 异常:', error);
         return { error: `发生异常：${errorMessage(error)}` };
     }
@@ -262,6 +298,7 @@ async function fallbackFromToolsBackend(requestData: ChatRequestData, config: Ex
     const { taskBackend: _taskBackend, ...fallbackOptions } = options
     let lastFailure: ChatResponse = { error: failure };
     for (const candidate of candidates) {
+        if (!isModelRequestCurrent(options.isCurrent)) return { error: bindingChanged }
         logger.warn(`[Agent路由] 工具模型不可用，当前请求不强制工具调用，降级到 ${candidate.label}: ${failure}`);
         const response = await YTapi(requestData, {
             ...config,
@@ -273,6 +310,7 @@ async function fallbackFromToolsBackend(requestData: ChatRequestData, config: Ex
             toolsBackendFallback: true,
             textBackendFallback: true
         });
+        if (!isModelRequestCurrent(options.isCurrent)) return { error: bindingChanged }
         if (response?.choices?.[0]?.message?.content) return response;
         lastFailure = response?.error ? response : lastFailure;
     }
@@ -290,6 +328,7 @@ async function fallbackFromTextBackend(requestData: ChatRequestData, config: Exe
     let lastFailure: ChatResponse | null = null;
     for (const candidate of resolveToolsBackendFallbacks(config)) {
         if (hasSameBackend(candidate, selectedBackend)) continue;
+        if (!isModelRequestCurrent(options.isCurrent)) return { error: bindingChanged }
         logger.warn(`[Agent路由] 回答模型不可用，降级到 ${candidate.label}: ${failure}`);
         const response = await YTapi(requestData, {
             ...config,
@@ -300,6 +339,7 @@ async function fallbackFromTextBackend(requestData: ChatRequestData, config: Exe
             forceChatBackend: true,
             textBackendFallback: true
         });
+        if (!isModelRequestCurrent(options.isCurrent)) return { error: bindingChanged }
         if (response?.choices?.[0]?.message?.content) return response;
         if (response?.error) lastFailure = response;
     }

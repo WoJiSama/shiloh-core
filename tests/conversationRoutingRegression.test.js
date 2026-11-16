@@ -2,6 +2,7 @@ import { test } from "node:test"
 import { readPluginSources, readSource } from "./helpers/pluginSources.js"
 import assert from "node:assert/strict"
 import fs from "node:fs"
+import ts from "typescript"
 import { createTurnPlan, deriveTurnPlanRequest } from "../dist/backend/modules/conversation/infrastructure/turnPlan.js"
 import { buildChatRequestData } from "../dist/backend/modules/models/domain/modelGateway.js"
 
@@ -84,7 +85,17 @@ test("proactive freshness is anchored to the source message and checked before s
 })
 
 test("all direct replies in the main agent use one observed delivery method", () => {
-  const directReplies = source.match(/await e\.reply\(/g) || []
-  assert.equal(directReplies.length, 1)
-  assert.match(source, /async (?:function )?sendObservedReply\(/)
+  const parsed = ts.createSourceFile("plugin.ts", source, ts.ScriptTarget.Latest, true)
+  const deliveryMethods = []
+  function visit(node) {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+        ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "e" && node.expression.name.text === "reply") {
+      let scope = node.parent
+      while (scope && !ts.isFunctionDeclaration(scope) && !ts.isMethodDeclaration(scope)) scope = scope.parent
+      deliveryMethods.push(scope?.name?.getText(parsed))
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(parsed)
+  assert.deepEqual(deliveryMethods, ["sendObservedReply"])
 })

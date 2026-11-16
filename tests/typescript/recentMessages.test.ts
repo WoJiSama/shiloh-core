@@ -39,6 +39,31 @@ function personaFixture() {
  return {manager: new Manager(), data}
 }
 
+test('private recent messages keep account and peer separate while reading attributable legacy messages', async () => {
+ const {manager,data} = personaFixture()
+ const peer = 9
+ const base = {message_type:'private',user_id:peer,time:101,sender:{user_id:peer,nickname:'访客'}}
+ const text = (value:string) => [{type:'text',text:value}]
+ const bodies = (rows:{content:string}[]) => rows.map(row=>row.content.replace(/^在私聊说: /, ''))
+ const old = await manager.formatMessage({...base,self_id:1,message:text('旧账号一消息'),time:99})
+ const oldOther = await manager.formatMessage({...base,self_id:2,message:text('旧账号二消息'),time:97})
+ const unknown = await manager.formatMessage({...base,message:text('归属不明的旧消息'),time:98})
+ data.set(manager.getRedisKey('private',peer),JSON.stringify([old,unknown,oldOther]))
+ await manager.recordMessage({...base,self_id:1,message_id:700,message:text('账号一收到')},{throwOnError:true})
+ await manager.recordMessage({...base,self_id:2,message_id:700,message:text('账号二收到')},{throwOnError:true})
+ await manager.recordMessage({...base,self_id:1,message_id:701,source:'send',sender:{user_id:1},time:102,message:text('账号一回复')},{throwOnError:true})
+
+ const first = await manager.getMessages('private',peer,{accountId:1})
+ const second = await manager.getMessages('private',peer,{accountId:2})
+ assert.deepEqual(bodies(first),['账号一回复','账号一收到','旧账号一消息'])
+ assert.deepEqual(bodies(second),['账号二收到','旧账号二消息'])
+ assert.deepEqual(await manager.getMessages('private',peer,{accountId:''}),[])
+ await manager.clearMessages('private',peer,{accountId:1})
+ assert.deepEqual(await manager.getMessages('private',peer,{accountId:1}),[])
+ assert.deepEqual(bodies(await manager.getMessages('private',peer,{accountId:2})),['账号二收到','旧账号二消息'])
+ assert.deepEqual(bodies(await manager.getMessages('private',peer)),['归属不明的旧消息','旧账号二消息'])
+})
+
 test('sent messages persist a detached four-field persona source without snapshot configuration', async () => {
  const {manager, data} = personaFixture()
  const expected: PersonaScope = {botId:'1', personaId:'first', personaVersion:'v1', personaName:'甲'}

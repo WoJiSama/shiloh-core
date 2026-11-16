@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import YAML from 'yaml'
 import {createPersonaSnapshot} from '../dist/backend/modules/conversation/infrastructure/personaSnapshot.js'
 import {createPersonaLibrary} from '../dist/backend/modules/conversation/infrastructure/personaLibrary.js'
 import {createChatPlugin} from '../dist/backend/modules/host/infrastructure/chatPlugin.js'
@@ -666,28 +667,29 @@ test('real episode writes feed later turns with bot and persona ownership while 
   f.host.messageManager.getMessages = async () => f.captures.archived.map((row,index) => ({
     message_id:`prior-${index}`,source:'send',time:row.time,sender:row.sender,personaSource:row.personaSource,content:row.message[0].text
   })).reverse()
-  const systems = () => f.captures.requests.map(messages => messages.find(item => item.role === 'system').content)
+  const memories = () => f.captures.requests.map(messages => messages.filter(item => item.role === 'user' && item.content.includes('本轮记忆资料')).map(item => item.content).join('\n'))
   assert.equal(await api.handleToolInner(f.host,f.event),true)
   const original = f.session.personaSnapshot
   assert.ok(fs.existsSync(path.join(baseDir,`${f.event.group_id}.ndjson`)))
   assert.equal(await api.handleToolInner(f.host,f.event),true)
-  assert.match(systems()[1],/你回了/)
+  assert.match(memories()[1],/你回了/)
+  assert.ok(f.captures.requests[1].filter(item => item.role === 'system').every(item => !item.content.includes('你回了')), '情节资料不进入系统指令')
   assert.equal(f.session.interactionContext.previousBotReply.text,scenario.modelReply)
   assert.ok(f.captures.requests[1].some(item => item.role === 'assistant' && item.content.includes(scenario.modelReply)))
 
   library.setGroupBinding(f.event.group_id,second.id)
   assert.equal(await api.handleToolInner(f.host,f.event),true)
   assert.equal(f.session.interactionContext.previousBotReply,undefined)
-  assert.ok(systems()[2].includes(scenario.rawUserText),'public user words remain available')
-  assert.ok(systems()[2].includes('甲'),'other persona is explicitly named')
-  assert.doesNotMatch(systems()[2],/你回了|你当时回/)
+  assert.ok(memories()[2].includes(scenario.rawUserText),'public user words remain available')
+  assert.ok(memories()[2].includes('甲'),'other persona is explicitly named')
+  assert.doesNotMatch(memories()[2],/你回了|你当时回/)
   assert.ok(!f.captures.requests[2].some(item => item.role === 'assistant'))
   assert.ok(f.captures.requests[2].some(item => item.role === 'user' && item.content.includes('[历史人格:甲')))
 
   f.event.self_id = 303
   f.event.bot = {...f.event.bot,uin:303,nickname:'另一只机器人'}
   assert.equal(await api.handleToolInner(f.host,f.event),true)
-  assert.doesNotMatch(systems()[3],/你回了|你当时回/)
+  assert.doesNotMatch(memories()[3],/你回了|你当时回/)
   assert.equal(f.session.interactionContext.previousBotReply,undefined)
 
   f.event.self_id = 99
@@ -698,7 +700,7 @@ test('real episode writes feed later turns with bot and persona ownership while 
   assert.equal(f.session.personaSnapshot.personaId,original.personaId)
   assert.notEqual(f.session.personaSnapshot.personaVersion,original.personaVersion)
   assert.equal(f.session.interactionContext.previousBotReply,undefined)
-  assert.doesNotMatch(systems()[4],/你回了|你当时回/)
+  assert.doesNotMatch(memories()[4],/你回了|你当时回/)
   assert.deepEqual(f.captures.errors,[])
   assert.equal(f.captures.mainCalls,5,'source handling adds no model request')
 })
@@ -783,4 +785,46 @@ test('a guard enabled during Gate handoff cannot enter a turn whose snapshot has
   assert.equal(f.captures.guards[0].personaGuard,undefined)
   assert.equal(f.session.personaSnapshot,snapshot)
   assert.deepEqual(f.captures.errors,[])
+})
+
+test('a binding replaced while the main model is running cannot dispatch tools or a final reply', async t => {
+  const f = fixture({rawUserText:'帮我想想怎么接着聊。', modelReply:'接着刚才的话题。'}, {realPlanning:true})
+  const {library, dir} = useRealPersonaLibrary(f, t)
+  const file = path.join(dir, 'agent-bindings.yaml')
+  const write = agentId => {
+    fs.writeFileSync(file + '.tmp', YAML.stringify({
+      version:1,
+      agents:[{id:'daily', personaId:'default'}, {id:'work', personaId:'default'}],
+      connections:[{id:'qq-main', platform:'qq', namespace:'global', accountId:'99'}],
+      bindings:[{connectionId:'qq-main', kind:'group', conversationId:String(f.event.group_id), agentId}],
+    }))
+    fs.renameSync(file + '.tmp', file)
+  }
+  write('daily')
+  const api = createChatTurn({...f.ports, resolveConversationContext, createOutboundArbiter})
+  const {ExamplePlugin} = createChatPlugin({
+    Plugin:class {}, shared:{}, logger:{warn(){}}, getBot:()=>undefined, anchorEventConversation(){},
+    handleToolInnerFn:api.handleToolInner,
+  })
+  f.host.personaLibrary = library
+  f.host.prepareQqTurn = ExamplePlugin.prototype.prepareQqTurn
+  f.host.handleForbiddenWordHit = () => false
+  f.host.handleMemorySelfCorrection = () => {}
+  f.event.reply = async value => { f.captures.sent.push(value); return {message_id:'sent'} }
+  f.host.processToolCalls = async () => assert.fail('A stale turn must not dispatch a tool')
+  const reply = f.host.retryRequest
+  let modelCalls = 0
+  f.host.retryRequest = async (...args) => {
+    modelCalls++
+    write('work')
+    return reply(...args)
+  }
+
+  assert.equal(await ExamplePlugin.prototype.handleTool.call(f.host, f.event), false)
+  assert.equal(modelCalls, 1)
+  assert.equal(f.session.context.binding.agentId, 'daily')
+  assert.equal(f.host.getPersonaSnapshotFor(f.event).binding.agentId, 'work')
+  assert.deepEqual(f.captures.sent, [])
+  assert.deepEqual(f.captures.saved, [])
+  assert.deepEqual(f.captures.archived, [])
 })

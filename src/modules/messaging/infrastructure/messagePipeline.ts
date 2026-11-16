@@ -382,7 +382,11 @@ class MessagePipeline {
 
   async processNotice(job: EventJob) {
     if (job.consumers.archive === "done" || job.consumers.archive === "skipped") return
-    const event = envelopeToRuntimeEvent(job.envelope)
+    const { envelope } = job
+    const event = envelopeToRuntimeEvent(envelope)
+    // Source revocation uses the stored IDs exactly. The archive keeps its historical event format.
+    await ports.onRecall?.({ ...event, self_id: envelope.botId, group_id: envelope.groupId,
+      user_id: envelope.userId, message_id: envelope.messageId })
     if (!this.archiveManager.shouldRecordNotice(event)) {
       job.consumers.archive = "skipped"
       return

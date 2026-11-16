@@ -1,15 +1,19 @@
+import {canReadUnattributedMemory} from '../../memory/infrastructure/personMemoryContext.js'
 import type {createGlobalStyleLearnerClass} from '../../memory/infrastructure/globalStyleLearner.js'
 import type {createPersonProfileClass} from '../../memory/application/personProfileInjector.js'
 import type {PersonaText} from '../domain/personaSource.js'
 import type {TurnInteractionContext} from '../../../contracts/turnInteraction.js'
 import type {PersonaScope, PersonaSnapshot} from '../../../contracts/persona.js'
+import type { MemoryPersona } from '../../../contracts/memoryEngine.js'
 import {createHash} from 'node:crypto'
 import {resolvePersonaName} from '../domain/personaSource.js'
+import type { PersonMemoryStore } from '../../../contracts/personMemory.js'
+import { memoryScene } from '../../memory/domain/memoryScope.js'
 type Style=InstanceType<ReturnType<typeof createGlobalStyleLearnerClass>>
 type Profile=InstanceType<ReturnType<typeof createPersonProfileClass>>
 interface ComposerConfig {emotionSystem?:{enabled?:boolean};memorySystem?:{enabled?:boolean};expressionLearning?:{enabled?:boolean};personProfileInjection?:{enabled?:boolean};midtermMemory?:{enabled?:boolean};globalStyleLearning?:Parameters<Style['buildPrompt']>[0] & {semanticPromptWaitMs?:number};embeddingAiConfig?:{embeddingApiUrl?:string;embeddingApiKey?:string;embeddingApiModel?:string};persona?:PersonaText;personaGuard?:Record<string,unknown>;promptLayerCache?:{enabled?:boolean}}
 interface ComposerTurn {groupId?:string|number;userId?:string|number;event?:Parameters<Profile['build']>[2];viewerSelfId?:unknown;viewerBotName?:string;messageText?:string;memoryText?:string;rawMessageText?:string;toneText?:string;cardText?:string;cardResponseKind?:string;moodHint?:Parameters<typeof formatMoodPrompt>[0];interactionContext?:TurnInteractionContext}
-interface ComposerDeps {emotionManager?:{getEmotionPromptForGroup(groupId:unknown,botId:string):Promise<string>};memoryManager?:{getContextualMemoryPrompt(groupId:unknown,userId:unknown,text:string,now:number,options:{viewerBotName:string;viewer?:PersonaScope|undefined}):Promise<string>;getGroupWorkflowPrompt(groupId:unknown,text:string):Promise<string>;getGroupKnowledgePrompt(groupId:unknown,options:{speakerQQ:unknown;message:string}):Promise<string>};expressionLearner?:{getExpressionPromptForGroup(groupId:unknown):Promise<string>};knowledgeSearcher?:{search(text:string):Promise<{knowledgeContext?:string}|null>};personaFeedbackManager?:{buildFeedbackPrompt(config:Record<string,unknown>|undefined,options:{personaName?:string;source?:PersonaScope}):string;getFeedbackRevision?(source?:PersonaScope):string|number};globalStyleLearnerManager?:Pick<Style,'buildRelevantPrompt'|'buildPrompt'>;personProfileInjector?:Pick<Profile,'build'>;midtermSummaryManager?:{getSummaryPrompt(groupId:unknown):string}}
+interface ComposerDeps {emotionManager?:{getEmotionPromptForGroup(groupId:unknown,botId:string):Promise<string>};memoryManager?:{personMemory?:PersonMemoryStore;getContextualMemoryPrompt(groupId:unknown,userId:unknown,text:string,now:number,options:{viewerBotName:string;viewer?:MemoryPersona|undefined}):Promise<string>;getGroupWorkflowPrompt(groupId:unknown,text:string):Promise<string>;getGroupKnowledgePrompt(groupId:unknown,options:{speakerQQ:unknown;message:string}):Promise<string>};expressionLearner?:{getExpressionPromptForGroup(groupId:unknown):Promise<string>};knowledgeSearcher?:{search(text:string):Promise<{knowledgeContext?:string}|null>};personaFeedbackManager?:{buildFeedbackPrompt(config:Record<string,unknown>|undefined,options:{personaName?:string;source?:PersonaScope}):string;getFeedbackRevision?(source?:PersonaScope):string|number};globalStyleLearnerManager?:Pick<Style,'buildRelevantPrompt'|'buildPrompt'>;personProfileInjector?:Pick<Profile,'build'>;midtermSummaryManager?:{getSummaryPrompt(groupId:unknown,options?:{after?:number}):string}}
 interface ComposerOptions {config?:ComposerConfig;personaSnapshot?:PersonaSnapshot;profile?:{profile?:string;reason?:string;layers?:string[]};turn?:ComposerTurn;precomputed?:Partial<Record<'identityBindings'|'workflowTeaching'|'knowledgeTeaching'|'memberLookup'|'mergedTrigger',string>>;deps?:ComposerDeps}
 interface ComposerLogger {warn?(message:string):void;error?(message:string):void;info?(message:string):void}
 function message(error:unknown){return error instanceof Error?error.message:String(error)}
@@ -116,13 +120,15 @@ async function composeTurnPromptLayers({
   const personaGuard = personaSnapshot ? personaSnapshot.personaGuard ?? {} : structuredClone(config.personaGuard || {})
   const viewerBotName = String(personaSnapshot?.personaName || turn.viewerBotName || "").trim()
   const legacyVersion = stableFingerprint(persona)
-  const personaSource: PersonaScope | undefined = personaSnapshot ?? (viewerSelfId ? {
+  const personaSource: MemoryPersona | undefined = personaSnapshot ?? (viewerSelfId ? {
     botId: viewerSelfId,
     personaId: `legacy:${legacyVersion}`,
     personaVersion: legacyVersion,
     personaName: resolvePersonaName(persona)
   } : undefined)
   const messageText = String(turn.messageText || "")
+  const projectionState = personaSource && memoryManager?.personMemory
+    ? await memoryManager.personMemory.getSceneRedactions({identity:personaSource,scene:memoryScene(groupId,userId)}).catch(() => null) : {invalidatedAt:0}
   const memoryText = String(turn.memoryText ?? (turn.messageText || ""))
   const toneText = String(turn.toneText || messageText)
   const cardText = String(turn.cardText ?? toneText)
@@ -168,16 +174,16 @@ async function composeTurnPromptLayers({
           return ''
         })
       : '',
-    config.memorySystem?.enabled && memoryManager
+    config.memorySystem?.enabled && memoryManager && (groupId || (userId && personaSource))
       ? withContextualMemoryTimeout(memoryManager.getContextualMemoryPrompt(groupId, userId, memoryText, Date.now(), { viewerBotName, viewer:personaSource }))
       : '',
-    config.memorySystem?.enabled && memoryManager
+    config.memorySystem?.enabled && memoryManager && groupId
       ? memoryManager.getGroupWorkflowPrompt(groupId, messageText).catch(error => {
         logger?.warn?.(`[群工作流] 读取失败 group=${groupId}: ${message(error)}`)
         return ''
       })
       : '',
-    config.memorySystem?.enabled && memoryManager
+    config.memorySystem?.enabled && memoryManager && groupId
       ? memoryManager.getGroupKnowledgePrompt(groupId, { speakerQQ: userId, message: messageText }).catch(error => {
         logger?.warn?.(`[群知识] 读取失败 group=${groupId}: ${message(error)}`)
         return ''
@@ -204,10 +210,10 @@ async function composeTurnPromptLayers({
       return ''
     })(),
     (async () => {
-      if (!config.personProfileInjection?.enabled || !groupId || !userId || !personProfileInjector) return ''
+      if (!config.personProfileInjection?.enabled || !userId || !personProfileInjector) return ''
       try {
-        return await cachedOr(`personProfile:${groupId}:${userId}`, LAYER_CACHE_TTL_MS.personProfile,
-          () => personProfileInjector.build(groupId, userId, event || {}))
+        // Read the current projection every turn; a TTL cannot outlive revocation.
+        return await personProfileInjector.build(groupId, userId, event || {},personaSource)
       } catch (err) {
         logger?.error?.(`[画像注入] 失败: ${message(err)}`)
         return ''
@@ -219,10 +225,10 @@ async function composeTurnPromptLayers({
       : '',
     // 中期记忆:本群滚动主线摘要(纯本地读盘,微秒级;摘要变化频率低,走 60s 层缓存)
     (async () => {
-      if (!config.midtermMemory?.enabled || !midtermSummaryManager || !groupId) return ''
+      if (!config.midtermMemory?.enabled || !midtermSummaryManager || !groupId || !projectionState) return ''
       try {
-        return await cachedOr(groupId ? `midtermMemory:${groupId}` : "", 60_000,
-          () => Promise.resolve(midtermSummaryManager.getSummaryPrompt(groupId)))
+        if (personaSource && memoryManager?.personMemory && !await canReadUnattributedMemory(memoryManager.personMemory,personaSource,memoryScene(groupId,userId))) return ''
+        return midtermSummaryManager.getSummaryPrompt(groupId,{after:projectionState?.invalidatedAt || 0})
       } catch (err) {
         logger?.warn?.(`[中期记忆] prompt 读取失败 group=${groupId}: ${message(err)}`)
         return ''
@@ -306,6 +312,11 @@ async function composeTurnPromptLayers({
   }
 
   const result = applyPromptLayerProfile(profile, layerMap)
+  const dataLayers = new Set(['memory','midtermMemory','personProfile','knowledge','groupKnowledge','expression','globalStyle','semanticStyle'])
+  const selectedLayers = new Set(profile?.layers || Object.keys(layerMap))
+  const dataPrompt = Object.entries(layerMap).filter(([name,value]) => value && dataLayers.has(name) && selectedLayers.has(name)).map(([,value]) => value).join('\n')
+  const instructionMap = Object.fromEntries(Object.entries(layerMap).map(([name,value]) => [name,dataLayers.has(name) ? '' : value]))
+  const instructionPrompt = applyPromptLayerProfile(profile,instructionMap).prompt
 
   const included = Object.keys(layerMap)
     .filter(name => layerMap[name] && result.prompt.includes(layerMap[name]!))
@@ -322,7 +333,7 @@ async function composeTurnPromptLayers({
     `[提示词分层] profile=${report.profile} reason=${report.reason || "casual"} layers=${included.length}/${included.length + report.omitted.length} total=${report.totalChars}c ${layerSummary}`
   )
 
-  return { prompt: result.prompt, omitted: result.omitted, layerValues: layerMap, report }
+  return { prompt: instructionPrompt, dataPrompt, omitted: result.omitted, layerValues: layerMap, report }
 }
 
 return {composeTurnPromptLayers}

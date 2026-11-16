@@ -1,11 +1,15 @@
 import {isDrawTaskStatusInquiry} from '../domain/messageIntent.js'
 import {randomUUID} from 'node:crypto'
+import {isAgentBindingCurrent} from '../../../contracts/agentBinding.js'
 import type {ActionFactScope,ActionFactsEvent,ActionFactsQuery,TurnActionFacts,TurnTaskFact} from '../../../contracts/turnActionFacts.js'
+import type {RecentOptions} from '../../../contracts/recentMessages.js'
+import {actionFactScope,matchesActionFactScope,unknownTurnActionFacts} from '../domain/turnActionFacts.js'
+import {configuredConversationKey} from '../domain/conversationIdentity.js'
 type Id=string|number|null|undefined
 export interface TaskStatus {groupId?:string;userId?:string;messageId?:string;status:string;toolName:string;error?:string;updatedAt?:number;requesterName?:string;detail?:string;scopeKey?:string;startedAt?:number;actionFacts?:TurnTaskFact}
 export interface StatusInput {groupId?:Id;userId?:Id;messageId?:Id;status:string;toolName?:string;error?:unknown;requesterName?:string;detail?:string;scopeKey?:string;event?:ActionFactsEvent;actionFacts?:TurnTaskFact}
 export interface Event extends ActionFactsEvent {message_type?:string;reply_id?:unknown;_quotedPromptContext?:{messageId?:unknown}}
-export interface TaskStatusHost {TASK_STATUS_PREFIX:string;ACTIVE_TOOL_TASK_PREFIX:string;config:{groupChatMemoryDays?:number;longRunningToolStaleMinutes?:number};getTaskStatusCacheKey(groupId:Id,messageId:Id):string;getTaskStatusRedisKey(groupId:Id,messageId:Id):string;getActiveToolTaskCacheKey(groupId:Id,userId:Id,toolName:string):string;getActiveToolTaskRedisKey(groupId:Id,userId:Id,toolName:string):string;getTaskStatusTtlSeconds():number;getToolRunKey(groupId:Id,userId:Id,toolName:string):string;getRuntimeToolTaskStatus(groupId:Id,userId:Id,toolName:string):TaskStatus|null;getUserToolTaskStatus(groupId:Id,userId:Id,toolName:string):Promise<TaskStatus|null|undefined>;getCurrentUserToolTaskStatus(groupId:Id,userId:Id,toolName:string):Promise<TaskStatus|null|undefined>;getTurnActionFacts(e:ActionFactsEvent,query?:ActionFactsQuery):Promise<TurnActionFacts>;messageManager?:{getMessages(type:string|undefined,id:Id):Promise<{message_id?:unknown;sender?:{user_id?:Id}}[]>};buildReplySegment(messageId:Id):unknown;buildTaskStatusReplyMessage(status:TaskStatus,text:string):unknown;buildDrawTaskStatusReply(status:TaskStatus):string;sendObservedReply(e:Event,payload:unknown):Promise<unknown>}
+export interface TaskStatusHost {TASK_STATUS_PREFIX:string;ACTIVE_TOOL_TASK_PREFIX:string;config:{groupChatMemoryDays?:number;longRunningToolStaleMinutes?:number};getTaskStatusCacheKey(groupId:Id,messageId:Id,event?:ActionFactsEvent):string;getTaskStatusRedisKey(groupId:Id,messageId:Id,event?:ActionFactsEvent):string;getActiveToolTaskCacheKey(groupId:Id,userId:Id,toolName:string,event?:ActionFactsEvent):string;getActiveToolTaskRedisKey(groupId:Id,userId:Id,toolName:string,event?:ActionFactsEvent):string;getTaskStatusTtlSeconds():number;getToolRunKey(groupId:Id,userId:Id,toolName:string,event?:ActionFactsEvent):string;getRuntimeToolTaskStatus(groupId:Id,userId:Id,toolName:string,event?:ActionFactsEvent):TaskStatus|null;getUserToolTaskStatus(groupId:Id,userId:Id,toolName:string,event?:ActionFactsEvent):Promise<TaskStatus|null|undefined>;getCurrentUserToolTaskStatus(groupId:Id,userId:Id,toolName:string,event?:ActionFactsEvent):Promise<TaskStatus|null|undefined>;getTurnActionFacts(e:ActionFactsEvent,query?:ActionFactsQuery):Promise<TurnActionFacts>;messageManager?:{getMessages(type:string|undefined,id:Id,options?:RecentOptions):Promise<{message_id?:unknown;sender?:{user_id?:Id}}[]>};buildReplySegment(messageId:Id):unknown;buildTaskStatusReplyMessage(status:TaskStatus,text:string):unknown;buildDrawTaskStatusReply(status:TaskStatus):string;sendObservedReply(e:Event,payload:unknown):Promise<unknown>}
 function parseStatus(value:unknown):TaskStatus|null {if(!value||typeof value!=='object')return null;const r=value as Record<string,unknown>;if(typeof r.status!=='string'||typeof r.toolName!=='string')return null;const result:TaskStatus={status:r.status,toolName:r.toolName};for(const key of ['groupId','userId','messageId','error','requesterName','detail','scopeKey'] as const)if(typeof r[key]==='string')result[key]=r[key];for(const key of ['updatedAt','startedAt'] as const)if(typeof r[key]==='number'&&Number.isFinite(r[key]))result[key]=r[key];return result}
 function errorMessage(e:unknown){return e instanceof Error?e.message:String(e)}
 export function createTaskStatus(ports:{store():{set(key:string,value:string,options:{EX:number}):Promise<unknown>;get(key:string):Promise<unknown>;del(key:string):Promise<unknown>};logger:{warn(message:string):void;info(message:string):void};activeDedupeToolRuns:Map<string,{startedAt?:number;[key:string]:unknown}>;replySegment?(id:Id):unknown}) {
@@ -21,13 +25,11 @@ const MAX_FACT_REQUESTS = 12
 const MAX_CACHE_ENTRIES = 512
 interface ScopedFactRecord {version:1;scope:ActionFactScope;requestMessageId:string;updatedAt:number;expiresAt:number;tasks:{fact:TurnTaskFact;runtimeId:string}[]}
 function record(value:unknown):Record<string,unknown>{return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{}}
-function factScope(e:ActionFactsEvent):ActionFactScope {
-  const botId=String(e.self_id||e.bot?.uin||''),userId=String(e.user_id||'')
-  return {botId,userId,conversationId:e.group_id?`group:${e.group_id}`:userId?`private:${userId}`:''}
-}
 function validScope(scope:ActionFactScope){return Boolean(scope.botId&&scope.userId&&scope.conversationId)}
-function sameScope(a:ActionFactScope,b:ActionFactScope){return a.botId===b.botId&&a.conversationId===b.conversationId&&a.userId===b.userId}
-function factKey(host:TaskStatusHost,scope:ActionFactScope,messageId:string){return `${host.TASK_STATUS_PREFIX}v2:${[scope.botId,scope.conversationId,scope.userId,messageId].map(encodeURIComponent).join(':')}`}
+function factKey(host:TaskStatusHost,scope:ActionFactScope,messageId:string) {
+  const parts = scope.bindingToken ? ['v3', scope.bindingToken] : ['v2', scope.botId, scope.conversationId]
+  return host.TASK_STATUS_PREFIX + [...parts, scope.userId, messageId].map(encodeURIComponent).join(':')
+}
 function parseFact(value:unknown):TurnTaskFact|null {
   const r=record(value),delivery=record(r.delivery),followUp=record(r.followUp)
   if(typeof r.taskId!=='string'||!r.taskId||typeof r.requestMessageId!=='string'||!r.requestMessageId||typeof r.toolName!=='string'||!r.toolName||!['task_record','live_job'].includes(String(r.source))||typeof r.observedAt!=='number'||!Number.isFinite(r.observedAt)||!['queued','running','completed','failed','unknown'].includes(String(r.execution))||!['available','unavailable','unknown'].includes(String(r.result))||!['not_attempted','sent','failed','unknown'].includes(String(delivery.state)))return null
@@ -36,8 +38,8 @@ function parseFact(value:unknown):TurnTaskFact|null {
   return {taskId:r.taskId,requestMessageId:r.requestMessageId,toolName:r.toolName,source:r.source as TurnTaskFact['source'],observedAt:r.observedAt,execution:r.execution as TurnTaskFact['execution'],result:r.result as TurnTaskFact['result'],delivery:{state:delivery.state as TurnTaskFact['delivery']['state'],...(delivery.state==='sent'?{messageId:String(delivery.messageId)}:{})},followUp:{state:followUp.state as 'none'|'unknown'}}
 }
 function parseScopedRecord(value:unknown,scope:ActionFactScope,messageId:string):ScopedFactRecord|null {
-  const r=record(value),s=record(r.scope)
-  if(r.version!==1||s.botId!==scope.botId||s.conversationId!==scope.conversationId||s.userId!==scope.userId||r.requestMessageId!==messageId||typeof r.updatedAt!=='number'||typeof r.expiresAt!=='number'||!Number.isFinite(r.expiresAt)||!Array.isArray(r.tasks))return null
+  const r=record(value)
+  if(r.version!==1||!matchesActionFactScope(r.scope,scope)||r.requestMessageId!==messageId||typeof r.updatedAt!=='number'||typeof r.expiresAt!=='number'||!Number.isFinite(r.expiresAt)||!Array.isArray(r.tasks))return null
   const tasks:ScopedFactRecord['tasks']=[]
   for(const row of r.tasks){const entry=record(row),fact=parseFact(entry.fact);if(!fact||fact.requestMessageId!==messageId||typeof entry.runtimeId!=='string')return null;tasks.push({fact,runtimeId:entry.runtimeId})}
   return {version:1,scope,requestMessageId:messageId,updatedAt:r.updatedAt,expiresAt:r.expiresAt,tasks}
@@ -52,7 +54,7 @@ async function readFactRecord(host:TaskStatusHost,scope:ActionFactScope,messageI
 }
 async function saveActionFacts(host:TaskStatusHost,input:StatusInput) {
   if(!input.event||!input.actionFacts)return
-  const scope=factScope(input.event),fact=parseFact(input.actionFacts),messageId=String(input.messageId||input.event.message_id||'')
+  const scope=actionFactScope(input.event),fact=parseFact(input.actionFacts),messageId=String(input.messageId||input.event.message_id||'')
   if(!validScope(scope)||!fact||fact.requestMessageId!==messageId)return
   const key=factKey(host,scope,messageId),previousWrite=factWrites.get(key)
   const runtimeKey=`${key}:${encodeURIComponent(fact.toolName)}`,known=runtimeFacts.get(runtimeKey)
@@ -80,15 +82,17 @@ async function saveActionFacts(host:TaskStatusHost,input:StatusInput) {
   try{await work}finally{if(factWrites.get(key)===work)factWrites.delete(key)}
 }
 async function getTurnActionFacts(host:TaskStatusHost,e:ActionFactsEvent,query:ActionFactsQuery={}):Promise<TurnActionFacts> {
-  const scope=factScope(e),now=Date.now(),output:TurnActionFacts={scope,observedAt:now,lookup:validScope(scope)?'ok':'unavailable',tasks:[]}
-  if(!validScope(scope))return output
+  const scope=actionFactScope(e),now=Date.now()
+  if(!validScope(scope)||!isAgentBindingCurrent(e))return unknownTurnActionFacts(e,now)
+  const output:TurnActionFacts={scope,observedAt:now,lookup:'ok',tasks:[]}
   const reference=String(query.referenceMessageId||'').trim()
   const ids=[...new Set([...(reference?[reference]:[]),...(query.recentRequestMessageIds||[])])].filter(id=>typeof id==='string'&&Boolean(id)).slice(0,MAX_FACT_REQUESTS)
   const reads=await Promise.all(ids.map(async id=>({id,...await readFactRecord(host,scope,id)})))
+  if(!isAgentBindingCurrent(e))return unknownTurnActionFacts(e,now)
   const activeTtl=Math.max(60000,(Number(host.config.longRunningToolStaleMinutes)||8)*60000)
   for(const read of reads){
     if(!read.available){output.lookup='unavailable';continue}
-    if(!read.value||!sameScope(read.value.scope,scope)||read.value.expiresAt<=now)continue
+    if(!read.value||read.value.expiresAt<=now)continue
     for(const {fact,runtimeId:owner} of read.value.tasks){
       if(reference&&fact.requestMessageId!==reference&&!(fact.delivery.state==='sent'&&fact.delivery.messageId===reference))continue
       if(fact.observedAt>now+5000)continue
@@ -122,20 +126,24 @@ async function settleTaskStatusRedis<T,F>(promise:Promise<T>, fallback:F, label:
 }
 
 const taskStatusCache = new Map<string,TaskStatus>()
-function getTaskStatusCacheKey(host:TaskStatusHost, groupId:Id, messageId:Id) {
+function getTaskStatusCacheKey(host:TaskStatusHost, groupId:Id, messageId:Id, event?:ActionFactsEvent) {
+    const scope=configuredConversationKey(event?._agentBinding)
+    if(scope)return JSON.stringify([scope,String(event?.user_id||''),String(messageId)])
     return `${groupId}:${messageId}`
 }
 
-function getTaskStatusRedisKey(host:TaskStatusHost, groupId:Id, messageId:Id) {
-    return `${host.TASK_STATUS_PREFIX}${groupId}:${messageId}`
+function getTaskStatusRedisKey(host:TaskStatusHost, groupId:Id, messageId:Id, event?:ActionFactsEvent) {
+    return host.TASK_STATUS_PREFIX + getTaskStatusCacheKey(host,groupId,messageId,event)
 }
 
-function getActiveToolTaskCacheKey(host:TaskStatusHost, groupId:Id, userId:Id, toolName:string) {
+function getActiveToolTaskCacheKey(host:TaskStatusHost, groupId:Id, userId:Id, toolName:string, event?:ActionFactsEvent) {
+    const scope=configuredConversationKey(event?._agentBinding)
+    if(scope)return JSON.stringify([scope,String(userId),toolName])
     return `${groupId}:${userId}:${toolName}`
 }
 
-function getActiveToolTaskRedisKey(host:TaskStatusHost, groupId:Id, userId:Id, toolName:string) {
-    return `${host.ACTIVE_TOOL_TASK_PREFIX}${groupId}:${userId}:${toolName}`
+function getActiveToolTaskRedisKey(host:TaskStatusHost, groupId:Id, userId:Id, toolName:string, event?:ActionFactsEvent) {
+    return host.ACTIVE_TOOL_TASK_PREFIX + getActiveToolTaskCacheKey(host,groupId,userId,toolName,event)
 }
 
 function getTaskStatusTtlSeconds(host:TaskStatusHost) {
@@ -144,11 +152,11 @@ function getTaskStatusTtlSeconds(host:TaskStatusHost) {
 
 async function saveTaskStatus(host:TaskStatusHost, input:StatusInput) {
     await saveActionFacts(host,input)
-    const { groupId, userId, messageId, status, toolName = "", error = "" }=input
-    if (!groupId || !messageId || !status) return
+    const { groupId, userId, messageId, status, event, toolName = "", error = "" }=input
+    if ((!groupId && event?._agentBinding?.source !== 'configured') || !messageId || !status) return
 
     const record = {
-      groupId: String(groupId),
+      groupId: String(groupId || ''),
       userId: userId ? String(userId) : "",
       messageId: String(messageId),
       status,
@@ -156,12 +164,12 @@ async function saveTaskStatus(host:TaskStatusHost, input:StatusInput) {
       error: error ? String(error).slice(0, 120) : "",
       updatedAt: Date.now()
     }
-    const cacheKey = host.getTaskStatusCacheKey(groupId, messageId)
+    const cacheKey = host.getTaskStatusCacheKey(groupId, messageId, event)
     if(taskStatusCache.size>=MAX_CACHE_ENTRIES)taskStatusCache.delete(taskStatusCache.keys().next().value||'')
     taskStatusCache.set(cacheKey, record)
 
     await settleTaskStatusRedis(
-      ports.store().set(host.getTaskStatusRedisKey(groupId, messageId), JSON.stringify(record), {
+      ports.store().set(host.getTaskStatusRedisKey(groupId, messageId, event), JSON.stringify(record), {
         EX: host.getTaskStatusTtlSeconds()
       }),
       undefined,
@@ -169,16 +177,16 @@ async function saveTaskStatus(host:TaskStatusHost, input:StatusInput) {
     )
 }
 
-async function getTaskStatus(host:TaskStatusHost, groupId:Id, messageId:Id) {
-    if (!groupId || !messageId) return null
+async function getTaskStatus(host:TaskStatusHost, groupId:Id, messageId:Id, event?:ActionFactsEvent) {
+    if ((!groupId && event?._agentBinding?.source !== 'configured') || !messageId) return null
 
-    const cacheKey = host.getTaskStatusCacheKey(groupId, messageId)
+    const cacheKey = host.getTaskStatusCacheKey(groupId, messageId, event)
     const cached=taskStatusCache.get(cacheKey)
     if(cached&&Date.now()-Number(cached.updatedAt||0)<host.getTaskStatusTtlSeconds()*1000)return cached
     taskStatusCache.delete(cacheKey)
 
     const raw = await settleTaskStatusRedis(
-      ports.store().get(host.getTaskStatusRedisKey(groupId, messageId)),
+      ports.store().get(host.getTaskStatusRedisKey(groupId, messageId, event)),
       null,
       "读取"
     )
@@ -196,24 +204,24 @@ async function getTaskStatus(host:TaskStatusHost, groupId:Id, messageId:Id) {
     }
 }
 
-async function clearTaskStatus(host:TaskStatusHost, groupId:Id, messageId:Id) {
-    if (!groupId || !messageId) return
-    taskStatusCache.delete(host.getTaskStatusCacheKey(groupId, messageId))
+async function clearTaskStatus(host:TaskStatusHost, groupId:Id, messageId:Id, event?:ActionFactsEvent) {
+    if ((!groupId && event?._agentBinding?.source !== 'configured') || !messageId) return
+    taskStatusCache.delete(host.getTaskStatusCacheKey(groupId, messageId, event))
     await settleTaskStatusRedis(
-      ports.store().del(host.getTaskStatusRedisKey(groupId, messageId)),
+      ports.store().del(host.getTaskStatusRedisKey(groupId, messageId, event)),
       undefined,
       "清理"
     )
 }
 
-async function updateUserToolTaskStatus(host:TaskStatusHost, { groupId, userId, messageId = "", toolName, status, requesterName = "", detail = "", scopeKey = "" }:StatusInput & {toolName:string}) {
-    if (!groupId || !userId || !toolName || !status) return
+async function updateUserToolTaskStatus(host:TaskStatusHost, { groupId, userId, messageId = "", toolName, status, requesterName = "", detail = "", scopeKey = "", event }:StatusInput & {toolName:string}) {
+    if ((!groupId && event?._agentBinding?.source !== 'configured') || !userId || !toolName || !status) return
 
-    const key = host.getActiveToolTaskCacheKey(groupId, userId, toolName)
+    const key = host.getActiveToolTaskCacheKey(groupId, userId, toolName, event)
     const previous:Partial<TaskStatus> = activeUserToolTaskCache.get(key) || {}
     const record = {
       ...previous,
-      groupId: String(groupId),
+      groupId: String(groupId || ''),
       userId: String(userId),
       messageId: messageId ? String(messageId) : String(previous.messageId || ""),
       toolName,
@@ -228,7 +236,7 @@ async function updateUserToolTaskStatus(host:TaskStatusHost, { groupId, userId, 
     activeUserToolTaskCache.set(key, record)
 
     try {
-      await ports.store().set(host.getActiveToolTaskRedisKey(groupId, userId, toolName), JSON.stringify(record), {
+      await ports.store().set(host.getActiveToolTaskRedisKey(groupId, userId, toolName, event), JSON.stringify(record), {
         EX: host.getTaskStatusTtlSeconds()
       })
     } catch (error) {
@@ -236,16 +244,16 @@ async function updateUserToolTaskStatus(host:TaskStatusHost, { groupId, userId, 
     }
 }
 
-async function getUserToolTaskStatus(host:TaskStatusHost, groupId:Id, userId:Id, toolName:string) {
-    if (!groupId || !userId || !toolName) return null
+async function getUserToolTaskStatus(host:TaskStatusHost, groupId:Id, userId:Id, toolName:string, event?:ActionFactsEvent) {
+    if ((!groupId && event?._agentBinding?.source !== 'configured') || !userId || !toolName) return null
 
-    const key = host.getActiveToolTaskCacheKey(groupId, userId, toolName)
+    const key = host.getActiveToolTaskCacheKey(groupId, userId, toolName, event)
     const cached=activeUserToolTaskCache.get(key)
     if(cached&&Date.now()-Number(cached.updatedAt||0)<host.getTaskStatusTtlSeconds()*1000)return cached
     activeUserToolTaskCache.delete(key)
 
     try {
-      const raw = await ports.store().get(host.getActiveToolTaskRedisKey(groupId, userId, toolName))
+      const raw = await ports.store().get(host.getActiveToolTaskRedisKey(groupId, userId, toolName, event))
       if (typeof raw !== "string" || !raw) return null
       const record = parseStatus(JSON.parse(raw))
       if(!record)return null
@@ -259,20 +267,20 @@ async function getUserToolTaskStatus(host:TaskStatusHost, groupId:Id, userId:Id,
     }
 }
 
-async function clearUserToolTaskStatus(host:TaskStatusHost, { groupId, userId, toolName }:{groupId?:Id;userId?:Id;toolName:string}) {
-    if (!groupId || !userId || !toolName) return
-    const key = host.getActiveToolTaskCacheKey(groupId, userId, toolName)
+async function clearUserToolTaskStatus(host:TaskStatusHost, { groupId, userId, toolName, event }:{groupId?:Id;userId?:Id;toolName:string;event?:ActionFactsEvent}) {
+    if ((!groupId && event?._agentBinding?.source !== 'configured') || !userId || !toolName) return
+    const key = host.getActiveToolTaskCacheKey(groupId, userId, toolName, event)
     activeUserToolTaskCache.delete(key)
 
     try {
-      await ports.store().del(host.getActiveToolTaskRedisKey(groupId, userId, toolName))
+      await ports.store().del(host.getActiveToolTaskRedisKey(groupId, userId, toolName, event))
     } catch (error) {
       logger.warn(`[活跃任务] 清理失败：${errorMessage(error)}`)
     }
 }
 
-function getRuntimeToolTaskStatus(host:TaskStatusHost, groupId:Id, userId:Id, toolName:string) {
-    const runtime = activeDedupeToolRuns.get(host.getToolRunKey(groupId, userId, toolName))
+function getRuntimeToolTaskStatus(host:TaskStatusHost, groupId:Id, userId:Id, toolName:string, event?:ActionFactsEvent) {
+    const runtime = activeDedupeToolRuns.get(host.getToolRunKey(groupId, userId, toolName, event))
     if (!runtime) return null
     return {
       ...runtime,
@@ -284,10 +292,10 @@ function getRuntimeToolTaskStatus(host:TaskStatusHost, groupId:Id, userId:Id, to
     }
 }
 
-async function getCurrentUserToolTaskStatus(host:TaskStatusHost, groupId:Id, userId:Id, toolName:string) {
-    const runtime = host.getRuntimeToolTaskStatus(groupId, userId, toolName)
+async function getCurrentUserToolTaskStatus(host:TaskStatusHost, groupId:Id, userId:Id, toolName:string, event?:ActionFactsEvent) {
+    const runtime = host.getRuntimeToolTaskStatus(groupId, userId, toolName, event)
     if (runtime) return runtime
-    const stored = await host.getUserToolTaskStatus(groupId, userId, toolName)
+    const stored = await host.getUserToolTaskStatus(groupId, userId, toolName, event)
     if (!stored || !["queued", "running"].includes(stored.status)) return null
     return stored
 }
@@ -319,10 +327,10 @@ async function handleActiveDrawStatusQuestion(host:TaskStatusHost, e:Event, text
     const reference=String(e._quotedPromptContext?.messageId||e.reply_id||'')
     let ids:string[]=[]
     if(!reference&&host.messageManager){
-      try{const history=await host.messageManager.getMessages(e.group_id?'group':'private',e.group_id||e.user_id);ids=history.filter(row=>String(row.sender?.user_id)===String(e.user_id)&&String(row.message_id)!==String(e.message_id)&&Boolean(row.message_id)).slice(0,MAX_FACT_REQUESTS).map(row=>String(row.message_id))}catch{return false}
+      try{const history=await host.messageManager.getMessages(e.group_id?'group':'private',e.group_id||e.user_id,e.group_id?undefined:{accountId:e.self_id??e.bot?.uin??'',throwOnError:true});ids=history.filter(row=>String(row.sender?.user_id)===String(e.user_id)&&String(row.message_id)!==String(e.message_id)&&Boolean(row.message_id)).slice(0,MAX_FACT_REQUESTS).map(row=>String(row.message_id))}catch{return false}
     }
     const facts=await host.getTurnActionFacts(e,{...(reference?{referenceMessageId:reference}:{}),recentRequestMessageIds:ids})
-    if(facts.lookup!=='ok')return false
+    if(facts.lookup!=='ok'||!isAgentBindingCurrent(e))return false
     const status=facts.tasks.find(fact=>['bananaTool','googleImageEditTool'].includes(fact.toolName)&&['queued','running'].includes(fact.execution))
     if (!status) return false
     const reply=host.buildDrawTaskStatusReply({status:status.execution,toolName:status.toolName})

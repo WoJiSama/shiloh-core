@@ -1,8 +1,9 @@
 import {resolvePersonaName} from '../../../conversation/domain/personaSource.js'
 import type {createPersonaLibrary} from '../../../conversation/infrastructure/personaLibrary.js'
+import {resolveQqAgentBinding} from '../../../../adapters/qqAgentBinding.js'
 type PersonaLibrary=ReturnType<typeof createPersonaLibrary>
 type PersonaDetail=ReturnType<PersonaLibrary['resolve']>
-export interface AdminEvent {msg?:string;isMaster?:boolean;user_id?:string|number;group_id?:string|number;message_type?:string;sender?:{role?:string}}
+export interface AdminEvent {msg?:string;isMaster?:boolean;user_id?:string|number;group_id?:string|number;self_id?:string|number;bot?:{uin?:string|number};message_type?:string;sender?:{role?:string}}
 type Target={error:string;groupId?:never}|{groupId:string;error?:never}
 export interface AdminCommandHost {
  config:{forbiddenWords?:{words?:unknown;enabled?:boolean};persona?:Record<string,unknown>;userBlacklist?:{enabled?:boolean;users?:unknown};allowedGroups?:unknown};personaLibrary:PersonaLibrary;
@@ -239,7 +240,7 @@ function formatPersonaDetail(host:AdminCommandHost, detail:PersonaDetail) {
 async function handlePersonaList(host:AdminCommandHost, e:AdminEvent) {
     try {
       const entries = host.personaLibrary.list()
-      const resolved = host.personaLibrary.resolve({ messageType: e?.message_type || "", groupId: String(e?.group_id || "") })
+      const {selected: resolved} = resolveQqAgentBinding(host.personaLibrary, e)
       const lines = ["【人设库】"]
       for (const item of entries) {
         const mark = item.id === resolved.id ? " ←当前" : ""
@@ -255,8 +256,9 @@ async function handlePersonaList(host:AdminCommandHost, e:AdminEvent) {
 
 async function handlePersonaCurrent(host:AdminCommandHost, e:AdminEvent) {
     try {
-      const detail = host.personaLibrary.resolve({ messageType: e?.message_type || "", groupId: String(e?.group_id || "") })
-      await host.sendObservedReply(e, host.formatPersonaDetail(detail))
+      const {selected, binding} = resolveQqAgentBinding(host.personaLibrary, e)
+      const role = binding?.source === 'configured' ? `\n运行角色 ${binding.agentId}（由 agent-bindings.yaml 配置）` : ''
+      await host.sendObservedReply(e, host.formatPersonaDetail(selected) + role)
     } catch (error) {
       await host.sendObservedReply(e, `读取当前人设失败：${error instanceof Error?error.message:String(error)}`)
     }
@@ -289,6 +291,13 @@ async function handlePersonaSwitch(host:AdminCommandHost, e:AdminEvent) {
       return true
     }
     try {
+      const {binding} = resolveQqAgentBinding(host.personaLibrary, Object.assign(Object.create(e), {
+        message_type:'group', group_id:target.groupId,
+      }))
+      if (binding?.source === 'configured') {
+        await host.sendObservedReply(e, `群 ${target.groupId} 的角色 ${binding.agentId} 由 agent-bindings.yaml 管理，请联系部署者调整。`)
+        return true
+      }
       if (!name || name === "默认" || name === "default") {
         await host.personaLibrary.setGroupBinding(target.groupId, "default")
         await host.sendObservedReply(e, `群 ${target.groupId} 已切回默认人设`)
@@ -320,6 +329,13 @@ async function handlePersonaReset(host:AdminCommandHost, e:AdminEvent) {
       return true
     }
     try {
+      const {binding} = resolveQqAgentBinding(host.personaLibrary, Object.assign(Object.create(e), {
+        message_type:'group', group_id:target.groupId,
+      }))
+      if (binding?.source === 'configured') {
+        await host.sendObservedReply(e, `群 ${target.groupId} 的角色 ${binding.agentId} 由 agent-bindings.yaml 管理，请联系部署者调整。`)
+        return true
+      }
       host.personaLibrary.setGroupBinding(target.groupId, "default")
       await host.sendObservedReply(e, `群 ${target.groupId} 已解绑,回到默认人设「${resolvePersonaName(host.config.persona)}」`)
     } catch (error) {
@@ -339,7 +355,7 @@ async function handlePersonaSave(host:AdminCommandHost, e:AdminEvent) {
       return true
     }
     try {
-      const resolved = host.personaLibrary.resolve({ messageType: e?.message_type || "", groupId: String(e?.group_id || "") })
+      const {selected: resolved} = resolveQqAgentBinding(host.personaLibrary, e)
       const saved = host.personaLibrary.upsert({ ...resolved.persona, name })
       logger.mark(`[人设库] 保存人设 ${saved.id}(${saved.name}) by=${e?.user_id}`)
       await host.sendObservedReply(e, `已保存人设「${saved.name}」(id:${saved.id}),可以用 #切换人设 ${saved.name} 给群换上`)

@@ -505,9 +505,15 @@ class MessageArchiveManager {
     const maxLen = Math.max(100, Number(cfg.maxMessageLength) || DEFAULT_CONFIG.maxMessageLength)
     const personaSource = parseSentPersonaSource(e.personaSource, e.source, e.sender?.user_id ?? e.user_id)
     const forwardCompleteness = parseForwardCompleteness(e.forwardCompleteness) || findForwardCompleteness(e.message, e.forward_context)
+    const receivingBotId = String(e.self_id || object(e.bot).uin || '')
+    const receivingPersona = object(e._personaSnapshot)
+    const receivingPersonaId = receivingPersona.botId === receivingBotId && typeof receivingPersona.personaId === 'string'
+      ? receivingPersona.personaId : ''
     return {
       version: 1,
       event_id: e.event_id || null,
+      ...(receivingBotId ? {source_bot_id: receivingBotId} : {}),
+      ...(receivingPersonaId ? {source_persona_id: receivingPersonaId} : {}),
       timestamp,
       time: formatTime(timestamp),
       message_type: e.message_type || "unknown",
@@ -542,6 +548,7 @@ class MessageArchiveManager {
     return {
       version: 1,
       event_id: e.event_id || null,
+      ...(e.self_id || object(e.bot).uin ? {source_bot_id: String(e.self_id || object(e.bot).uin)} : {}),
       archive_kind: "notice",
       timestamp,
       time: formatTime(timestamp),

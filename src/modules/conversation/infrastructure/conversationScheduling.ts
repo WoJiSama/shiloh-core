@@ -1,4 +1,5 @@
 import type {ConversationEvent,ConversationState} from '../application/smartConversation.js'
+import {isAgentBindingCurrent} from '../../../contracts/agentBinding.js'
 import {isAiConversationEnabled} from '../domain/aiConversationGate.js'
 import {smartConversationKey} from '../domain/conversationIdentity.js'
 import {markProactiveReply} from '../domain/proactiveReplyFreshness.js'
@@ -35,6 +36,7 @@ const toolRequestMergeTimers=new Map<string,MergeEntry>()
 const consecutiveInterrupts=new Map<string|number,number>()
 
 function scheduleDeferredGateCheck(host:SchedulingHost,e:ScheduledEvent,state:ConversationState) {
+    if (!isAgentBindingCurrent(e)) return
     const smartCfg = host.config.smartTrigger || {}
     if (smartCfg.deferredGateEnabled === false) return
     if (!e?.group_id) return
@@ -57,13 +59,14 @@ function scheduleDeferredGateCheck(host:SchedulingHost,e:ScheduledEvent,state:Co
     state.deferredTimer = setTimeout(async () => {
       state.deferredTimer = null
       try {
+        if (!isAgentBindingCurrent(e)) return
         const mode = String(host.config?.chatTriggerMode || 'strict').toLowerCase()
         if (mode !== 'smart') return
         if (!isAiConversationEnabled(host.config)) return
         if (!host.checkGroupPermission(e)) return
         if (host.isUserBlacklisted(e)) return
         if (await host.isMutedInGroup(e)) return
-        if (state.inFlight) return
+        if (state.inFlight || !isAgentBindingCurrent(e)) return
         state.forceGateCheck = true
         const wrapped:ScheduledEvent = Object.create(e)
         wrapped._smartWaitRerun = true
@@ -153,7 +156,7 @@ function scheduleMergedDirectTrigger(host:SchedulingHost,e:ScheduledEvent,handle
     const mergeMs = host.getMergeMsForEvent(e)
     if (mergeMs <= 0 || !host.isMergeableDirectTrigger(e)) return null
 
-    const key = `${smartConversationKey(e.group_id, e)}:${e.user_id}`
+    const key = JSON.stringify([smartConversationKey(e.group_id,e), String(e.user_id ?? ''), e._agentBindingToken ?? null])
     const previous = directTriggerMergeTimers.get(key)
     if (previous?.timer) clearTimeout(previous.timer)
 
@@ -175,6 +178,7 @@ function scheduleMergedDirectTrigger(host:SchedulingHost,e:ScheduledEvent,handle
       const entry = directTriggerMergeTimers.get(key)
       if (!entry || entry.timer !== timer) return
       directTriggerMergeTimers.delete(key)
+      if (!isAgentBindingCurrent(e)) return
       const mergedEvent = host.buildMergedDirectTriggerEvent(e, entry.messages)
       logger.info(`[触发合并] group=${e.group_id} user=${e.user_id} total=${entry.messages.length + (entry.droppedCount || 0)} retained=${entry.messages.length} dropped=${entry.droppedCount || 0} reason=${reason} latest="${summarizeForLog(entry.messages.at(-1)?.text || "")}"`)
       try {
@@ -213,7 +217,7 @@ function scheduleMergedToolRequest(host:SchedulingHost,e:ScheduledEvent,handler:
     const mergeMs = host.getMergeMsForEvent(e)
     if (mergeMs <= 0 || !host.isMergeableToolRequest(e)) return null
 
-    const key = `${smartConversationKey(e.group_id,e)}:${e.user_id}:tool_request`
+    const key = JSON.stringify([smartConversationKey(e.group_id,e), String(e.user_id ?? ''), e._agentBindingToken ?? null])
     const previous = toolRequestMergeTimers.get(key)
     if (previous?.timer) clearTimeout(previous.timer)
 
@@ -235,6 +239,7 @@ function scheduleMergedToolRequest(host:SchedulingHost,e:ScheduledEvent,handler:
       const entry = toolRequestMergeTimers.get(key)
       if (!entry || entry.timer !== timer) return
       toolRequestMergeTimers.delete(key)
+      if (!isAgentBindingCurrent(e)) return
       const mergedEvent = host.buildMergedToolRequestEvent(e, entry.messages)
       logger.info(`[工具请求合并] group=${e.group_id} user=${e.user_id} total=${entry.messages.length + (entry.droppedCount || 0)} retained=${entry.messages.length} dropped=${entry.droppedCount || 0} latest="${summarizeForLog(entry.messages.at(-1)?.text || "")}"`)
       try {
@@ -262,7 +267,7 @@ function releaseSmartInFlight(host:SchedulingHost,state:ConversationState,e:Sche
     state.needsRerun = false
     state.rerunEvent = null
     state.queuedForceGateCheck = false
-    if (!rerunEvent) return
+    if (!rerunEvent || !isAgentBindingCurrent(rerunEvent)) return
     const wrappedRerun:ScheduledEvent = Object.create(rerunEvent)
     wrappedRerun._smartQueuedRerun = true
     if (queuedForceGateCheck) wrappedRerun._smartQueuedGateCheck = true
@@ -306,6 +311,7 @@ async function applyReplyDebounce(host:SchedulingHost,e:ScheduledEvent) {
   }
 
 function scheduleWaitReply(host:SchedulingHost,e:ScheduledEvent,seconds:number,reason:string) {
+    if (!isAgentBindingCurrent(e)) return
     const groupId = e.group_id
     if (!groupId) {
       logger.warn(`[WaitTool] 私聊场景暂不支持自动续话: user=${e.user_id}`)
@@ -317,7 +323,9 @@ function scheduleWaitReply(host:SchedulingHost,e:ScheduledEvent,seconds:number,r
     if (old) clearTimeout(old)
 
     const timer = setTimeout(async () => {
+      if (state.waitTimers.get(userKey) !== timer) return
       state.waitTimers.delete(userKey)
+      if (!isAgentBindingCurrent(e)) return
       // 触发时再次校验：模式可能已切回 strict、bot 可能已被禁言、群可能已退出白名单
       const mode = String(host.config?.chatTriggerMode || 'strict').toLowerCase()
       if (!isAiConversationEnabled(host.config)) return
@@ -337,6 +345,7 @@ function scheduleWaitReply(host:SchedulingHost,e:ScheduledEvent,seconds:number,r
         logger.info(`[WaitTool] group=${groupId} 被禁言，取消续话`)
         return
       }
+      if (!isAgentBindingCurrent(e)) return
       state.forceContinue = false
       state.forceGateCheck = true
       logger.info(`[WaitTool] group=${groupId} user=${e.user_id} fired after ${seconds}s reason=${reason || ''}`)
@@ -366,6 +375,7 @@ async function enqueueProactiveTask(host:SchedulingHost,groupId:string|number,in
       logger.warn(`[Proactive] anchor.group_id(${anchor.group_id}) 与传入 groupId(${groupId}) 不匹配，拒绝触发`)
       return { ok: false, error: 'anchor_group_mismatch' }
     }
+    if (!isAgentBindingCurrent(anchor)) return { ok: false, error: 'binding_changed' }
     if (!host.checkGroupPermission(anchor)) {
       return { ok: false, error: 'not_whitelisted' }
     }
@@ -375,6 +385,7 @@ async function enqueueProactiveTask(host:SchedulingHost,groupId:string|number,in
     if (await host.isMutedInGroup(anchor)) {
       return { ok: false, error: 'muted' }
     }
+    if (!isAgentBindingCurrent(anchor)) return { ok: false, error: 'binding_changed' }
 
     logger.info(`[Proactive] group=${groupId} source=${opts.source || 'unknown'} intent="${String(intent).slice(0, 40)}"`)
     try {
@@ -385,10 +396,14 @@ async function enqueueProactiveTask(host:SchedulingHost,groupId:string|number,in
         const state = host.getSmartState(groupId, anchor)
         state.forceContinue = true
         markProactiveReply(wrapped, lastIncomingMsgAt.get(smartConversationKey(groupId, anchor)) || Date.now())
-        setImmediate(() => host.handleRandomReplySmart(wrapped).catch(err => logger.error('[Proactive] 处理失败:', err)))
+        setImmediate(() => {
+          if (isAgentBindingCurrent(wrapped)) void host.handleRandomReplySmart(wrapped).catch(err => logger.error('[Proactive] 处理失败:', err))
+        })
       } else {
         // strict 模式没有 Gate，直接走 handleTool（绕过 @/前缀破冰）
-        setImmediate(() => host.handleTool(wrapped).catch(err => logger.error('[Proactive] 处理失败:', err)))
+        setImmediate(() => {
+          if (isAgentBindingCurrent(wrapped)) void host.handleTool(wrapped).catch(err => logger.error('[Proactive] 处理失败:', err))
+        })
       }
       return { ok: true }
     } catch (err) {

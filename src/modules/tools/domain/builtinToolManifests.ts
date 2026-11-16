@@ -640,11 +640,12 @@ const CHAT_HISTORY_TOOL_MANIFEST: ToolManifest = {
   name: 'chatHistoryTool',
   triggers: CHAT_HISTORY_PATTERNS,
   disclosure: [
-    '【chatHistoryTool 历史发言检索】从本群实际存储的近期消息中查找发言证据，不负责查群名片或写入记忆。',
-    'question 保留当前问题；user_id 为明确的发言人 QQ，start_time/end_time 可限定北京时间，limit 默认20，keywords 可限定主题。',
+    '【chatHistoryTool 历史发言检索】群聊查询本群近期原文及可见记忆；与本人私聊时，可跨宿主授权的群查找这个人自己的历史。不负责查群名片或写入记忆。',
+    'question 保留当前问题；user_id 为明确的发言人 QQ，私聊仅允许当前本人。start_time/end_time 可限定北京时间，limit 每类默认20，keywords 可限定主题。',
+    'source 可选recent/archive/memory/all，默认all；archive仅在私聊查询本人。按next_offsets选来源并用offset继续，按memory_index真实ID填memory_ids读取细节。不得猜测群号、身份或记忆ID来扩大范围。',
     '“他/她上次说什么”必须先确定对象；无唯一对象先澄清，不能搜到另一个人的发言就当答案。',
     '引用或已有上下文已足够回答时直接依据该证据回答，无须重复查询。',
-    '只根据返回的 messages、时间和消息ID回答；not_found 只代表本次覆盖范围未找到，不代表对方从未说过；unavailable 表示未查到结果，不能编造。'
+    '只根据返回的 messages/memories、时间及来源ID回答；not_found 只代表本次覆盖范围未找到，不代表对方从未说过；unavailable 表示未查到结果，不能编造。'
   ].join('\n')
 }
 

@@ -32,6 +32,34 @@ export interface TokenSummary {
 
 export interface TokenSeriesBucket { start: number; tokens: number; cost: number; calls: number }
 
+const ledgerDay = (at: number) => new Date(at + 8 * 3_600_000).toISOString().slice(0, 10)
+
+function parseLine(line: string): TokenLedgerEntry | null {
+  try {
+    const parsed = JSON.parse(line) as TokenLedgerEntry
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.scope !== 'string' || !parsed.u) return null
+    return parsed
+  } catch { return null /* 半行/坏行丢弃（进程中断的尾巴） */ }
+}
+
+export function readTokenLedgerCost(dataDir: string, scope: string, at: number): number {
+  const day = ledgerDay(at)
+  let source: string
+  try {
+    source = fs.readFileSync(path.join(dataDir, 'token_usage', `${day}.ndjson`), 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0
+    throw new Error('无法读取源令牌账本')
+  }
+  let cost = 0
+  for (const line of source.split('\n')) {
+    const row = parseLine(line)
+    if (row?.scope === scope && Number.isFinite(row.t) && row.t <= at && row.t > at - 86_400_000 && ledgerDay(row.t) === day &&
+        Number.isFinite(row.cny) && row.cny >= 0) cost += row.cny
+  }
+  return Math.round(cost * 10_000) / 10_000
+}
+
 export function createTokenLedger(ports: TokenLedgerPorts) {
   const now = ports.now ?? Date.now
   const dir = path.join(ports.dataDir, 'token_usage')
@@ -42,7 +70,6 @@ export function createTokenLedger(ports: TokenLedgerPorts) {
   let todayKey = ''
   const fileCache = new Map<string, { at: number; rows: TokenLedgerEntry[] }>()
 
-  const dayKey = (at: number) => new Date(at + 8 * 3600_000).toISOString().slice(0, 10)
   const filePath = (key: string) => path.join(dir, `${key}.ndjson`)
 
   function ensureDir() {
@@ -50,7 +77,7 @@ export function createTokenLedger(ports: TokenLedgerPorts) {
   }
 
   function rollDay(at: number) {
-    const key = dayKey(at)
+    const key = ledgerDay(at)
     if (key === todayKey) return
     todayKey = key
     todayRows = []
@@ -58,14 +85,6 @@ export function createTokenLedger(ports: TokenLedgerPorts) {
       const raw = fs.existsSync(filePath(key)) ? fs.readFileSync(filePath(key), 'utf8') : ''
       todayRows = raw.split('\n').filter(Boolean).map(line => parseLine(line)).filter((x): x is TokenLedgerEntry => x !== null)
     } catch { /* 读不了当日文件就从头记 */ }
-  }
-
-  function parseLine(line: string): TokenLedgerEntry | null {
-    try {
-      const parsed = JSON.parse(line) as TokenLedgerEntry
-      if (!parsed || typeof parsed !== 'object' || typeof parsed.scope !== 'string' || !parsed.u) return null
-      return parsed
-    } catch { return null /* 半行/坏行丢弃（进程中断的尾巴） */ }
   }
 
   function record(input: { scope: string; stage: string; model?: string; usage: unknown; ms?: number; at?: number }): void {
@@ -85,7 +104,7 @@ export function createTokenLedger(ports: TokenLedgerPorts) {
     writeChain = writeChain.then(() => {
       ensureDir()
       try {
-        fs.appendFileSync(filePath(dayKey(at)), JSON.stringify(entry) + '\n')
+        fs.appendFileSync(filePath(ledgerDay(at)), JSON.stringify(entry) + '\n')
       } catch (error) {
         try { ports.logger?.warn?.(`[令牌账本] 写入失败：${error instanceof Error ? error.message : String(error)}`) } catch { /* 日志不可用 */ }
       }
@@ -111,7 +130,7 @@ export function createTokenLedger(ports: TokenLedgerPorts) {
   function lastDayKeys(count: number): string[] {
     const keys: string[] = []
     const base = now()
-    for (let i = 0; i < count; i += 1) keys.push(dayKey(base - i * 86_400_000))
+    for (let i = 0; i < count; i += 1) keys.push(ledgerDay(base - i * 86_400_000))
     return keys
   }
 
@@ -197,7 +216,7 @@ export function createTokenLedger(ports: TokenLedgerPorts) {
   function prune(): number {
     let removed = 0
     try {
-      const cutoff = dayKey(now() - retentionDays * 86_400_000)
+      const cutoff = ledgerDay(now() - retentionDays * 86_400_000)
       for (const name of fs.readdirSync(dir)) {
         if (!/^\d{4}-\d{2}-\d{2}\.ndjson$/.test(name)) continue
         if (name.slice(0, 10) < cutoff) {
@@ -208,7 +227,7 @@ export function createTokenLedger(ports: TokenLedgerPorts) {
     return removed
   }
 
-  return { record, summary, series, todayCostOfScope, recent, prune, table }
+  return { record, summary, series, todayCostOfScope, recent, prune, table, flush: () => writeChain }
 }
 
 export type TokenLedger = ReturnType<typeof createTokenLedger>

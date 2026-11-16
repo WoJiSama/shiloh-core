@@ -9,13 +9,13 @@ import {createChatHistoryTool} from '../dist/backend/modules/qqTools/infrastruct
 import {classifyToolResult} from '../utils/toolResultGrounding.js'
 const logger={info(){},warn(){},error(){}}
 
-test('compiled executor dispatches MCP and retries local execution once',async()=>{
+test('compiled executor dispatches MCP and retries explicitly safe local execution once',async()=>{
  const calls=[]
  const api=createToolExecution({logger,mcpManager:{isMCPTool:name=>name==='mcp_test',executeToolByAlias:async(name,params)=>{calls.push([name,params]);return 'remote'}}})
  const host={executeTool:(...args)=>api.executeTool(host,...args)}
  assert.equal(await api.executeTool(host,'mcp_test',{query:'x'},{}),'remote')
  let attempts=0
- const local={async execute(params,event){attempts++;if(attempts===1)throw new Error('temporary');return {params,event}}}
+ const local={async execute(params,event){attempts++;if(attempts===1)throw Object.assign(new Error('temporary'),{safeToRetry:true});return {params,event}}}
  assert.deepEqual(await api.executeTool(host,local,{value:1},{msg:'test'}),{params:{value:1},event:{msg:'test'}})
  assert.equal(attempts,2)
  assert.deepEqual(calls,[['mcp_test',{query:'x'}]])
@@ -125,6 +125,37 @@ test('uncertain delivery errors are not retried by the shared tool executor',asy
  assert.equal(attempts,1)
 })
 
+test('serialization preserves explicit outcome before reading content text',()=>{
+ const api=createToolExecution({logger,mcpManager:{isMCPTool:()=>false}})
+ for(const value of [{success:false,content:[{type:'text',text:'已生成'}]},{isError:true,content:[{type:'text',text:'正常文字'}]},{success:true,content:[{type:'text',text:'error: 这是原文'}]}]){
+  const serialized=api.serializeToolResult({},value)
+  assert.deepEqual(JSON.parse(serialized),value)
+  assert.equal(classifyToolResult(serialized).kind,value.success===true?'success':'error')
+ }
+})
+
+test('uncertain MCP results retain unknown action facts and cannot be reported as definite failure',async()=>{
+ const statuses=[]
+ const api=createToolExecution({logger,mcpManager:{isMCPTool:()=>true},formatTurnPlanLog:()=>'',recordTurnPlanToolOutcome(){}})
+ const host={toolInstances:{},isDedupeTool:()=>false,saveTaskStatus:async value=>statuses.push(value),executeTool:async()=>{throw Object.assign(Error('timeout after acceptance'),{uncertain:true})}}
+ const result=await api.runToolCall(host,{id:'remote-write',type:'function',function:{name:'mcp_write',arguments:'{}'}},{self_id:1,group_id:2,user_id:3,message_id:4},{tools:[{function:{name:'mcp_write'}}]})
+ assert.equal(JSON.parse(result.result).status,'unknown')
+ assert.match(JSON.parse(result.result).error.message,/停止自动重试/)
+ assert.equal(statuses.at(-1).actionFacts.execution,'unknown')
+ assert.equal(classifyToolResult(result.result).kind,'error')
+})
+
+test('returned unknown outcome survives the production failure classifier and serializer',async()=>{
+ const statuses=[]
+ const api=createToolExecution({logger,mcpManager:{isMCPTool:()=>false},formatTurnPlanLog:()=>'',recordTurnPlanToolOutcome(){}})
+ const unknown={kind:'tool_outcome',status:'unknown',error:{message:'lost receipt'}}
+ const host={toolInstances:{localWrite:{execute:async()=>unknown}},isDedupeTool:()=>false,saveTaskStatus:async value=>statuses.push(value),executeTool:async()=>unknown,
+ serializeToolResult:value=>api.serializeToolResult(host,value),isRawToolFailure:value=>classifyToolResult(value).kind==='error',isToolResultError:value=>classifyToolResult(value).kind==='error'}
+ const result=await api.runToolCall(host,{id:'local-write',type:'function',function:{name:'localWrite',arguments:'{}'}},{self_id:1,group_id:2,user_id:3,message_id:4},{tools:[{function:{name:'localWrite'}}]})
+ assert.deepEqual(JSON.parse(result.result),unknown)
+ assert.equal(statuses.at(-1).actionFacts.execution,'unknown')
+})
+
 function scopedExecutorFixture(tools) {
   const executions = [], requests = [], sent = []
   const controls = {afterExecute: async () => {}, responses: []}
@@ -157,6 +188,39 @@ function scopedExecutorFixture(tools) {
   return {api, host, store, session, controls, executions, requests, sent}
 }
 const scopedDefinition = name => ({type: 'function', function: {name, parameters: {type: 'object', properties: {page: {type: 'integer'}}, required: ['page']}}})
+
+for (const syntheticToolCall of [false, true]) test(`after-tool ${syntheticToolCall ? 'text summary' : 'continuation'} stops on binding change`, async () => {
+ const f = scopedExecutorFixture([scopedDefinition('searchInformationTool')])
+ const modelRequests = []
+ let current = true
+ f.host.retryRequest = async (_request, _content, _retries, _name, options) => {
+  modelRequests.push(options)
+  assert.equal(options.isCurrent(), true)
+  current = false
+  assert.equal(options.isCurrent(), false)
+  return { choices: [{ message: { content: '不能处理的旧上下文' } }] }
+ }
+ const call = f.host.buildForcedToolCall('searchInformationTool', { page: 1 })
+ await f.api.processToolCalls(f.host, { tool_calls: [call] }, { msg: '帮我检索正文', _isAgentBindingCurrent: () => current },
+  f.session, [], [], 'member', { syntheticToolCall })
+ assert.equal(modelRequests.length, 1)
+ assert.deepEqual(f.sent, [])
+})
+
+test('mixed unknown and success results stop further tool rounds and reject direct session retries',async()=>{
+ const tools=['mcp_write','searchInformationTool'].map(scopedDefinition)
+ const f=scopedExecutorFixture(tools)
+ f.host.serializeToolResult=value=>f.api.serializeToolResult(f.host,value)
+ f.host.isRawToolFailure=f.host.isToolResultError=value=>classifyToolResult(value).kind==='error'
+ f.controls.afterExecute=async name=>{if(name==='mcp_write')throw Object.assign(Error('response lost'),{uncertain:true})}
+ f.controls.responses=[{content:'搜索有结果，写入结果尚未确认。',tool_calls:[f.host.buildForcedToolCall('mcp_write',{page:1})]}]
+ await f.api.processToolCalls(f.host,{tool_calls:tools.map(tool=>f.host.buildForcedToolCall(tool.function.name,{page:1}))},{},f.session,[],[])
+ assert.deepEqual(f.executions.map(row=>row.name),['mcp_write','searchInformationTool'])
+ assert.equal(f.requests.length,1);assert.deepEqual(f.requests[0].tools,[]);assert.equal(f.requests[0].tool_choice,'none')
+ assert.equal(f.session.toolExecutionBlocked,true)
+ const denied=await f.api.runToolCall(f.host,f.host.buildForcedToolCall('mcp_write',{page:1}),{},f.session)
+ assert.equal(JSON.parse(denied.result).status,'unknown');assert.equal(f.executions.length,2)
+})
 
 test('vision-to-search keeps its original authorized scope across a real registry refresh', async () => {
   const initial = ['googleImageAnalysisTool', 'searchInformationTool'].map(scopedDefinition)
@@ -244,7 +308,7 @@ test('history executor resolves self to sender and leaves group-wide queries unf
   f.host.toolInstances.chatHistoryTool={execute:async params=>{received.push(params);return 'history evidence'}}
   f.session.rawArgs=text
   f.session.memberMap=new Map([[202,{user_id:202,nickname:'用户'}],[303,{user_id:303,nickname:'小明'}]])
-  await f.api.runToolCall(f.host,f.host.buildForcedToolCall('chatHistoryTool',params),{user_id:202,msg:text},f.session)
+  await f.api.runToolCall(f.host,f.host.buildForcedToolCall('chatHistoryTool',params),{group_id:'group',user_id:202,msg:text},f.session)
   assert.equal(received.length,1)
   assert.equal(received[0].user_id,expected)
  }
@@ -258,6 +322,34 @@ test('planner target normalization shares the executor evidence boundary', () =>
  assert.equal(api.normalizeToolDecision(host,structuredClone(decision),context).params.user_id,'303')
  assert.equal(api.normalizeToolDecision(host,structuredClone(decision),{...context,currentIntentText:'那哥们是谁来着',atQq:[]}).intent,'chat')
  assert.equal(api.normalizeToolDecision(host,structuredClone(decision),{...context,currentIntentText:'查一下成员资料',atQq:[]}).intent,'chat')
+})
+
+test('private history planner and executor accept trusted self without requiring a particular self phrase', async () => {
+ const planner=createSemanticToolIntent({logger,isExplicitAdminCollectionMentionRequest:()=>false,resolveMemberAvatarReferences:()=>[],normalizeToolSkillParams:(_tool,params)=>params})
+ const text='你还记得我的爱好吗'
+ for(const params of [{question:text},{question:text,user_id:'202'}]) {
+  const e={user_id:202,self_id:900,msg:text}
+  const decision=planner.normalizeToolDecision({toolInstances:{chatHistoryTool:{}}},{intent:'tool',confidence:0.95,toolName:'chatHistoryTool',params},{e,currentUserId:303,currentIntentText:text,availableToolNames:['chatHistoryTool']})
+  assert.equal(decision.intent,'tool')
+  assert.equal(decision.params.user_id,'202','actual event author overrides a stale context identity')
+  const f=scopedExecutorFixture([{function:{name:'chatHistoryTool'}}]),received=[]
+  f.host.toolInstances.chatHistoryTool={execute:async params=>{received.push(params);return 'self history'}}
+  f.session.rawArgs=text
+  await f.api.runToolCall(f.host,f.host.buildForcedToolCall('chatHistoryTool',params),e,f.session)
+  assert.equal(received.length,1)
+  assert.equal(received[0].user_id,'202')
+ }
+ for(const params of [{question:text,user_id:'303'},{question:text,nickname:'小明'}]) {
+  const e={user_id:202,msg:text}
+  const decision=planner.normalizeToolDecision({toolInstances:{chatHistoryTool:{}}},{intent:'tool',confidence:0.95,toolName:'chatHistoryTool',params},{e,currentUserId:202,currentIntentText:text,availableToolNames:['chatHistoryTool']})
+  assert.equal(decision.intent,'chat')
+  const f=scopedExecutorFixture([{function:{name:'chatHistoryTool'}}]);let executed=0
+  f.host.toolInstances.chatHistoryTool={execute:async()=>{executed++;return 'forbidden'}}
+  f.session.rawArgs=text
+  const result=await f.api.runToolCall(f.host,f.host.buildForcedToolCall('chatHistoryTool',params),e,f.session)
+  assert.equal(JSON.parse(result.result).status,'invalid_target')
+  assert.equal(executed,0)
+ }
 })
 
 test('history with no usable evidence exits before a model can fill gaps from old messages', async () => {
@@ -277,5 +369,14 @@ test('history with no usable evidence exits before a model can fill gaps from ol
   assert.doesNotMatch(failed[0].factualReply,/周六|公园/)
   const result=JSON.parse(f.session.toolResults[0].result)
   assert.equal(result.status,unavailable?'unavailable':'not_found')
+ }
+})
+
+test('ordinary execution errors do not retry side effects; explicitly safe failures may retry once',async()=>{
+ const api=createToolExecution({logger,mcpManager:{isMCPTool:()=>false}}),host={executeTool:(...args)=>api.executeTool(host,...args)}
+ for(const safe of [false,true]){
+  let attempts=0
+  await assert.rejects(api.executeTool(host,{execute:async()=>{attempts++;throw Object.assign(Error('transport broke'),{safeToRetry:safe})}},{},{}),/transport broke/)
+  assert.equal(attempts,safe?2:1)
  }
 })

@@ -1,6 +1,7 @@
 import type {createAvatarReference} from './avatarReference.js'
 import type {TurnInteractionContext} from '../../../contracts/turnInteraction.js'
-export interface PromptEvent {msg?:string;raw_message?:string;group_id?:unknown;bot?:{nickname?:string};_quotedPromptContext?:{text?:string;senderName?:string;mediaSummary?:string};_directTriggerMerged?:boolean;_mergedMessageCount?:number;_mergedOriginalTexts?:string[];_groupContextImagePrompt?:string}
+import {isAgentBindingCurrent,type AgentBindingGuard} from '../../../contracts/agentBinding.js'
+export interface PromptEvent extends AgentBindingGuard {msg?:string;raw_message?:string;group_id?:unknown;bot?:{nickname?:string};_quotedPromptContext?:{text?:string;senderName?:string;mediaSummary?:string};_directTriggerMerged?:boolean;_mergedMessageCount?:number;_mergedOriginalTexts?:string[];_groupContextImagePrompt?:string}
 export interface History {role?:string;content?:unknown}
 export interface UnderstandingConfig {enabled:boolean;maxChars:number;includeRecentContext:boolean;briefEnabled:boolean;briefTimeoutMs:number}
 type Avatar=Parameters<ReturnType<typeof createAvatarReference>['formatAvatarDrawReferencePrompt']>[0]
@@ -261,6 +262,7 @@ function gatherUnderstandingMaterials(host:PromptContextHost, context:PromptCont
 
   // 模型理解简报优先,失败回退规则卡;两次材料抽取合一(gatherUnderstandingMaterials)
 async function resolveUnderstandingPrompt(host:PromptContextHost, context:PromptContext = {}) {
+    if (!isAgentBindingCurrent(context.e)) return ''
     const materials = host.gatherUnderstandingMaterials(context)
     if (!materials) return ""
     const cfg = materials.cfg
@@ -278,10 +280,13 @@ async function resolveUnderstandingPrompt(host:PromptContextHost, context:Prompt
         apiKey: briefCfg.key || "",
         model: briefCfg.model || "",
         materials,
-        fetchImpl: (url, options, timeoutMs) => (ports.fetchBrief ?? fetchWithTimeout)(url, options, timeoutMs),
+        fetchImpl: (url, options, timeoutMs) => isAgentBindingCurrent(context.e)
+          ? (ports.fetchBrief ?? fetchWithTimeout)(url, options, timeoutMs)
+          : Promise.reject(new Error('角色绑定已改变')),
         timeoutMs: cfg.briefTimeoutMs
       })
       context.session?.turnTrace?.addModelCall("brief", Date.now() - startedAt)
+      if (!isAgentBindingCurrent(context.e)) return ''
       if (result.ok) {
         if (result.social && context.session?.interactionContext) {
           context.session.interactionContext = withTurnSocialInterpretation(context.session.interactionContext, result.social, 'understanding_model')

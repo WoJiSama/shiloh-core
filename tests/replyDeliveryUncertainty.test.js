@@ -21,6 +21,24 @@ test('receipt without message id is counted as unknown without resend',async()=>
  await api.sendObservedReply(host,event,'hello')
  assert.equal(attempts,1);assert.equal(sends.length,0);assert.equal(failures[0].code,'delivery_unknown')
 })
+test('segmented replies stop on a conflicting rejection or unknown first receipt',async()=>{
+ for(const [receipt,code] of [
+  [{status:'failed',retcode:1201,message_id:33},'delivery_failed'],
+  [{status:'ok'},'delivery_unknown'],
+ ]){
+  const failures=[],sent=[],confirmed=[]
+  const {api,host,event}=replyRenderingFixture({
+   stats:()=>({recordFailure:entry=>failures.push(entry),recordSend:()=>assert.fail('no confirmed send')}),
+   confirmMemoryReply:(_event,result)=>confirmed.push(result),
+  })
+  host.splitMessage=()=>['第一段','第二段']
+  event.reply=async payload=>{sent.push(payload);return receipt}
+  assert.equal(await api.sendSegmentedMessage(host,event,'第一段\n第二段',0,{alreadyGuarded:true}),null)
+  assert.deepEqual(sent,['第一段'])
+  assert.deepEqual(confirmed,[])
+  assert.deepEqual(failures.map(entry=>entry.code),[code])
+ }
+})
 test('smart card permits preparation fallback but never uncertain delivery fallback',async()=>{
  for(const afterSend of [false,true]){
   let attempts=0

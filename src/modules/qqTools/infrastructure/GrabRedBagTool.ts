@@ -1,6 +1,6 @@
 import {normalizeDeliveryReceipt} from '../../messaging/domain/deliveryReceipt.js'
-import type { QqToolEvent, QqToolBot, QqToolGroup, QqMember, QqToolPorts, PbObject, PbValue } from '../../../contracts/qqTools.js'
-import { apiOk, asRecord, errorText, eventBot } from './qqToolRuntime.js'
+import type { QqToolEvent, QqToolBot, QqToolPorts } from '../../../contracts/qqTools.js'
+import { asRecord, captureQqToolScope, errorText, QqToolBindingChanged, requireQqToolBot, type QqToolScope } from './qqToolRuntime.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
 import fs from 'fs'
 import path from 'path'
@@ -69,13 +69,13 @@ class GrabRedBagTool extends AbstractTool {
   /**
    * 从群历史消息中查找最近的红包
    */
-  async findRecentRedBag(bot: QqToolBot, groupId: string|number) {
+  async findRecentRedBag(bot: QqToolBot, groupId: string|number, scope: QqToolScope = captureQqToolScope({bot})) {
     try {
       const count = this.getGroupMaxMessages()
-      const history = await bot.sendApi('get_group_msg_history', {
+      const history = await scope.effect(() => bot.sendApi('get_group_msg_history', {
         group_id: groupId,
         count
-      })
+      }), bot)
 
       const data=asRecord(asRecord(history).data)
       const messages = Array.isArray(data.messages)?[...data.messages]:[]
@@ -87,6 +87,7 @@ class GrabRedBagTool extends AbstractTool {
         }
       }
     } catch (err) {
+      if (err instanceof QqToolBindingChanged) throw err
       console.error('获取群历史消息失败:', err)
     }
     return null
@@ -97,12 +98,13 @@ class GrabRedBagTool extends AbstractTool {
    */
   async func(opts: Record<string, unknown>, e: QqToolEvent) {
     if(opts.confirm===false)return '已取消抢红包操作'
-    const bot = eventBot(e,ports)
     const groupId = e.group_id
 
     if (!groupId) {
       return '此功能仅支持群聊使用'
     }
+    const scope = captureQqToolScope(e)
+    const bot = requireQqToolBot(scope, ports)
 
     let walletElement = null
     let msgSeq: unknown = ''
@@ -111,9 +113,10 @@ class GrabRedBagTool extends AbstractTool {
     let replyMsg: unknown = null
     try {
       if (e.getReply) {
-        replyMsg = await e.getReply()
+        replyMsg = await scope.effect(() => e.getReply!(), bot)
       }
     } catch (err) {
+      if (err instanceof QqToolBindingChanged) throw err
       // ignore
     }
 
@@ -121,11 +124,12 @@ class GrabRedBagTool extends AbstractTool {
       const replyId = e.reply_id || e.source?.message_id || e.source?.seq
       if (replyId) {
         try {
-          const sourceMsg = await bot.sendApi('get_msg', { message_id: replyId })
+          const sourceMsg = await scope.effect(() => bot.sendApi('get_msg', { message_id: replyId }), bot)
           if (asRecord(sourceMsg).data) {
             replyMsg = asRecord(sourceMsg).data
           }
         } catch (err) {
+          if (err instanceof QqToolBindingChanged) throw err
           // ignore
         }
       }
@@ -142,7 +146,7 @@ class GrabRedBagTool extends AbstractTool {
 
     // 2. 如果引用消息没有红包，从最近群消息中查找
     if (!walletElement) {
-      const result = await this.findRecentRedBag(bot, groupId)
+      const result = await this.findRecentRedBag(bot, groupId, scope)
       if (result) {
         walletElement = result.wallet
         msgSeq = result.msgSeq
@@ -161,15 +165,20 @@ class GrabRedBagTool extends AbstractTool {
       // 口令红包：先发送口令
       if (redBagType.type === 'password' && title) {
         try {
-          if(normalizeDeliveryReceipt(await bot.pickGroup(groupId).sendMsg(title)).state !== 'sent')return '口令发送结果未确认，已停止抢红包，请勿重复执行'
+          scope.assertCurrent()
+          const group = await bot.pickGroup(groupId)
+          const outcome = normalizeDeliveryReceipt(await scope.effect(() => group.sendMsg(title), bot))
+          if(outcome.state === 'failed' && outcome.code === 'binding_changed') throw new QqToolBindingChanged()
+          if(outcome.state !== 'sent')return '口令发送结果未确认，已停止抢红包，请勿重复执行'
           // 等待一小段时间让服务器处理
           await new Promise(resolve => setTimeout(resolve, 500))
         } catch (err) {
+          if (err instanceof QqToolBindingChanged) throw err
           return `口令发送结果未确认，已停止抢红包：${errorText(err)}`
         }
       }
 
-      const result = await bot.sendApi('grab_red_bag', {
+      const result = await scope.effect(() => bot.sendApi('grab_red_bag', {
         recv_uin: String(groupId),
         recv_type: 2,
         peer_uid: String(groupId),
@@ -178,7 +187,7 @@ class GrabRedBagTool extends AbstractTool {
         wishing: walletElement.title || '',
         msg_seq: walletElement.msg_seq || String(msgSeq || ''),
         index: walletElement.string_index || ''
-      })
+      }), bot)
 
       const grabResult = asRecord(asRecord(asRecord(asRecord(result).data).result).grabRedBagRsp)
       const amountText=String(asRecord(grabResult.recvdOrder).amount??'0')
@@ -193,6 +202,7 @@ class GrabRedBagTool extends AbstractTool {
         return `抢「${title}」红包失败，错误码: ${grabResult?.result || '未知'}`
       }
     } catch (err) {
+      if (err instanceof QqToolBindingChanged) return `error: ${err.message}`
       if (errorText(err).includes('超时')) {
         return `抢「${title}」红包请求超时，结果未确认，请勿重复执行`
       }

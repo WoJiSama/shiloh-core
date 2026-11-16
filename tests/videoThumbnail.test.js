@@ -30,7 +30,7 @@ test('same account forwards serialize across groups; different accounts proceed'
 })
 test('explicit preprocessing failure is certain; text fallback uses ordinary send', async () => {
   const seen=[]
-  const gateway=new DeliveryGateway({botRoot:()=>({sendApi:async(api,args)=>{seen.push(api); if(api==='send_group_forward_msg') throw new Error('上传转发消息资源失败：1/2'); return {retcode:0,data:{message_id:1}}}})})
+  const gateway=new DeliveryGateway({botRoot:()=>({uin:1,sendApi:async(api,args)=>{seen.push(api); if(api==='send_group_forward_msg') throw new Error('上传转发消息资源失败：1/2'); return {retcode:0,data:{message_id:1}}}})})
   await assert.rejects(gateway.sendGroupForward({botId:1,groupId:2,nodes:[]}), error=>error.uncertain===false)
   await gateway.sendGroupText({botId:1,groupId:2,text:'link'})
   assert.deepEqual(seen,['send_group_forward_msg','send_group_msg'])

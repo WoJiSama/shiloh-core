@@ -1,8 +1,26 @@
 import type {ActionFactsEvent, ActionFactScope, ActionFactsQuery, TurnActionFacts, TurnTaskFact} from '../../../contracts/turnActionFacts.js'
+import {isAgentBindingCurrent} from '../../../contracts/agentBinding.js'
+import {agentBindingToken} from '../../runtime/domain/agentBindings.js'
 
 export function actionFactScope(event: ActionFactsEvent): ActionFactScope {
-  const userId = String(event.user_id ?? '')
-  return {botId: String(event.self_id ?? event.bot?.uin ?? ''), conversationId: event.group_id ? `group:${event.group_id}` : `private:${userId}`, userId}
+  const userId = String(event.user_id || '')
+  const binding = event._agentBinding
+  if (binding?.source === 'configured') {
+    return {
+      botId: binding.target.account.id,
+      conversationId: `${binding.target.kind}:${binding.target.id}`,
+      userId,
+      bindingToken: agentBindingToken(binding),
+    }
+  }
+  return {botId: String(event.self_id || event.bot?.uin || ''), conversationId: event.group_id ? `group:${event.group_id}` : userId ? `private:${userId}` : '', userId}
+}
+
+export function matchesActionFactScope(value: unknown, scope: ActionFactScope): boolean {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<ActionFactScope>
+  return candidate.botId === scope.botId && candidate.conversationId === scope.conversationId &&
+    candidate.userId === scope.userId && candidate.bindingToken === scope.bindingToken
 }
 
 export function unknownTurnActionFacts(event: ActionFactsEvent, now = Date.now()): TurnActionFacts {
@@ -12,8 +30,8 @@ export function unknownTurnActionFacts(event: ActionFactsEvent, now = Date.now()
 /** Fail closed at the prompt boundary, including optional host implementations. */
 export function validateTurnActionFacts(value: TurnActionFacts | undefined, event: ActionFactsEvent, now = Date.now(), query?: ActionFactsQuery): TurnActionFacts {
   const scope = actionFactScope(event)
-  if (!scope.botId || !scope.userId || !value || !['ok', 'unavailable'].includes(value.lookup)
-    || !value.scope || value.scope.botId !== scope.botId || value.scope.conversationId !== scope.conversationId || value.scope.userId !== scope.userId
+  if (!isAgentBindingCurrent(event) || !scope.botId || !scope.userId || !value || !['ok', 'unavailable'].includes(value.lookup)
+    || !matchesActionFactScope(value.scope, scope)
     || !Number.isFinite(value.observedAt) || value.observedAt > now + 5000 || now - value.observedAt > 60_000 || !Array.isArray(value.tasks)) {
     return unknownTurnActionFacts(event, now)
   }

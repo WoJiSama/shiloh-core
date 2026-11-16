@@ -138,6 +138,8 @@ async function retryRequest(host:ToolAssemblyHost, requestData:ChatRequestData, 
 	      requestData,
 	      {
 	        retries,
+	        ...(options.isCurrent ? {isCurrent: options.isCurrent} : {}),
+	        ...(options.signal ? {signal: options.signal} : {}),
 	        onRetry: ({ failure, requestData: retryData, retriesLeft }) => {
 	          const choice = typeof retryData?.tool_choice === "string"
 	            ? retryData.tool_choice

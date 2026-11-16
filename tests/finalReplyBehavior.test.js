@@ -5,6 +5,8 @@ import {createMemoryReplies} from '../dist/backend/modules/conversation/applicat
 import {createPersonaSnapshot} from '../dist/backend/modules/conversation/infrastructure/personaSnapshot.js'
 import {buildTurnInteractionContext} from '../dist/backend/modules/conversation/domain/turnInteractionContext.js'
 import {buildDiagnosticContext} from '../dist/backend/modules/conversation/domain/diagnosticContext.js'
+import {createChatPlugin} from '../dist/backend/modules/host/infrastructure/chatPlugin.js'
+import {takeDrawFailureNote,clearDrawFailureNote} from '../dist/backend/modules/conversation/domain/drawFailureNote.js'
 function fixture(){
  const archived=[],saved=[],enhanced=[],tracking=[],events=[]
  const api=createFinalReply({randomUUID:()=>"tool-id",logger:{warn(){},info(){},error(){}},bot:()=>({uin:99,nickname:'bot'}),buildGenericChatFailureReply:()=> 'failed',extractModrinthForwardItems:()=>[],stripModrinthForwardMarkers:text=>text,applyOutputPersonaGuards:text=>text,findRecentBotImage:async()=>null,recordEpisode(){},recordTurnContinuity:async()=>{},getActiveConversation:()=>({chatHistory:[]}),trackingKey:e=>`${e.self_id}:${e.group_id}_${e.user_id}`,rememberPersonaReply(){},rememberStyleReply(){}})
@@ -12,11 +14,92 @@ function fixture(){
  const host={config:{conversationTrackingEnabled:true},processToolSpecificMessage:x=>x,getPersonaFor:()=>({name:'bot'}),getTextImageTemplateForFinalReply:()=>false,sendSegmentedMessage:async()=> 'text-id',sendFinalReplyAsTextImage:(...args)=>api.sendFinalReplyAsTextImage(host,...args),formatTime:()=> 'now',setTrackingWithTimer:(...args)=>tracking.push(args),messageManager:{recordMessage:async x=>archived.push(x)},trimMessageHistory:x=>x,saveGroupUserMessages:async(...args)=>saved.push(args),updateEnhancedSystems:async(...args)=>enhanced.push(args)}
  return {api,event,host,archived,saved,enhanced,tracking,events}
 }
+test('terminal unknown results stay unconfirmed without promising another image send',()=>{
+ const {api}=fixture()
+ const errors=[
+  JSON.stringify({kind:'tool_outcome',status:'unknown',error:{message:'图片已生成，但发送结果未确认，请勿重复发送。'}}),
+  {ok:false,unknown:true,error:'lost receipt'},
+  Object.assign(Error('accepted then response lost'),{uncertain:true})
+ ]
+ for(const toolName of ['bananaTool','googleImageEditTool','torrentDownloadTool'])for(const error of errors){
+  const text=api.getFriendlyFailureMessage(toolName,{error,e:{group_id:`unknown-${toolName}-${errors.indexOf(error)}`}})
+  assert.match(text,/结果.*(?:未知|确认)|未.*确认/)
+  assert.match(text,/核实前.*不.*重复/)
+  assert.doesNotMatch(text,/没有成功送到|重新发送一次|没有完成|重新试/)
+ }
+ const text=api.getFriendlyFailureMessage('bananaTool',{failedResult:errors[0],session:{actionOutcomes:[{kind:'group_knowledge',item:{subject:'测试',targets:['群友']}}]}})
+ assert.match(text,/核实前.*不.*重复/,'unrelated committed actions cannot mask an unknown delivery')
+})
+test('actual host failure entry keeps unknown results out of draw-failure memory and text polishing',async()=>{
+ const {api,event}=fixture()
+ const {ExamplePlugin}=createChatPlugin({Plugin:class {},logger:{info(){},warn(){},debug(){}},shared:{},getBot:()=>({uin:99})})
+ let polished=0
+ const sent=[]
+ const host={getFriendlyFailureMessage:(...args)=>api.getFriendlyFailureMessage(...args),handleTextResponse:async text=>sent.push(text),composeToolFailureReply:async()=>{polished++;return '我重新发送一次。'}}
+ for(const toolName of ['bananaTool','googleImageEditTool','torrentDownloadTool'])for(const source of ['error','failedResult','session']){
+  const groupId=`host-unknown-${toolName}-${source}`
+  const unknown=JSON.stringify({kind:'tool_outcome',status:'unknown',error:{message:'图片已生成，但发送结果未确认，请勿重复发送。'}})
+  clearDrawFailureNote(groupId)
+  const provenance=source==='session'?{session:{rawArgs:'画一张图',toolResults:[{toolName,result:unknown}]}}:{[source]:source==='error'?Object.assign(Error('lost receipt'),{uncertain:true}):unknown,session:{rawArgs:'画一张图'}}
+  await ExamplePlugin.prototype.handleToolFailureResponse.call(host,toolName,{e:{...event,group_id:groupId},...provenance,factualReply:'图片没有成功送到群里。我重新发送一次。'})
+  assert.match(sent.at(-1),/核实前.*不.*重复/)
+  assert.equal(takeDrawFailureNote(groupId),null,'unknown does not establish that drawing failed')
+ }
+ assert.equal(polished,0)
+})
+test('ordinary QQ failure polishing carries its binding and drops late model text', async () => {
+ const { event } = fixture()
+ const {ExamplePlugin} = createChatPlugin({Plugin: class {}, logger: {info(){}, warn(){}, debug(){}}, shared: {}, getBot: () => ({uin: 99})})
+ let current = true
+ let calls = 0
+ event._isAgentBindingCurrent = () => current
+ const host = { config: {}, getFriendlyFailureMessage: () => '工具没有返回可用结果。',
+  retryRequest: async (_request, _content, _count, _name, options) => {
+   calls++
+   assert.equal(options.isCurrent(), true)
+   current = false
+   assert.equal(options.isCurrent(), false)
+   return { choices: [{ message: { content: '已失效的生成结果。' } }] }
+  },
+ }
+ const failure = { e: event, messages: [{ role: 'user', content: '帮我查一下刚才那条' }] }
+ assert.equal(await ExamplePlugin.prototype.composeToolFailureReply.call(host, 'fixtureTool', failure), '工具没有返回可用结果。')
+ assert.equal(await ExamplePlugin.prototype.composeToolFailureReply.call(host, 'fixtureTool', failure), '工具没有返回可用结果。')
+ assert.equal(calls, 1)
+})
 test('final reply stores confirmed message and bot-scoped tracking only once',async()=>{
  const {api,event,host,archived,saved,enhanced,tracking}=fixture(),messages=[],session={}
  await api.handleTextResponse(host,'你好',event,session,messages)
  assert.equal(session.responseAttempted,true);assert.equal(archived[0].message_id,'text-id');assert.equal(archived[0].self_id,99)
  assert.equal(tracking[0][0],'99:1_2');assert.deepEqual(messages,[{role:'assistant',content:'你好'}]);assert.equal(saved.length,1);assert.equal(enhanced.length,1)
+})
+test('the private turn records the peer separately from the sending QQ account',async()=>{
+ const {api,event,host,archived,saved}=fixture()
+ const binding={source:'configured',id:'qq-private',revision:'binding-v1',agentId:'daily',personaId:'default',connectionId:'qq-main',
+  target:{account:{platform:'qq',namespace:'global',id:'99'},kind:'private',id:'2'}}
+ const personaSnapshot=createPersonaSnapshot({botId:99,personaId:'agent:daily',binding,persona:{name:'甲'}})
+ const privateEvent={...event,group_id:undefined,message_type:'private',_agentBinding:binding}
+ await api.handleTextResponse(host,'你好',privateEvent,{personaSnapshot},[])
+ assert.equal(archived[0].self_id,'99')
+ assert.equal(archived[0].sender.user_id,'99')
+ assert.equal(archived[0].user_id,2)
+ assert.equal(saved[0][1],2)
+ assert.deepEqual(JSON.parse(decodeURIComponent(saved[0][0].slice('agent-'.length))),['daily','qq','global','99','private','2'])
+})
+test('a memory invalidation before final delivery suppresses the stale reply and all learning side effects',async()=>{
+ const {api,event,host,archived,saved,enhanced,tracking,events}=fixture(),messages=[],session={}
+ let sends=0,checks=0
+ event._isMemoryContextCurrent=async()=>{checks++;return false}
+ host.sendSegmentedMessage=async()=>{sends++;return 'must-not-send'}
+ await api.handleTextResponse(host,'记得你之前告诉我的私事',event,session,messages)
+ assert.equal(checks,1)
+ assert.equal(sends,0)
+ assert.deepEqual(events,[])
+ assert.deepEqual(archived,[])
+ assert.deepEqual(saved,[])
+ assert.deepEqual(enhanced,[])
+ assert.deepEqual(tracking,[])
+ assert.deepEqual(messages,[])
 })
 test('unknown final delivery is not archived or learned as sent',async()=>{
  const {api,event,host,archived,saved,enhanced}=fixture(),session={};host.sendSegmentedMessage=async()=>null
@@ -78,6 +161,21 @@ test('final grounding rechecks cancellation after generation and respects explic
  await api.handleTextResponse(host,'好了我第一时间发你。',event,session,[])
  assert.equal(reads.length,2);assert.ok(reads.every(query=>query.referenceMessageId==='original-request'))
  assert.equal(sent[0],'我还没核实到进度，自动补发安排也尚未确认。')
+})
+test('final grounding stops before dispatch when the original role changed during evidence lookup', async () => {
+ const { api, event, host, archived } = fixture()
+ const session = { interactionContext: taskInteraction() }
+ let current = true
+ let modelCalls = 0
+ event._isAgentBindingCurrent = () => current
+ host.getTurnActionFacts = async () => {
+  current = false
+  return session.interactionContext.actionFacts
+ }
+ host.retryRequest = async () => { modelCalls++; return { choices: [] } }
+ await api.handleTextResponse(host, '好了我第一时间发你。', event, session, [])
+ assert.equal(modelCalls, 0)
+ assert.deepEqual(archived, [])
 })
 const composedReplayCandidates=[
   {"candidate":"这个我现在没法给你准信欸。你之前发的那张我记得，但我这边没查到处理结果的记录，做得怎么样、出没出图都还没确认。\n\n我这边没有可核验的进度，不想瞎猜给你一个假答案。等我实际拿到图或者结果，再发给你。","raw":"刚才改背景的图出来了吗？","tasks":[],"corrected":"图片处理结果及完成后发送的安排尚未核实。你之后再问一声，我再查当前状态。"},

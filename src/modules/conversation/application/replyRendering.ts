@@ -1,6 +1,8 @@
 // 回复渲染:分段发送/长文切分/@转换/工具专属后处理。
 // 从 apps/test.js 原样迁出(P2),行为不变;this 依赖以 host(插件实例)注入。
 import { logDeliveryOutcome, extractDeliveryMessageId } from "../../messaging/domain/deliveryObservability.js"
+import { normalizeDeliveryReceipt } from "../../messaging/domain/deliveryReceipt.js"
+import { isAgentBindingCurrent, type AgentBindingTurn } from "../../../contracts/agentBinding.js"
 
 
 
@@ -21,7 +23,7 @@ import { SendPacer } from "../domain/sendPacing.js"
 type Id = string | number
 export interface Member {card?:string;nickname?:string}
 export interface Group {getMemberMap():Promise<Map<number,Member>>}
-export interface ReplyEvent {group_id?:Id;user_id?:Id;self_id?:Id;bot?:{uin?:Id};group?:Group;msg?:string;_personaSnapshot?:PersonaSnapshot;_proactiveReply?:boolean;_proactiveReplyAnchorAt?:number;_forbiddenAnchorAt?:number;message_type?:string;reply(payload:unknown,quote?:boolean):Promise<unknown>}
+export interface ReplyEvent extends AgentBindingTurn {_turnId?:string;_semanticMemoryChunkIds?:string[];group_id?:Id;user_id?:Id;self_id?:Id;bot?:{uin?:Id};group?:Group;msg?:string;_personaSnapshot?:PersonaSnapshot;_proactiveReply?:boolean;_proactiveReplyAnchorAt?:number;_forbiddenAnchorAt?:number;message_type?:string;reply(payload:unknown,quote?:boolean):Promise<unknown>}
 interface ReplyConfig {sendPacing?:ConstructorParameters<typeof SendPacer>[0];forbiddenWords?:import('../domain/forbiddenWordGuard.js').ForbiddenConfig;persona?:{name?:string};personaGuard?:{enabled?:boolean;badPatterns?:string[]};chatTriggerMode?:string;smartTrigger?:{continuationKeywordMaxCount?:number;proactiveReplyNoQuote?:boolean;typingSpeed?:number};replyRhythm?:Parameters<typeof planTextReplyMessages>[1];messageSplitMaxChars?:number;messageSplitMaxSegments?:number}
 export interface ReplyDeliveryPort {
  config:ReplyConfig;_sendPacer?:SendPacer;_sendPacerSource?:ReplyConfig['sendPacing'];
@@ -33,6 +35,8 @@ export interface ReplyDeliveryPort {
 }
 interface SendStatsContext {botId?:Id|undefined;groupId:string;channel:string}
 interface RenderingPorts {
+ confirmMemoryReply?(event:ReplyEvent,receipt:unknown):unknown;
+ withDeliveryGuard?<T>(isCurrent: () => boolean, send: () => T): T;
  logger:{info(message:string):void;warn(message:string):void;mark(message:string):void;error(message:string):void};bot:()=>{uin?:Id;nickname?:string};at(qq:number):unknown;
  lastIncoming(groupId:Id|undefined,event:ReplyEvent):number;shouldCancelProactiveReply(event:ReplyEvent,last:number):boolean;
  guard:ReturnType<typeof import('../domain/forbiddenWordGuard.js').createForbiddenWordGuard>;
@@ -42,7 +46,7 @@ interface RenderingPorts {
 }
 export function createReplyRendering(ports:RenderingPorts) {
 const {logger,TotalTokens,shouldCancelProactiveReply,applyOutputPersonaGuards}=ports
-const {findForbiddenWord,isConversationInterrupted,markConversationInterrupted,extractReplyText}=ports.guard
+const {findForbiddenWord,chatScopeKey,isConversationInterrupted,markConversationInterrupted,extractReplyText}=ports.guard
 function pacerFor(host:ReplyDeliveryPort) {
     if (!host) return null
     const configSource = host.config?.sendPacing
@@ -68,7 +72,7 @@ function shouldBlockByForbiddenWords(host:ReplyDeliveryPort, e:ReplyEvent, text:
     if (cfg && cfg.blockOutput !== false) {
       const word = findForbiddenWord(extractReplyText(text), cfg)
       if (word) {
-        markConversationInterrupted(groupId)
+        markConversationInterrupted(chatScopeKey(e))
         logger.mark(`[违禁词拦截] group=${groupId || ""} ${where} 出站内容命中「${word}」，已拦截并中断本回合`)
         return true
       }
@@ -77,6 +81,7 @@ function shouldBlockByForbiddenWords(host:ReplyDeliveryPort, e:ReplyEvent, text:
   }
 
 async function sendObservedReply(host:ReplyDeliveryPort, e:ReplyEvent, payload:unknown, quote = false, channel = "command") {
+    if (!isAgentBindingCurrent(e)) return null
     const stats = ports.stats()
     const statsContext = {
       botId: e?.self_id || e?.bot?.uin || ports.bot().uin,
@@ -91,34 +96,41 @@ async function sendObservedReply(host:ReplyDeliveryPort, e:ReplyEvent, payload:u
       } catch {
         // 节流 fail-open,绝不阻断发送
       }
-      const result = await e.reply(payload, quote)
-      try {
-        pacer?.markSent(e, channel)
-      } catch {}
+      const isCurrent = () => isAgentBindingCurrent(e) &&
+        (host.config?.forbiddenWords?.enabled === false || !isConversationInterrupted(e))
+      if (!isCurrent()) return null
+      const send = () => e.reply(payload, quote)
+      const result = await (ports.withDeliveryGuard ? ports.withDeliveryGuard(isCurrent, send) : send())
+      const delivery = normalizeDeliveryReceipt(result)
+      if (delivery.state === 'sent') {
+        if (['agent_text','agent_text_fallback','agent_final_card'].includes(channel)) ports.confirmMemoryReply?.(e,result)
+        try { pacer?.markSent(e, channel) } catch {}
+      }
       logDeliveryOutcome(logger, {
-        status: extractDeliveryMessageId(result) === null ? "unknown" : "sent",
+        status: delivery.state,
         channel,
         groupId: e?.group_id ?? "",
         userId: e?.user_id ?? "",
         messageId: extractDeliveryMessageId(result)
       })
-      if(extractDeliveryMessageId(result) === null) stats?.recordFailure({...statsContext,code:"delivery_unknown"})
-      else stats?.recordSend(statsContext)
+      if (delivery.state === 'sent') stats?.recordSend(statsContext)
+      else stats?.recordFailure({...statsContext,code:delivery.state === 'unknown' ? 'delivery_unknown' : 'delivery_failed'})
       return result
     } catch (error) {
       logDeliveryOutcome(logger, {
-        status: "failed",
+        status: "unknown",
         channel,
         groupId: e?.group_id ?? "",
         userId: e?.user_id ?? "",
         error
       })
-      stats?.recordFailure({ ...statsContext, code: "reply_error" })
+      stats?.recordFailure({ ...statsContext, code: "delivery_unknown" })
       throw error
     }
   }
 
 async function sendSegmentedMessage(host:ReplyDeliveryPort, e:ReplyEvent, output:string, quoteChance = 0.5, { alreadyGuarded = false } = {}) {
+    if (!isAgentBindingCurrent(e)) return null
     const personaConfig = withPersonaSnapshot(host.config, e)
     const snapshotBotName = e._personaSnapshot ? personaConfig.persona?.name : undefined
     const hasPersonaSnapshot = Boolean(e._personaSnapshot)
@@ -219,6 +231,7 @@ async function sendSegmentedMessage(host:ReplyDeliveryPort, e:ReplyEvent, output
                 const res = await replyWithReceipt(seg, quote)
                 lastMessageId = extractDeliveryMessageId(res)
               }
+              if (lastMessageId === null) return null
               if (i < messageSegments.length - 1) {
                 const typingSpeed = Number(host.config?.smartTrigger?.typingSpeed) || 0
                 let delay
@@ -273,6 +286,7 @@ async function sendSegmentedMessage(host:ReplyDeliveryPort, e:ReplyEvent, output
           const quote = shouldQuote && i === 0
           const res = await replyWithReceipt(messageSegments[i]!.trim(), quote)
           lastMessageId = extractDeliveryMessageId(res)
+          if (lastMessageId === null) return null
 
           if (i < messageSegments.length - 1) {
             const typingSpeed = Number(host.config?.smartTrigger?.typingSpeed) || 0

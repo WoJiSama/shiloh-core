@@ -141,6 +141,17 @@ export function validateMemberQueryTarget(text: string, params: Record<string, u
   return result
 }
 
+/** A private history reader has one trusted subject, regardless of phrasing. */
+export function validatePrivateHistoryTarget(text:string,params:Record<string,unknown>,context:MemberContext):MemberQueryTargetValidation {
+  const self=normalizedId(context.currentUserId)
+  const reject=():MemberQueryTargetValidation=>({status:'invalid_target',reason:'private_self_only',message:'私聊历史只能查询当前本人，不能指定其他成员或昵称。'})
+  if(!self||params.nickname!==undefined||params.user_id!==undefined&&normalizedId(params.user_id)!==self)return reject()
+  const target=validateMemberQueryTarget(text,{}, {...context,memberMap:undefined})
+  if(target.status==='resolved'&&target.userId!==self)return reject()
+  if(target.status==='needs_clarification'||target.status==='invalid_target')return target
+  return {status:'resolved',userId:self,reason:'private_self'}
+}
+
 export function resolveMemberInfoIntent(text: string, context: MemberContext = {}): Record<string, unknown> | null {
   if (!MEMBER_INFO_PATTERNS.some(pattern => pattern.test(text)) || NO_ACTION.test(text)) return null
   const userId = resolveExplicitMemberTarget(text, context)

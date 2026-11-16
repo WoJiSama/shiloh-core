@@ -106,3 +106,14 @@ test("识图失败提示按故障类别给建议:渠道趴了不让用户白重�
   const expired = buildUnavailableToolReply([make("image_link_expired", 0, [])])
   assert.match(expired, /重新发一次原图/)
 })
+
+test('execution status is independent of successful payload prose',()=>{
+ for(const result of [
+  '这篇文档介绍失败重试机制和错误处理。',
+  {success:true,content:'查询失败、链接已过期是本文分析的错误案例'},
+  {ok:true,content:'没有找到不是本工具状态'},
+  {kind:'tool_outcome',status:'success',content:'error: is literal source text'},
+ ])assert.equal(classifyToolResult(result).kind,'success')
+ for(const result of [{ok:false,content:'x'},{success:false},{status:'unknown',content:'unconfirmed'},{kind:'tool_outcome',status:'unknown'},'查询失败: timeout'])assert.equal(classifyToolResult(result).kind,'error')
+ assert.match(buildUnavailableToolReply([{toolName:'mcp_write',result:JSON.stringify({kind:'tool_outcome',status:'unknown'})}]),/可能已经发生/)
+})

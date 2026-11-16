@@ -19,7 +19,7 @@ export function projectMemoryCommands(manager: MemoryCommandPort): MemoryCommand
     adminDeleteGroupWorkflow: scope => manager.adminDeleteGroupWorkflow(scope),
     adminDeleteGroupKnowledge: scope => manager.adminDeleteGroupKnowledge(scope),
     adminDeleteMemory: scope => manager.adminDeleteMemory(scope),
-    clearUserMemory: (groupId, userId) => manager.clearUserMemory(groupId, userId),
+    clearUserMemory: (groupId, userId, viewer, isCurrent) => manager.clearUserMemory(groupId, userId, viewer, isCurrent),
     adminSetUserMemoryEnabled: scope => manager.adminSetUserMemoryEnabled(scope)
   }
 }

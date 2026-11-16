@@ -1,10 +1,12 @@
 import type {PersonaIdentity} from '../../../contracts/persona.js'
+import type {AgentBindingSnapshot} from '../../../contracts/agentBinding.js'
 import type {SocialContinuity, SocialStance} from '../../../contracts/turnInteraction.js'
 import {safeTruncateUnicode} from '../../models/domain/unicodeText.js'
+import {configuredConversationKey} from '../domain/conversationIdentity.js'
 
 interface Store {get(key:string):Promise<unknown>;set(key:string,value:string,options:{EX:number}):Promise<unknown>}
 export interface Continuity {intent:string;route:string;tools:string[];lastReply:string;at:number;botId?:string;persona?:PersonaIdentity;social?:SocialContinuity}
-interface Scope {redis?:Store|null;groupId?:string|number;userId?:string|number;botId?:string|number;persona?:PersonaIdentity}
+interface Scope {redis?:Store|null;groupId?:string|number|undefined;userId?:string|number|undefined;botId?:string|number;persona?:PersonaIdentity;binding?:AgentBindingSnapshot}
 
 const SOCIAL_STANCES: readonly SocialStance[] = ['playful', 'supportive', 'matter_of_fact', 'repairing', 'boundary', 'neutral']
 function parseSocialContinuity(value: unknown, lastReply: string): SocialContinuity | undefined {
@@ -45,9 +47,12 @@ function parseRecord(value:unknown):Continuity|null {
 const TURN_CONTINUITY_TTL_MS = 10 * 60 * 1000
 const KEY_PREFIX = "blchat:turn_continuity:"
 const PERSONA_KEY_PREFIX = "blchat:turn_continuity_v2:"
+const BINDING_KEY_PREFIX = "blchat:turn_continuity_v3:"
 const memoryFallback = new Map<string,Continuity>()
 
-function scopeKey(groupId:string|number = "", userId:string|number = "", botId?:string|number, persona?:PersonaIdentity) {
+function scopeKey(groupId:string|number, userId:string|number, botId?:string|number, persona?:PersonaIdentity, binding?:AgentBindingSnapshot) {
+  const configured = configuredConversationKey(binding)
+  if (configured) return `${BINDING_KEY_PREFIX}${JSON.stringify([configured, String(userId), persona?.personaId ?? null, persona?.personaVersion ?? null])}`
   // A separate namespace prevents legacy writers from overwriting scoped records.
   // Tuple encoding keeps separators in group/user/persona identifiers unambiguous.
   if (persona) return `${PERSONA_KEY_PREFIX}${JSON.stringify([String(groupId), String(userId), botId === undefined ? null : String(botId), persona.personaId, persona.personaVersion])}`
@@ -69,6 +74,7 @@ export async function recordTurnContinuity({
   userId = "",
   botId,
   persona,
+  binding,
   intent = "",
   route = "",
   tools = [],
@@ -90,7 +96,7 @@ export async function recordTurnContinuity({
     ...(identity ? {persona: identity} : {}),
     ...(socialState ? {social: socialState} : {})
   }
-  const key = scopeKey(groupId, userId, botId, identity)
+  const key = scopeKey(groupId, userId, botId, identity, binding)
   memoryFallback.set(key, record)
   const store = isRedisLike(client) ? client : null
   if (!store) return record
@@ -102,10 +108,10 @@ export async function recordTurnContinuity({
   return record
 }
 
-export async function loadTurnContinuity({ redis:client = null, groupId = "", userId = "", botId, persona }:Scope = {}) {
+export async function loadTurnContinuity({ redis:client = null, groupId = "", userId = "", botId, persona, binding }:Scope = {}) {
   const identity = persona === undefined ? undefined : parsePersona(persona)
   if (identity === null) return null
-  const key = scopeKey(groupId, userId, botId, identity)
+  const key = scopeKey(groupId, userId, botId, identity, binding)
   let record:Continuity|null = null
   const store = isRedisLike(client) ? client : null
   if (store) {

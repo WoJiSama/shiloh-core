@@ -8,7 +8,11 @@ import {renderPersonaTemplate,type PersonaText} from '../domain/personaSource.js
 import {detectAndPenalize} from '../../memory/infrastructure/memorySelfCorrection.js'
 export interface EntryEvent extends Omit<ConversationEvent,'group_id'|'_triggerContext'|'reply'> {group_id?:string|number;reply?:unknown;isMaster?:boolean;_triggerContext?:{mode?:string;gateDecision?:string;gateReason?:string;phase?:string}}
 type ScopedEntryEvent=Omit<EntryEvent,'reply'|'_triggerContext'> & {group_id:string|number}
-function scopeEvent(e:EntryEvent & {group_id:string|number}):ScopedEntryEvent {const {reply,_triggerContext,...scope}=e;return scope}
+function scopeEvent(e:EntryEvent & {group_id:string|number}):ScopedEntryEvent {
+ const {reply,_triggerContext,...scope}=e
+ const {self_id,bot,_agentBinding}=e
+ return {...scope,...(self_id===undefined?{}:{self_id}),...(bot?{bot}:{}),...(_agentBinding?{_agentBinding}:{})}
+}
 function hasEntryGroup(e:EntryEvent):e is EntryEvent & {group_id:string|number}{return typeof e.group_id==='string'||typeof e.group_id==='number'}
 interface CorrectionRuntime {config?:unknown;store?:{penalizeChunks(groupId:string,ids:string[],options:{penalty:number}):number}}
 function correctionConfig(value:unknown):{enabled:boolean;penalty:number;ttlMinutes:number}{
@@ -74,9 +78,15 @@ function handleMemorySelfCorrection(host:EntryHost,e:EntryEvent) {
       const correction=correctionConfig(runtime.config)
       if (!correction.enabled) return false
       const state = host.getSmartState(groupId, scopeEvent(e))
+      const botId=String(e.self_id||e.bot?.uin||ports.bot().uin||'')
+      const source=e.source
+      const replySegment=e.message?.find(segment=>segment.type==='reply')
+      const quotedReplyMessageId=String((source&&'message_id'in source?source.message_id:undefined)||source?.id||replySegment?.id||replySegment?.data?.id||/\[CQ:reply,id=([^,\]]+)/.exec(e.raw_message||'')?.[1]||'')
       detectAndPenalize({
         text: e?.msg || e?.raw_message || "",
         groupId:String(groupId),
+        botId,
+        quotedReplyMessageId,
         quotesBot: (() => { try { return messageQuotesUser({...(e.source?{source:e.source}:{}),...(e.message?{message:e.message}:{})}, e?.bot?.uin || ports.bot().uin) } catch { return false } })(),
         senderUserId: e?.user_id ?? "",
         lastBotReplyToUserId: state?.lastBotReplyToUserId ?? "",

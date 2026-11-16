@@ -2,9 +2,12 @@ import type { ConversationEvent, ConversationState } from '../application/smartC
 import { extractChatKeywords } from '../domain/messageIntent.js'
 import { collectBotStyleIds, isBotStyleSource } from '../domain/styleSourceFilter.js'
 import { isAiConversationEnabled } from '../domain/aiConversationGate.js'
+import { configuredConversationKey } from '../domain/conversationIdentity.js'
 import { ROLE_MAP as roleMap, summarizeForLog } from '../domain/messageContext.js'
 import type { ConversationTool } from '../infrastructure/conversationUtils.js'
 import type {PersonaSnapshot, PersonaScope} from '../../../contracts/persona.js'
+import {isAgentBindingCurrent} from '../../../contracts/agentBinding.js'
+import type {IncomingMessage, MessageActionOptions} from '../../../contracts/platformMessage.js'
 export interface HistoryItem {role:string;content:string}
 export interface Tracking {lastActiveTime:number;chatHistory:HistoryItem[];timer:ReturnType<typeof setTimeout>}
 export interface Judgment {conversationKey:string;userMessage:string;chatHistory:HistoryItem[];e:ConversationEvent;resolve(value:boolean):void}
@@ -30,7 +33,7 @@ export interface StrictConversationPorts {
  logger:{info(message:string):void;warn(message:string):void;error(message:string,error?:unknown):void};bot():{uin?:string|number;nickname?:string};now?():number;
  fetch?:typeof fetch;random?():number;
  /** 自主仿真模式（可选）：命中仿真群时消息只进仿真会话缓冲，不走 smart/strict 触发链 */
- simulation?:{isCapture(e:ConversationEvent):boolean;ingest(e:ConversationEvent):Promise<boolean>};
+ simulation?:{ingest(message:IncomingMessage,options?:MessageActionOptions):Promise<boolean>};
  diceManager:{isLogActive(groupId:string|number,config:unknown):boolean};
  globalStyleLearnerManager:{observeMessage(e:ConversationEvent,config:unknown,embedding:unknown,source?:PersonaScope):unknown;maybeAutoSummarize(config:unknown,memory:unknown):Promise<unknown>};
  anchorEventConversation(e:ConversationEvent):unknown;getRedBagType(wallet:unknown):{type:string;name:string};isExclusiveForUser(wallet:unknown,botId:string|number|undefined):boolean;
@@ -58,8 +61,8 @@ const RED_BAG_CONFIG = {
 }
 const redBagCooldowns = new Map<string,number>() // 红包冷却记录: key: groupId, value: lastGrabTime
 
-const activeConversations = new Map<string,Tracking>() // 会话追踪: key: `${groupId}_${userId}`, value: { lastActiveTime, chatHistory: [], timer: null }
-const trackingThrottle = new Map<string,number>() // 节流: key: `${groupId}_${userId}`, value: lastCallTime
+const activeConversations = new Map<string,Tracking>()
+const trackingThrottle = new Map<string,number>()
 const batches = new WeakMap<StrictConversationHost,{timer:ReturnType<typeof setTimeout>|null;pending:Judgment[]}>()
 function batchFor(host:StrictConversationHost) {
  let state=batches.get(host)
@@ -67,7 +70,11 @@ function batchFor(host:StrictConversationHost) {
  return state
 }
 
-function trackingConversationKey(e:ConversationEvent) {return `${e.self_id ?? e.bot?.uin ?? ports.bot().uin ?? ""}:${e.group_id}_${e.user_id}`}
+function trackingConversationKey(e:ConversationEvent) {
+  const configured = configuredConversationKey(e._agentBinding)
+  return configured ? JSON.stringify([configured, String(e.user_id ?? '')])
+    : `${e.self_id ?? e.bot?.uin ?? ports.bot().uin ?? ""}:${e.group_id}_${e.user_id}`
+}
 function getActiveConversation(e:ConversationEvent) {return activeConversations.get(trackingConversationKey(e))}
 function setTrackingWithTimer(host:StrictConversationHost, conversationKey:string, newData:Partial<Pick<Tracking,"lastActiveTime"|"chatHistory">> = {}) {
     const timeout = (host.config.conversationTrackingTimeout || 2) * 60000
@@ -185,6 +192,7 @@ function detectGroupRepeat(host:StrictConversationHost, e:ConversationEvent, sta
 }
 
 async function isUserTalkingToBot(host:StrictConversationHost, userMessage:string, chatHistory:HistoryItem[] = [],e?:ConversationEvent) {
+    if (!isAgentBindingCurrent(e)) return false
     try {
       const botName = e?.bot?.nickname || ports.bot().nickname || '机器人'
 
@@ -193,7 +201,8 @@ async function isUserTalkingToBot(host:StrictConversationHost, userMessage:strin
         ? chatHistory.map(h => `[${h.role === 'bot' ? '机器人' : '用户'}] ${h.content}`).join('\n')
         : '(无历史记录)'
 
-      const response = await fetch(host.resolveChatCompletionUrl(host.config.trackAiConfig.trackAiUrl), {
+      const url = host.resolveChatCompletionUrl(host.config.trackAiConfig.trackAiUrl)
+      const request = {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${host.config.trackAiConfig.trackAiApikey}`,
@@ -228,14 +237,16 @@ async function isUserTalkingToBot(host:StrictConversationHost, userMessage:strin
             }
           ]
         })
-      })
+      }
+      if (!isAgentBindingCurrent(e)) return false
+      const response = await fetch(url, request)
 
       if (!response.ok) return false // 请求失败时默认不触发
 
       const data = await response.json()
       const answer = responseContent(data).toLowerCase().trim()
       // logger.error(answer, historyText, userMessage, 8888)
-      return answer === 'true' || answer?.includes('true')
+      return isAgentBindingCurrent(e) && (answer === 'true' || answer.includes('true'))
     } catch (error) {
       logger.error('[会话追踪] AI判断失败:', error)
       return false // 出错时默认不触发
@@ -260,18 +271,23 @@ async function processBatchJudgments(host:StrictConversationHost) {
     state.timer = null
     if (state.pending.length === 0) return
 
-    const batch = state.pending.splice(0)
+    const batch = state.pending.splice(0).filter(item => {
+      if (isAgentBindingCurrent(item.e)) return true
+      item.resolve(false)
+      return false
+    })
     const first = batch[0]
+    if (!first) return
 
-    if (batch.length === 1 && first) {
-      try { first.resolve(await host.isUserTalkingToBot(first.userMessage, first.chatHistory,first.e)) }
+    if (batch.length === 1) {
+      try { first.resolve(await host.isUserTalkingToBot(first.userMessage, first.chatHistory,first.e) && isAgentBindingCurrent(first.e)) }
       catch (error) { logger.error("[批量判断] 单条失败:", error); first.resolve(false) }
       return
     }
 
     try {
       const results = await host.batchIsUserTalkingToBot(batch)
-      batch.forEach((item, i) => item.resolve(results[i] || false))
+      batch.forEach((item, i) => item.resolve(Boolean(results[i]) && isAgentBindingCurrent(item.e)))
     } catch (error) {
       logger.error('[批量判断] 失败:', error)
       batch.forEach(item => item.resolve(false))
@@ -279,11 +295,24 @@ async function processBatchJudgments(host:StrictConversationHost) {
 }
 
 async function batchIsUserTalkingToBot(host:StrictConversationHost, batch:Judgment[]) {
+    // Preserve original positions for the caller when stale records are removed.
+    const entries = batch.map((item, index) => ({ item, index }))
+      .filter(({ item }) => isAgentBindingCurrent(item.e))
+    if (!entries.length) return batch.map(() => false)
+    const active = entries.map(({ item }) => item)
+    const restorePositions = (results: (boolean | null)[]) => {
+      const decisions = batch.map(() => false)
+      for (const [position, { item, index }] of entries.entries()) {
+        decisions[index] = Boolean(results[position]) && isAgentBindingCurrent(item.e)
+      }
+      return decisions
+    }
+    const fallback = async (partial?: (boolean | null)[]) => restorePositions(await host.fallbackToSingleJudgment(active, partial))
     try {
-      const botName = batch[0]?.e.bot?.nickname || ports.bot().nickname || '机器人'
+      const botName = active[0]?.e.bot?.nickname || ports.bot().nickname || '机器人'
 
       // 为每条消息生成唯一标识
-      const batchWithIds = batch.map((item, i) => ({
+      const batchWithIds = active.map((item, i) => ({
         ...item,
         id: `MSG_${i + 1}_${item.e?.user_id || 'unknown'}`
       }))
@@ -299,7 +328,8 @@ ${recentHistory || '(无)'}
 ---`
       }).join('\n\n')
 
-      const response = await fetch(host.resolveChatCompletionUrl(host.config.trackAiConfig.trackAiUrl), {
+      const url = host.resolveChatCompletionUrl(host.config.trackAiConfig.trackAiUrl)
+      const request = {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${host.config.trackAiConfig.trackAiApikey}`,
@@ -336,14 +366,17 @@ ${recentHistory || '(无)'}
             }
           ]
         })
-      })
+      }
+      if (active.some(item => !isAgentBindingCurrent(item.e))) return await fallback()
+      const response = await fetch(url, request)
 
       if (!response.ok) {
         logger.error('[批量判断] API请求失败')
-        return host.fallbackToSingleJudgment(batch)
+        return await fallback()
       }
 
       const data = await response.json()
+      if (!active.some(item => isAgentBindingCurrent(item.e))) return batch.map(() => false)
       let content = responseContent(data).trim() || '{}'
 
       // 提取JSON对象
@@ -353,10 +386,11 @@ ${recentHistory || '(无)'}
       }
 
       const resultsMap = record(JSON.parse(content))
-      logger.info(`[批量判断] ${batch.length}条消息，结果: ${JSON.stringify(resultsMap)}`)
+      logger.info(`[批量判断] 已解析 ${active.length} 条消息结果`)
 
       // 按ID映射回结果数组
       const results = batchWithIds.map(item => {
+        if (!isAgentBindingCurrent(item.e)) return false
         const result = resultsMap[item.id]
         if (result === undefined) {
           logger.warn(`[批量判断] 缺少ID ${item.id} 的结果，回退单独判断`)
@@ -368,13 +402,13 @@ ${recentHistory || '(无)'}
       // 检查是否有需要单独判断的
       const needsFallback = results.some(r => r === null)
       if (needsFallback) {
-        return host.fallbackToSingleJudgment(batch, results)
+        return await fallback(results)
       }
 
-      return results
+      return restorePositions(results)
     } catch (error) {
       logger.error('[批量判断] 解析失败:', error)
-      return host.fallbackToSingleJudgment(batch)
+      return await fallback()
     }
 }
 
@@ -385,17 +419,20 @@ async function fallbackToSingleJudgment(host:StrictConversationHost, batch:Judgm
       const item = batch[i]
       if (!item) continue
       const partial = partialResults?.[i]
-      if (typeof partial === "boolean") {
+      if (!isAgentBindingCurrent(item.e)) {
+        results.push(false)
+      } else if (typeof partial === "boolean") {
         results.push(partial)
       } else {
         const result = await host.isUserTalkingToBot(item.userMessage, item.chatHistory,item.e)
-        results.push(result)
+        results.push(result && isAgentBindingCurrent(item.e))
       }
     }
     return results
 }
 
 async function handleRandomReply(host:StrictConversationHost, e:ConversationEvent) {
+    if (!isAgentBindingCurrent(e)) return false
     // 私聊分流:默认关闭,开启后白名单(留空=仅主人)用户可私聊,走同一主回合
     if (e.message_type === "private") return await host.handlePrivateChat(e)
     if (!host.config.enabled || !host.checkGroupPermission(e) || host.isCommand(e) || !e.group_id) {
@@ -504,8 +541,9 @@ async function handleRandomReply(host:StrictConversationHost, e:ConversationEven
 
     // 仿真模式分流：命中仿真群时消息只进仿真会话缓冲（归档/统计/风格观察等数据通道不受影响），
     // 由本地触发器 + 唤醒调度决定何时启动 agent 回合；本条消息不再交给 smart/strict 触发链。
-    if (ports.simulation && ports.simulation.isCapture(e)) {
-      return await ports.simulation.ingest(e)
+    const incoming = e._incomingMessage
+    if (incoming?.conversation.kind === 'group' && await ports.simulation?.ingest(incoming, {isCurrent: () => isAgentBindingCurrent(e)})) {
+      return true
     }
 
     // smart 模式分发
@@ -515,6 +553,7 @@ async function handleRandomReply(host:StrictConversationHost, e:ConversationEven
     }
 
     const hasTrigger = await host.checkTriggers(e)
+    if (!isAgentBindingCurrent(e)) return false
 
     // 会话追踪逻辑
     const conversationKey = trackingConversationKey(e)
@@ -556,7 +595,7 @@ async function handleRandomReply(host:StrictConversationHost, e:ConversationEven
       // 使用批量判断队列
       const isTalking = await host.addToBatchJudgment(conversationKey, userMessageFormatted, activeConv.chatHistory || [], e)
 
-      if (isTalking) {
+      if (isTalking && isAgentBindingCurrent(e)) {
         // 重置定时器
         host.setTrackingWithTimer(conversationKey)
         e._triggerContext = { mode: "conversation_tracking" }

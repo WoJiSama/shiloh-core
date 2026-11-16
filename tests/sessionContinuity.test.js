@@ -244,9 +244,10 @@ test("gate and main path share the addressee signal module", () => {
 
 test("turn continuity is injected next turn and recorded at turn end", () => {
   const src = readPluginSources()
-  const load = src.match(/loadTurnContinuity\(\{([^}]+)\}\)/)?.[1] || ""
+  const load = src.match(/loadTurnContinuity\(\{([\s\S]*?)\}\)\.catch/)?.[1] || ""
   assert.match(load, /\bbotId:/, "下一轮只注入当前 bot 的上一轮摘要")
   assert.match(load, /\bpersona:/, "下一轮按本轮人格版本加载上一轮摘要")
+  assert.match(load, /\bbinding:\s*personaSnapshot\.binding/, "显式绑定按版本加载上一轮摘要")
   assert.ok(src.includes("await recordTurnContinuity({"), "轮末记录延续摘要")
   assert.ok(src.includes("session.lastFinalReply = String(output || \"\").slice(0, 240)"), "最终回复节选入摘要")
 })

@@ -1,6 +1,10 @@
 // 违禁词黑名单单测:词表匹配(普通/正则/大小写)、会话中断锚点语义、出站文本提取、出站咽喉拦截
 import { test, beforeEach } from "node:test"
 import assert from "node:assert/strict"
+import { createForbiddenWordGuard } from '../dist/backend/modules/conversation/domain/forbiddenWordGuard.js'
+import { createAgentBindingDirectory } from '../dist/backend/modules/runtime/domain/agentBindings.js'
+import { queuedDeliveryAllowed, withDeliveryGuard } from '../dist/backend/modules/messaging/infrastructure/deliveryScope.js'
+import { replyRenderingFixture } from './helpers/replyRenderingFixture.js'
 import {
   findForbiddenWord,
   markConversationInterrupted,
@@ -107,4 +111,42 @@ test("出站咽喉:中断后丢弃发送;出站含违禁词拦截并中断后续
   const normal = anchorEventConversation({ group_id: "gx", reply: async p => sent.push(p) })
   await sendObservedReply(makeHost(), normal, "普通回复")
   assert.equal(sent.length, 1)
+})
+
+test('explicit QQ scopes isolate interruptions by account and by group or private conversation', async () => {
+  const routes = ['99', '303'].map(accountId => ({ id: `qq-${accountId}`, platform: 'qq', namespace: 'global', accountId }))
+  const directory = createAgentBindingDirectory({ version: 1, agents: [{ id: 'daily', personaId: 'default' }], connections: routes,
+    bindings: routes.flatMap(({ id }) => ['group', 'private'].map(kind => ({ connectionId: id, kind, conversationId: '42', agentId: 'daily' }))),
+  }, 'role-revision')
+  const guard = createForbiddenWordGuard({ warn() {} })
+  const { api, host, event, sent } = replyRenderingFixture({ guard, withDeliveryGuard })
+  host.config.forbiddenWords = { words: ['拒绝正文'] }
+  const incoming = (route, kind) => guard.anchorEventConversation({ ...event, self_id: route.accountId, message_type: kind,
+    group_id: kind === 'group' ? '42' : undefined, user_id: '42',
+    _agentBinding: directory.resolve({ account: { ...route, id: route.accountId }, kind, id: '42' }),
+  })
+  const [first, second, privateChat] = [incoming(routes[0], 'group'), incoming(routes[1], 'group'), incoming(routes[0], 'private')]
+  assert.equal(await api.sendObservedReply(host, first, '含有拒绝正文'), null)
+  assert.equal(guard.isConversationInterrupted(first), true)
+  assert.equal(guard.isConversationInterrupted(second), false)
+  assert.equal(guard.isConversationInterrupted(privateChat), false)
+  await api.sendObservedReply(host, second, '第二个账号可回复')
+  await api.sendObservedReply(host, privateChat, '同编号私聊可回复')
+  assert.deepEqual(sent, ['第二个账号可回复', '同编号私聊可回复'])
+
+  const entered = Promise.withResolvers()
+  const resume = Promise.withResolvers()
+  second.reply = async payload => {
+    entered.resolve()
+    await resume.promise
+    if (!queuedDeliveryAllowed()) return { status: 'failed' }
+    sent.push(payload)
+    return { message_id: 'late' }
+  }
+  const queued = api.sendObservedReply(host, second, '排队回复已经失效')
+  await entered.promise
+  guard.markConversationInterrupted(guard.chatScopeKey(second))
+  resume.resolve()
+  assert.equal((await queued).status, 'failed')
+  assert.deepEqual(sent, ['第二个账号可回复', '同编号私聊可回复'])
 })

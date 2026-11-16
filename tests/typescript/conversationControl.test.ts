@@ -86,6 +86,21 @@ test('judgment queues isolate hosts; single-call rejection resolves false withou
  await runtime.processBatchJudgments(a);assert.equal(await pa,false)
  await runtime.processBatchJudgments(b);assert.equal(await pb,true)
 })
+test('strict tracking filters expired work before submitting a batch and rejects late decisions',async()=>{
+ const runtime=strictRuntime(),host=strictHost()
+ let oldLive=true,lateLive=true
+ const expired=runtime.addToBatchJudgment(host,'old','old context',[],{group_id:'g',_isAgentBindingCurrent:()=>oldLive})
+ const current=runtime.addToBatchJudgment(host,'new','current context',[],{group_id:'g'})
+ const late=runtime.addToBatchJudgment(host,'late','context submitted while live',[],{group_id:'g',_isAgentBindingCurrent:()=>lateLive})
+ oldLive=false
+ host.batchIsUserTalkingToBot=async batch=>{
+  assert.deepEqual(batch.map(item=>item.userMessage),['current context','context submitted while live'])
+  lateLive=false
+  return [true,true]
+ }
+ await runtime.processBatchJudgments(host)
+ assert.deepEqual(await Promise.all([expired,current,late]),[false,true,false])
+})
 test('failed repeat delivery never commits cooldown, reply timestamp or keywords',async()=>{
  const host=strictHost(),s=state();host.sendObservedReply=async()=>{throw new Error('uncertain')}
  assert.equal(await strictRuntime().joinRepeat(host,{group_id:'g'},s,'repeat'),false)

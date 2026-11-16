@@ -117,7 +117,7 @@ function layerValue(name) {
   }[name]
 }
 
-test("任务回合:全部层按 FULL_PROMPT_LAYERS 顺序拼装,report 统计正确", async () => {
+test("任务回合:指令与记忆资料分层拼装,report 统计正确", async () => {
   const deps = buildDeps()
   const profile = resolvePromptLayerProfile({ responseKind: "chat", modelIntent: "search" })
   const result = await composeTurnPromptLayers({
@@ -137,10 +137,10 @@ test("任务回合:全部层按 FULL_PROMPT_LAYERS 顺序拼装,report 统计正
 
   const promptLines = result.prompt.split("\n")
   for (const value of expectedStatic) {
-    assert.ok(result.prompt.includes(value), `缺少层: ${value}`)
+    assert.ok(`${result.prompt}\n${result.dataPrompt}`.includes(value), `缺少层: ${value}`)
   }
   assert.equal(result.report.profile, "task")
-  assert.equal(result.report.totalChars, result.prompt.length)
+  assert.equal(result.report.totalChars, Object.values(result.layerValues).filter(Boolean).join("\n").length)
   assert.deepEqual(result.report.omitted, [])
   assert.ok(result.report.included.some(item => item.name === "personaTone" && item.chars > 0))
   assert.ok(promptLines.length > 0)
@@ -198,7 +198,8 @@ test("单层失败降级为空,不拖垮其他层", async () => {
     deps
   })
   assert.equal(result.layerValues.emotion, "")
-  assert.ok(result.prompt.includes("【记忆】M"))
+  assert.ok(result.dataPrompt.includes("【记忆】M"))
+  assert.ok(!result.prompt.includes("【记忆】M"))
   assert.ok(result.prompt.includes("【工作流】W"))
 })
 
@@ -247,7 +248,7 @@ function buildCountingDeps() {
   }
 }
 
-test("慢变化层按 TTL 缓存:同一群连续两轮,情绪/表达/全局风格/反馈/画像只取数一次,记忆仍每轮取", async () => {
+test("慢变化层按 TTL 缓存:同一群连续两轮,情绪/表达/全局风格/反馈只取数一次,记忆和画像每轮核验", async () => {
   clearPromptLayerCache()
   const deps = buildCountingDeps()
   const profile = resolvePromptLayerProfile({ responseKind: "chat", modelIntent: "search" })
@@ -268,7 +269,7 @@ test("慢变化层按 TTL 缓存:同一群连续两轮,情绪/表达/全局风�
   assert.equal(deps.counts.expression, 1, "表达层应命中缓存")
   assert.equal(deps.counts.globalStyle, 1, "全局风格层应命中缓存")
   assert.equal(deps.counts.personaFeedback, 1, "人设反馈层应命中缓存")
-  assert.equal(deps.counts.personProfile, 1, "画像层应命中缓存")
+  assert.equal(deps.counts.personProfile, 2, "画像必须每轮核验撤回与遗忘")
   assert.equal(deps.counts.memory, 2, "记忆层随消息变化,不缓存")
 })
 

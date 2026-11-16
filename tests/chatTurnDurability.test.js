@@ -1,5 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import { createAgentRedisFixture, redisAvailable } from "./helpers/agentRedis.js"
 import {
   buildChatTurnKey,
   serializeChatTurnEnvelope,
@@ -127,6 +128,61 @@ test("recoverPending: young unanswered turn is redispatched, replied/stale/inval
   assert.equal(dispatched[0].group_id, 100)
   assert.equal(dispatched[0].msg, "你好，帮我看看这个")
   assert.equal(await durability.pendingTurnCount(), 0)
+})
+
+test("real Redis recovery processes every key in a scan page and keeps older keys readable", { skip: !redisAvailable }, async t => {
+  const { reader } = await createAgentRedisFixture(t, "chat-turn-test")
+  const previous = globalThis.redis
+  t.after(() => { if (previous === undefined) delete globalThis.redis; else globalThis.redis = previous })
+  globalThis.redis = reader
+  const durability = createChatTurnDurability({ logger: { info() {}, warn() {}, error() {} } })
+  const events = [
+    event({ self_id: 81234, message_id: 901, _agentBindingToken: "qq-original-binding" }),
+    event({ self_id: 81234, message_id: 902, _agentBindingToken: "qq-original-binding" }),
+    event({ message_id: 903 }),
+  ]
+  for (const input of events) assert.equal(await durability.beginTurn(input), true)
+  assert.equal((await durability.claimReply(events[1])).claimed, true)
+  const actualKeys = events.map(input => `ytbot:chat_turn:${buildChatTurnKey(input)}`)
+  const pages = []
+  for await (const page of reader.scanIterator({ MATCH: "ytbot:chat_turn:*" })) pages.push(page)
+  assert.ok(pages.some(page => Array.isArray(page) && page.length > 1), "the actual client must exercise multi-key SCAN pages")
+  assert.equal(await durability.pendingTurnCount(), 3)
+  const recovered = []
+  const counts = await durability.recoverPending({ redispatch: async envelope => recovered.push(envelope) })
+  assert.deepEqual(counts, { redispatched: 2, stale: 0, replied: 1, invalid: 0 })
+  assert.deepEqual(recovered.map(envelope => [envelope.message_id, envelope.agentBindingToken]).sort(), [
+    [901, "qq-original-binding"], [903, undefined],
+  ])
+  assert.deepEqual(await reader.mGet(actualKeys), [null, null, null])
+  assert.equal(await durability.pendingTurnCount(), 0)
+})
+
+test("recovery deduplicates repeated pages and ignores keys outside the pending namespace", async () => {
+  const redis = createFakeRedis()
+  const durability = makeDurability(redis)
+  const input = event({ message_id: "literal,comma" })
+  assert.equal(await durability.beginTurn(input), true)
+  const key = `ytbot:chat_turn:${buildChatTurnKey(input)}`
+  const outside = "ytbot:chat_turn_replied:unrelated"
+  const reads = [], deletions = []
+  const originalGet = redis.get, originalDel = redis.del
+  redis.get = async name => { reads.push(name); return await originalGet(name) }
+  redis.del = async name => { deletions.push(name); return await originalDel(name) }
+  redis.scanIterator = async function* () {
+    yield key
+    yield [outside, key, 42, null]
+    yield [key]
+  }
+  await redis.set(outside, "unrelated", { EX: 600 })
+  assert.equal(await durability.pendingTurnCount(), 1)
+  const ids = []
+  const counts = await durability.recoverPending({ redispatch: async envelope => ids.push(envelope.message_id) })
+  assert.deepEqual(ids, ["literal,comma"])
+  assert.deepEqual(counts, { redispatched: 1, stale: 0, replied: 0, invalid: 0 })
+  assert.deepEqual(reads, [key, `ytbot:chat_turn_replied:${buildChatTurnKey(input)}`])
+  assert.deepEqual(deletions, [key])
+  assert.equal(await redis.get(outside), "unrelated")
 })
 
 test("rebuildChatTurnEvent binds reply to Bot.pickGroup and keeps recovery marker", async () => {

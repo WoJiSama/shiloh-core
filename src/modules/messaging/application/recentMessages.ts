@@ -4,6 +4,18 @@ import type { RecentMessagePorts, RecentOptions, Segment, Sender, MessageEvent, 
 import {parseSentPersonaSource} from '../../conversation/domain/personaProvenance.js'
 import {findForwardCompleteness, parseForwardCompleteness} from '../../conversation/domain/forwardCompleteness.js'
 
+function cacheId(value: unknown): string {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? String(value) : ''
+  if (typeof value !== 'string') return ''
+  const id = value.trim()
+  return /^[0-9]+$/.test(id) ? id.replace(/^0+/, '') : ''
+}
+
+function sameStoredMessage(left: StoredMessage, right: StoredMessage): boolean {
+  if (left.event_id && right.event_id && String(left.event_id) === String(right.event_id)) return true
+  return left.message_id != null && left.message_id !== '' && String(left.message_id) === String(right.message_id)
+}
+
 function parseStoredMessages(value: unknown): StoredMessage[] {
  if (!Array.isArray(value)) throw new Error('消息历史格式无效')
  const object = (item: unknown): Record<string, unknown> | null => item !== null && typeof item === 'object' && !Array.isArray(item) ? item as Record<string,unknown> : null
@@ -22,6 +34,12 @@ function parseStoredMessages(value: unknown): StoredMessage[] {
 
 export function createMessageManagerClass(ports: RecentMessagePorts) {
 const { redis: redisClient, bot: botIdentity, logger, refreshTencentImageUrl, enrichBilibiliMessageSegments, enrichDouyinMessageSegments, formatBilibiliHistoryText, formatBilibiliHistoryLinks, formatDouyinHistoryText, formatDouyinHistoryLinks, queue: recentMessageWriteQueue } = ports
+
+async function readMessages(key: string): Promise<StoredMessage[]> {
+  const data = await redisClient.get(key)
+  return data ? parseStoredMessages(JSON.parse(data)) : []
+}
+
 return class MessageManager {
  PRIVATE_MAX_MESSAGES: number; GROUP_MAX_MESSAGES: number; MESSAGE_MAX_LENGTH: number
  CACHE_EXPIRE_SECONDS = 3600; CACHE_EXPIRE_DAYS = 1 / 24; REDIS_KEY_PREFIX: string
@@ -422,7 +440,12 @@ return class MessageManager {
    * @param {number} id 用户ID或群ID
    * @returns {string} Redis键名
    */
-  getRedisKey(type: string, id: unknown) {
+  getRedisKey(type: string, id: unknown, accountId?: string | number) {
+    if (type === 'private' && accountId !== undefined) {
+      const account = cacheId(accountId), peer = cacheId(id)
+      if (!account || !peer) throw new Error('私聊历史缺少有效账号或会话')
+      return `${this.REDIS_KEY_PREFIX}private:v2:${account}:${peer}`
+    }
     return `${this.REDIS_KEY_PREFIX}${type}:${id}`;
   }
 
@@ -444,12 +467,18 @@ return class MessageManager {
         }
       };
       const isGroup = event.message_type === 'group';
-      const id = isGroup ? event.group_id : event.sender.user_id;
+      const accountId = isGroup ? '' : cacheId(event.self_id)
+      const peer = event.user_id ?? (event.source === 'send' ? undefined : event.sender.user_id)
+      if (!isGroup && event.self_id !== undefined && !accountId) throw new Error('私聊历史缺少有效账号')
+      if (accountId && !cacheId(peer)) throw new Error('私聊历史缺少对方账号')
+      const id = isGroup ? event.group_id : cacheId(peer) || event.sender.user_id;
       const type = isGroup ? 'group' : 'private';
-      const redisKey = this.getRedisKey(type, id);
+      const redisKey = this.getRedisKey(type, id, accountId || undefined);
 
       return await recentMessageWriteQueue.run(redisKey, async () => {
-        let messages = await this.getMessages(type, id, { throwOnError: true });
+        // Persist only records observed by this account. Historical fallback is
+        // read-only so a later clear can remove the source without reimporting it.
+        let messages = await readMessages(redisKey);
         const formatted = await this.formatMessage(event, options);
         const existingIndex = messages.findIndex(item => {
           if (formatted.event_id) return String(item.event_id || '') === String(formatted.event_id)
@@ -484,15 +513,26 @@ return class MessageManager {
    */
   async getMessages(type: string, id: unknown, options: RecentOptions = {}): Promise<StoredMessage[]> {
     try {
-      const redisKey = this.getRedisKey(type, id);
-      const data = await redisClient.get(redisKey);
-      const messages = data ? parseStoredMessages(JSON.parse(data)) : [];
+      const messages = await readMessages(this.getRedisKey(type, id, options.accountId));
+      const account = type === 'private' ? cacheId(options.accountId) : ''
+      if (account) {
+        const peer = cacheId(id)
+        const legacy = await readMessages(this.getRedisKey(type, peer)).catch(error => {
+          logger.warn(`读取旧私聊历史失败: ${error}`)
+          return []
+        })
+        for (const row of legacy) {
+          if (cacheId(row.self_id) === account && cacheId(row.sender.user_id) === peer
+            && row.source !== 'send' && !messages.some(existing => sameStoredMessage(existing, row))) messages.push(row)
+        }
+      }
       // 按时间戳倒序排序
-      return messages.sort((a, b) => {
+      const sorted = messages.sort((a, b) => {
         const timeA = ports.parseTime(a.time);
         const timeB = ports.parseTime(b.time);
         return timeB - timeA; // 倒序排列
       });
+      return account ? sorted.slice(0, this.PRIVATE_MAX_MESSAGES) : sorted
     } catch (error) {
       logger.error(`获取消息历史失败: ${error}`);
       if (options.throwOnError) throw error;
@@ -506,13 +546,27 @@ return class MessageManager {
    * @param {number} id 用户ID或群ID
    * @returns {Promise<void>}
    */
-  async clearMessages(type: string, id: unknown) {
+  async clearMessages(type: string, id: unknown, options: RecentOptions = {}) {
     try {
-      const redisKey = this.getRedisKey(type, id);
-      await redisClient.del(redisKey);
+      const redisKey = this.getRedisKey(type, id, options.accountId);
+      await recentMessageWriteQueue.run(redisKey, async () => {
+        const account = type === 'private' ? cacheId(options.accountId) : ''
+        if (account) {
+          const legacyKey = this.getRedisKey(type, cacheId(id))
+          await recentMessageWriteQueue.run(legacyKey, async () => {
+            const legacy = await readMessages(legacyKey)
+            const remaining = legacy.filter(row => cacheId(row.self_id) !== account)
+            if (remaining.length === legacy.length) return
+            if (remaining.length) await redisClient.set(legacyKey, JSON.stringify(remaining), { EX: this.CACHE_EXPIRE_SECONDS })
+            else await redisClient.del(legacyKey)
+          })
+        }
+        await redisClient.del(redisKey);
+      });
       logger.info(`已清除${type}:${id}的消息历史记录`);
     } catch (error) {
       logger.error(`清除消息历史失败: ${error}`);
+      if (options.throwOnError) throw error;
     }
   }
 

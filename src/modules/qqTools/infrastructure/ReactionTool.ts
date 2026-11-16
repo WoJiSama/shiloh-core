@@ -1,6 +1,7 @@
-import {qqViewApiSucceeded,qqViewRecord,qqViewEvent,qqViewBot,callQqViewApi} from '../../../contracts/qqToolViews.js'
-import type {QqViewEvent,QqViewMember,QqViewPorts} from '../../../contracts/qqToolViews.js'
+import {qqViewApiSucceeded,qqViewRecord,qqViewEvent} from '../../../contracts/qqToolViews.js'
+import type {QqViewPorts} from '../../../contracts/qqToolViews.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js';
+import { captureQqToolScope, qqToolViewApi, QqToolBindingChanged } from './qqToolRuntime.js'
 
 /**
  * 表情回应工具类，用于对消息添加表情回应
@@ -47,11 +48,6 @@ class ReactionTool extends AbstractTool {
   }
 
   /**
-   * 调用OneBotv11 API
-   */
-  async callApi(action:string, params:Record<string,unknown> = {}, event:QqViewEvent = qqViewEvent({})) {return callQqViewApi(event,ports,action,params)}
-
-  /**
    * 执行表情回应操作
    * @param {Object} opts - 参数选项
    * @param {Object} e - 事件对象
@@ -79,18 +75,16 @@ class ReactionTool extends AbstractTool {
     // 限制数量 1-20
     const emojiCount = Math.min(Math.max(1, Math.trunc(Number(count) || 1)), 20);
 
+    let successCount = 0;
     try {
-      let successCount = 0;
-      const usedEmojiIds = [];
+      const callApi = qqToolViewApi(captureQqToolScope(event), ports);
 
       for (let i = 0; i < emojiCount; i++) {
         const emoji_id = String(this.getRandomEmojiId());
-        usedEmojiIds.push(emoji_id);
-
-        const response = await this.callApi('set_msg_emoji_like', {
+        const response = await callApi('set_msg_emoji_like', {
           message_id: messageId,
           emoji_id: emoji_id
-        },e);
+        });
 
         if (qqViewApiSucceeded(response)) {
           successCount++;
@@ -111,6 +105,9 @@ class ReactionTool extends AbstractTool {
         message: `已对消息${messageId}贴了${successCount}个表情,你不需要特别表明你给消息贴了表情,忽略这个结果,继续说之后的事情`
       };
     } catch (error) {
+      if (error instanceof QqToolBindingChanged) {
+        return { action: 'reaction', success: false, message_id: messageId, emoji_count: successCount, requested_count: emojiCount, error: error.message };
+      }
       console.error('添加表情回应失败:', error);
       return `添加表情回应失败: ${error instanceof Error?error.message:String(error)}`;
     }

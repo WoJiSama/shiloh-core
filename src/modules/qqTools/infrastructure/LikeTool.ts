@@ -1,5 +1,5 @@
-import type { QqToolEvent, QqToolBot, QqToolGroup, QqMember, QqToolPorts, PbObject, PbValue } from '../../../contracts/qqTools.js'
-import { apiOk, asRecord, errorText, eventBot } from './qqToolRuntime.js'
+import type { QqToolEvent, QqToolBot, QqToolPorts } from '../../../contracts/qqTools.js'
+import { apiOk, captureQqToolScope, errorText, QqToolBindingChanged, requireQqToolBot, type QqToolScope } from './qqToolRuntime.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js';
 import { collectMentionTargetIds } from '../../conversation/domain/mentionTargets.js';
 
@@ -42,30 +42,33 @@ class LikeTool extends AbstractTool {
     const count=typeof opts.count==='number'&&Number.isFinite(opts.count)?Math.min(20,Math.max(1,Math.floor(opts.count))):10
     const random=opts.random===true
     try {
-      const bot=eventBot(e,ports)
+      const scope=captureQqToolScope(e),bot=requireQqToolBot(scope,ports)
       let target=String(opts.qq??'').trim()
       if(!target||random) {
         target=collectMentionTargetIds(e,bot.uin)[0]??''
         if(!target&&random) {
           if(!e.group_id)return {status:'error',error:'随机点赞仅支持群聊'}
-          const members=await bot.pickGroup(e.group_id).getMemberMap()
-          const available=[...members.keys()].filter(id=>id!==bot.uin&&String(id)!==String(e.sender?.user_id??e.user_id))
+          const group=await bot.pickGroup(e.group_id)
+          const members=await scope.effect(()=>group.getMemberMap(),bot)
+          const available=[...members.keys()].filter(id=>String(id)!==String(bot.uin)&&String(id)!==String(e.sender?.user_id??e.user_id))
           target=String(available[Math.floor(Math.random()*available.length)]??'')
         } else if(!target)target=String(e.sender?.user_id??e.user_id??'')
       }
       if(!/^\d+$/.test(target)||Number(target)<=0)return {status:'error',error:'没有可用的目标用户'}
-      const result=await this.thumbUp(bot,Number(target),count)
+      const result=await this.thumbUp(bot,Number(target),count,scope)
       return result.code===0?{status:'success',target,count,isRandom:random,message:result.msg}:{status:'error',target,error:result.msg}
     }catch(error){return {status:'error',error:errorText(error)}}
   }
-  async thumbUp(bot:QqToolBot,uid:number,times=1){return this.origThumbUp(bot,uid,Math.min(20,Math.max(1,Math.floor(times))))}
-  async origThumbUp(bot:QqToolBot,uid:number,times:number) {
+  async thumbUp(bot:QqToolBot,uid:number,times=1,scope=captureQqToolScope({bot})){return this.origThumbUp(bot,uid,Math.min(20,Math.max(1,Math.floor(times))),scope)}
+  async origThumbUp(bot:QqToolBot,uid:number,times:number,scope:QqToolScope=captureQqToolScope({bot})) {
     // Select a supported transport before sending, never retry after dispatch.
-    const friend=bot.pickFriend?.(uid)
     try {
-      const result=friend?.thumbUp?await friend.thumbUp(times):await bot.sendApi('send_like',{user_id:uid,times})
+      scope.assertCurrent()
+      const friend=bot.pickFriend?.(uid)
+      const send=friend?.thumbUp?.bind(friend)
+      const result=await scope.effect(()=>send ? send(times) : bot.sendApi('send_like',{user_id:uid,times}),bot)
       return apiOk(result)?{code:0,msg:'点赞成功'}:{code:1,msg:'点赞响应未确认成功，请勿重复执行'}
-    }catch(error){return {code:1,msg:`点赞结果未确认，请勿重复执行：${errorText(error)}`}}
+    }catch(error){return {code:1,msg:error instanceof QqToolBindingChanged ? error.message : `点赞结果未确认，请勿重复执行：${errorText(error)}`}}
   }
 }
 return {LikeTool}

@@ -6,7 +6,7 @@ type SendApi = (action: string, params?: Params) => Promise<unknown>
 interface Adapter { id?: unknown; uin?: unknown; sendApi?: SendApi }
 interface Monitor { notifyCensorBlock?(botId:string,groupId:string,excerpt?:string):void; quietFactor(botId:string):number; detectResponse(botId:string,action:string,result:unknown):void }
 interface Logger { warn?(message:string):void;info?(message:string):void }
-interface ThrottlePorts { readUserSettings():unknown; getBotRoot(): { bots?: Record<string,Adapter> } | undefined; logger?: Logger; signalMonitor:Monitor;recordCode(botId:string,groupId:string,code:string):void }
+interface ThrottlePorts { readUserSettings():unknown; getBotRoot(): { bots?: Record<string,Adapter> } | undefined; logger?: Logger; signalMonitor:Monitor;recordCode(botId:string,groupId:string,code:string):void;queuedDeliveryAllowed?():boolean }
 function record(value:unknown):Record<string,unknown> {return value&&typeof value==='object'?value as Record<string,unknown>:{} }
 export function createOutboundThrottleModule(ports:ThrottlePorts) {
 const { readUserSettings, recordCode } = ports
@@ -319,6 +319,7 @@ function installOutboundThrottle({
       }
     }
 
+    if (ports.queuedDeliveryAllowed?.() === false) return {status:'failed', state:'failed', code:'binding_changed'}
     const result = await original.call(adapter, action, params)
     try {
       signalMonitor.detectResponse(botId, action, result)
