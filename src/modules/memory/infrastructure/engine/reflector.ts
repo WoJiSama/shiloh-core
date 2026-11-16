@@ -67,11 +67,13 @@ function sourceIndices(value:unknown,count:number):number[] {
 function sameFactContext(sources:MemoryFact[]) {
   return new Set(sources.map(fact => fact.eventAt ?? null)).size === 1
     && new Set(sources.map(fact => JSON.stringify([personaSourceKey(fact.personaSource),fact.heardFrom || '']))).size === 1
+    && new Set(sources.map(fact => JSON.stringify([fact.memorySource,fact.memoryCategory,fact.memorySensitivity,fact.portable,fact.personMemoryId]))).size === 1
 }
 
 function sourceMetadata(sources:MemoryFact[]) {
   const personaSource = normalizePersonaSource(sources[0]?.personaSource)
-  return {eventAt:sources[0]?.eventAt,refs:mergeRefs(sources),...(personaSource ? {personaSource} : {}),...(sources[0]?.heardFrom ? {heardFrom:sources[0].heardFrom} : {})}
+  const first = sources[0]
+  return {eventAt:first?.eventAt,refs:mergeRefs(sources),...(personaSource ? {personaSource} : {}),...(first?.heardFrom ? {heardFrom:first.heardFrom} : {}),...(first?.memorySource ? {memorySource:first.memorySource,memoryCategory:first.memoryCategory,memorySensitivity:first.memorySensitivity,portable:first.portable,personMemoryId:first.personMemoryId} : {})}
 }
 
 function describeFact(fact:MemoryFact,index:number) {

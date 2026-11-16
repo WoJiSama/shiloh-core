@@ -156,5 +156,6 @@ test("composer 集成:注入 midtermSummaryManager 后层有值", async () => {
     deps: { midtermSummaryManager: manager }
   })
   assert.ok(result.layerValues.midtermMemory.includes("本群近期主线"))
-  assert.ok(result.prompt.includes("本群近期主线"))
+  assert.ok(result.dataPrompt.includes("本群近期主线"))
+  assert.ok(!result.prompt.includes("本群近期主线"))
 })

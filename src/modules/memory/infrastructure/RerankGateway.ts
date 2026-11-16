@@ -9,6 +9,7 @@ export function rerankUrlFromEmbeddingUrl(embeddingUrl = "") {
 }
 
 export class RerankGateway {
+ private lifecycle=new AbortController()
  apiUrl:string;apiKey:string;model:string;timeoutMs:number;fetchFn:typeof fetch;logger:GatewayOptions["logger"];failureUntil:number
  stats:{requests:number;failures:number;timeouts:number}
 
@@ -25,7 +26,7 @@ export class RerankGateway {
 
   configured() {
     return Boolean(
-      this.apiUrl &&
+      !this.lifecycle.signal.aborted && this.apiUrl &&
       this.apiKey &&
       !this.apiKey.includes("sk-xxx") &&
       this.model &&
@@ -34,6 +35,8 @@ export class RerankGateway {
     )
   }
 
+  dispose(){this.lifecycle.abort()}
+
   markFailure() {
     this.stats.failures++
     this.failureUntil = Date.now() + FAILURE_COOLDOWN_MS
@@ -41,7 +44,8 @@ export class RerankGateway {
   }
 
   // 返回 Map(chunkId -> relevanceScore);失败/超时返回 null,调用方回落 RRF 顺序
-  async rerank(query = "", chunks: {id?:string|number;text?:string}[] = []) {
+  async rerank(query = "", chunks: {id?:string|number;text?:string}[] = [],options:{signal?:AbortSignal}={}) {
+    if(options.signal?.aborted)return null
     if (!this.configured() || !String(query || "").trim() || !chunks.length) return null
     const timeoutSignal = typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
       ? AbortSignal.timeout(this.timeoutMs)
@@ -60,13 +64,14 @@ export class RerankGateway {
           documents: chunks.map(chunk => String(chunk.text || "").slice(0, 4000)),
           top_n: chunks.length
         }),
-        ...(timeoutSignal ? { signal: timeoutSignal } : {})
+        signal:AbortSignal.any([this.lifecycle.signal,...(options.signal?[options.signal]:[]),...(timeoutSignal?[timeoutSignal]:[])])
       })
       if (!response?.ok) {
         const body = await response.text().catch(() => "")
         throw new Error(`rerank API ${response.status} ${String(body).slice(0, 120)}`)
       }
       const payload: unknown = await response.json()
+      if(this.lifecycle.signal.aborted||options.signal?.aborted)return null
       const rows: unknown[] = Array.isArray(record(payload).results) ? record(payload).results as unknown[] : []
       const scores = new Map<string,number>()
       for (const row of rows) {
@@ -77,6 +82,7 @@ export class RerankGateway {
       }
       return scores.size ? scores : null
     } catch (error) {
+      if(this.lifecycle.signal.aborted||options.signal?.aborted)return null
       if (record(error).name === "TimeoutError" || record(error).name === "AbortError") this.stats.timeouts++
       this.markFailure()
       this.logger?.warn?.(`[SemanticMemory] rerank 失败(回落 RRF 顺序): ${error instanceof Error ? error.message : String(error)}`)

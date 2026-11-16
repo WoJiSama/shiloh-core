@@ -99,6 +99,7 @@ export function getSemanticMemoryRuntime() {
 }
 
 export function installSemanticMemoryRuntime({ pluginSettings = {}, archiveManager = null, logger }: {pluginSettings?:Settings;archiveManager?:RuntimeArchive|null;logger?:Logger} = {}) {
+  disposeRuntime()
   const config = normalizeSemanticMemoryConfig(pluginSettings.semanticMemory, pluginSettings.embeddingAiConfig)
   const embedding = pluginSettings.embeddingAiConfig || {}
   const usable = Boolean(
@@ -141,7 +142,7 @@ export function installSemanticMemoryRuntime({ pluginSettings = {}, archiveManag
     })
     : null
   const indexer = new SemanticMemoryIndexer({ store, gateway, archiveManager, config, ...(logger ? {logger} : {}) })
-  const retriever = new SemanticMemoryRetriever({ store, gateway, reranker, config, ...(logger ? {logger} : {}) })
+  const retriever = new SemanticMemoryRetriever({ store, gateway, reranker, archiveManager, config, ...(logger ? {logger} : {}) })
   runtime = { config, store, gateway, reranker, indexer, retriever, baseDir }
   // 评估出题模型:复用 memoryAiConfig(glm flash 一类便宜小模型)
   const memory = pluginSettings.memoryAiConfig || {}
@@ -154,6 +155,7 @@ export function installSemanticMemoryRuntime({ pluginSettings = {}, archiveManag
     }
   }
   installArchiveHook(archiveManager, logger)
+  void indexer.start().catch(error=>logger?.warn?.(`[SemanticMemory] 启动恢复索引失败: ${String(error)}`))
   scheduleSweep(store, logger)
   logger?.info?.(`[SemanticMemory] 语义记忆就绪 model=${gateway.model} dim=${store.dimension} retention=${config.retentionDays}d base=${baseDir}`)
   return runtime
@@ -171,9 +173,22 @@ function detachArchiveHook() {
   archiveHookInstalled = false
 }
 
+function disposeRuntime(){
+  detachArchiveHook()
+  runtime?.indexer.dispose()
+  runtime?.retriever.dispose()
+  runtime?.gateway.dispose()
+  runtime?.reranker?.dispose()
+  runtime?.store.dispose()
+  runtime=null
+  if(sweepTimer)clearTimeout(sweepTimer)
+  if(sweepInterval)clearInterval(sweepInterval)
+  sweepTimer=null;sweepInterval=null
+}
+
 // 供测试重置
 export function __resetSemanticMemoryRuntimeForTest() {
-  detachArchiveHook()
+  disposeRuntime()
   runtime = null
   archiveHookInstalled = false
   if (sweepTimer) clearTimeout(sweepTimer)

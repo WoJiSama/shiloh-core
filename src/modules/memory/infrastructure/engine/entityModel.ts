@@ -49,6 +49,7 @@ export function makeAlias(raw: unknown = {}): MemoryAlias {
   const input = memoryRecord(raw)
   return {
     text: compactText(input.text, 64),
+    ...(typeof input.sourceMessageId === 'string' ? {sourceMessageId:input.sourceMessageId} : {}),
     authority: String(input.authority || 'mention'),
     confidence: clamp(input.confidence ?? 0.7),
     by: uniqStrings(input.by),
@@ -60,6 +61,12 @@ export function makeAlias(raw: unknown = {}): MemoryAlias {
 export function makeFact(raw: unknown = {}): MemoryFact {
   const input = memoryRecord(raw)
   const personaSource = normalizePersonaSource(input.personaSource)
+  const source = memoryRecord(input.memorySource)
+  const scene = memoryRecord(source.scene)
+  const memorySource = ['group','private'].includes(String(scene.kind)) && typeof scene.id === 'string' && scene.id
+    && typeof source.authorId === 'string' && source.authorId && typeof source.messageId === 'string' && source.messageId
+    && typeof source.at === 'number' && Number.isFinite(source.at) && typeof source.excerpt === 'string' && source.excerpt
+    ? {scene:{kind:scene.kind as 'group'|'private',id:scene.id},authorId:source.authorId,messageId:source.messageId,at:source.at,excerpt:source.excerpt} : undefined
   return {
     text: compactText(input.text, 240),
     tags: uniqStrings(input.tags),
@@ -74,7 +81,12 @@ export function makeFact(raw: unknown = {}): MemoryFact {
     // 多账号共享记忆的来源标注:这条事实是哪个 bot 在场时听来的(人设名);
     // 注入给其他 bot 时可自然引用为"听XX说过"
     ...(compactText(input.heardFrom, 24) ? { heardFrom: compactText(input.heardFrom, 24) } : {}),
-    ...(personaSource ? {personaSource} : {})
+    ...(personaSource ? {personaSource} : {}),
+    ...(memorySource ? {memorySource} : {}),
+    ...(['name','interest','preference','fact','event','relationship','impression'].includes(String(input.memoryCategory)) ? {memoryCategory:input.memoryCategory as NonNullable<MemoryFact['memoryCategory']>} : {}),
+    ...(['ordinary','personal','sensitive'].includes(String(input.memorySensitivity)) ? {memorySensitivity:input.memorySensitivity as NonNullable<MemoryFact['memorySensitivity']>} : {}),
+    ...(input.portable === true ? {portable:true} : {}),
+    ...(typeof input.personMemoryId === 'string' ? {personMemoryId:input.personMemoryId} : {})
   }
 }
 

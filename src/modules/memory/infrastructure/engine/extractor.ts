@@ -5,6 +5,7 @@ import type {MemoryLlmConfig,MemoryLlmPorts,MemoryId,MemoryExtractionMessage,Mem
 import { makeFact } from './entityModel.js'
 import { memStats } from './stats.js'
 import {describeMemoryTime,finiteTimestamp,MEMORY_TIME_ZONE,parseEventDate} from './temporalContext.js'
+import { memoryScene } from '../../domain/memoryScope.js'
 
 const DAY_MS = 86400000
 const CHAT_TIMEOUT_MS = 20000
@@ -63,6 +64,22 @@ export function parseAndRoute(items:unknown, ctx:Record<string,unknown> = {}):Me
     const confidence = clamp(item.confidence ?? 0.7)
     const eventAt = resolveEventAt(item, ctx)
     const refs = normalizeRefs(item.refs)
+    // Only an actual source row can establish cross-conversation provenance.
+    // Models select a row and a verbatim excerpt; identifiers come from ingress.
+    const excerpt = typeof item.sourceExcerpt === 'string' ? item.sourceExcerpt.trim() : ''
+    const sourceText = typeof source?.content === 'string' ? source.content : ''
+    const grounded = source && source.messageId && source.authorQQ && (!ctx.speakerQQ || source.authorQQ === String(ctx.speakerQQ))
+      && finiteTimestamp(source.at) !== undefined && excerpt.length >= 2 && sourceText.includes(excerpt)
+    if (Array.isArray(ctx.messages) && ((item.sourceIndex !== undefined && !source)
+      || (item.sourceExcerpt !== undefined && !grounded)
+      || (source?.messageId && !grounded))) continue
+    const category = ['name','interest','preference','fact','event','relationship','impression'].includes(String(item.category)) ? String(item.category) : eventAt !== undefined ? 'event' : 'fact'
+    const provenance = grounded ? {
+      memorySource:{scene:memoryScene(ctx.groupId,ctx.speakerQQ),authorId:source.authorQQ!,messageId:source.messageId!,at:source.at!,excerpt},
+      memoryCategory:category,
+      memorySensitivity:['ordinary','personal','sensitive'].includes(String(item.sensitivity)) ? String(item.sensitivity) : 'personal',
+      portable:item.portable === true && refs.length === 0 && category !== 'fact' && category !== 'event' && category !== 'relationship' && category !== 'impression'
+    } : {}
 
     if (route === 'explicit_teaching') {
       // Shared aliases/definitions/workflows are committed only through the
@@ -74,10 +91,11 @@ export function parseAndRoute(items:unknown, ctx:Record<string,unknown> = {}):Me
     if (route === 'self_statement') {
       const alias = compactText(item.alias, 64)
       if (alias && ctx.speakerQQ) {
-        ops.push({ stream: 'alias' as const, qq: String(ctx.speakerQQ), text: alias, authority: 'self', confidence, by: [String(ctx.speakerQQ)], at })
+        ops.push({ stream: 'alias' as const, qq: String(ctx.speakerQQ), text: alias, authority: 'self', confidence, by: [String(ctx.speakerQQ)], at,...(grounded ? {sourceMessageId:source.messageId,memorySource:provenance.memorySource!} : {}) })
+        if (grounded) ops.push({stream:'entityFact',qq:String(ctx.speakerQQ),authority:'self',fact:makeFact({text:alias,tags:['称呼'],refs,authority:'self',confidence,at,...provenance,memoryCategory:'name'})})
       } else {
         const text = compactText(item.content, 240)
-        if (text && ctx.speakerQQ) ops.push({ stream: 'entityFact' as const, qq: String(ctx.speakerQQ), authority: 'self', fact: makeFact({ text, tags: item.tags, refs, authority: 'self', confidence, at, eventAt }) })
+        if (text && ctx.speakerQQ) ops.push({ stream: 'entityFact' as const, qq: String(ctx.speakerQQ), authority: 'self', fact: makeFact({ text, tags: item.tags, refs, authority: 'self', confidence, at, eventAt,...provenance }) })
       }
       continue
     }
@@ -86,14 +104,14 @@ export function parseAndRoute(items:unknown, ctx:Record<string,unknown> = {}):Me
       const text = compactText(item.content, 240)
       if (text && ctx.speakerQQ) {
         const tags = [...new Set(['偏好', ...(Array.isArray(item.tags) ? item.tags : [])])]
-        ops.push({ stream: 'entityFact' as const, qq: String(ctx.speakerQQ), authority: 'self', fact: makeFact({ text, tags, refs, authority: 'self', confidence, at, eventAt }) })
+        ops.push({ stream: 'entityFact' as const, qq: String(ctx.speakerQQ), authority: 'self', fact: makeFact({ text, tags, refs, authority: 'self', confidence, at, eventAt,...provenance }) })
       }
       continue
     }
 
     if (route === 'group_consensus') {
       const text = compactText(item.content, 240)
-      if (text) ops.push({ stream: 'groupFact' as const, authority: 'mention', fact: makeFact({ text, tags: item.tags, refs, authority: 'mention', confidence, at, eventAt }) })
+      if (text) ops.push({ stream: 'groupFact' as const, authority: 'mention', fact: makeFact({ text, tags: item.tags, refs, authority: 'mention', confidence, at, eventAt,...provenance }) })
       continue
     }
   }
@@ -127,6 +145,10 @@ function extractJsonArray(text:unknown,messages:MemoryExtractionMessage[]):unkno
 const SYSTEM_PROMPT = `你是群聊长期记忆抽取器。对每条真实用户发言，分类并抽取结构化结果，只输出 JSON 数组，不要解释。
 每个元素字段：
 - sourceIndex: 原始发言的行号（从 1 开始），每条事实必须指明对应发言；合并多条时不要混淆各自行文里的时间
+- sourceExcerpt: 支撑这一条事实的最小原文摘句，必须逐字来自 sourceIndex 对应发言，不复述、不包含无关的其他事实
+- category: name | interest | preference | fact | event | relationship | impression
+- sensitivity: ordinary | personal | sensitive；拿不准选 personal
+- portable: 仅本人明确表达的低敏、通用称呼/长期爱好/通用相处偏好可为 true；具体经历、职业家庭隐私、健康、情绪倾诉、群内外号/梗、关系和推测均为 false；稳定或高置信度不代表可以跨群使用
 - route: explicit_teaching | self_statement | user_preference | group_consensus | ordinary_chat
 - alias: 当 route 是 explicit_teaching/self_statement 且涉及"外号/称呼"时给出别名文本
 - targetQQ: explicit_teaching 中"A 是 @某人"的某人 QQ（纯数字）
@@ -191,7 +213,9 @@ export class MemoryExtractor {
       return {...message,...(recordedAt !== undefined ? {at:recordedAt} : {})}
     })
     const chatText = sourceMessages.map((m, i) => `${i + 1}. [角色：${m.role || 'user'}；来源：${m.source || 'user'}；发言时间：${m.at !== undefined ? describeMemoryTime(m.at) : '未知；不得推断相对日期'}] ${m.content}`).join('\n')
-    const userPrompt = `日期时区：${MEMORY_TIME_ZONE}。每条日期以对应发言时间为准，抽取可能延迟或重试；不要把执行时的今天代入。\n群 ${groupId} 发言人 QQ ${speakerQQ} 的发言：\n${chatText}\n\n已有记忆参考：\n${existingHint || '无'}\n\n请输出 JSON 数组。`
+    const scene = memoryScene(groupId,speakerQQ)
+    const conversation = scene.kind === 'group' ? `群 ${scene.id}` : '私聊'
+    const userPrompt = `日期时区：${MEMORY_TIME_ZONE}。每条日期以对应发言时间为准，抽取可能延迟或重试；不要把执行时的今天代入。\n${conversation} 发言人 QQ ${speakerQQ} 的发言：\n${chatText}\n\n已有记忆参考：\n${existingHint || '无'}\n\n请输出 JSON 数组。`
     let content
     try {
       content = await this._callChat([
@@ -206,6 +230,6 @@ export class MemoryExtractor {
       memStats.inc('extract.invalid-output')
       return {status:'failed',reason:'invalid-output',retryable:true}
     }
-    return {status:'success',ops:parseAndRoute(items, { speakerQQ, at, messages:sourceMessages })}
+    return {status:'success',ops:parseAndRoute(items, { groupId,speakerQQ, at, messages:sourceMessages })}
   }
 }

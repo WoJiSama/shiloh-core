@@ -16,7 +16,7 @@ test('emotion persistence isolates bots and rejects malformed stored state', asy
 })
 
 test('profile keeps current speaker messages without duplicating own persona',async()=>{
- const Profile=createPersonProfileClass({getConfig:()=>({personProfileInjection:{enabled:true},persona:{enabled:true,name:'default'}}),getPersonaFor:()=>({enabled:true,name:'group persona'}),getMessages:async()=>[{sender:{user_id:7},raw_message:'my recent message'},{sender:{user_id:8},raw_message:'other private context'}]})
+ const Profile=createPersonProfileClass({filterRecentMessages:async(_group,messages)=>messages,getConfig:()=>({personProfileInjection:{enabled:true},persona:{enabled:true,name:'default'}}),getPersonaFor:()=>({enabled:true,name:'group persona'}),getMessages:async()=>[{sender:{user_id:7},raw_message:'my recent message'},{sender:{user_id:8},raw_message:'other private context'}]})
  const result=await new Profile().build('group',7,{sender:{nickname:'speaker'}})
  assert.doesNotMatch(result,/group persona|固定人设/)
  assert.match(result,/my recent message/)

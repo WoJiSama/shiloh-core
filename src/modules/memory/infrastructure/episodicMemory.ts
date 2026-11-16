@@ -4,7 +4,7 @@ import type { PersonaScope } from "../../../contracts/persona.js"
 
 interface ReplyAttribution { kind:"self"|"other"|"unknown"; viewer?:PersonaScope }
 export interface Episode { at:number; date:string; userId:string;userName:string;summary:string;reply:string;source?:PersonaScope;replyAttribution?:ReplyAttribution }
-interface EpisodeOptions { groupId?:string|number;userId?:string|number;userName?:string;summary?:string;reply?:string;at?:number;maxPerGroup?:number;baseDir?:string;terms?:string[];days?:number;limit?:number;minAgeMs?:number;source?:PersonaScope;viewer?:PersonaScope }
+interface EpisodeOptions { groupId?:string|number;userId?:string|number;userName?:string;summary?:string;reply?:string;at?:number;maxPerGroup?:number;baseDir?:string;terms?:string[];days?:number;limit?:number;minAgeMs?:number;source?:PersonaScope;viewer?:PersonaScope;after?:number }
 interface EpisodePromptOptions { viewer?:PersonaScope }
 function isEpisode(value:unknown):value is Episode { if(!value||typeof value!=='object')return false;const row=value as Record<string,unknown>;return typeof row.at==='number'&&Number.isFinite(row.at)&&['date','userId','userName','summary','reply'].every(key=>typeof row[key]==='string') }
 
@@ -114,12 +114,7 @@ export function recordEpisode({ groupId = "", userId = "", userName = "", summar
   return episode
 }
 
-const TIME_DEIXIS_PATTERN = /上次|上回|昨天|前天|那天|之前说|之前聊|前几天|上周|刚才说|早些时候/
-
-/** 用户话里带时间指代时才值得翻情节日志 */
-export function hasTemporalDeixis(text = "") {
-  return TIME_DEIXIS_PATTERN.test(String(text || ""))
-}
+export { hasTemporalDeixis } from '../domain/temporalDeixis.js'
 
 function scoreEpisode(episode:Episode, terms:string[] = [], now = Date.now()) {
   const haystack = `${episode.summary}${episode.reply}`
@@ -136,12 +131,12 @@ function scoreEpisode(episode:Episode, terms:string[] = [], now = Date.now()) {
  * 按关键词 + 近因召回情节（默认 7 天内，最多 5 条）。
  * terms 为空时返回最近几条（纯时间线回放）。
  */
-export function recallEpisodes({ groupId = "", terms = [], days = 7, limit = 5, baseDir = "", viewer }:EpisodeOptions = {}) {
+export function recallEpisodes({ groupId = "", terms = [], days = 7, limit = 5, baseDir = "", viewer,after = 0 }:EpisodeOptions = {}) {
   const key = String(groupId || "")
   const episodes = loadEpisodes(key, baseDir)
   if (!episodes.length) return []
   const cutoff = Date.now() - Math.max(1, Number(days) || 7) * 24 * 60 * 60 * 1000
-  const fresh = episodes.filter(e => Number(e.at || 0) >= cutoff)
+  const fresh = episodes.filter(e => Number(e.at || 0) >= cutoff && Number(e.at || 0) > after)
   const words = (Array.isArray(terms) ? terms : []).map(t => String(t || "").trim()).filter(Boolean)
   return fresh
     .map(episode => ({ episode, score: scoreEpisode(episode, words) }))
@@ -155,7 +150,7 @@ export function recallEpisodes({ groupId = "", terms = [], days = 7, limit = 5, 
  * minAgeMs 排除太新鲜的记录——半小时内的内容聊天历史里本来就有，
  * 回勾的价值在跨天，不值得重复注入。
  */
-export function recallUserEpisodes({ groupId = "", userId = "", days = 7, limit = 2, minAgeMs = 30 * 60 * 1000, baseDir = "", viewer }:EpisodeOptions = {}) {
+export function recallUserEpisodes({ groupId = "", userId = "", days = 7, limit = 2, minAgeMs = 30 * 60 * 1000, baseDir = "", viewer,after = 0 }:EpisodeOptions = {}) {
   const key = String(groupId || "")
   const uid = String(userId || "")
   if (!key || !uid) return []
@@ -166,7 +161,7 @@ export function recallUserEpisodes({ groupId = "", userId = "", days = 7, limit 
   const minAge = Math.max(0, Number(minAgeMs) || 0)
   return episodes
     .filter(e => String(e.userId || "") === uid)
-    .filter(e => now - Number(e.at || 0) >= minAge && Number(e.at || 0) >= cutoff)
+    .filter(e => now - Number(e.at || 0) >= minAge && Number(e.at || 0) >= cutoff && Number(e.at || 0) > after)
     .slice(-Math.max(1, Number(limit) || 2))
     .reverse()
     .map(episode => episodeForViewer(episode, viewer))

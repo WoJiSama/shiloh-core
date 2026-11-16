@@ -1,22 +1,27 @@
 import type { MemoryCommandPort, MemoryFact } from '../../../contracts/sharedRuntime.js'
-import { memoryRecord } from '../../../contracts/memoryEngine.js'
+import { memoryRecord, type MemoryPersona } from '../../../contracts/memoryEngine.js'
+import { isAgentBindingCurrent, type DeferredBindingEvent, type RestoreDeferredAgentBinding } from '../../../contracts/agentBinding.js'
+import { agentBindingToken } from '../../runtime/domain/agentBindings.js'
 import { extractDeliveryMessageId, logDeliveryOutcome } from '../../messaging/domain/deliveryObservability.js'
+import { withDeliveryGuard } from '../../messaging/infrastructure/deliveryScope.js'
 import { memStats } from '../infrastructure/engine/stats.js'
 import type { createGlobalStyleLearnerClass } from '../infrastructure/globalStyleLearner.js'
 import type { createPersonaFeedbackModule } from '../infrastructure/personaFeedbackManager.js'
 import { safeTruncateUnicode } from '../../models/domain/unicodeText.js'
 import { factShortId } from '../infrastructure/engine/entityModel.js'
-interface CommandEvent {msg?:string;group_id?:string|number;user_id?:string|number;self_id?:string|number;bot?:{uin?:unknown};isMaster?:boolean;sender?:{role?:string};reply(payload:unknown,quote?:boolean):Promise<unknown>}
+import { personMemoryCommandText } from '../domain/personMemoryCommands.js'
+interface CommandEvent {msg?:string;message_type?:string;group_id?:string|number;user_id?:string|number;self_id?:string|number;bot?:{uin?:unknown};isMaster?:boolean;sender?:{role?:string};reply(payload:unknown,quote?:boolean):Promise<unknown>}
 interface Logger {info?(message:string):void;warn(message:string,...details:unknown[]):void;error(message:string,...details:unknown[]):void}
 type Style = InstanceType<ReturnType<typeof createGlobalStyleLearnerClass>>
 type Persona = InstanceType<ReturnType<typeof createPersonaFeedbackModule>['PersonaFeedbackManager']>
 function errorMessage(error:unknown) {return error instanceof Error?error.message:String(error)}
-export function createMemoryCommands(ports:{PluginBase:new(options:{name:string;dsc:string;event:string;priority:number;rule:{reg:string;fnc:string}[]})=>object;getSharedMemoryManager():MemoryCommandPort;getSharedConfig():Readonly<Record<string,unknown>>;globalStyleLearnerManager:Style;personaFeedbackManager:Persona;logger:Logger;makeForwardMsg(event:CommandEvent,messages:string[],title:string):Promise<unknown>}) {
+export function createMemoryCommands(ports:{PluginBase:new(options:{name:string;dsc:string;event:string;priority:number;rule:{reg:string;fnc:string}[]})=>object;getSharedMemoryManager():MemoryCommandPort;getSharedConfig():Readonly<Record<string,unknown>>;getPersonaSnapshotFor?(event:CommandEvent):MemoryPersona|undefined;restoreBinding?:RestoreDeferredAgentBinding;globalStyleLearnerManager:Style;personaFeedbackManager:Persona;logger:Logger;makeForwardMsg(event:CommandEvent,messages:string[],title:string):Promise<unknown>}) {
 const {getSharedMemoryManager,getSharedConfig,globalStyleLearnerManager,personaFeedbackManager,logger}=ports
 const styleConfig=()=>globalStyleLearnerManager.normalizeInputConfig(getSharedConfig().globalStyleLearning)
 const embeddingConfig=()=> {const r=memoryRecord(getSharedConfig().embeddingAiConfig);return {embeddingApiUrl:String(r.embeddingApiUrl||''),embeddingApiKey:String(r.embeddingApiKey||''),embeddingApiModel:String(r.embeddingApiModel||'')}}
 const memoryAiConfig=()=> {const r=memoryRecord(getSharedConfig().memoryAiConfig);return {memoryAiUrl:String(r.memoryAiUrl||''),memoryAiApikey:String(r.memoryAiApikey||''),memoryAiModel:String(r.memoryAiModel||'')}}
 const replyFailures = new WeakMap<CommandEvent, { error: unknown }>()
+const bindingGuards = new WeakMap<CommandEvent, () => boolean>()
 const clearGroupMemoryPending = new Map<string,number>()
 const CLEAR_GROUP_MEMORY_CONFIRM_TTL_MS = 30000
 
@@ -38,10 +43,10 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
         { reg: "^#删除群知识\\s+\\S+$", fnc: "deleteGroupKnowledge" },
         { reg: "^#搜索记忆\\s+[\\s\\S]+$", fnc: "searchMemory" },
         { reg: "^#删除记忆\\s+\\S+$", fnc: "deleteMemory" },
-        { reg: "^#清空我的记忆$", fnc: "clearMyMemory" },
+        { reg: `^${personMemoryCommandText.forget}$`, fnc: "clearMyMemory" },
         { reg: "^#清空群记忆$", fnc: "clearGroupMemory" },
-        { reg: "^#禁用我的记忆$", fnc: "disableMyMemory" },
-        { reg: "^#启用我的记忆$", fnc: "enableMyMemory" },
+        { reg: `^${personMemoryCommandText.disable}$`, fnc: "disableMyMemory" },
+        { reg: `^${personMemoryCommandText.enable}$`, fnc: "enableMyMemory" },
         { reg: "^#清除群记忆$", fnc: "clearGroupMemory" },
         { reg: "^[#＃.。]\\s*希洛反馈\\s+[\\s\\S]+$", fnc: "recordPersonaFeedback" },
         { reg: "^[#＃.。]\\s*(全局表达学习|表达学习)\\s*(报告|状态|记忆|总结|候选|自主|清空|帮助)?\\s*$", fnc: "globalStyleLearningCommand" }
@@ -53,10 +58,27 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
     return getSharedMemoryManager()
   }
 
+  memoryViewer(e:CommandEvent) {
+    bindingGuards.delete(e)
+    const viewer = ports.getPersonaSnapshotFor?.(e)
+    if (!viewer) return {}
+    if (!viewer.binding || !ports.restoreBinding) return {viewer}
+    const event:DeferredBindingEvent = {
+      self_id:viewer.binding.target.account.id,message_type:viewer.binding.target.kind,
+      ...(e.group_id===undefined?{}:{group_id:e.group_id}),...(e.user_id===undefined?{}:{user_id:e.user_id}),
+    }
+    if (ports.restoreBinding(event,{token:agentBindingToken(viewer.binding)}) !== 'current') throw new Error('无法确认当前会话的记忆归属')
+    const isCurrent = () => isAgentBindingCurrent(event)
+    bindingGuards.set(e,isCurrent)
+    return {viewer,isCurrent}
+  }
+
   async sendObservedReply(e:CommandEvent, payload:unknown, quote = false, channel = "command") {
     replyFailures.delete(e)
+    const isCurrent = bindingGuards.get(e)
+    if (isCurrent?.() === false) return
     try {
-      const result = await e.reply(payload, quote)
+      const result = await withDeliveryGuard(isCurrent,() => e.reply(payload, quote))
       logDeliveryOutcome(logger, {
         status: "sent",
         channel,
@@ -175,20 +197,24 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
       return true
     }
 
-    // P0-1 二次确认：首次仅登记 pending（30s 过期），需再发一次同命令才真正清空。
-    const pendingKey = `${e.self_id ?? e.bot?.uin ?? "legacy"}_${e.group_id}_${e.user_id}`
-    const now = Date.now()
-    const expireAt = clearGroupMemoryPending.get(pendingKey)
-    if (!expireAt || expireAt < now) {
-      clearGroupMemoryPending.set(pendingKey, now + CLEAR_GROUP_MEMORY_CONFIRM_TTL_MS)
-      await this.sendObservedReply(e, "这会清空整群的记忆且不可恢复。请在 30 秒内再发一次 #清空群记忆 确认。")
-      return true
-    }
-    clearGroupMemoryPending.delete(pendingKey)
-
     let cleared:number
+    let configured = false
     try {
-      const result = await this.memory().adminClearMemories({ groupId: e.group_id })
+      const memory = this.memoryViewer(e)
+      const binding = memory.viewer?.binding
+      configured = binding?.source === 'configured'
+      const pendingKey = JSON.stringify([e.self_id ?? e.bot?.uin ?? 'legacy',e.group_id,e.user_id,binding ? agentBindingToken(binding) : null])
+      const now = Date.now()
+      const expireAt = clearGroupMemoryPending.get(pendingKey)
+      if (!expireAt || expireAt < now) {
+        for (const [key,until] of clearGroupMemoryPending) if (until < now) clearGroupMemoryPending.delete(key)
+        clearGroupMemoryPending.set(pendingKey, now + CLEAR_GROUP_MEMORY_CONFIRM_TTL_MS)
+        const target = configured ? '当前角色在本群学到的记忆' : '整群的记忆'
+        await this.sendObservedReply(e, `这会清空${target}且不可恢复。请在 30 秒内再发一次 #清空群记忆 确认。`)
+        return true
+      }
+      clearGroupMemoryPending.delete(pendingKey)
+      const result = await this.memory().adminClearMemories({ groupId: e.group_id, ...memory })
       cleared=result.cleared
     } catch (error) {
       if (replyFailures.has(e) && Object.is(replyFailures.get(e)?.error, error)) throw error
@@ -196,7 +222,7 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
       await this.sendObservedReply(e, "清空群记忆失败，请看日志")
       return true
     }
-    await this.sendObservedReply(e, `已清空本群群记忆，共 ${cleared} 项存储键。`)
+    await this.sendObservedReply(e, `已清空${configured ? '当前角色在本群学到的记忆' : '本群群记忆'}，共 ${cleared} 项存储键。`)
     return true
   }
 
@@ -204,7 +230,7 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
     try {
       const status = await this.memory().adminStatus({
         groupId: e.group_id,
-        userId: e.user_id
+        userId: e.user_id,...this.memoryViewer(e)
       })
       const user = memoryRecord(status.user)
       const group = memoryRecord(status.group)
@@ -268,7 +294,7 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
         scope: "user",
         groupId: e.group_id,
         userId: e.user_id,
-        limit: 30
+        limit: 30,...this.memoryViewer(e)
       })
       await this.replyMemoryForward(e, "我的记忆", [
         { title: "我的记忆", facts: result.facts }
@@ -291,7 +317,7 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
       const result = await this.memory().adminListMemories({
         scope: "group",
         groupId: e.group_id,
-        limit: 30
+        limit: 30,...this.memoryViewer(e)
       })
       await this.replyMemoryForward(e, "群记忆", [
         { title: "群记忆", facts: result.facts }
@@ -420,19 +446,20 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
     }
 
     try {
+      const memory = this.memoryViewer(e)
       const myResult = await this.memory().adminListMemories({
         scope: "user",
         groupId: e.group_id,
         userId: e.user_id,
         query,
-        limit: 10
+        limit: 10,...memory
       })
       const groupResult = e.group_id
         ? await this.memory().adminListMemories({
             scope: "group",
             groupId: e.group_id,
             query,
-            limit: 10
+            limit: 10,...memory
           })
         : { facts: [] }
       await this.replyMemoryForward(e, "搜索记忆", [
@@ -455,7 +482,8 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
     }
 
     try {
-      const result = await this.memory().adminDeleteMemory({ groupId: e.group_id, userId: e.user_id, id })
+      if (!id.startsWith('my:') && !this.isGroupMemoryAdmin(e)) {await this.sendObservedReply(e,'普通用户只能删除自己的记忆');return true}
+      const result = await this.memory().adminDeleteMemory({ groupId: e.group_id, userId: e.user_id, id,...this.memoryViewer(e) })
 
       await this.sendObservedReply(e, result.deleted ? `已删除记忆 ${id}` : "没有找到可删除的记忆，普通用户只能删除自己的记忆")
     } catch (error) {
@@ -467,14 +495,11 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
   }
 
   async clearMyMemory(e: CommandEvent) {
-    if (!e.group_id) {
-      await this.sendObservedReply(e, "请在群聊中使用这个命令")
-      return true
-    }
     try {
       // P0-1：只删该用户自己的 entity（旧实现误调 adminClearMemories 会清整群）。
-      const result = await this.memory().clearUserMemory(e.group_id, e.user_id)
-      await this.sendObservedReply(e, result?.cleared ? "已清空你在本群的记忆" : "你在本群没有可清空的记忆")
+      const {viewer,isCurrent} = this.memoryViewer(e)
+      const result = await this.memory().clearUserMemory(e.group_id, e.user_id,viewer,isCurrent)
+      await this.sendObservedReply(e, result?.cleared ? (e.group_id ? "已清空你在本群的记忆" : '已清空当前机器人与人设对你的跨群记忆，旧资料不会再次自动恢复') : "没有可清空的记忆")
     } catch (error) {
       if (replyFailures.has(e) && Object.is(replyFailures.get(e)?.error, error)) throw error
       logger.error("[记忆管理] 清空我的记忆失败:", error)
@@ -484,19 +509,15 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
   }
 
   async disableMyMemory(e: CommandEvent) {
-    if (!e.group_id) {
-      await this.sendObservedReply(e, "请在群聊中使用这个命令")
-      return true
-    }
     try {
       // P0-2：按真实返回写文案。返回 {enabled:<是否仍在记>}，false 表示已退出记忆。
       const result = await this.memory().adminSetUserMemoryEnabled({
         groupId: e.group_id,
         userId: e.user_id,
-        enabled: false
+        enabled: false,...this.memoryViewer(e)
       })
       await this.sendObservedReply(e, result?.enabled === false
-        ? "已禁用你在本群的长期记忆，之后不再记录你的发言"
+        ? (e.group_id ? "已禁用你在本群的长期记忆，之后不再记录你的发言" : '已禁用当前机器人与人设对你的跨群记忆')
         : "操作未生效，你的记忆仍处于启用状态")
     } catch (error) {
       if (replyFailures.has(e) && Object.is(replyFailures.get(e)?.error, error)) throw error
@@ -507,19 +528,15 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
   }
 
   async enableMyMemory(e: CommandEvent) {
-    if (!e.group_id) {
-      await this.sendObservedReply(e, "请在群聊中使用这个命令")
-      return true
-    }
     try {
       // P0-2：返回 {enabled:<是否仍在记>}，true 表示已重新启用记忆。
       const result = await this.memory().adminSetUserMemoryEnabled({
         groupId: e.group_id,
         userId: e.user_id,
-        enabled: true
+        enabled: true,...this.memoryViewer(e)
       })
       await this.sendObservedReply(e, result?.enabled
-        ? "已启用你在本群的长期记忆"
+        ? (e.group_id ? "已启用你在本群的长期记忆" : '已重新启用当前机器人与人设对你的记忆；已删除的旧资料仍不恢复')
         : "操作未生效，你的记忆仍处于禁用状态")
     } catch (error) {
       if (replyFailures.has(e) && Object.is(replyFailures.get(e)?.error, error)) throw error
@@ -547,7 +564,7 @@ return class MemoryCommandsPlugin extends ports.PluginBase {
     const messages:string[]=[]
     for(const section of sections) {
       if(!section.facts.length) {messages.push(`${section.title}\n暂无记忆`);continue}
-      const lines=section.facts.map(fact=>`ID:${factShortId(fact.text)} [${fact.tags?.[0] || '未分类'}] ${fact.text}`)
+      const lines=section.facts.map(fact=>`ID:${fact.id || factShortId(fact.text)} [${fact.tags?.[0] || '未分类'}] ${fact.text}`)
       for(let i=0;i<lines.length;i+=12) messages.push(`${section.title} (${Math.floor(i/12)+1}/${Math.ceil(lines.length/12)})\n${lines.slice(i,i+12).join('\n')}`)
     }
     messages.push('删除单条记忆可发送：#删除记忆 my:<id>（删自己事实）或 #删除记忆 alias:<别名> / #删除记忆 fact:<群事实前缀>')

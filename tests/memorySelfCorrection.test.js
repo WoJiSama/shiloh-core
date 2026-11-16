@@ -7,6 +7,7 @@ import path from "node:path"
 import {
   isCorrectionText,
   noteInjectedChunks,
+  confirmMemoryReply,
   getInjectedChunks,
   detectAndPenalize,
   __resetMemorySelfCorrectionForTest
@@ -29,6 +30,12 @@ async function seed(store, ids) {
 }
 
 beforeEach(() => __resetMemorySelfCorrectionForTest())
+function confirmed(groupId,items,now=Date.now(),messageId='reply'){
+  const e={group_id:groupId,self_id:'bot1',user_id:'u1',_turnId:'turn1'}
+  noteInjectedChunks(e,items)
+  confirmMemoryReply(e,{message_id:messageId},now)
+}
+
 
 test("isCorrectionText:命中典型纠错话术,不误伤普通聊天", () => {
   for (const hit of ["你记错了", "你记岔了吧", "不是这样的", "根本没有这件事", "哪有这个说法", "你搞错了"]) {
@@ -43,24 +50,24 @@ test("detectAndPenalize:三条件缺一不触发(话术/关联/近期注入)", a
   const store = makeStore()
   await seed(store, ["a", "b"])
   const runtime = { store }
-  noteInjectedChunks("g1", [{ chunk: { id: "a" } }, { chunk: { id: "b" } }])
+  confirmed("g1", [{ chunk: { id: "a" } }, { chunk: { id: "b" } }])
 
-  const base = { groupId: "g1", senderUserId: "u1", lastBotReplyToUserId: "u1", runtime }
+  const base = { groupId: "g1", botId:"bot1", senderUserId: "u1", lastBotReplyToUserId: "u1", runtime }
 
   // 无话术
   assert.deepEqual(detectAndPenalize({ ...base, text: "哈哈" }), [])
   // 不关联(既非引用 bot,发送者也不是 bot 上轮回复的人)
   assert.deepEqual(detectAndPenalize({ ...base, text: "你记错了", lastBotReplyToUserId: "别人" }), [])
   // 引用 bot 也算关联
-  assert.ok(detectAndPenalize({ ...base, text: "你记错了", quotesBot: true }).length === 2)
+  assert.ok(detectAndPenalize({ ...base, text: "你记错了", quotesBot: true,quotedReplyMessageId:"reply" }).length === 2)
 })
 
 test("detectAndPenalize:TTL 过期不触发", async () => {
   const store = makeStore()
   await seed(store, ["a"])
-  noteInjectedChunks("g1", [{ chunk: { id: "a" } }], Date.now() - 11 * 60 * 1000)
+  confirmed("g1", [{ chunk: { id: "a" } }], Date.now() - 11 * 60 * 1000)
   const hit = detectAndPenalize({
-    groupId: "g1", text: "你记错了", senderUserId: "u1", lastBotReplyToUserId: "u1",
+    groupId: "g1", botId:"bot1", text: "你记错了", senderUserId: "u1", lastBotReplyToUserId: "u1",
     runtime: { store }, ttlMs: 10 * 60 * 1000
   })
   assert.deepEqual(hit, [])
@@ -98,8 +105,8 @@ test("penalizeChunks:降权不重置衰减锚点,强度钳下限,重复纠错逼
 
 test("getInjectedChunks:无记录/空 id 过滤/过期清缓存", () => {
   assert.equal(getInjectedChunks("gx"), null)
-  noteInjectedChunks("g2", [{ chunk: { id: "" } }, null, { chunk: { id: "ok" } }])
-  assert.deepEqual(getInjectedChunks("g2").ids, ["ok"])
-  noteInjectedChunks("g3", [{ chunk: { id: "x" } }], Date.now() - 999_999)
-  assert.equal(getInjectedChunks("g3"), null, "过期应返回 null")
+  confirmed("g2", [{ chunk: { id: "" } }, null, { chunk: { id: "ok" } }])
+  assert.deepEqual(getInjectedChunks("g2",{botId:"bot1"}).ids, ["ok"])
+  confirmed("g3", [{ chunk: { id: "x" } }], Date.now() - 999_999)
+  assert.equal(getInjectedChunks("g3",{botId:"bot1"}), null, "过期应返回 null")
 })

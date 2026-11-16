@@ -1,12 +1,14 @@
 import { subscribeArchiveRecords } from './archiveHookRegistry.js'
-interface ArchiveRecord {group_id?:unknown;archive_kind?:string;sender?:{user_id?:unknown;card?:string;nickname?:string};user_id?:unknown;timestamp?:number;raw_message?:unknown;msg?:unknown}
+import type {PersonMemoryStore,PersonMemorySource} from '../../../contracts/personMemory.js'
+import {createPersonMemorySourceFilter,canReadUnattributedMemory} from './personMemoryContext.js'
+interface ArchiveRecord {group_id?:unknown;archive_kind?:string;sender?:{user_id?:unknown;card?:string;nickname?:string};user_id?:unknown;timestamp?:number;raw_message?:unknown;msg?:unknown;message_id?:unknown;source_bot_id?:string;source_persona_id?:string}
 interface Archive {formatRecord(record:ArchiveRecord,options:{compact:boolean;maxTextLength:number}):string;getBaseDir():string;recordMessage(event:unknown,options?:unknown):Promise<ArchiveRecord|null>}
 interface MemoryAi {memoryAiUrl?:string;memoryAiApikey?:string;memoryAiModel?:string}
 interface Logger {warn?(message:string):void;info?(message:string):void}
-interface Summary {summary:string;updated_at:number;covered_until_ts:number;updates:number}
-interface Line {ts:number;name:string;text:string}
+interface Summary {summary:string;updated_at:number;covered_until_ts:number;updates:number;redaction_cutoff?:number}
+interface Line {ts:number;name:string;text:string;source?:PersonMemorySource;botId?:string;personaId?:string}
 interface BufferState {lines:Line[];timer:ReturnType<typeof setTimeout>|null;updating:boolean;queued:boolean}
-interface Options {baseDir?:string;archiveManager?:Archive|null;config?:Partial<typeof DEFAULT_MIDTERM_CONFIG>;memoryAiConfig?:MemoryAi;logger?:Logger}
+interface Options {baseDir?:string;archiveManager?:Archive|null;config?:Partial<typeof DEFAULT_MIDTERM_CONFIG>;memoryAiConfig?:MemoryAi;logger?:Logger;personMemory?:PersonMemoryStore}
 function isSummary(value:unknown):value is Summary {if(!value||typeof value!=='object')return false;const row=value as Record<string,unknown>;return typeof row.summary==='string'&&['updated_at','covered_until_ts','updates'].every(key=>typeof row[key]==='number'&&Number.isFinite(row[key]))}
 // 中期记忆:每群一份滚动"主线摘要",补 60 分钟原文窗口与长期 RAG 之间的叙事空档。
 // 借鉴 MaiBot/A-Memorix 的会话摘要思路,做薄:单一摘要、便宜模型、追加式更新。
@@ -55,8 +57,10 @@ const SUMMARY_SYSTEM_PROMPT = `你是群聊主线摘要器。把"已有摘要"�
 - 只输出摘要正文,不要任何前缀、标题或解释`
 
 export class MidtermSummaryManager {
+ personMemory:PersonMemoryStore|undefined
  baseDir:string;archiveManager:Archive|null;config:typeof DEFAULT_MIDTERM_CONFIG;memoryAiConfig:MemoryAi;logger:Logger|undefined;buffers:Map<string,BufferState>;summaryCache:Map<string,Summary>;stats:{updates:number;llmCalls:number;llmFailures:number;linesSeen:number}
-  constructor({ baseDir, archiveManager = null, config = {}, memoryAiConfig = {}, logger }:Options = {}) {
+  constructor({ baseDir, archiveManager = null, config = {}, memoryAiConfig = {}, logger,personMemory }:Options = {}) {
+    this.personMemory = personMemory
     this.baseDir = String(baseDir || "")
     this.archiveManager = archiveManager
     this.config = normalizeMidtermConfig(config)
@@ -118,7 +122,30 @@ export class MidtermSummaryManager {
     if (!text || text.length < 2 || text === "[非文本消息]") return null
     const name = String(record.sender?.card || record.sender?.nickname || userId || "?").slice(0, 16)
     const ts = Number(record.timestamp || 0)
-    return { ts, name, text: String(text).slice(0, 160) }
+    const source = record.message_id && userId && ts ? {scene:{kind:'group' as const,id:String(record.group_id)},authorId:userId,messageId:String(record.message_id),at:ts,excerpt:String(record.raw_message || record.msg || text)} : undefined
+    return { ts, name, text: String(text).slice(0, 160),...(source ? {source} : {}),...(record.source_bot_id ? {botId:record.source_bot_id} : {}),...(record.source_persona_id ? {personaId:record.source_persona_id} : {}) }
+  }
+
+  async filterSummarySources(groupId:string,lines:Line[]) {
+    if (!this.personMemory) return {lines,cutoff:0}
+    let cutoff = 0, allowed = lines
+    // The legacy summary is group-wide. Apply every observer's erasure policy;
+    // source identity may narrow original lines, never the old aggregate.
+    for (const identity of await this.personMemory.identities()) {
+      const scene = {kind:'group' as const,id:groupId}
+      const state = await this.personMemory.getSceneRedactions({identity,scene})
+      cutoff = Math.max(cutoff,state.invalidatedAt)
+      const filter = createPersonMemorySourceFilter(this.personMemory,identity)
+      const next:Line[] = []
+      for (const line of allowed) {
+        if (line.ts <= cutoff) continue
+        if (line.botId && line.botId !== identity.botId) {next.push(line);continue}
+        if (line.personaId && line.personaId !== identity.personaId) {next.push(line);continue}
+        if (line.source ? await filter(line.source,line.source.excerpt) : !cutoff && await canReadUnattributedMemory(this.personMemory,identity,scene)) next.push(line)
+      }
+      allowed = next
+    }
+    return {lines:allowed.filter(line => line.ts > cutoff),cutoff}
   }
 
   // ── 摘要更新:旧摘要 + 缓冲行 → 便宜模型 → 落盘 ──
@@ -135,14 +162,24 @@ export class MidtermSummaryManager {
     const lines = buffer.lines
     buffer.lines = []
     try {
+      const checked = await this.filterSummarySources(key,lines)
+      this.getSummaryPrompt(key,{after:checked.cutoff})
       const previous = this.loadSummary(key)
-      const summary = await this.callSummarizer(previous?.summary || "", lines)
-      const lastTs = lines.reduce((max, line) => Math.max(max, line.ts), previous?.covered_until_ts || 0)
+      const cutoff = previous?.redaction_cutoff || 0
+      const allowed = checked.lines.filter(line => line.ts > cutoff)
+      if (!allowed.length) return false
+      const summary = await this.callSummarizer(previous?.summary || "", allowed)
+      const rechecked = await this.filterSummarySources(key,allowed)
+      if (rechecked.cutoff > cutoff || rechecked.lines.length !== allowed.length) return false
+      // A deletion while the model was working invalidates its whole old input.
+      if ((this.loadSummary(key)?.redaction_cutoff || 0) !== cutoff) return false
+      const lastTs = allowed.reduce((max, line) => Math.max(max, line.ts), previous?.covered_until_ts || 0)
       const next = {
         summary,
         updated_at: Date.now(),
         covered_until_ts: lastTs,
-        updates: (previous?.updates || 0) + 1
+        updates: (previous?.updates || 0) + 1,
+        redaction_cutoff:cutoff
       }
       this.saveSummary(key, next)
       this.stats.updates++
@@ -221,9 +258,15 @@ export class MidtermSummaryManager {
   }
 
   // ── 提示词层输出:过期的摘要不注入 ──
-  getSummaryPrompt(groupId:string) {
+  getSummaryPrompt(groupId:string,{after = 0}: {after?:number} = {}) {
     if (!this.usable()) return ""
-    const data = this.loadSummary(groupId)
+    let data = this.loadSummary(groupId)
+    if (after > (data?.redaction_cutoff || 0)) {
+      data = {summary:'',updated_at:Date.now(),covered_until_ts:after,updates:0,redaction_cutoff:after}
+      this.saveSummary(groupId,data)
+      const buffer = this.buffers.get(String(groupId))
+      if (buffer) buffer.lines = buffer.lines.filter(line => line.ts > after)
+    }
     if (!data?.summary) return ""
     const ageMs = Date.now() - Number(data.updated_at || 0)
     if (ageMs > this.config.retentionDays * 24 * 3600 * 1000) return ""
@@ -264,7 +307,7 @@ export function getMidtermMemoryManager() {
   return runtime
 }
 
-export function installMidtermMemoryRuntime({ pluginSettings = {}, archiveManager = null, logger }:{pluginSettings?:{midtermMemory?:Partial<typeof DEFAULT_MIDTERM_CONFIG>;memoryAiConfig?:MemoryAi};archiveManager?:Archive|null;logger?:Logger} = {}) {
+export function installMidtermMemoryRuntime({ pluginSettings = {}, archiveManager = null, logger,personMemory }:{pluginSettings?:{midtermMemory?:Partial<typeof DEFAULT_MIDTERM_CONFIG>;memoryAiConfig?:MemoryAi};archiveManager?:Archive|null;logger?:Logger;personMemory?:PersonMemoryStore} = {}) {
   const config = normalizeMidtermConfig(pluginSettings.midtermMemory)
   const memoryAiConfig = pluginSettings.memoryAiConfig || {}
   const baseDir = archiveManager
@@ -275,6 +318,7 @@ export function installMidtermMemoryRuntime({ pluginSettings = {}, archiveManage
     archiveManager,
     config,
     memoryAiConfig,
+    ...(personMemory ? {personMemory} : {}),
     ...(logger ? {logger} : {})
   })
   if (!manager.usable() || !archiveManager) {

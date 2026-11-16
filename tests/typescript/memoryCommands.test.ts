@@ -4,12 +4,14 @@ import { createMemoryCommands } from '../../src/modules/memory/infrastructure/me
 import { createGlobalStyleLearnerClass } from '../../src/modules/memory/infrastructure/globalStyleLearner.js'
 import { createPersonaFeedbackModule } from '../../src/modules/memory/infrastructure/personaFeedbackManager.js'
 import type { MemoryCommandPort } from '../../src/contracts/sharedRuntime.js'
-function fixture() {
+import type { MemoryPersona } from '../../src/contracts/memoryEngine.js'
+import { agentBindingToken } from '../../src/modules/runtime/domain/agentBindings.js'
+function fixture(options:Pick<Parameters<typeof createMemoryCommands>[0],'getPersonaSnapshotFor'|'restoreBinding'>={}) {
  let clears=0
  const memory:MemoryCommandPort={clearGroupRedis:async()=>0,adminClearMemories:async()=>{clears++;return{cleared:2}},adminStatus:async()=>({}),adminListMemories:async()=>({facts:[]}),getGroupWorkflowRules:async()=>[],getGroupKnowledgeEntries:async()=>[],adminDeleteGroupWorkflow:async()=>({deleted:false}),adminDeleteGroupKnowledge:async()=>({deleted:false}),adminDeleteMemory:async()=>({deleted:false}),clearUserMemory:async()=>({cleared:0}),adminSetUserMemoryEnabled:async()=>({enabled:true})}
  const Style=createGlobalStyleLearnerClass({botId:()=>1,buildExpressionObservation:()=>null})
  const Persona=createPersonaFeedbackModule({isToneCorrectionMessage:()=>false}).PersonaFeedbackManager
- const Commands=createMemoryCommands({PluginBase:class {},getSharedMemoryManager:()=>memory,getSharedConfig:()=>({}),globalStyleLearnerManager:new Style(),personaFeedbackManager:new Persona(),logger:{warn(){},error(){}},makeForwardMsg:async(_event,messages,title)=>({messages,title})})
+ const Commands=createMemoryCommands({PluginBase:class {},getSharedMemoryManager:()=>memory,getSharedConfig:()=>({}),globalStyleLearnerManager:new Style(),personaFeedbackManager:new Persona(),logger:{warn(){},error(){}},makeForwardMsg:async(_event,messages,title)=>({messages,title}),...options})
  return {command:new Commands(),clears:()=>clears}
 }
 test('group clearing requires permission and two confirmations from the same user',async()=>{
@@ -36,6 +38,27 @@ test('clear confirmation cannot be reused across bot accounts',async()=>{
  await command.clearGroupMemory({...event,self_id:'20'})
  assert.equal(clears(),0)
  await command.clearGroupMemory({...event,self_id:'10'})
+ assert.equal(clears(),1)
+})
+test('clear confirmation requires the same captured QQ role binding revision',async()=>{
+ const target={account:{platform:'qq',namespace:'global',id:'10'},kind:'group' as const,id:'100'}
+ let binding={source:'configured' as const,target,id:'qq-100',agentId:'daily',personaId:'shared',connectionId:'qq-10',revision:'before'}
+ const {command,clears}=fixture({
+  getPersonaSnapshotFor:():MemoryPersona=>({botId:'10',personaId:`agent:${binding.agentId}`,personaVersion:'template',personaName:'日常',binding}),
+  restoreBinding(event,expected){
+   const captured=binding
+   if(!expected||!('token' in expected)||expected.token!==agentBindingToken(captured))return 'changed'
+   event._agentBinding=captured
+   event._isAgentBindingCurrent=()=>binding===captured
+   return 'current'
+  },
+ })
+ const event={group_id:'100',user_id:'1',self_id:'10',isMaster:true,reply:async()=>undefined}
+ await command.clearGroupMemory({...event})
+ binding={...binding,revision:'after'}
+ await command.clearGroupMemory({...event})
+ assert.equal(clears(),0)
+ await command.clearGroupMemory({...event})
  assert.equal(clears(),1)
 })
 test('command business catch does not retry or relabel uncertain reply failure',async()=>{

@@ -95,7 +95,7 @@ test('event dates survive a midnight flush and use the selected utterance clock'
   assert.equal(ops[0].fact.at,first)
   assert.equal(ops[1].fact.eventAt,second+DAY_MS)
   assert.equal(ops[2].fact.eventAt,null)
-  assert.equal(ops[3].fact.eventAt,null)
+  assert.equal(ops.length,3,'明确非法的来源行号必须丢弃，不能降级成无来源记忆')
 })
 
 test('absolute calendar dates are validated and invalid relative values cannot become day zero', () => {

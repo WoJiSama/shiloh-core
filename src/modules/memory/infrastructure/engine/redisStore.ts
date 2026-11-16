@@ -66,6 +66,24 @@ export class RedisStore {
     await this._setRaw(KEY.facts(groupId), JSON.stringify(slimGroupFacts(facts)))
   }
 
+  async saveLearnedMemory(groupId:MemoryId, documents:{entities:unknown;aliases:unknown;facts:unknown},isCurrent?:()=>boolean) {
+    const entries = {
+      [KEY.entities(groupId)]:JSON.stringify(slimEntityDoc(documents.entities)),
+      [KEY.alias(groupId)]:JSON.stringify(documents.aliases || {}),
+      [KEY.facts(groupId)]:JSON.stringify(slimGroupFacts(documents.facts)),
+    }
+    if (isCurrent?.() === false) return false
+    if (this.redis.mSet) {
+      await this.redis.mSet(entries)
+    } else {
+      for (const [key,value] of Object.entries(entries)) {
+        if (isCurrent?.() === false) return false
+        await this._setRaw(key,value)
+      }
+    }
+    return true
+  }
+
   async getWorkflows(groupId:MemoryId):Promise<WorkflowRule[]> {
     const value = await this._getJson(KEY.workflows(groupId), [])
     return Array.isArray(value) ? value.filter(item => item && typeof item === "object" && !Array.isArray(item)).map(parseTeachingEntry) : []
@@ -100,8 +118,10 @@ export class RedisStore {
     return this._setRaw(KEY.pending(groupId), JSON.stringify(pending))
   }
 
-  async clearGroup(groupId:MemoryId) {
-    const keys = [KEY.entities(groupId), KEY.alias(groupId), KEY.facts(groupId), KEY.workflows(groupId), KEY.knowledge(groupId), KEY.meta(groupId), KEY.pending(groupId)]
+  async clearGroup(groupId:MemoryId, keepSettings?:{disabled:boolean;optedOut:string[]}) {
+    const keys = [KEY.entities(groupId), KEY.alias(groupId), KEY.facts(groupId), KEY.workflows(groupId), KEY.knowledge(groupId), KEY.pending(groupId)]
+    if (keepSettings) await this.saveMeta(groupId,keepSettings)
+    else keys.push(KEY.meta(groupId))
     for (const k of keys) await this.redis.del(k)
     return keys.length
   }

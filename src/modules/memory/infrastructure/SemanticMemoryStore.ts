@@ -1,4 +1,17 @@
-export interface MemoryChunk { id:string;message_ids?:string[];text:string;end_ts:number;start_ts?:number;group_id?:string;user_ids?:string[];source_bot_ids?:string[];source_group_id?:string;strength?:number;lastRecallAt?:number;recallCount?:number;emb?:string;vector?:Float32Array|number[];index?:number;[key:string]:unknown }
+/** Individual message provenance. Display names are never identity evidence. */
+export interface MemoryChunkSource {
+  user_id: string
+  message_id: string
+  timestamp: number
+  name: string
+  text: string
+  /** Only the sender's own text segments; excludes forward/quote/media bodies. */
+  personal_text?: string
+  bot_id?: string
+  persona_id?: string
+  recalled?: boolean
+}
+export interface MemoryChunk { id:string;message_ids?:string[];text:string;end_ts:number;start_ts?:number;group_id?:string;user_ids?:string[];source_bot_ids?:string[];source_group_id?:string;sources?:MemoryChunkSource[];strength?:number;lastRecallAt?:number;recallCount?:number;emb?:string;vector?:Float32Array|number[];index?:number;[key:string]:unknown }
 interface GroupState {groupId:string;file:string|null;chunks:Map<string,MemoryChunk>;byIndex:Map<number,MemoryChunk>;matrix:Float32Array|null;bm25:BM25Index;loaded:boolean;droppedOnLoad:number;records:MemoryChunk[];dirty:Set<string>}
 interface StoreOptions {baseDir?:string;dimension?:number;retentionDays?:number;evolution?:Partial<typeof DEFAULT_EVOLUTION>;logger?:{warn?(message:string):void}}
 function isStoredChunk(value:unknown):value is MemoryChunk {if(!value||typeof value!=='object')return false;const row=value as Record<string,unknown>;return typeof row.id==='string'&&typeof row.text==='string'&&typeof row.end_ts==='number'&&Number.isFinite(row.end_ts)&&typeof row.emb==='string'}
@@ -7,6 +20,7 @@ function isStoredChunk(value:unknown):value is MemoryChunk {if(!value||typeof va
 // 语料受归档保留期约束(万级分块),暴力检索 <20ms,无需外部向量库。
 import fs from "node:fs"
 import path from "node:path"
+import { randomUUID } from 'node:crypto'
 
 export function tokenizeForBM25(text = "") {
   const normalized = String(text || "").toLowerCase()
@@ -122,6 +136,8 @@ export function effectiveStrength(record:Partial<MemoryChunk> = {}, now = Date.n
 }
 
 export class SemanticMemoryStore {
+ private disposed=false
+ dispose(){this.disposed=true;this.groups.clear()}
  baseDir:string;dimension:number;retentionDays:number;evolution:typeof DEFAULT_EVOLUTION;logger:StoreOptions["logger"];groups:Map<string,GroupState>
   constructor({ baseDir = "", dimension = 1024, retentionDays = 7, evolution = {}, logger }:StoreOptions = {}) {
     this.baseDir = baseDir
@@ -146,6 +162,27 @@ export class SemanticMemoryStore {
 
   groupFile(groupId:string) {
     return path.join(this.groupDir(), `${groupId}.ndjson`)
+  }
+
+  /** Manual forgetting survives reindexing and process restarts. */
+  sourceRedactions(groupId:string) {
+    const file=path.join(this.baseDir,'redactions',`${encodeURIComponent(groupId)}.json`)
+    try {
+      if(!fs.existsSync(file))return {ids:new Set<string>(),messages:new Set<string>(),invalid:false}
+      const value:unknown=JSON.parse(fs.readFileSync(file,'utf8'))
+      if(!value||typeof value!=='object'||!('ids'in value)||!Array.isArray(value.ids)||!('messages'in value)||!Array.isArray(value.messages))throw new Error('invalid redactions')
+      return {ids:new Set(value.ids.filter((id):id is string=>typeof id==='string')),messages:new Set(value.messages.filter((id):id is string=>typeof id==='string')),invalid:false}
+    } catch {return {ids:new Set<string>(),messages:new Set<string>(),invalid:true}}
+  }
+
+  isChunkForgotten(groupId:string,chunk:Pick<MemoryChunk,'id'|'message_ids'>) {
+    const redactions=this.sourceRedactions(groupId)
+    return redactions.invalid||redactions.ids.has(chunk.id)||Boolean(chunk.message_ids?.some(id=>redactions.messages.has(id)))
+  }
+
+  isSourceForgotten(groupId:string,messageId:string) {
+    const redactions=this.sourceRedactions(groupId)
+    return redactions.invalid||redactions.messages.has(messageId)
   }
 
   loadGroup(groupId:string) {
@@ -175,7 +212,9 @@ export class SemanticMemoryStore {
     let dropped = 0
     let compactable = 0
     const keptRecords = []
+    const redactions=this.sourceRedactions(id)
     for (const record of seen.values()) {
+      if(redactions.invalid||redactions.ids.has(record.id)||record.message_ids?.some(messageId=>redactions.messages.has(messageId)))continue
       if (Number(record.end_ts || 0) < cutoff) {
         dropped++
         compactable++
@@ -253,7 +292,7 @@ export class SemanticMemoryStore {
   // 召回强化:被注入上下文的分块提升强度并重置衰减时钟。
   // 内存即时生效;达到 flushBatch 批量追加落盘(同 id 后写覆盖)。
   reinforceChunks(groupId:string, ids:string[] = [], { boost, now = Date.now() }:{boost?:number;now?:number} = {}) {
-    if (!this.evolution.enabled || !ids.length) return 0
+    if (this.disposed||!this.evolution.enabled || !ids.length) return 0
     const state = this.touchGroup(groupId)
     const gain = Math.min(1, Math.max(0.05, Number(boost ?? this.evolution.reinforceBoost)))
     let updated = 0
@@ -280,7 +319,7 @@ export class SemanticMemoryStore {
 
   // 把强化过的分块以整行记录追加回去(追加式存储,同 id 后写覆盖)
   async flushDirty(state:GroupState) {
-    if (!state?.dirty?.size || !state.file) return 0
+    if (this.disposed||!state?.dirty?.size || !state.file) return 0
     const dirtyIds = [...state.dirty]
     const lines = []
     for (const id of dirtyIds) {
@@ -304,7 +343,7 @@ export class SemanticMemoryStore {
   // 继续沿原时钟衰减,重复纠错会跌破冻结线由清扫淡忘;单次误伤只降权不丢数据。
   penalizeChunks(groupId:string, ids:string[] = [], { penalty = 0.5 } = {}) {
     const key = String(groupId || "")
-    if (!key || !ids.length) return 0
+    if (this.disposed||!key || !ids.length) return 0
     const state = this.touchGroup(key)
     const cut = Math.min(0.95, Math.max(0.05, Number(penalty) || 0.5))
     let updated = 0
@@ -327,11 +366,26 @@ export class SemanticMemoryStore {
 
   // 单条遗忘:重写该群文件(剔除目标 id)后重载内存态
   async forgetChunk(groupId:string, id:string) {
+    if(this.disposed)return false
     const key = String(groupId || "")
     const targetId = String(id || "")
     const state = this.loadGroup(key)
     if (!state.chunks.has(targetId)) return false
-    const kept = (state.records || []).filter(record => record.id !== targetId)
+    const selected=state.chunks.get(targetId)!
+    const redactions=this.sourceRedactions(key)
+    if(redactions.invalid)throw new Error('记忆遗忘记录不可读')
+    redactions.ids.add(targetId)
+    for(const messageId of selected.message_ids||[])redactions.messages.add(messageId)
+    // Synchronous read/rename is intentional: no await between read and commit,
+    // so concurrent same-process callers cannot lose one another's tombstones.
+    const tombstone=path.join(this.baseDir,'redactions',`${encodeURIComponent(key)}.json`)
+    fs.mkdirSync(path.dirname(tombstone),{recursive:true})
+    const temporary=`${tombstone}.${randomUUID()}.tmp`
+    try {
+      fs.writeFileSync(temporary,JSON.stringify({ids:[...redactions.ids],messages:[...redactions.messages]}),'utf8')
+      fs.renameSync(temporary,tombstone)
+    } finally {fs.rmSync(temporary,{force:true})}
+    const kept = (state.records || []).filter(record => !redactions.ids.has(record.id)&&!record.message_ids?.some(messageId=>redactions.messages.has(messageId)))
     if (state.file) {
       await fs.promises.mkdir(this.groupDir(), { recursive: true })
       await this.compactFile(state.file, kept)
@@ -344,6 +398,7 @@ export class SemanticMemoryStore {
   // 每日清扫:逐群装载(丢弃过期)并强制压实任何含过期/无效行的文件;
   // 记忆演化启用时,强度衰减到冻结阈值以下的分块一并遗忘(半衰期模型代替硬保留期)。
   async sweepAll() {
+    if(this.disposed)return {groups:0,compactedGroups:0,droppedChunks:0,frozenChunks:0}
     const groupIds = []
     try {
       for (const entry of fs.readdirSync(this.groupDir(), { withFileTypes: true })) {
@@ -358,6 +413,7 @@ export class SemanticMemoryStore {
     let droppedChunks = 0
     let frozenChunks = 0
     for (const groupId of groupIds) {
+      if(this.disposed)break
       const state = this.loadGroup(groupId)
       if (!state.file || !fs.existsSync(state.file)) continue
       droppedChunks += state.droppedOnLoad || 0
@@ -383,9 +439,11 @@ export class SemanticMemoryStore {
   }
 
   async compactFile(file:string, records:MemoryChunk[]) {
+    if(this.disposed)return
     const tmp = `${file}.compact-tmp`
     const body = records.map(record => JSON.stringify(record)).join("\n") + (records.length ? "\n" : "")
     await fs.promises.writeFile(tmp, body, "utf8")
+    if(this.disposed){await fs.promises.rm(tmp,{force:true});return}
     await fs.promises.rename(tmp, file)
   }
 
@@ -397,20 +455,23 @@ export class SemanticMemoryStore {
   }
 
   // 追加分块(带向量);同 id 后写覆盖。返回写入条数。
-  async appendChunks(groupId:string, chunks:MemoryChunk[] = []) {
-    const usable = chunks.filter(chunk => chunk?.id &&
+  async appendChunks(groupId:string, chunks:MemoryChunk[] = [],options:{signal?:AbortSignal}={}) {
+    if(this.disposed||options.signal?.aborted)return 0
+    const usable = chunks.filter(chunk => chunk?.id && !this.isChunkForgotten(groupId,chunk) &&
       (Array.isArray(chunk?.vector) || chunk?.vector instanceof Float32Array) &&
       chunk.vector!.length === this.dimension)
     if (!usable.length) return 0
     const file = this.groupFile(groupId)
     await fs.promises.mkdir(this.groupDir(), { recursive: true })
+    if(this.disposed||options.signal?.aborted)return 0
     const lines = usable.map(chunk => {
       const record = { ...chunk }
       record.emb = encodeVector(chunk.vector!)
       delete record.vector
       return JSON.stringify(record)
     })
-    await fs.promises.appendFile(file, lines.join("\n") + "\n", "utf8")
+    await fs.promises.appendFile(file, lines.join("\n") + "\n", {encoding:'utf8',...(options.signal?{signal:options.signal}:{})})
+    if(this.disposed||options.signal?.aborted)return 0
 
     // 内存增量:重载该群(文件已在页缓存,毫秒级);重载前先保住未落盘的强化
     const prior = this.groups.get(String(groupId))
@@ -423,14 +484,18 @@ export class SemanticMemoryStore {
     return usable.length
   }
 
-  searchVector(groupId:string, queryVector:Float32Array|number[], topN = 30) {
+  searchVector(groupId:string, queryVector:Float32Array|number[], topN = 30, accept?:(chunk:MemoryChunk)=>boolean) {
     const state = this.touchGroup(groupId)
     if (!state.matrix || !state.chunks.size) return []
     const query = decodeVector(encodeVector(queryVector), this.dimension)
     if (!query) return []
     const count = state.matrix.length / this.dimension
+    const redactions=this.sourceRedactions(groupId)
+    if(redactions.invalid)return []
     const scored = []
     for (let i = 0; i < count; i++) {
+      const candidate=state.byIndex.get(i)
+      if (!candidate || redactions.ids.has(candidate.id)||candidate.message_ids?.some(id=>redactions.messages.has(id)) || accept && !accept(candidate)) continue
       let dot = 0
       const base = i * this.dimension
       for (let d = 0; d < this.dimension; d++) dot += state.matrix[base + d]! * query[d]!
@@ -442,12 +507,14 @@ export class SemanticMemoryStore {
       .filter((item): item is {chunk:MemoryChunk;score:number} => Boolean(item.chunk))
   }
 
-  searchBM25(groupId:string, queryText:string, topN = 30) {
+  searchBM25(groupId:string, queryText:string, topN = 30, accept?:(chunk:MemoryChunk)=>boolean) {
     const state = this.touchGroup(groupId)
-    return state.bm25.search(tokenizeForBM25(queryText), topN).map(item => ({
+    const redactions=this.sourceRedactions(groupId)
+    if(redactions.invalid)return []
+    return state.bm25.search(tokenizeForBM25(queryText), accept||redactions.ids.size||redactions.messages.size?state.chunks.size:topN).map(item => ({
       chunk: state.chunks.get(item.id),
       score: item.score
-    })).filter((item): item is {chunk:MemoryChunk;score:number} => Boolean(item.chunk))
+    })).filter((item): item is {chunk:MemoryChunk;score:number} => Boolean(item.chunk)&&!redactions.ids.has(item.chunk!.id)&&!item.chunk!.message_ids?.some(id=>redactions.messages.has(id))&&(!accept||accept(item.chunk!))).slice(0,topN)
   }
 
   stats() {

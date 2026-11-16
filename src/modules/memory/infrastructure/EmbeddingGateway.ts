@@ -8,6 +8,7 @@ const CACHE_LIMIT = 8000
 const FAILURE_COOLDOWN_MS = 60000
 
 export class EmbeddingGateway {
+ private lifecycle=new AbortController()
  apiUrl:string;apiKey:string;model:string;timeoutMs:number;fetchFn:typeof fetch;logger:GatewayOptions["logger"];failureUntil:number
  batchSize:number;cache:Map<string,Float32Array|null>;stats:{requests:number;batchRequests:number;cacheHits:number;failures:number;texts:number}
 
@@ -30,7 +31,7 @@ export class EmbeddingGateway {
 
   configured() {
     return Boolean(
-      this.apiUrl &&
+      !this.lifecycle.signal.aborted && this.apiUrl &&
       this.apiKey &&
       !this.apiKey.includes("sk-xxx") &&
       this.model &&
@@ -38,6 +39,8 @@ export class EmbeddingGateway {
       Date.now() >= this.failureUntil
     )
   }
+
+  dispose(){this.lifecycle.abort();this.cache.clear()}
 
   markFailure() {
     this.stats.failures++
@@ -63,7 +66,9 @@ export class EmbeddingGateway {
     while (this.cache.size > CACHE_LIMIT) this.cache.delete(this.cache.keys().next().value!)
   }
 
-  async requestBatch(texts:string[]) {
+  async requestBatch(texts:string[],options:{signal?:AbortSignal}={}) {
+    this.lifecycle.signal.throwIfAborted()
+    options.signal?.throwIfAborted()
     const timeoutSignal = typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
       ? AbortSignal.timeout(this.timeoutMs)
       : undefined
@@ -74,7 +79,7 @@ export class EmbeddingGateway {
         Authorization: `Bearer ${this.apiKey}`
       },
       body: JSON.stringify({ model: this.model, input: texts }),
-      ...(timeoutSignal ? { signal: timeoutSignal } : {})
+      signal:AbortSignal.any([this.lifecycle.signal,...(options.signal?[options.signal]:[]),...(timeoutSignal?[timeoutSignal]:[])])
     })
     if (!response?.ok) {
       const body = await response.text().catch(() => "")
@@ -92,10 +97,10 @@ export class EmbeddingGateway {
   }
 
   // 批量向量化:缓存命中直接返回;未命中按 batchSize 分批请求(串行,控制上游压力)。
-  async embedBatch(texts:unknown[] = []) {
+  async embedBatch(texts:unknown[] = [],options:{signal?:AbortSignal}={}) {
     const list = texts.map(text => String(text || "").trim())
     const results: (Float32Array|null)[] = new Array(list.length).fill(null)
-    if (!list.length) return results
+    if (this.lifecycle.signal.aborted||options.signal?.aborted||!list.length) return results
     const pending = []
     for (let i = 0; i < list.length; i++) {
       if (!list[i]) continue
@@ -107,19 +112,24 @@ export class EmbeddingGateway {
     if (!this.configured()) return results
 
     for (let start = 0; start < pending.length; start += this.batchSize) {
+      if(this.lifecycle.signal.aborted||options.signal?.aborted)break
       const slice = pending.slice(start, start + this.batchSize)
       const sliceTexts = slice.map(i => list[i]!)
       try {
         this.stats.requests++
         this.stats.batchRequests++
         this.stats.texts += sliceTexts.length
-        const vectors = await this.requestBatch(sliceTexts)
+        const vectors = await this.requestBatch(sliceTexts,options)
+        if(this.lifecycle.signal.aborted||options.signal?.aborted)break
         slice.forEach((targetIndex, offset) => {
           const vector = vectors[offset] || null
           results[targetIndex] = vector
-          this.cachePut(this.hash(list[targetIndex]), vector)
+          // An incomplete provider response must be retryable. Permanently
+          // caching null here would strand the indexer's pending checkpoint.
+          if(vector)this.cachePut(this.hash(list[targetIndex]), vector)
         })
       } catch (error) {
+        if(this.lifecycle.signal.aborted||options.signal?.aborted)break
         this.markFailure()
         this.logger?.warn?.(`[SemanticMemory] embedding 批量失败: ${error instanceof Error ? error.message : String(error)}`)
         break
@@ -128,7 +138,7 @@ export class EmbeddingGateway {
     return results
   }
 
-  async embed(text:unknown) {
-    return (await this.embedBatch([text]))[0] || null
+  async embed(text:unknown,options:{signal?:AbortSignal}={}) {
+    return (await this.embedBatch([text],options))[0] || null
   }
 }

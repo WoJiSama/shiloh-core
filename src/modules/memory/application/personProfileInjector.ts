@@ -1,10 +1,11 @@
 import { safeTruncateUnicode } from '../../models/domain/unicodeText.js'
 import { formatPersonProfile, type PersonProfile } from '../../simulation/domain/personProfile.js'
+import type { PersonaScope } from '../../../contracts/persona.js'
 type Fields = Record<string, unknown>
 interface Sender { card?: string; nickname?: string; user_id?: unknown }
 interface ProfileEvent { sender?: Sender; group?: { getMemberMap?(): Promise<Map<number, Sender>> } }
-interface RecentMessage { raw_message?: string; content?: string; sender?: Sender }
-export interface ProfilePorts { getConfig(): Fields; getPersonaFor(event: ProfileEvent): Fields | null; getMessages(type: string, groupId: unknown): Promise<RecentMessage[]>; /** 仿真系统学出的跨群人物档案（Redis shiloh:sim:person:*）；无则不注入 */ getCrossGroupProfile?(userId: unknown): Promise<PersonProfile | null> }
+interface RecentMessage { message_id?:unknown;at?:unknown;time?:unknown; raw_message?: string; content?: string; sender?: Sender }
+export interface ProfilePorts { filterRecentMessages?(groupId:unknown,messages:RecentMessage[],viewer?:PersonaScope):Promise<RecentMessage[]>; getConfig(): Fields; getPersonaFor(event: ProfileEvent): Fields | null; getMessages(type: string, groupId: unknown): Promise<RecentMessage[]>; getCrossGroupProfile?(userId: unknown,context:{groupId:unknown;viewer?:PersonaScope}): Promise<PersonProfile | null> }
 function object(value: unknown): Fields { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Fields : {} }
 export function createPersonProfileClass(ports: ProfilePorts) {
 function asList(value: unknown) {
@@ -67,11 +68,11 @@ class PersonProfileInjector {
     return `${names[0]}（昵称:${names.slice(1).join(" / ")}）`
   }
 
-  async build(groupId: unknown, userId: unknown, e: ProfileEvent) {
+  async build(groupId: unknown, userId: unknown, e: ProfileEvent,viewer?:PersonaScope) {
     const config = ports.getConfig()
     const cfg = object(config.personProfileInjection)
     if (!cfg?.enabled) return ""
-    if (!groupId || !userId) return ""
+    if (!userId) return ""
     const maxChars = clampNumber(cfg.maxChars, 900, 200, 3000)
 
     let sender = e?.sender || {}
@@ -92,7 +93,7 @@ class PersonProfileInjector {
 
     // 跨群人物档案（仿真系统学习、全链路共享）：与仿真的人物卡同一份格式化，主链路/仿真看到同一个TA
     try {
-      const profile = await ports.getCrossGroupProfile?.(userId)
+      const profile = await ports.getCrossGroupProfile?.(userId,{groupId,...(viewer ? {viewer} : {})})
       const profileLine = profile ? formatPersonProfile(profile, senderName) : ""
       // formatPersonProfile 返回 "名字：内容"——名字已在上一行，裁掉前缀
       if (profileLine && profileLine.length > senderName.length + 1) {
@@ -102,7 +103,8 @@ class PersonProfileInjector {
     } catch { /* 档案读取失败降级为无档案 */ }
 
     try {
-      const recent = await ports.getMessages("group", groupId)
+      const rawRecent = groupId ? await ports.getMessages("group", groupId) : []
+      const recent = ports.filterRecentMessages ? await ports.filterRecentMessages(groupId,rawRecent,viewer) : []
       if (Array.isArray(recent)) {
         const limit = Math.max(0, Number(cfg.maxRecentMessages) || 3)
         if (limit > 0) {
