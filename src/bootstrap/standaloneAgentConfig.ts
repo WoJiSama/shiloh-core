@@ -61,10 +61,15 @@ function readModel(value: unknown, section: 'model' | 'vision' | 'characterConsi
   try { apiUrl = new URL(typeof model.baseUrl === 'string' ? model.baseUrl : '') } catch { throw new Error(`${section}.baseUrl 必须是有效的模型服务 URL`) }
   if (!['http:', 'https:'].includes(apiUrl.protocol) || apiUrl.username || apiUrl.password || apiUrl.search || apiUrl.hash) throw new Error(`${section}.baseUrl 不支持凭据、查询参数或片段`)
   if (typeof model.name !== 'string' || !model.name.trim()) throw new Error(`${section}.name 必须指定模型`)
+  if (section === 'model' && model.reasoningEffort !== undefined &&
+      (typeof model.reasoningEffort !== 'string' || !['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(model.reasoningEffort))) {
+    throw new Error('model.reasoningEffort 必须是 none、minimal、low、medium、high 或 xhigh')
+  }
   const keyName = envName(model.apiKeyEnv)
   const apiKey = env[keyName]?.trim() || ''
   if (!apiKey && requireCredentials) throw new Error(`环境变量 ${keyName} 缺少模型 API Key`)
-  return { apiUrl: apiUrl.href, model: model.name.trim(), apiKey, apiKeyEnv: keyName }
+  return { apiUrl: apiUrl.href, model: model.name.trim(), apiKey, apiKeyEnv: keyName,
+    ...(section === 'model' && typeof model.reasoningEffort === 'string' ? { reasoningEffort: model.reasoningEffort } : {}) }
 }
 
 function readMemorySection(value: unknown, section: string, booleans: readonly string[], integers: Readonly<Record<string, readonly [number, number]>>) {
@@ -528,7 +533,8 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   const tools = readTools(raw.tools, env, requireCredentials, directory)
   const execution: ExecutionConfig = {
     providers: 'openai', useTools: true,
-    chatAiConfig: { chatApiUrl: apiUrl, chatApiModel: modelName, chatApiKey: apiKey },
+    chatAiConfig: { chatApiUrl: apiUrl, chatApiModel: modelName, chatApiKey: apiKey,
+      ...(mainModel.reasoningEffort ? { chatReasoningEffort: mainModel.reasoningEffort } : {}) },
     toolsAiConfig: { toolsAiUrl: apiUrl, toolsAiModel: modelName, toolsAiApikey: apiKey },
   }
   const hostConfig = decodeHostConfig({ ...(raw.simulation === undefined ? {} : { simulation: object(raw.simulation) }), persona: raw.persona, forbiddenWords: raw.forbiddenWords })

@@ -120,8 +120,6 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
                     ...buildGenerationOptions(requestData, options, toolsBackend)
                 }, openaiUrl);
                 options = preserveReasoningEffort(options, openaiRequestData.reasoning_effort)
-                // logger.error(config.toolsAiConfig?.toolsAiApikey, config.toolsAiConfig?.toolsAiModel, JSON.stringify(openaiRequestData))
-                // logger.error('已触发全局AI对话', config.toolsAiConfig?.toolsAiApikey, config.toolsAiConfig?.toolsAiModel)
                 const sent = await fetchWithGenerationCompatibility(openaiUrl, openaiHeaders, openaiRequestData, options)
                 openaiResponse = sent.response
                 if (!current()) return { error: bindingChanged }
@@ -143,7 +141,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
             try {
                 openaiData = processResponse(await openaiResponse.json());
                 if (!current()) return { error: bindingChanged }
-                logger.error('OpenAI 响应:', JSON.stringify(openaiData, null, 2));
+                logger.info('工具模型响应已接收');
             } catch (openaiJsonError) {
                 if (!current()) return { error: bindingChanged }
                 logger.error("解析 OpenAI 响应 JSON 失败:", openaiJsonError);
@@ -223,7 +221,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
             removeToolPromptsFromMessages(finalRequestData.messages || requestData.messages || [])
         )
         if (!current()) return { error: bindingChanged }
-        logger.info('最终请求体:', finalRequestData);
+        logger.info('模型请求已准备');
         options = preserveReasoningEffort(options, finalRequestData.reasoning_effort)
         try {
             const sent = await fetchWithGenerationCompatibility(url, headers, finalRequestData, options)
@@ -265,7 +263,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
         try {
             responseData = await response.json();
             if (!current()) return { error: bindingChanged }
-            logger.info(`${provider || 'API'} 响应:`, JSON.stringify(responseData, null, 2));
+            logger.info('回答模型响应已接收');
         } catch (jsonError) {
             if (!current()) return { error: bindingChanged }
             logger.error(`解析 ${provider || 'API'} 响应 JSON 失败:`, jsonError);

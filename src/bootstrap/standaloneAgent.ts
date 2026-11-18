@@ -241,6 +241,7 @@ export async function main(argv: string[]): Promise<void> {
         apiUrl: config.execution.chatAiConfig?.chatApiUrl,
         model: config.execution.chatAiConfig?.chatApiModel,
         apiKey: config.execution.chatAiConfig?.chatApiKey,
+        reasoningEffort: config.execution.chatAiConfig?.chatReasoningEffort,
       }),
       summarizeToolResultForAgent, removeToolPromptsFromMessages,
       // Model responses and provider error bodies can carry chat content or keys.

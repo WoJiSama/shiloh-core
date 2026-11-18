@@ -53,6 +53,22 @@ const lowConfig = { ...config, useTools: true, chatAiConfig: { ...config.chatAiC
 const forcedToolRequest = { ...request, tools: [{ type: 'function', function: { name: 'run', parameters: { type: 'object' } } }], tool_choice: { type: 'function', function: { name: 'run' } } }
 const complexRequest = { messages: [{ role: 'user', content: '分析刚才转发里几个人的方案，比较一下为什么失败。' }] }
 
+test('successful text and tool responses do not log failures or request and response bodies', async () => {
+ const content = 'private-response-fixture'
+ const privateRequest = { messages: [{ role: 'user', content: 'private-request-fixture' }] }
+ for (const tools of [false, true]) {
+  const logs = [], failures = []
+  const logger = { info: (...values) => logs.push(values), warn: (...values) => failures.push(values), error: (...values) => failures.push(values) }
+  const { YTapi } = modelExecutor(async () => new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content,
+   ...(tools ? { tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'run', arguments: '{"value":"private-tool-fixture"}' } }] } : {}) } }] })), logger)
+  const result = await YTapi(tools ? { ...forcedToolRequest, ...privateRequest } : privateRequest, tools ? lowConfig : config)
+  assert.equal(result.choices[0].message.content, content)
+  assert.deepEqual(failures, [])
+  assert.ok(logs.length > 0)
+  assert.doesNotMatch(JSON.stringify(logs), /private-request-fixture|private-response-fixture|private-tool-fixture|fixture-tools-key/)
+ }
+})
+
 test('tool requests inherit global low effort while retaining their backend, credentials and forced action', async () => {
  const calls = []
  const { YTapi } = modelExecutor(async (url, options) => {

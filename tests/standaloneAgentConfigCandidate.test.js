@@ -99,6 +99,29 @@ test('candidate credentials retain startup rules while explicit inspection accep
   assert.equal(result.models.model.apiKeyConfigured, false); assert.equal(result.models.vision.apiKeyConfigured, false)
 })
 
+test('main model reasoning effort is explicit, validated offline and reaches text and tool requests', async t => {
+  const f = await fixture(t, sources({ config: host({ model: { ...model, reasoningEffort: 'low' } }) }))
+  const config = readStandaloneAgentConfig(f.file, { MAIN_KEY: 'private-key' })
+  assert.equal(config.execution.chatAiConfig.chatReasoningEffort, 'low')
+  const { modelExecutor } = await import('./helpers/modelExecutor.js')
+  const requests = []
+  const executor = modelExecutor(async (_url, init) => {
+    requests.push(JSON.parse(init.body))
+    return new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }))
+  })
+  const request = { messages: [{ role: 'user', content: 'fixture' }] }
+  await executor.YTapi(request, config.execution)
+  await executor.YTapi({ ...request, tools: [{ type: 'function', function: { name: 'run' } }], tool_choice: 'required' }, config.execution)
+  assert.deepEqual(requests.map(value => value.reasoning_effort), ['low', 'low'])
+  const validate = createStandaloneAgentCandidateValidator(f.file, { MAIN_KEY: 'private-key' })
+  for (const reasoningEffort of ['', 'auto', 'LOW', 1, true, null]) {
+    assert.throws(() => validate(sources({ config: host({ model: { ...model, reasoningEffort } }) })), /model.reasoningEffort/u)
+  }
+  for (const reasoningEffort of ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']) {
+    assert.doesNotThrow(() => validate(sources({ config: host({ model: { ...model, reasoningEffort } }) })))
+  }
+})
+
 test('candidate and startup reject the same invalid business configuration including unrelated tool and bridge policies', async t => {
   const f = await fixture(t), validate = createStandaloneAgentCandidateValidator(f.file, { MAIN_KEY: 'main' })
   for (const change of [{ dice: { enabled: true, maxRounds: 0 } }, { textTrigger: { mode: 'auto' } },

@@ -48,6 +48,7 @@ async function fixture(t, options = {}) {
   const host = { version: 1, instance: 'fixture', dataDir: './retained-data', ...models(), dice: { enabled: false, maxDiceCount: 100, maxDiceSides: 100000, maxRounds: 20 },
     persona: { name: 'Default persona', identity: 'default identity' }, personaGuard: { enabled: true }, extensionOwned: { preserve: 'this field' } }
   if (options.diceEngine !== undefined) host.dice.engine = options.diceEngine
+  if (options.reasoningEffort !== undefined) host.model.reasoningEffort = options.reasoningEffort
   await writeFile(hostFile, '# host comment\n' + YAML.stringify(host))
   const bindingData = bindingsObject()
   if (options.noLibrary) bindingData.agents[1].personaId = 'default'
@@ -165,6 +166,16 @@ test('each of the six real model slots saves one environment-reference provider 
     assert.equal(after['persona-library.yaml'], before['persona-library.yaml']); assert.equal(after['agent-bindings.yaml'], before['agent-bindings.yaml'])
     assert.equal(result.text.includes('apiKey"'), false); assert.equal(result.text.includes(secret), false)
   })
+})
+
+test('saving the main model endpoint preserves its configured reasoning effort', async t => {
+  const f = await fixture(t, { reasoningEffort: 'low' }), view = (await f.request('/api/ai/config')).data
+  const result = await put(f, '/api/ai/config', { revision: view.revisions.model, configKey: 'model',
+    providers: [{ baseUrl: 'https://other.example.test/v1', name: 'updated-main', apiKeyEnv: 'MODEL_KEY' }] })
+  assert.equal(result.status, 200, result.text)
+  const host = YAML.parse((await f.files())['agent-host.yaml'])
+  assert.equal(host.model.name, 'updated-main')
+  assert.equal(host.model.reasoningEffort, 'low')
 })
 
 test('template save changes only the library and preserves unrelated YAML nodes and comments', async t => {
