@@ -1,0 +1,27 @@
+[Unit]
+Description=Standalone QQ Agent Core
+After=network-online.target redis-server.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bl-chat-agent
+Group=bl-chat-agent
+WorkingDirectory=/opt/bl-chat-agent/current
+EnvironmentFile=/opt/bl-chat-agent/config/agent.env
+Environment=HOME=/var/lib/bl-chat-agent
+Environment=XDG_CONFIG_HOME=/var/lib/bl-chat-agent/config
+Environment=XDG_CACHE_HOME=/var/lib/bl-chat-agent/cache
+Environment=XDG_RUNTIME_DIR=/run/bl-chat-agent
+StateDirectory=bl-chat-agent
+StateDirectoryMode=0700
+RuntimeDirectory=bl-chat-agent
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/node scripts/start-agent.mjs --config /opt/bl-chat-agent/config/agent-host.yaml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

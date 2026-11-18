@@ -140,6 +140,12 @@ npm start -- --config /path/to/agent-host.yaml
 
 发布包要求 Node.js 22.12 或更高版本，包含 Core、QQ 适配器、启动入口和依赖锁。启动时核对构建与发布清单。把配置、Redis 数据和 `dataDir` 放在发布包外即可在替换版本时继续使用原绑定和存储分区。
 
+发布包的 `scripts/bl-chat-agent.service` 提供 systemd 模板，默认使用独立的 `bl-chat-agent` 用户和组。先创建该系统用户，将配置目录及 `dataDir` 交给该用户，保持目录 `0700`、凭据文件 `0600`；发布目录由 root 管理，只授予服务用户读取及目录遍历权限。模板使用 `/opt/bl-chat-agent/current`、`/opt/bl-chat-agent/config/agent-host.yaml` 及同目录的 `agent.env`，其他安装位置须同步修改。私有 HOME、XDG 和临时运行目录由 systemd 管理。
+
+文字文档、知识卡和思维导图使用 Chromium，须以非 root 身份保留默认沙箱运行。已安装系统 Chromium 时，在 `agent.env` 中设置 `PUPPETEER_EXECUTABLE_PATH`；安装依赖可设置 `PUPPETEER_SKIP_DOWNLOAD=true` 复用该浏览器。启用渲染前，应使用服务的实际用户验证浏览器及字体可读、HOME 可写。调整现有配置文件的所有权会改变绑定版本；已有状态的 root 实例不应直接递归 chown 迁移。
+
+已有 root 实例可只降低浏览器权限：创建独立渲染用户和其拥有的 `0700` 私有目录，设置 `PUPPETEER_EXECUTABLE_PATH=/opt/bl-chat-agent/current/scripts/start-sandboxed-chromium.mjs`、`BL_AGENT_CHROMIUM_EXECUTABLE=/usr/bin/chromium`、`BL_AGENT_CHROMIUM_UID`、`BL_AGENT_CHROMIUM_GID` 及 `BL_AGENT_CHROMIUM_HOME`。该可执行启动器要求 Linux、Node.js 22.15 或更高版本，仅接管 Puppeteer 新建的空临时 profile，清空补充用户组、切换身份并以精简环境 exec 浏览器，保留原 PID 和退出清理。配置及 dataDir 的原身份不变；启动器拒绝关闭沙箱的参数。上线后同时核对真实渲染、QQ 连接、绑定版本和配置加载状态。
+
 连接真实部署前可以单独检查配置、绑定人设、Redis 连通性和每条 OneBot 连接的实际登录账号。从已安装的独立包运行检查。
 
 ```sh
