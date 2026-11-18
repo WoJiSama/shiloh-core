@@ -45,7 +45,7 @@ function view(overrides = {}) {
     owner: { name: '示例UP', mid: 12345 }, pubdate: 1784304716, stat: { view: 12034, like: 567, coin: 89, favorite: 321, share: 45, reply: 67, danmaku: 88 },
     pages: [{ page: 1, cid: 11, part: 'P1', duration: 60 }], pic: '', ...overrides } }
 }
-function play(overrides = {}) { return { code: 0, data: { quality: 6, support_formats: [{ quality: 6, new_description: '240P' }], durl: [{ url: 'https://cn-test.bilivideo.com/video.mp4?token=upstream-private', length: 60000, size: 64 }], ...overrides } } }
+function play(overrides = {}) { return { code: 0, data: { quality: 6, support_formats: [{ quality: 6, new_description: '240P' }], durl: [{ url: 'https://cn-test.bilivideo.com/video.mp4?token=upstream-private&buvid3=BUVID_PRIVATE_3', length: 60000, size: 64, backup_url: ['https://cn-test.bilivideo.com/backup.mp4?token=upstream-private&buvid4=BUVID_PRIVATE_4'] }], ...overrides } } }
 async function files(directory) { const output = []; for (const name of await readdir(directory)) { const file = path.join(directory, name), info = await stat(file); if (info.isDirectory()) output.push(...await files(file)); else output.push(file) } return output }
 async function bounded(promise, ms = 2000) { let timer; try { return await Promise.race([promise, new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error('fixture operation hung')), ms) })]) } finally { clearTimeout(timer) } }
 async function rejected(operation) { await bounded(assert.rejects(operation, error => { assert.equal(error.message, 'B站媒体获取失败：来源、权限、网络或内容不符合要求'); return true })) }

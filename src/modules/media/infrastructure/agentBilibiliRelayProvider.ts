@@ -116,8 +116,10 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
     if (requiredAuth && !cookie || profile.mode === 'attachment' && cookie) throw bilibiliFailure()
     if (options.timeoutMs !== undefined) { if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 600_000) throw bilibiliFailure(); timeout = options.timeoutMs }
   } catch { throw bilibiliFailure() }
-  // SPI is the fixed credential-reception endpoint for anonymous device tokens.
-  // It may repeat a previously learned buvid, but must still reject host/account secrets.
+  // Bilibili API responses and signed media URLs legitimately echo the client's own
+  // anonymous device tokens (playurl durl URLs embed buvid3), so host/account secrets
+  // gate requests, URLs and response bodies while learned device tokens are only kept
+  // out of delivered text through `allowed`/`safe` below.
   const hostSecretCheck = createAgentSecretTextCheck([...secrets])
   const hostAllowed = (value: string): boolean => { try { return hostSecretCheck(value) && options.allowsText?.(value) !== false } catch { return false } }
   let secretCheck = createAgentSecretTextCheck([...secrets])
@@ -133,14 +135,14 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       else if (next.value && typeof next.value === 'object') for (const [key, value] of Object.entries(next.value)) { if (key.length > 256 || !check(key)) throw bilibiliFailure(); pending.push({ value, depth: next.depth + 1 }) }
     }
   }
-  const read = createBilibiliHttp({ ...(options.lookup ? { lookup: options.lookup } : {}), ...(options.request ? { request: options.request } : {}), allows: allowed,
+  const read = createBilibiliHttp({ ...(options.lookup ? { lookup: options.lookup } : {}), ...(options.request ? { request: options.request } : {}), allows: hostAllowed,
     onCleanupFailure: code => diagnose('bilibili_provider_release', code) })
   let fingerprintCache = { value: '', expiresAt: 0 }
   async function json(url: string, context: AgentMediaResourceContext, auth = '', exact = false): Promise<Record<string, unknown>> {
     const guard = bilibiliGuard(context, Math.min(timeout, 10_000))
     let response: Awaited<ReturnType<typeof read>> | undefined
     try {
-      const reader = exact ? createBilibiliHttp({ ...(options.lookup ? { lookup: options.lookup } : {}), allows: allowed,
+      const reader = exact ? createBilibiliHttp({ ...(options.lookup ? { lookup: options.lookup } : {}), allows: hostAllowed,
         onCleanupFailure: code => diagnose('bilibili_provider_release', code),
         request: (current, address, signal, policy) => {
           if (current.href !== url) throw bilibiliFailure()
@@ -151,7 +153,7 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       const chunks: Uint8Array[] = []; let size = 0
       for await (const bytes of response.chunks) { size += bytes.length; chunks.push(bytes) }
       const raw = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, size))
-      const responseAllowed = url === 'https://api.bilibili.com/x/frontend/finger/spi' ? hostAllowed : allowed
+      const responseAllowed = hostAllowed
       if (!responseAllowed(raw)) throw bilibiliFailure()
       const payload = JSON.parse(raw)
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw bilibiliFailure()
