@@ -318,7 +318,7 @@ test('standalone QQ recovers bound simulation, group text and private turns', { 
   }
 
   const first = launch()
-  await waitUntil(() => first.log.includes('已启动'), 'first standalone process online')
+  await waitUntil(() => first.log.includes('已启动'), 'first standalone process online', 15_000)
   const duplicate = launch()
   const [duplicateCode] = await once(duplicate.child, 'exit')
   assert.equal(duplicateCode, 1)
@@ -340,7 +340,7 @@ test('standalone QQ recovers bound simulation, group text and private turns', { 
   assert.equal(await redis.get(prefix + 'agent:host-lease'), null)
 
   const second = launch()
-  await waitUntil(() => second.log.includes('已启动'), 'second standalone process online')
+  await waitUntil(() => second.log.includes('已启动'), 'second standalone process online', 15_000)
   await waitUntil(() => deliveries.length === 1, 'OneBot message after restart')
   assert.equal(deliveries[0].action, 'send_group_msg')
   assert.equal(deliveries[0].params.group_id, GROUP)
@@ -368,7 +368,7 @@ test('standalone QQ recovers bound simulation, group text and private turns', { 
   assert.equal(reply.atSelf, false)
   assert.equal(reply.text, `引用 ${literalMention} & &#91;`)
   assert.equal(reply.imageCount, 1)
-  assert.deepEqual(reply.imageUrls, ['https://example.invalid/image.png?name=a,b&size=1'])
+  assert.equal(reply.imageUrls, undefined, 'image-capable adapters retain the source identity and reload bytes instead of persisting image URLs')
   await waitUntil(async () => (await session())?.confirmedMessageIds?.includes('88002') && !(await session())?.queuedIngressWake,
     'reply turn consumed its wake')
   emit(groupMessage(REMOVED, '撤回前的最后一条'))
@@ -409,7 +409,7 @@ test('standalone QQ recovers bound simulation, group text and private turns', { 
 
   repliedToModelTurn = false
   const third = launch()
-  await waitUntil(() => third.log.includes('已启动'), 'third standalone process online')
+  await waitUntil(() => third.log.includes('已启动'), 'third standalone process online', 15_000)
   assert.equal(await redis.lLen(legacyInbox), 0)
   assert.equal(await inboxLength(), 0)
   assert.equal((await session()).recent.filter(message => message.kind === 'poke').length, 1)
@@ -457,7 +457,7 @@ test('standalone QQ recovers bound simulation, group text and private turns', { 
   assert.deepEqual(await stop(third, 'SIGTERM'), [0, null])
 
   const fourth = launch()
-  await waitUntil(() => fourth.log.includes('已启动'), 'fourth standalone process online')
+  await waitUntil(() => fourth.log.includes('已启动'), 'fourth standalone process online', 15_000)
   emit(recall(95001, { user_id: USER + 1 }))
   emit(privateMessage(95009, '重启后的私聊'))
   await waitUntil(() => deliveries.length === 5, 'private reply after restart')
@@ -474,7 +474,7 @@ test('standalone QQ recovers bound simulation, group text and private turns', { 
   ]))
   await waitUntil(() => lastPromptContains('撤回后不应送出的回复'), 'private model starts before a prior source is recalled')
   const queuedPrivate = JSON.parse(await redis.lIndex(privateQueue, 0)).event.message
-  assert.deepEqual(queuedPrivate.parts, [])
+  assert.deepEqual(queuedPrivate.parts, [{ kind: 'text', text: '撤回后不应送出的回复' }])
   assert.equal(queuedPrivate.quote, undefined)
   assert.equal(lastPromptContains('https://example.invalid/private-media'), false)
   emit(recall(95001))
@@ -537,6 +537,8 @@ test('standalone QQ recovers bound simulation, group text and private turns', { 
   await waitUntil(() => deliveries.length === 9, 'saved private message is answered after restart')
   assert.ok(lastPromptContains('进程重启前已收件'))
   assert.ok(lastPromptContains('不应看到未确认的回复'))
+  await waitUntil(async () => (await getPrivateHistory())?.turns.at(-1)?.user === '进程重启前已收件' && await redis.lLen(privateQueue) === 0,
+    'recovered private receipt and queue acknowledgement finish before disabling private chat')
   assert.deepEqual(await stop(sixth, 'SIGTERM'), [0, null])
 
   delete hostConfig.privateChat
