@@ -145,12 +145,16 @@ export function createAgentBilibiliSearchProvider(options: AgentBilibiliSearchPr
     async function fingerprint(): Promise<string> {
       try {
         const payload = await json(FINGERPRINT, '', true), data = row(payload.data)
-        if (payload.code !== 0 || typeof data.b_3 !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/u.test(data.b_3) ||
-          data.b_4 !== undefined && (typeof data.b_4 !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/u.test(data.b_4))) throw failure()
-        const tokens = [data.b_3, ...(typeof data.b_4 === 'string' && data.b_4 ? [data.b_4] : [])]
+        // Same SPI token policy as the relay provider: b_4 may carry a base64 tail; a
+        // rejected b_4 degrades to buvid3-only instead of dropping the whole fingerprint.
+        const token = /^[A-Za-z0-9_+=:-]{1,256}$/u
+        const b3 = typeof data.b_3 === 'string' && token.test(data.b_3) ? data.b_3 : ''
+        const b4 = typeof data.b_4 === 'string' && token.test(data.b_4) ? data.b_4 : ''
+        if (payload.code !== 0 || !b3) throw failure()
+        const tokens = [b3, ...(b4 ? [b4] : [])]
         secretCheck = createAgentSecretTextCheck([...hostSecrets, ...tokens])
         await guard.ensure()
-        return `buvid3=${data.b_3}${data.b_4 ? `; buvid4=${data.b_4}` : ''}`
+        return `buvid3=${b3}${b4 ? `; buvid4=${b4}` : ''}`
       } catch { await guard.ensure(); diagnoseFallback(); return '' }
     }
     const card = (id: string, title: unknown, author: unknown, durationSeconds: number, episode = false): AgentVideoCard => {
