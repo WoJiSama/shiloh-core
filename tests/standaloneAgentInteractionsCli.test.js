@@ -129,7 +129,8 @@ async function fixture(t, { enabled = true, unknown = false, revoke = false, gra
   await writeFile(file, configText); await writeFile(bindingsFile, bindingsText)
   const env = { ...process.env, BL_AGENT_REDIS_URL: `unix://${socketPath}`, INTERACTION_MODEL_KEY: MODEL_KEY, INTERACTION_QQ_TOKEN: QQ_TOKEN }
   const launch = check => { child = spawn(process.execPath, [entry, '--config', file, ...(check ? ['--check'] : [])], { cwd: directory, env }); exited = once(child, 'exit'); for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => { log += bytes }) }
-  const records = async () => Promise.all((await reader.keys(prefix + 'agent:interaction:v1:*')).map(async key => JSON.parse(await reader.get(key))))
+  const recordKeys = () => reader.keys(prefix + 'agent:interaction:v1:*')
+  const records = async (keys) => Promise.all((keys ?? await recordKeys()).map(async key => JSON.parse(await reader.get(key))))
   const queueEmpty = async () => {
     const queues = (await Promise.all(['group-text', 'private'].map(kind => reader.keys(prefix + `agent:inbox:${kind}:*`)))).flat()
     return (await Promise.all(queues.map(key => reader.lLen(key)))).every(count => count === 0)
@@ -154,7 +155,7 @@ async function fixture(t, { enabled = true, unknown = false, revoke = false, gra
     async restart() { log = ''; websocket = undefined; launch(false); await waitFor(() => { if (child.exitCode !== null) assert.fail(`CLI exited early: ${log}`); return log.includes('已启动') && websocket }, 'CLI readiness') },
     async run(kind = 'poke') {
       if (management && models.length) await delay(900)
-      active = kind; caseModels = 0; if (kind === 'reaction') await admitQuoted(); const before = (await records()).length
+      active = kind; caseModels = 0; if (kind === 'reaction') await admitQuoted(); const before = new Set(await recordKeys())
       source = { post_type: 'message', message_type: 'group', sub_type: 'normal', self_id: BOT, group_id: GROUP, user_id: USER, sender: { user_id: USER, nickname: '互动验收员', ...(management ? { role: 'admin' } : {}) },
         message_id: 96000 + models.length, time: Math.floor(Date.now() / 1000), message: [...(kind === 'reaction' ? [{ type: 'reply', data: { id: String(QUOTED) } }] : []),
           { type: 'at', data: { qq: String(BOT) } }, { type: 'text', data: { text: managementCases[kind]?.text ?? (kind === 'poke' ? `请戳我${unknown ? 3 : 1}下。` : kind === 'like' ? '给我点3个赞。' : '给引用的消息贴一个表情。') } }] }
@@ -163,7 +164,11 @@ async function fixture(t, { enabled = true, unknown = false, revoke = false, gra
         await waitFor(() => held, 'held model request'); raw.tools.interactions.enabled = false; configText = JSON.stringify(raw); await writeFile(file, configText)
         held.end(completion(tool(), args())); await delay(500)
       } else if (roleRevoke) await waitFor(() => actions.some(row => row.action === 'get_group_member_info' && String(row.params.user_id) === String(USER)), 'fresh requester revocation evidence')
-      else if (enabled && grant) await waitFor(async () => (await records()).slice(before).some(row => row.state === (unknown ? 'unknown' : 'confirmed')), 'durable native result')
+      else if (enabled && grant) await waitFor(async () => {
+        // Redis key enumeration is unordered; an older confirmed row cannot settle this turn.
+        const current = (await recordKeys()).filter(key => !before.has(key))
+        return (await records(current)).some(row => row.state === (unknown ? 'unknown' : 'confirmed'))
+      }, 'durable native result')
       else await waitFor(() => actions.some(row => row.action === 'send_group_msg'), 'disabled feature text response')
       await waitFor(queueEmpty, 'text inbox drained'); assert.deepEqual(errors, [])
     },
