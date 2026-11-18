@@ -78,7 +78,7 @@ export interface SimToolContext {
   forwardTextOnly?: boolean
   /** 精选收藏某条消息的附图进表情包库 */
   collectSticker?(seq: number): Promise<{ ok: boolean; error?: string }>
-  /** 甩一张B站视频QQ卡片(带冷却,偶尔为之) */
+  /** 分享一个B站视频卡片(带冷却,偶尔为之；不是视频下载) */
   shareVideoCard?(input: { query?: string; url?: string }): Promise<{ ok: boolean; error?: string; title?: string; unknown?: boolean }>
 }
 
@@ -202,6 +202,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
         noteModelSeen(state, [seq])
         ctx.noteVisibleMessages?.([seq])
         return JSON.stringify({ found: true, message: compactSimMessage(message, ctx.now()), messageId: message.messageId, imageCount: message.imageCount,
+          ...(message.videoCount ? { videoCount: message.videoCount } : {}), ...(message.quoteSource?.video ? { quotedVideoCount: message.quoteSource.video.count } : {}),
           ...(message.files?.length ? { files: message.files } : {}), ...(message.quoteSource?.file ? { quotedFiles: message.quoteSource.file.files } : {}), readThroughSeq: readThroughSeq(state) })
       })
       await ctx.assertMemoryCurrent?.()
@@ -630,7 +631,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
       this.description = '戳一戳某位群友（屏幕上弹出"拍了拍"）。适合：回应别人戳你、跟熟人闹着玩、轻轻催一下正在等你的人。别频繁戳人、别戳不熟的人（每小时全群最多 6 次，超了会被拦）。'
       this.parameters = {
         type: 'object',
-        properties: { userId: { type: 'string', description: '要戳的群友 QQ 号（可用 simGetGroupMembers 查）。' } },
+        properties: { userId: { type: 'string', description: '要戳的当前群成员 ID（可用 simGetGroupMembers 查）。' } },
         required: ['userId'],
         additionalProperties: false,
       }
@@ -640,7 +641,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
       if (!ctx.pokeMember) return 'error: 戳一戳不可用'
       const result = await ctx.pokeMember(String(opts.userId || ''))
       if (!result.ok) return `error: ${result.error}`
-      return '已戳'
+      return JSON.stringify({ ok: true, summary: '已戳' })
     }
   }
 
@@ -892,12 +893,12 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
     constructor() {
       super()
       this.name = 'simShareVideoCard'
-      this.description = '往群里甩一张B站视频的QQ分享卡片（不是搬运视频，就是人手滑分享出来的那种卡片）。聊天聊到某个视频/番剧/鬼畜/曲子/梗相关的东西、或想给大家看点什么的时候用；query 搜关键词自动选第一个结果，url 直接给B站链接。有冷却（每群20分钟一张），偶尔为之别刷屏；发之前最好有一句话引入（如"让我找找那个视频"）。'
+      this.description = '按当前话题向当前群分享一个B站视频卡片：query搜索并选择第一条相关结果，url解析一个明确B站链接或BV号，两项只填一种。只发送公开视频元数据和页面链接，不下载或搬运视频，也不做高清提取。自主回合只有拿到本工具才可偶尔分享；真人明确查询/选择则使用当前清单里的searchVideoTool/videoShareTool。每群20分钟一张，共用发送额度、权限和沉默选择；结果未知时核实回执，不重发。'
       this.parameters = {
         type: 'object',
         properties: {
           query: { type: 'string', description: '搜索关键词（与 url 二选一）' },
-          url: { type: 'string', description: 'B站视频链接/BV号（与 query 二选一）' },
+          url: { type: 'string', description: '一个B站视频/番剧链接或BV号（与 query 二选一）' },
         },
         required: [],
         additionalProperties: false,

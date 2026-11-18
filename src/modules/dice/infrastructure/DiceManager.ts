@@ -1,4 +1,4 @@
-import type {DiceEvent,DiceBot,DiceLogger,DiceState,DiceCard,DiceGroup,DiceLog,DiceLogLine,DiceRoll,DiceCheckOptions} from '../../../contracts/dice.js'
+import type {DiceEvent,DiceBot,DiceLogger,DiceState,DiceCard,DiceGroup,DiceLog,DiceLogLine,DiceCheckOptions} from '../../../contracts/dice.js'
 import {diceRecord,diceError,decodeDiceState,decodeDiceLogLine,numericDiceTotal} from './diceDecoders.js'
 import fs from "fs"
 import path from "path"
@@ -10,6 +10,8 @@ import { collectMentionTargetIds, getMentionTargetId, stripCqMentions } from "..
 import { KeyedSerialQueue } from "../../messaging/infrastructure/keyedSerialQueue.js"
 import { canManageGroupDice, sanitizeDiceCommandError } from "../domain/diceCommandGateway.js"
 import { secureDiceInt, secureDiceRandom } from "./diceRandom.js"
+import { normalizeDiceExpression, rollDiceExpression, splitDiceRounds } from "../domain/diceExpression.js"
+import { renderLogText, renderLogHtml, resolveLogForExport as resolveSharedLogForExport } from "../domain/logExport.js"
 import {
   DEFAULT_TEMPLATES,
   DEFAULT_CHECK_LEVELS,
@@ -230,213 +232,6 @@ function todayKey(date = new Date(), timeZone = DEFAULT_CONFIG.timeZone) {
   }
 }
 
-function normalizeDiceExpression(expr = "") {
-  return String(expr || "1d100")
-    .replace(/[！-～]/g, char => String.fromCharCode(char.charCodeAt(0) - 0xFEE0))
-    .replace(/[＋﹢]/g, "+")
-    .replace(/[－﹣]/g, "-")
-    .replace(/[＊×]/g, "*")
-    .replace(/[／÷]/g, "/")
-    .replace(/[％]/g, "%")
-    .replace(/[（]/g, "(")
-    .replace(/[）]/g, ")")
-    .replace(/\bmod\b/gi, "%")
-    // 梨骰算符（sealdice dicescript roll.peg _dicePearMod）：d20优势=2d20kh1、d20劣势=2d20kl1，支持繁体
-    .replace(/(?<![\dd.])d(\d+)(优势|優勢)/gi, (_, sides) => `2d${sides}kh1`)
-    .replace(/(?<![\dd.])d(\d+)(劣势|劣勢)/gi, (_, sides) => `2d${sides}kl1`)
-    .replace(/\s+/g, "")
-    .toLowerCase()
-}
-
-class DiceExpressionParser {
- rawExpr:string;comparison:{op:string;threshold:number}|null;expr:string;displayExpr:string;config:DiceConfig;random:()=>number;pos:number;diceCount:number;detailParts:string[];
- lastDice:{count:number;sides:number;suffixText:string;rolls:number[];kept:number[];keptText:string}|null;lastDiceDetailIndex:number;
-  constructor(expr:string, config:DiceConfig, random = secureDiceRandom) {
-    let working = normalizeDiceExpression(expr)
-    this.rawExpr = working
-    // 兼容糖：骰池尾缀 aN（如 6d6a4）= 逐骰 >N 计数；仅在本来没有比较运算时转换
-    if (!/[<>]/.test(working)) working = working.replace(/([\d)])a(\d+)$/, "$1>$2")
-    // 尾部比较子句：d100<60 / 6d6>=4（全角＜＞已归一化），对最后一组骰子逐骰判定
-    this.comparison = null
-    const cmp = working.match(/(<=|>=|<|>)(\d+)$/)
-    if (cmp) {
-      this.comparison = { op: cmp[1]!, threshold: Number(cmp[2]!) }
-      working = working.slice(0, cmp.index)
-    }
-    this.expr = working || "1d100"
-    // 展示用：含 aN 糖转换与比较子句的完整写法
-    this.displayExpr = this.comparison ? `${this.expr}${this.comparison.op}${this.comparison!.threshold}` : this.expr
-    this.config = config
-    this.random = typeof random === "function" ? random : secureDiceRandom
-    this.pos = 0
-    this.diceCount = 0
-    this.detailParts = []
-    this.lastDice = null
-    this.lastDiceDetailIndex = -1
-  }
-
-  peek() {
-    return this.expr[this.pos] || ""
-  }
-
-  consume(char:string) {
-    if (this.peek() === char) {
-      this.pos += 1
-      return true
-    }
-    return false
-  }
-
-  readNumber() {
-    const start = this.pos
-    while (/\d/.test(this.peek())) this.pos += 1
-    if (start === this.pos) return null
-    return Number(this.expr.slice(start, this.pos))
-  }
-
-  parse() {
-    if (!this.expr) throw new Error("骰点表达式不能为空")
-    const value = this.parseExpression()
-    if (this.pos !== this.expr.length) {
-      throw new Error(`骰点表达式在「${this.expr.slice(this.pos)}」附近格式不正确`)
-    }
-    if (!Number.isFinite(value)) throw new Error("骰点结果无效")
-    const base:DiceRoll = {
-      expr: this.displayExpr.toUpperCase(),
-      detail: this.detailParts.length ? this.detailParts.join("+") : String(Math.trunc(value)),
-      total: Math.trunc(value)
-    }
-    if (!this.comparison) return base
-    // 比较计数：对最后一组骰子的保留结果逐骰 ✓/✗；没有骰子时对总算术结果判定一次
-    const compareOk = (v:number) => {
-      if (this.comparison!.op === "<") return v < this.comparison!.threshold
-      if (this.comparison!.op === "<=") return v <= this.comparison!.threshold
-      if (this.comparison!.op === ">") return v > this.comparison!.threshold
-      return v >= this.comparison!.threshold
-    }
-    const dice = this.lastDice?.kept?.length ? this.lastDice.kept : [Math.trunc(value)]
-    const success = dice.filter(compareOk).length
-    if (this.lastDice && this.lastDiceDetailIndex >= 0) {
-      const markedKept = this.lastDice.kept.map(v => `${v}${compareOk(v) ? "✓" : "✗"}`).join("+")
-      const inner = this.lastDice.rolls.join("+")
-      const shown = this.lastDice.keptText
-        ? `${inner}=>${markedKept}`
-        : markedKept
-      this.detailParts[this.lastDiceDetailIndex] = `${this.lastDice.count}D${this.lastDice.sides}${this.lastDice.suffixText}[${shown}]`
-      base.detail = this.detailParts.join("+")
-    }
-    base.total = `成功 ${success}/${dice.length}`
-    return base
-  }
-
-  parseExpression():number {
-    let value = this.parseTerm()
-    while (true) {
-      if (this.consume("+")) value += this.parseTerm()
-      else if (this.consume("-")) value -= this.parseTerm()
-      else break
-    }
-    return value
-  }
-
-  parseTerm():number {
-    let value = this.parseUnary()
-    while (true) {
-      if (this.consume("*")) value *= this.parseUnary()
-      else if (this.consume("/")) {
-        const right = this.parseUnary()
-        if (right === 0) throw new Error("骰点表达式不能除以 0")
-        value /= right
-      } else if (this.consume("%")) {
-        const right = this.parseUnary()
-        if (right === 0) throw new Error("骰点表达式不能对 0 取余")
-        value %= right
-      } else break
-    }
-    return value
-  }
-
-  parseUnary():number {
-    if (this.consume("+")) return this.parseUnary()
-    if (this.consume("-")) return -this.parseUnary()
-    return this.parsePrimary()
-  }
-
-  parsePrimary():number {
-    if (this.consume("(")) {
-      const value = this.parseExpression()
-      if (!this.consume(")")) throw new Error("括号未闭合")
-      return value
-    }
-    const number = this.readNumber()
-    if (this.consume("d")) return this.parseDice(number || 1)
-    // 命运骰（sealdice dicescript RollFate）：每颗 -1/0/+1，默认 4 颗，符号序列展示
-    if (this.peek() === "f") {
-      this.pos += 1
-      return this.parseFateDice(number === null ? 4 : number)
-    }
-    if (number !== null) return number
-    if (this.peek() === "d") {
-      this.pos += 1
-      return this.parseDice(1)
-    }
-    throw new Error(`骰点表达式在「${this.expr.slice(this.pos)}」附近格式不正确`)
-  }
-
-  parseDice(count:number) {
-    const sides = this.readNumber()
-    if (sides===null||!Number.isInteger(sides)) throw new Error("骰子面数不能为空")
-    if (!Number.isInteger(count) || count < 1 || count > this.config.maxDiceCount) throw new Error(`骰子数量必须是 1-${this.config.maxDiceCount}`)
-    if (sides < 2 || sides > this.config.maxDiceSides) throw new Error(`骰子面数必须是 2-${this.config.maxDiceSides}`)
-    this.diceCount += count
-    if (this.diceCount > this.config.maxDiceCount) throw new Error(`单次最多掷 ${this.config.maxDiceCount} 颗骰子`)
-
-    const rolls = Array.from({ length: count }, () => Math.floor(this.random() * sides) + 1)
-    const suffix = this.parseDiceSuffix(count)
-    let kept = [...rolls]
-    let suffixText = ""
-    if (suffix) {
-      const sortedAsc = [...rolls].sort((a, b) => a - b)
-      const n = Math.min(count, Math.max(0, suffix.n))
-      if (suffix.type === "kh") kept = sortedAsc.slice(-n)
-      if (suffix.type === "kl") kept = sortedAsc.slice(0, n)
-      if (suffix.type === "dh") kept = sortedAsc.slice(0, Math.max(0, count - n))
-      if (suffix.type === "dl") kept = sortedAsc.slice(n)
-      if (suffix.type === "min") kept = rolls.map(v => Math.max(v, n))
-      if (suffix.type === "max") kept = rolls.map(v => Math.min(v, n))
-      suffixText = suffix.raw.toUpperCase()
-    }
-    const total = kept.reduce((sum, value) => sum + value, 0)
-    const keptText = suffix ? `=>${kept.join("+")}` : ""
-    this.lastDiceDetailIndex = this.detailParts.length
-    this.lastDice = { count, sides, suffixText, rolls: [...rolls], kept: [...kept], keptText }
-    this.detailParts.push(`${count}D${sides}${suffixText}[${rolls.join("+")}${keptText}]`)
-    return total
-  }
-
-  parseFateDice(count:number) {
-    if (!Number.isInteger(count) || count < 1 || count > this.config.maxDiceCount) {
-      throw new Error(`命运骰数量必须是 1-${this.config.maxDiceCount}`)
-    }
-    this.diceCount += count
-    if (this.diceCount > this.config.maxDiceCount) throw new Error(`单次最多掷 ${this.config.maxDiceCount} 颗骰子`)
-    const rolls = Array.from({ length: count }, () => Math.min(2, Math.floor(this.random() * 3)) - 1)
-    const symbols = rolls.map(value => (value === -1 ? "-" : value === 0 ? "0" : "+")).join("")
-    const total = rolls.reduce((sum, value) => sum + value, 0)
-    this.detailParts.push(`${count}F[${symbols}]`)
-    return total
-  }
-
-  parseDiceSuffix(count:number) {
-    const rest = this.expr.slice(this.pos)
-    const match = rest.match(/^(kh|kl|dh|dl|min|max)(\d*)/)
-    if (!match) return null
-    const raw = match[0]
-    this.pos += raw.length
-    const defaultN = match[1]! === "kh" || match[1]! === "kl" || match[1]! === "dh" || match[1]! === "dl" ? 1 : count
-    return { type: match[1]!, n: match[2]! ? Number(match[2]!) : defaultN, raw }
-  }
-}
 
 export type DiceConfig=typeof DEFAULT_CONFIG & ReturnType<typeof mergeDiceReplyConfig>
 export class DiceManager {
@@ -1405,14 +1200,7 @@ export class DiceManager {
   }
 
   resolveLogForExport(group:DiceGroup = {}, raw = "") {
-    const selector = String(raw || "").trim()
-    const current = group.log?.file ? group.log : null
-    const history = [...(group.logs || [])]
-      .filter(item => item?.file && item.file !== current?.file)
-      .reverse()
-    if (!selector || /^(current|当前)$/i.test(selector)) return current
-    if (/^\d+$/.test(selector)) return history[Number(selector) - 1] || null
-    return [current, ...history].filter((item):item is DiceLog=>item!==null).find(item => String(item.title || "") === selector) || null
+    return resolveSharedLogForExport(group, raw)
   }
 
   async sendCompleteFile(e:DiceEvent, file:string, options:{maxMb?:number} = {}) {
@@ -1457,81 +1245,11 @@ export class DiceManager {
   }
 
   buildLogText(log:DiceLog, lines:DiceLogLine[]) {
-    const header = [
-      `# ${log.title || "COC Log"}`,
-      `开始：${log.startedAt || ""}`,
-      log.endedAt ? `结束：${log.endedAt}` : "",
-      ""
-    ].filter(line => line !== "").join("\n")
-    const body = lines.map(item => {
-      const time = item.at ? item.at.replace("T", " ").slice(0, 19) : ""
-      return `[${time}] ${item.name || item.userId}(${item.userId}): ${item.content}`
-    }).join("\n")
-    return `${header}${body}\n`
+    return renderLogText(log, lines)
   }
 
   buildLogHtml(log:DiceLog, lines:DiceLogLine[]) {
-    const esc = (value:unknown) => String(value ?? "")
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
-    // 掷骰结果染色：大成功绿、大失败红、其余成败按档位轻着色
-    const diceClass = (content:unknown) => {
-      const text = String(content || "")
-      if (text.includes("大成功")) return "dice-crit"
-      if (text.includes("大失败")) return "dice-fumble"
-      if (/极难成功|困难成功|成功/.test(text)) return "dice-pass"
-      if (/失败/.test(text)) return "dice-fail"
-      return "dice-roll"
-    }
-    const rows = lines.map(item => {
-      const time = item.at ? item.at.replace("T", " ").slice(0, 19) : ""
-      const isDice = item.type === "dice_result"
-      const extraClass = isDice ? ` dice ${diceClass(item.content)}` : ""
-      return [
-        `<div class="msg${extraClass}">`,
-        `  <div class="meta"><span class="name">${isDice ? "🎲 " : ""}${esc(item.name || item.userId)}</span><span class="time">${esc(time)}</span></div>`,
-        `  <div class="content">${esc(item.content)}</div>`,
-        `</div>`
-      ].join("\n")
-    }).join("\n")
-    return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(log.title || "COC Log")}</title>
-<style>
-  body { margin: 0; background: #16171f; color: #d7d9e0; font: 15px/1.7 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
-  .wrap { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
-  header { border-bottom: 1px solid #2c2e3d; padding-bottom: 14px; margin-bottom: 18px; }
-  h1 { margin: 0 0 6px; font-size: 20px; color: #f0f1f5; }
-  .info { color: #8b8fa3; font-size: 13px; }
-  .msg { background: #1f2130; border-radius: 10px; padding: 10px 14px; margin: 10px 0; }
-  .meta { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; margin-bottom: 4px; }
-  .name { color: #8ab4f8; font-weight: 600; }
-  .time { color: #6b6f84; }
-  .content { white-space: pre-wrap; word-break: break-word; }
-  .dice { border-left: 3px solid #6b7280; }
-  .dice-crit { border-left-color: #34d399; background: #17251f; }
-  .dice-crit .content { color: #6ee7b7; }
-  .dice-fumble { border-left-color: #f87171; background: #2a1c1e; }
-  .dice-fumble .content { color: #fca5a5; }
-  .dice-pass { border-left-color: #4ade80; }
-  .dice-fail { border-left-color: #fb923c; }
-  .dice-roll { border-left-color: #818cf8; }
-  footer { margin-top: 22px; color: #565a6e; font-size: 12px; text-align: center; }
-</style>
-</head>
-<body>
-<div class="wrap">
-<header>
-  <h1>🎲 ${esc(log.title || "COC Log")}</h1>
-  <div class="info">开始：${esc(log.startedAt || "未知")}${log.endedAt ? ` ｜ 结束：${esc(log.endedAt)}` : ""} ｜ 共 ${lines.length} 条记录</div>
-</header>
-${rows}
-<footer>由跑团骰娘导出</footer>
-</div>
-</body>
-</html>`
+    return renderLogHtml(log, lines)
   }
 
   handleLogList(e:DiceEvent) {
@@ -1713,16 +1431,11 @@ ${rows}
   }
 
   splitRounds(text = "") {
-    const raw = String(text || "").trim()
-    const prefix = raw.match(/^(\d+)\s*#\s*(.+)$/)
-    if (prefix) return { rounds: Math.max(1, Number(prefix[1]!) || 1), expr: prefix[2]!.trim() }
-    const suffix = raw.match(/^(.+?)\s*#\s*(\d+)$/)
-    if (suffix) return { rounds: Math.max(1, Number(suffix[2]!) || 1), expr: suffix[1]!.trim() }
-    return { rounds: 1, expr: raw }
+    return splitDiceRounds(text)
   }
 
   rollExpression(expr = "1d100", config = this.getConfig(), random = secureDiceRandom) {
-    return new DiceExpressionParser(expr || "1d100", config, random).parse()
+    return rollDiceExpression(expr || "1d100", config, typeof random === "function" ? random : secureDiceRandom)
   }
 
   rollD100(modifier = 0) {

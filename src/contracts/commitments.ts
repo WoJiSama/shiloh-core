@@ -3,6 +3,7 @@
 // agent 用工具面自主兑现(仿真群)或直发固定文案(任意群),daily 自动顺延。
 import type {AgentBindingSnapshot,AgentBindingTurn,AgentConversationScope,ConversationAddress} from './agentBinding.js'
 import type {MessageActionPort} from './platformMessage.js'
+import type {AgentDeferredActionData} from './agentDeferredAction.js'
 export interface CommitmentScheduleOnce { kind:'once'; time:number }
 export interface CommitmentScheduleDaily { kind:'daily'; time:string }
 export type CommitmentSchedule = CommitmentScheduleOnce | CommitmentScheduleDaily
@@ -18,6 +19,8 @@ export interface CommitmentData {
   static_message:string|null
   /** An existing one-time reminder transferred from the QQ reminder ledger. */
   importedReminder?:true
+  /** Frozen extra_action delegation; executed by the dedicated worker, never by wakeSim. */
+  deferredAction?:AgentDeferredActionData
   expiry_at:number                 // 到期不再执行(默认30天,防遗忘永动机)
   renewal_asked_at?:number         // 到期前问询续约的时间(0/缺省=未问过;只问一次,不追问)
   next_run_at:number

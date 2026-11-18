@@ -66,3 +66,124 @@ export const navigation = [
 export const pages = navigation.flatMap((group) =>
   group.items.map((item) => ({ ...item, group: group.label }))
 )
+
+// The plugin adapter retains its existing navigation above. Standalone navigation follows the robot's identity.
+export const workspaceNavigation = [
+  { path: '/', label: '总览', icon: Activity, hint: '本人、连接与待处理事项' },
+  { path: '/robots', label: '机器人', icon: Bot, hint: '本人、会话、自我与行动' },
+  { path: '/connections', label: '连接', icon: Workflow, hint: '平台账号与会话接入' },
+  { path: '/resources', label: '资源库', icon: Database, hint: '人设、模型与创作资源' },
+  { path: '/runtime', label: '运行中心', icon: Activity, hint: '观测、任务与用量' },
+  { path: '/system', label: '系统', icon: ShieldCheck, hint: '边界、配置与服务状态' }
+]
+export const workspaceFeatures = {
+  persona: {
+    label: '人设模板',
+    group: '/resources',
+    operation: 'persona.read',
+    hint: '管理可复用模板及其引用，保存后重启生效'
+  },
+  ai: {
+    label: '模型资源',
+    group: '/resources',
+    operation: 'providers.read',
+    hint: '现有模型渠道与环境变量凭据引用'
+  },
+  draw: {
+    label: '创作工作台',
+    group: '/resources',
+    operation: 'images.providers',
+    hint: '图片生成、编辑与历史'
+  },
+  games: {
+    label: '游戏资源',
+    group: '/resources',
+    operation: 'turtle-soup.read',
+    hint: '题库审核与游戏资源'
+  },
+  simulation: {
+    label: '会话参与',
+    group: '/runtime',
+    operation: 'simulation.read',
+    hint: '各会话的参与方式、预算与自我记录'
+  },
+  'person-profiles': {
+    label: '人物记忆',
+    group: '/robots',
+    operation: 'profiles.read',
+    hint: '按机器人与来源会话查看人物记录'
+  },
+  trusteeship: {
+    label: '托付与承诺',
+    group: '/runtime',
+    operation: 'trusteeship.read',
+    hint: '真实承诺、托付记忆与执行结果'
+  },
+  observe: {
+    label: '运行观测',
+    group: '/runtime',
+    operation: 'observe.read',
+    hint: '真实运行记录与失败原因'
+  },
+  tokens: {
+    label: '模型用量',
+    group: '/runtime',
+    operation: 'tokens.summary',
+    hint: '实例账本中的用量和费用'
+  },
+  pipeline: {
+    label: '消息与搬运',
+    group: '/runtime',
+    operation: 'pipeline.read',
+    hint: '消息任务与投递状态'
+  },
+  life: {
+    label: '作息与生活',
+    group: '/runtime',
+    operation: 'life.read',
+    hint: '当前可用的作息记录与管理'
+  },
+  style: {
+    label: '表达学习',
+    group: '/resources',
+    operation: 'style.read',
+    hint: '已有表达策略及其来源'
+  },
+  semantic: {
+    label: '记忆检索',
+    group: '/resources',
+    operation: 'semantic.read',
+    hint: '当前宿主可用的检索管理'
+  },
+  commands: {
+    label: '骰子边界',
+    group: '/system',
+    operation: 'config.read',
+    hint: '已开放的四项骰子护栏，保存后重启生效'
+  },
+  conversation: {
+    label: '对话配置',
+    group: '/system',
+    operation: 'conversation.config',
+    hint: '当前宿主是否提供对话配置编辑'
+  },
+  risk: {
+    label: '安全配置',
+    group: '/system',
+    operation: 'risk-control.config',
+    hint: '当前宿主是否提供安全配置编辑'
+  },
+  'group-admin': {
+    label: '群管理',
+    group: '/connections',
+    operation: 'group-admin.read',
+    hint: '在明确的连接和会话中管理'
+  },
+  groups: {
+    label: '接入会话',
+    group: '/connections',
+    operation: 'groups.read',
+    hint: '当前接入的完整会话地址'
+  }
+} as const
+export type WorkspaceFeature = keyof typeof workspaceFeatures

@@ -34,6 +34,8 @@ import {
   type AiProvider
 } from '../lib/schemaAi'
 import { useSchemaSaveShortcut } from '../lib/schemaKeyboard'
+import StandaloneAiConfig from '../components/StandaloneAiConfig.vue'
+import type { StandaloneAiView } from '../lib/standaloneConfig'
 
 interface ProbeResult {
   ok?: boolean
@@ -126,6 +128,7 @@ async function load(preserve = false) {
   try {
     const next = await api<AiOverview>('/api/ai/config', { signal: loadRequest.signal })
     if (seq !== loadGeneration) return
+    if (next.mode === 'standalone') { overview.value = next; return }
     const fresh = Object.fromEntries(
       Object.entries(next.sections || {}).map(([key, list]) => [
         key,
@@ -343,13 +346,15 @@ onBeforeUnmount(() => {
   <div ref="root" class="page-stack ai-page">
     <PageHeader
       title="AI 模型"
-      description="按能力配置渠道、模型与备用顺序，独立保存每个配置组。"
+      :description="overview?.mode === 'standalone' ? '按能力配置模型与凭据环境变量，保存后重启服务生效。' : '按能力配置渠道、模型与备用顺序，独立保存每个配置组。'"
       eyebrow="机器人能力"
       ><template #actions
-        ><NButton secondary :disabled="loading" @click="refresh">刷新配置</NButton></template
+        ><NButton v-if="overview?.mode !== 'standalone'" secondary :disabled="loading" @click="refresh">刷新配置</NButton></template
       ></PageHeader
     >
-    <section class="panel provider-panel">
+    <StandaloneAiConfig v-if="overview?.mode === 'standalone'" :initial="overview as StandaloneAiView" />
+    <template v-else>
+    <section v-if="overview" class="panel provider-panel">
       <h2>思考程度</h2>
       <p class="field-help">按全局聊天、短闲聊和复杂请求分别设置。模型支持的档位以渠道说明为准。</p>
       <SchemaPage kind="reasoning" embedded />
@@ -587,6 +592,7 @@ onBeforeUnmount(() => {
         />
       </template>
     </PageState>
+    </template>
   </div>
 </template>
 

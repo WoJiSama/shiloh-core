@@ -1,4 +1,8 @@
 import { ref } from 'vue'
+import { ConsoleBindingError, createConsoleBindings } from './consoleBindings'
+import { consoleRestart, isConfigurationRead, isConfigurationWrite } from './consoleRestart'
+import { parseWorkspace } from './workspaceModel'
+import { parseConfigurationCommitResult } from './workspaceChangeModel'
 const TOKEN_KEY = 'bl-console-token'
 let storedToken = ''
 try {
@@ -47,7 +51,7 @@ async function checkSession(headers: Headers) {
     })
   await sessionCheck
 }
-export async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> {
+async function request<T = any>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)
   if (options.body && !(options.body instanceof FormData) && !headers.has('content-type'))
     headers.set('content-type', 'application/json')
@@ -63,6 +67,60 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
   }
   return data as T
 }
+const conversationBindings = createConsoleBindings((signal) =>
+  request('/api/bindings', signal ? { signal } : {})
+)
+export async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> {
+  const method = options.method || 'GET'
+  consoleRestart.assertAllowed(path, method)
+  const generation = consoleRestart.state.generation
+  const ticket =
+    consoleRestart.state.standalone && isConfigurationWrite(path, method)
+      ? consoleRestart.begin(path)
+      : undefined
+  let selected: { path: string; options: RequestInit }
+  try {
+    selected = await conversationBindings.prepare(path, options)
+  } catch (error) {
+    if (ticket) consoleRestart.failed(ticket, error, path)
+    if (error instanceof ConsoleBindingError)
+      throw new ApiError(error.status, {
+        error: error.message,
+        code: error.status === 409 ? 'conflict' : 'unavailable'
+      })
+    throw error
+  }
+  try {
+    if (!ticket) consoleRestart.assertAllowed(path, method)
+    let result: T = await request<T>(selected.path, selected.options)
+    if (path === '/api/configuration/commit' && method.toUpperCase() === 'POST')
+      result = parseConfigurationCommitResult(result) as T
+    if (path === '/api/workspace') {
+      if (generation !== consoleRestart.state.generation)
+        throw new DOMException('工作区读取已过期，请重新检查', 'AbortError')
+      parseWorkspace(result)
+    } else if (path === '/api/config-state') {
+      if (generation !== consoleRestart.state.generation)
+        throw new DOMException('配置状态读取已过期，请重新检查', 'AbortError')
+      consoleRestart.process(result)
+    } else if (ticket) consoleRestart.complete(ticket, result)
+    else if (!path.startsWith('/api/auth/')) consoleRestart.observe(result, generation)
+    conversationBindings.observe(selected.path, selected.options, result)
+    return result
+  } catch (error) {
+    if (ticket) consoleRestart.failed(ticket, error, path)
+    else if (generation === consoleRestart.state.generation) {
+      consoleRestart.failed(undefined, error, path)
+      if (
+        method.toUpperCase() === 'GET' &&
+        isConfigurationRead(path) &&
+        (error as { status?: number })?.status === 409
+      )
+        consoleRestart.invalidate()
+    }
+    throw error
+  }
+}
 export function imageUrl(path: string): string {
   if (!path || /^(data:|blob:)/.test(path)) return path
   const url = new URL(path, location.origin)
@@ -73,6 +131,7 @@ export function imageUrl(path: string): string {
 }
 export function clearToken() {
   storedToken = ''
+  conversationBindings.reset()
   try {
     localStorage.removeItem(TOKEN_KEY)
   } catch {}

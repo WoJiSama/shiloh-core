@@ -1,7 +1,9 @@
 // 承诺账本 redis 存储:pending:list(按 next_run_at 排序)+ detail:{id},锁模式对齐 ReminderTool。
 import {randomUUID} from 'node:crypto'
 import type {CommitmentData,CommitmentRedisLike} from '../../../contracts/commitments.js'
+import type {AgentDeferredActionData} from '../../../contracts/agentDeferredAction.js'
 import {agentConversationKey,decodeAgentConversationKey} from '../../runtime/domain/agentBindings.js'
+import {assertDeferredGrant,decodeAgentDeferredAction} from './agentDeferredActionData.js'
 
 const REDIS_KEY_PREFIX='bl-chat:commitment:'
 export const COMMITMENT_PENDING_KEY=`${REDIS_KEY_PREFIX}pending:list`
@@ -12,6 +14,7 @@ const LOCK_TIMEOUT=15000
 const LOCK_ACQUIRE_TIMEOUT=1500
 
 interface PendingEntry{id:string;next_run_at:number}
+const invalidationListeners=new WeakMap<CommitmentRedisLike,Map<string,Set<()=>void>>>()
 
 function record(value:unknown):Record<string,unknown>{return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{}}
 
@@ -41,6 +44,7 @@ export function decodeCommitment(data:string):CommitmentData {
   const scope=typeof r.scopeKey==='string'?decodeAgentConversationKey(r.scopeKey):null
   const bindingIdentity=r.bindingIdentity
   const importedReminder=r.importedReminder===true
+  const deferredAction=r.deferredAction===undefined?undefined:decodeAgentDeferredAction(r.deferredAction)
   const scopeMatches=scope?.target.account.id===r.bot_id && (scope?.target.kind==='group' ? scope.target.id===r.group_id :
     importedReminder&&scope?.target.kind==='private'&&scope.target.id===r.creator_id&&r.group_id==='')
   if((r.scopeKey!==undefined&&(!scope||!scopeMatches))||
@@ -49,11 +53,18 @@ export function decodeCommitment(data:string):CommitmentData {
     (importedReminder&&(!scope||deliver!=='static'||normalizedSchedule.kind!=='once'||typeof r.static_message!=='string'||!r.static_message.trim()))) {
     throw new Error('承诺会话分区损坏')
   }
+  if(deferredAction){
+    if(!scope||typeof bindingIdentity!=='string'||deliver!=='static'||normalizedSchedule.kind!=='once'||typeof r.static_message!=='string'||!r.static_message.trim())throw new Error('延期提醒会话分区损坏')
+    assertDeferredGrant(deferredAction.grant,deferredAction.action,bindingIdentity,{...scope.target.account,id:r.creator_id},agentConversationKey(scope))
+    if(deferredAction.grant.dueAt!==normalizedSchedule.time)throw new Error('延期委托授权与排期不符')
+    if(deferredAction.state==='unknown'&&status==='active')throw new Error('未知延期动作不能处于待执行状态')
+  }
   return {
     id:r.id,group_id:r.group_id,creator_id:r.creator_id,creator_name:String(r.creator_name||''),
     intent:r.intent,schedule:normalizedSchedule,deliver,
     static_message:typeof r.static_message==='string'?r.static_message:null,
     ...(importedReminder?{importedReminder:true as const}:{}),
+    ...(deferredAction?{deferredAction}:{}),
     expiry_at:Number(r.expiry_at)||0,renewal_asked_at:Number(r.renewal_asked_at)||0,
     next_run_at:Number(r.next_run_at)||0,status:status as CommitmentData['status'],
     last_run_at:Number(r.last_run_at)||0,last_result:String(r.last_result||''),retry_count:Number(r.retry_count)||0,
@@ -77,37 +88,53 @@ redis.call("SET", KEYS[2], ARGV[2])
 if tonumber(ARGV[4]) > 0 then redis.call("EXPIRE", KEYS[2], ARGV[4]) end
 redis.call("SET", KEYS[3], ARGV[3])
 return 1`
+const WRITE_FAILURES=`-- commitment-failures-cas-v1
+if redis.call('GET',KEYS[1])~=ARGV[1] then return -1 end
+if (redis.call('GET',KEYS[2]) or '')~=ARGV[2] then return 0 end
+redis.call('SET',KEYS[2],ARGV[3]); return 1`
+
+export interface CommitmentFailure {
+  id?:string;intent?:string;group_id?:string;reason?:string;at?:number
+}
 
 export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{warn(message:string):void}}) {
   const {redis,logger}=ports
-  async function withLock<T>(operation:(token:string)=>Promise<T>):Promise<T> {
+  async function withLock<T>(operation:(token:string)=>Promise<T>,ensureCurrent?:()=>Promise<void>):Promise<T> {
     const token=randomUUID(),end=Date.now()+LOCK_ACQUIRE_TIMEOUT
     for (;;) {
+      await ensureCurrent?.()
       const result=await redis.set(COMMITMENT_LOCK_KEY,token,{PX:LOCK_TIMEOUT,NX:true})
       if(result==='OK'||result===true)break
+      await ensureCurrent?.()
       if(Date.now()>=end)throw new Error('获取承诺锁超时')
       await new Promise(resolve=>setTimeout(resolve,25))
     }
-    try{return await operation(token)}finally{
+    try{await ensureCurrent?.();return await operation(token)}finally{
       await redis.eval('if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end',{keys:[COMMITMENT_LOCK_KEY],arguments:[token]})
     }
   }
-  async function getPendingList():Promise<PendingEntry[]> {
-    return decodeCommitmentPendingList(await redis.get(COMMITMENT_PENDING_KEY))
+  async function getPendingList(ensureCurrent?:()=>Promise<void>):Promise<PendingEntry[]> {
+    await ensureCurrent?.()
+    const raw=await redis.get(COMMITMENT_PENDING_KEY)
+    await ensureCurrent?.()
+    return decodeCommitmentPendingList(raw)
   }
-  async function getCommitment(id:string):Promise<CommitmentData|null>{
+  async function getCommitment(id:string,ensureCurrent?:()=>Promise<void>):Promise<CommitmentData|null>{
+    await ensureCurrent?.()
     const data=await redis.get(commitmentDetailKey(id))
+    await ensureCurrent?.()
     if(!data)return null
     // A corrupt record must not become an apparently missing task that gets overwritten.
     return decodeCommitment(data)
   }
-  async function persist(c:CommitmentData,token:string,isCurrent?:()=>boolean):Promise<boolean>{
-    const list=(await getPendingList()).filter(item=>item.id!==c.id)
+  async function persist(c:CommitmentData,token:string,isCurrent?:()=>boolean,ensureCurrent?:()=>Promise<void>):Promise<boolean>{
+    const list=(await getPendingList(ensureCurrent)).filter(item=>item.id!==c.id)
     if(c.status==='active')list.push({id:c.id,next_run_at:c.run_id?c.lease_until||0:c.next_run_at})
     list.sort((a,b)=>a.next_run_at-b.next_run_at)
     const data=encodeCommitment(c)
+    await ensureCurrent?.()
     if(isCurrent?.()===false)return false
-    const saved=await redis.eval(WRITE_STATE,{keys:[COMMITMENT_LOCK_KEY,commitmentDetailKey(c.id),COMMITMENT_PENDING_KEY],arguments:[token,data,JSON.stringify(list),c.status==='active'?'0':'86400']})
+    const saved=await redis.eval(WRITE_STATE,{keys:[COMMITMENT_LOCK_KEY,commitmentDetailKey(c.id),COMMITMENT_PENDING_KEY],arguments:[token,data,JSON.stringify(list),c.status==='active'||c.deferredAction?'0':'86400']})
     if(Number(saved)!==1)throw new Error('承诺锁已失效，拒绝旧执行写入')
     return true
   }
@@ -115,38 +142,46 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
     const {run_id:_run,lease_until:_lease,execution_state:_state,...rest}=c
     return rest
   }
-  async function listActiveCommitments():Promise<CommitmentData[]>{
+  async function listActiveCommitments(ensureCurrent?:()=>Promise<void>):Promise<CommitmentData[]>{
     const out:CommitmentData[]=[]
-    for(const item of await getPendingList()){
-      const c=await getCommitment(item.id)
+    for(const item of await getPendingList(ensureCurrent)){
+      const c=await getCommitment(item.id,ensureCurrent)
       if(c?.status==='active')out.push(c)
     }
     return out
   }
-  async function createCommitment(c:CommitmentData,validate?:(active:CommitmentData[])=>void,isCurrent?:()=>boolean){
+  async function createCommitment(c:CommitmentData,validate?:(active:CommitmentData[])=>void|Promise<void>,isCurrent?:()=>boolean,ensureCurrent?:()=>Promise<void>){
     await withLock(async token=>{
-      if(await getCommitment(c.id))throw new Error('承诺 id 已存在')
-      validate?.(await listActiveCommitments())
-      if(!await persist({...c,revision:1},token,isCurrent))throw new Error('角色绑定已改变，承诺未创建')
-    })
+      if(await getCommitment(c.id,ensureCurrent))throw new Error('承诺 id 已存在')
+      await validate?.(await listActiveCommitments(ensureCurrent))
+      await ensureCurrent?.()
+      if(!await persist({...c,revision:1},token,isCurrent,ensureCurrent))throw new Error('角色绑定已改变，承诺未创建')
+    },ensureCurrent)
   }
-  async function cancelCommitment(id:string,isCurrent?:()=>boolean):Promise<boolean>{
+  async function cancelCommitment(id:string,isCurrent?:()=>boolean,ensureCurrent?:()=>Promise<void>,validate?:(current:CommitmentData)=>void|Promise<void>):Promise<boolean>{
     return withLock(async token=>{
-      const current=await getCommitment(id)
-      if(!current||current.status!=='active')return false
-      return await persist({...withoutRun(current),status:'cancelled',next_run_at:0,revision:(current.revision||0)+1,last_result:'已取消；在途动作不能撤回，后续不再执行'},token,isCurrent)
-    })
+      const current=await getCommitment(id,ensureCurrent)
+      if(!current)return false
+      await validate?.(current)
+      await ensureCurrent?.()
+      if(current.status!=='active'&&!(current.status==='unknown'&&current.deferredAction))return false
+      const saved=await persist({...withoutRun(current),status:'cancelled',next_run_at:0,revision:(current.revision||0)+1,last_result:'已取消；在途动作不能撤回，后续不再执行'},token,isCurrent,ensureCurrent)
+      if(saved)for(const listener of invalidationListeners.get(redis)?.get(id)||[])listener()
+      await ensureCurrent?.()
+      return saved
+    },ensureCurrent)
   }
-  async function updateActive(id:string,change:(current:CommitmentData)=>CommitmentData|null,isCurrent?:()=>boolean):Promise<boolean>{
+  async function updateActive(id:string,change:(current:CommitmentData)=>CommitmentData|null|Promise<CommitmentData|null>,isCurrent?:()=>boolean,ensureCurrent?:()=>Promise<void>):Promise<boolean>{
     return withLock(async token=>{
-      const current=await getCommitment(id)
+      const current=await getCommitment(id,ensureCurrent)
       if(!current||current.status!=='active')return false
-      const next=change(current)
+      const next=await change(current)
+      await ensureCurrent?.()
       if(!next)return false
-      return await persist({...next,revision:(current.revision||0)+1},token,isCurrent)
-    })
+      return await persist({...next,revision:(current.revision||0)+1},token,isCurrent,ensureCurrent)
+    },ensureCurrent)
   }
-  async function takeDueCommitments(at:number,canClaim?:(c:CommitmentData)=>boolean):Promise<CommitmentData[]>{
+  async function takeDueCommitments(at:number,canClaim?:(c:CommitmentData)=>boolean,limit=Infinity):Promise<CommitmentData[]>{
     if(!(await getPendingList()).some(item=>item.next_run_at<=at))return []
     return withLock(async token=>{
       const out:CommitmentData[]=[]
@@ -157,13 +192,15 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
         if(c.run_id&&(c.lease_until||0)>at)continue
         if(c.run_id&&c.execution_state==='executing'){
           const reason='上次执行中断且结果未知，已停止自动重发'
-          await persist({...withoutRun(c),status:'unknown',last_result:reason,next_run_at:0,revision:(c.revision||0)+1},token)
+          await persist({...withoutRun(c),status:'unknown',last_result:reason,next_run_at:0,revision:(c.revision||0)+1,
+            ...(c.deferredAction?.state==='executing'?{deferredAction:{...c.deferredAction,state:'unknown',settledAt:at,resultCode:'interrupted'}}:{})},token)
           await appendFailLogUnlocked({id:c.id,intent:c.intent,group_id:c.group_id,reason,at})
           continue
         }
         const claimed:CommitmentData={...c,run_id:randomUUID(),lease_until:at+COMMITMENT_LEASE_MS,execution_state:'claimed',revision:(c.revision||0)+1}
         await persist(claimed,token)
         out.push(claimed)
+        if(out.length>=limit)break
       }
       return out
     })
@@ -196,23 +233,129 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
       const current=await getCommitment(c.id)
       if(!current||current.status!=='active'||!c.run_id||current.run_id!==c.run_id)return false
       // Preserve concurrent renewal fields. Only the owner of this run may settle it.
-      await persist({...withoutRun(c),expiry_at:current.expiry_at,renewal_asked_at:current.renewal_asked_at||0,revision:(current.revision||0)+1},token)
+      await persist({...withoutRun(c),...(current.deferredAction?{deferredAction:current.deferredAction}:{}),expiry_at:current.expiry_at,renewal_asked_at:current.renewal_asked_at||0,revision:(current.revision||0)+1},token)
       return true
     })
+  }
+  /** A cancellation fence shared by local workers using this same storage port. */
+  function onInvalidated(id:string,listener:()=>void):()=>void {
+    let records=invalidationListeners.get(redis)
+    if(!records){records=new Map();invalidationListeners.set(redis,records)}
+    let listeners=records.get(id)
+    if(!listeners){listeners=new Set();records.set(id,listeners)}
+    listeners.add(listener)
+    return ()=>{listeners!.delete(listener);if(!listeners!.size)records!.delete(id)}
+  }
+  async function isClaimCurrent(c:CommitmentData,at:number):Promise<boolean>{
+    const current=await getCommitment(c.id)
+    return current?.status==='active'&&!!c.run_id&&current.run_id===c.run_id&&(current.lease_until||0)>at
+  }
+  /** Persist the one-shot marker before dispatch, and preserve it through reminder retries. */
+  async function updateDeferredActionClaim(c:CommitmentData,expected:AgentDeferredActionData['state'],next:AgentDeferredActionData,at:number,isCurrent?:()=>boolean):Promise<boolean>{
+    return withLock(async token=>{
+      const current=await getCommitment(c.id)
+      if(!current||current.status!=='active'||!c.run_id||current.run_id!==c.run_id||(current.lease_until||0)<=at||
+        !current.deferredAction||current.deferredAction.state!==expected||current.deferredAction.grant.id!==next.grant.id||current.deferredAction.grant.actionHash!==next.grant.actionHash)return false
+      const valid=expected==='pending'?next.state==='executing':expected==='executing'&&['succeeded','failed','unknown'].includes(next.state)
+      if(!valid)throw new Error('延期动作状态不能回退或重放')
+      const decoded=decodeAgentDeferredAction(next)
+      if(next.state==='unknown')return await persist({...withoutRun(current),deferredAction:decoded,status:'unknown',next_run_at:0,last_run_at:at,last_result:decoded.resultCode,revision:(current.revision||0)+1},token,isCurrent)
+      return await persist({...current,deferredAction:decoded,execution_state:next.state==='executing'?'executing':'claimed'},token,isCurrent)
+    })
+  }
+  /** Terminal deferred records remain available to inspect/cancel an unresolved delegation. */
+  async function listDeferredActions(ensureCurrent?:()=>Promise<void>):Promise<CommitmentData[]>{
+    if(!redis.scanIterator)throw new Error('延期提醒列表需要存储扫描端口')
+    const out:CommitmentData[]=[]
+    await ensureCurrent?.()
+    const iterator=await redis.scanIterator({MATCH:commitmentDetailKey('*'),COUNT:100})
+    await ensureCurrent?.()
+    for await(const batch of iterator){
+      await ensureCurrent?.()
+      for(const key of Array.isArray(batch)?batch:[batch]){
+        const c=await getCommitment(key.slice(commitmentDetailKey('').length),ensureCurrent)
+        if(c?.deferredAction)out.push(c)
+      }
+    }
+    return out.sort((a,b)=>a.created_at-b.created_at||a.id.localeCompare(b.id))
+  }
+  /** Read unresolved records without repairing indexes or recreating claims. */
+  async function listManagementCommitments(ensureCurrent:()=>Promise<void>):Promise<CommitmentData[]>{
+    if(!redis.scanIterator)throw new Error('承诺管理列表需要存储扫描端口')
+    await ensureCurrent()
+    const source=await redis.scanIterator({MATCH:commitmentDetailKey('*'),COUNT:100})
+    await ensureCurrent()
+    const iterator=source[Symbol.asyncIterator](),seen=new Set<string>(),out:CommitmentData[]=[]
+    for(;;){
+      await ensureCurrent()
+      const batch=await iterator.next()
+      await ensureCurrent()
+      if(batch.done)break
+      for(const key of Array.isArray(batch.value)?batch.value:[batch.value]){
+        if(seen.has(key))continue
+        seen.add(key)
+        const id=key.slice(commitmentDetailKey('').length),c=await getCommitment(id,ensureCurrent)
+        if(c&&c.id!==id)throw new Error('承诺详情身份不符')
+        if(c&&(c.status==='active'||c.status==='unknown'))out.push(c)
+      }
+    }
+    return out.sort((a,b)=>a.created_at-b.created_at||a.id.localeCompare(b.id))
   }
   async function requeueForRetry(c:CommitmentData,at:number):Promise<'retrying'|'failed'|'cancelled'>{
     const retry=c.retry_count+1,failed=retry>=3
     const saved=await commitRunOutcome({...c,retry_count:retry,status:failed?'failed':'active',next_run_at:failed?0:at+10000,last_result:c.last_result||'重试超限'})
     return !saved?'cancelled':failed?'failed':'retrying'
   }
-  type Failure={id?:string;intent?:string;group_id?:string;reason?:string;at?:number}
-  async function readFailLog():Promise<Failure[]>{
+  async function readFailLog():Promise<CommitmentFailure[]>{
     const raw=await redis.get(FAILLOG_KEY)
     if(!raw)return []
     try{const parsed:unknown=JSON.parse(raw);return Array.isArray(parsed)?parsed.filter(v=>v!==null&&typeof v==='object'):[]}catch{logger.warn('[承诺] 失败日志损坏，按空处理');return []}
   }
-  async function appendFailLogUnlocked(entry:Failure){await redis.set(FAILLOG_KEY,JSON.stringify([entry,...await readFailLog()].slice(0,FAILLOG_LIMIT)))}
-  async function appendFailLog(entry:Failure){await withLock(()=>appendFailLogUnlocked(entry))}
+  async function readManagementFailLog(ensureCurrent?:()=>Promise<void>):Promise<unknown[]>{
+    return (await readFailureDocument(ensureCurrent)).entries
+  }
+  async function readFailureDocument(ensureCurrent?:()=>Promise<void>):Promise<{raw:string|null;entries:unknown[]}>{
+    await ensureCurrent?.()
+    const raw=await redis.get(FAILLOG_KEY)
+    await ensureCurrent?.()
+    const entries:unknown=raw===null?[]:JSON.parse(raw)
+    if(!Array.isArray(entries))throw new Error('承诺失败日志损坏，停止修改')
+    return {raw,entries}
+  }
+  async function appendFailLogUnlocked(entry:CommitmentFailure){
+    // Only this store can attach provenance, and only from the original detail.
+    const task=entry.id?await getCommitment(entry.id):null
+    const {id,intent,group_id,reason,at}=entry
+    const proven=task?.scope&&task.bindingIdentity&&task.id===id&&task.group_id===group_id&&task.intent===intent
+    const next={id,intent,group_id,reason,at,failureId:randomUUID(),
+      ...(proven?{scopeKey:agentConversationKey(task.scope!),bindingIdentity:task.bindingIdentity}:{})}
+    const current=await readFailureDocument()
+    await redis.set(FAILLOG_KEY,JSON.stringify([next,...current.entries].slice(0,FAILLOG_LIMIT)))
+  }
+  async function appendFailLog(entry:CommitmentFailure){await withLock(()=>appendFailLogUnlocked(entry))}
+  /** Delete only exact rows captured by an authorized request, preserving new rows. */
+  async function clearManagementFailLog(selected:readonly unknown[],ensureCurrent:()=>Promise<void>):Promise<boolean>{
+    if(!selected.length)return false
+    const expected=selected.map(entry=>JSON.stringify(entry))
+    return withLock(async token=>{
+      for(let attempt=0;attempt<16;attempt++){
+        const current=await readFailureDocument(ensureCurrent),counts=new Map<string,number>()
+        for(const entry of expected)counts.set(entry,(counts.get(entry)||0)+1)
+        const retained=current.entries.filter(entry=>{
+          const key=JSON.stringify(entry),remaining=counts.get(key)||0
+          if(!remaining)return true
+          counts.set(key,remaining-1);return false
+        })
+        await ensureCurrent()
+        if(retained.length===current.entries.length)return false
+        const saved=await redis.eval(WRITE_FAILURES,{keys:[COMMITMENT_LOCK_KEY,FAILLOG_KEY],arguments:[token,current.raw??'',JSON.stringify(retained)]})
+        await ensureCurrent()
+        if(Number(saved)===1)return true
+        if(Number(saved)===-1)throw new Error('承诺锁已失效，失败日志未清理')
+      }
+      throw new Error('承诺失败日志正在更新')
+    },ensureCurrent)
+  }
   async function clearFailLog(){await withLock(async()=>{await redis.del(FAILLOG_KEY)})}
   // One-time legacy repair: old versions could remove a due ID before executing it.
   async function recoverLegacyIndex(){
@@ -232,5 +375,5 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
       }
     }
   }
-  return {createCommitment,getCommitment,cancelCommitment,takeDueCommitments,commitRunOutcome,requeueForRetry,listActiveCommitments,appendFailLog,readFailLog,clearFailLog,updateActive,refreshClaim,releaseUnstartedClaim,expireClaim,recoverLegacyIndex}
+  return {createCommitment,getCommitment,cancelCommitment,takeDueCommitments,commitRunOutcome,requeueForRetry,listActiveCommitments,appendFailLog,readFailLog,clearFailLog,updateActive,refreshClaim,releaseUnstartedClaim,expireClaim,recoverLegacyIndex,onInvalidated,isClaimCurrent,updateDeferredActionClaim,listDeferredActions,listManagementCommitments,readManagementFailLog,clearManagementFailLog}
 }

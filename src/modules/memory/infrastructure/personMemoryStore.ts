@@ -329,6 +329,8 @@ async function stagePersonMemoryIdentity(identity: PersonMemoryIdentity, destina
 /** Durable facts and audience-aware projections; read/write APIs never fall back to legacy unscoped profiles. */
 export function createPersonMemoryStore({ redis, now = Date.now }: { redis: PersonMemoryRedis; now?: () => number }):
   PersonMemoryStore & {
+    /** Exact-source management view; portable facts from other scenes are never hydrated. */
+    listScene(input: PersonMemoryQuery): Promise<PersonMemoryQueryResult>
     applyPrivacyCommand(input: PersonMemorySubject & { command: PersonMemoryCommand; scene?: PersonMemoryScene },
       receipt: PersonMemoryCommandReceipt, isCurrent: () => boolean): Promise<void>
   } {
@@ -504,14 +506,15 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
     }, isCurrent)
   }
 
-  async function query(input: PersonMemoryQuery, requestedIds?: string[]): Promise<PersonMemoryQueryResult> {
+  async function query(input: PersonMemoryQuery, requestedIds?: string[], exactScene = false): Promise<PersonMemoryQueryResult> {
     requireSubject(input)
     requireScene(input.scene)
     const at = input.now !== undefined && finiteAt(input.now) ? input.now : now(), offset = Math.max(0, Math.floor(input.offset || 0)), limit = Math.min(50, Math.max(1, Math.floor(input.limit || 12)))
     const { person, scope } = await load(input)
     const initial = redactions(person, scope)
     const initialTombstones = new Set(initial.tombstones.map(item => item.id))
-    let candidates = person.index.filter(entry => (!requestedIds || requestedIds.includes(entry.id))
+    let candidates = person.index.filter(entry => (!exactScene || samePersonMemoryScene(entry.source.scene, input.scene))
+      && (!requestedIds || requestedIds.includes(entry.id))
       && canUsePersonMemory(entry, input, at) && !entryIsRedacted(entry, initial, initialTombstones))
     const initialPeople = new Map<string, Promise<PersonMemoryRedactions>>()
     const allowed = await Promise.all(candidates.map(entry => participantsAllow(entry, scope, redis, initialPeople)))
@@ -523,6 +526,7 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
       if (raw === null || raw === undefined) return undefined
       const entry = json(raw) as PersonMemoryEntry
       if (!entry || entry.id !== index.id || personMemoryDraftError(entry) || !sameIdentity(entry.identity, input.identity) || entry.subjectId !== input.subjectId) throw new Error('人物记忆详情损坏')
+      if (exactScene && !memoryDetailMatches(index, entry)) throw new Error('人物记忆索引与详情来源不一致')
       return entry
     }))
     // Deletions and revocations during hydration must also affect the returned projection.
@@ -531,6 +535,7 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
     const freshTombstones = new Set(snapshot.tombstones.map(item => item.id))
     const activeIds = new Set(fresh.person.index.filter(item => !item.superseded).map(item => item.id))
     const active = detail.filter((item): item is PersonMemoryEntry => Boolean(item && activeIds.has(item.id)
+      && (!exactScene || samePersonMemoryScene(item.source.scene, input.scene))
       && canUsePersonMemory(item, input, at) && !entryIsRedacted(item, snapshot, freshTombstones)))
     const freshPeople = new Map<string, Promise<PersonMemoryRedactions>>()
     const stillAllowed = await Promise.all(active.map(entry => participantsAllow(entry, fresh.scope, redis, freshPeople)))
@@ -675,7 +680,8 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
     return out
   }
   return {
-    remember, registerSource, query, list: query, read: input => query(input, input.ids), getRedactions, getSceneRedactions,
+    remember, registerSource, query, list: query, listScene: input => query(input, undefined, true),
+    read: input => query(input, input.ids), getRedactions, getSceneRedactions,
     forget, revokeSource, forgetScene, setEnabled, scenes, identities, listSubjects, applyPrivacyCommand,
   }
 }

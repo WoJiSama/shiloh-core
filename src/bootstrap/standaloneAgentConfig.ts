@@ -1,4 +1,3 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import YAML from 'yaml'
@@ -10,24 +9,38 @@ import type { MidtermMemoryConfig, EpisodicMemoryConfig } from '../contracts/con
 import type { GroupMemoryConfig } from '../contracts/groupMemory.js'
 import type { AgentSemanticMemoryConfig } from '../contracts/semanticMemory.js'
 import type { AgentHistoryConfig } from '../contracts/agentHistory.js'
+import type { AgentDiceConfig } from '../contracts/agentDice.js'
 import type { AgentImageBackend } from '../modules/tools/infrastructure/agentImageTools.js'
 import type { AgentRenderingConfig } from '../modules/tools/infrastructure/agentRenderingTools.js'
 import type { AgentMcpServerConfig } from '../modules/tools/infrastructure/agentMcpTools.js'
 import { parseOneBotReverseUrl, parseOneBotUrl } from '../adapters/oneBotConnection.js'
 import { qqId, validateQqBindingAddress } from '../adapters/qqIdentity.js'
-import { createPersonaLibrary } from '../modules/conversation/infrastructure/personaLibrary.js'
+import { normalizePersonaEntry, PERSONA_ENTRY_FIELDS } from '../modules/conversation/infrastructure/personaLibrary.js'
 import { decodeHostConfig } from '../modules/host/infrastructure/hostConfig.js'
 import type { ForbiddenConfig } from '../modules/conversation/domain/forbiddenWordGuard.js'
 import { resolveConfiguredAgentPersona } from '../modules/runtime/application/agentPersona.js'
-import { conversationAddressKey } from '../modules/runtime/domain/agentBindings.js'
+import { conversationAddressKey, createAgentBindingDirectory } from '../modules/runtime/domain/agentBindings.js'
 import { groupTextToolNames, type GroupTextToolName } from '../modules/conversation/infrastructure/groupTextTools.js'
-import { createAgentBindingConfig } from '../modules/runtime/infrastructure/agentBindingConfig.js'
 import { readStandaloneVoiceConfig } from './standaloneVoiceConfig.js'
 import type { PersonaGuardConfig } from '../contracts/persona.js'
 import type { AgentMusicConfig } from '../modules/media/infrastructure/agentMusicProvider.js'
 import { validateMusicExtractionConfig } from '../modules/media/domain/musicExtractionConfig.js'
 import { readStandaloneMediaRelayConfig } from './standaloneMediaRelay.js'
 import { readStandaloneTorrentConfig } from './standaloneTorrent.js'
+import { readStandaloneGroupLogConfig } from './standaloneGroupLog.js'
+import { readStandaloneDiceEngine } from './standaloneDice.js'
+import { readStandalonePixivToolsConfig } from './standalonePixiv.js'
+import { readStandaloneVideoAnalysisConfig } from './standaloneVideoAnalysis.js'
+import { readStandaloneVideoSearchConfig } from './standaloneVideoSearch.js'
+import { readStandaloneBilibiliQualityConfig } from './standaloneBilibiliQuality.js'
+import { readStandaloneQqActionsConfig, readStandaloneQqActionsConnection } from './standaloneQqActions.js'
+import { readStandaloneDeferredActionsConfig } from './standaloneDeferredActions.js'
+import { resolveAgentTextTriggerConfig } from '../modules/conversation/infrastructure/agentTextTriggerConfig.js'
+import { readStandaloneAgentConsoleConfig } from './standaloneAgentConsoleConfig.js'
+import type { ConfigSources, SourceSnapshot } from './standaloneAgentConfigSources.js'
+import type { ConsoleModelSlot, ConsoleModelView, ValidatedConsoleCandidate } from './standaloneAgentConsolePersistence.js'
+import { inspectStandaloneAgentSourceSnapshot, readStandaloneAgentSourceSnapshot } from './standaloneAgentConfigSources.js'
+import type { AgentConsoleJson } from '../contracts/agentConsole.js'
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('独立宿主配置应为对象')
@@ -39,9 +52,9 @@ function envName(value: unknown): string {
   return value
 }
 
-function readModel(value: unknown, section: 'model' | 'vision' | 'characterConsistency' | 'personMemoryExtraction' | 'midtermSummary' | 'groupMemoryExtraction' | 'tools.search' | 'tools.images.generation' | 'tools.images.edit' | 'tools.modrinth.translation' | 'tools.rendering.mindMap', env: NodeJS.ProcessEnv, requireCredentials: boolean) {
+function readModel(value: unknown, section: 'model' | 'vision' | 'characterConsistency' | 'personMemoryExtraction' | 'midtermSummary' | 'groupMemoryExtraction' | 'textTriggerModel' | 'tools.search' | 'tools.images.generation' | 'tools.images.edit' | 'tools.modrinth.translation' | 'tools.rendering.mindMap', env: NodeJS.ProcessEnv, requireCredentials: boolean) {
   const model = object(value)
-  if (['characterConsistency', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction'].includes(section) && Object.keys(model).some(key => !['baseUrl', 'name', 'apiKeyEnv'].includes(key))) {
+  if (['characterConsistency', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction', 'textTriggerModel'].includes(section) && Object.keys(model).some(key => !['baseUrl', 'name', 'apiKeyEnv'].includes(key))) {
     throw new Error(`${section} 仅支持 baseUrl、name 和 apiKeyEnv`)
   }
   let apiUrl: URL
@@ -79,6 +92,19 @@ function readHistory(value: unknown): Required<AgentHistoryConfig> {
     maxMessagesPerConversation: input.maxMessagesPerConversation ?? 1000,
     timeoutMs: input.timeoutMs ?? 5000,
   }
+}
+
+function readDice(value: unknown): Required<AgentDiceConfig> {
+  const { engine: _engine, ...legacy } = value === undefined ? {} : object(value)
+  const input: Partial<AgentDiceConfig> = readMemorySection(legacy, 'dice', ['enabled'], {
+    maxDiceCount: [1, 10_000], maxDiceSides: [2, 100_000_000], maxRounds: [1, 1000],
+  })
+  return Object.freeze({
+    enabled: input.enabled === true,
+    maxDiceCount: input.maxDiceCount ?? 100,
+    maxDiceSides: input.maxDiceSides ?? 100_000,
+    maxRounds: input.maxRounds ?? 20,
+  })
 }
 
 interface StandaloneSemanticModel {
@@ -231,8 +257,19 @@ function readMcp(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: boo
 
 function readTools(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: boolean, directory: string) {
   const config = value === undefined ? {} : object(value)
-  if (Object.keys(config).some(key => !['search', 'web', 'images', 'mcp', 'github', 'modrinth', 'rendering', 'excel', 'files', 'voice', 'music'].includes(key))) throw new Error('tools 仅支持 search、web、images、mcp、github、modrinth、rendering、excel、files、voice 和 music')
+  if (Object.keys(config).some(key => !['search', 'web', 'images', 'mcp', 'github', 'modrinth', 'rendering', 'excel', 'files', 'voice', 'music', 'pixiv', 'videoAnalysis', 'videoSearch', 'interactions', 'qqActions', 'deferredActions'].includes(key))) throw new Error('tools 含不支持的工具配置')
+  const qqActions = readStandaloneQqActionsConfig(config.qqActions)
+  const deferredActions = readStandaloneDeferredActionsConfig(config.deferredActions)
   const voice = readStandaloneVoiceConfig(config.voice, env, requireCredentials)
+  const videoAnalysis = readStandaloneVideoAnalysisConfig(config.videoAnalysis, env, requireCredentials)
+  const videoSearch = readStandaloneVideoSearchConfig(config.videoSearch)
+  const pixiv = readStandalonePixivToolsConfig(config.pixiv, env, requireCredentials)
+  let interactions: Readonly<{ enabled: true }> | undefined
+  if (config.interactions !== undefined) {
+    const input = object(config.interactions)
+    if (Object.keys(input).some(key => key !== 'enabled') || typeof input.enabled !== 'boolean') throw new Error('tools.interactions 仅支持布尔字段 enabled')
+    if (input.enabled) interactions = Object.freeze({ enabled: true })
+  }
   let music: AgentMusicConfig | undefined
   if (config.music !== undefined) {
     const input = object(config.music)
@@ -359,20 +396,105 @@ function readTools(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: b
     if (!Object.keys(images).length) images = undefined
   }
   const mcp = config.mcp === undefined ? undefined : readMcp(config.mcp, env, requireCredentials, directory)
-  return { ...(search ? { search } : {}), ...(web ? { web } : {}), ...(images ? { images } : {}), ...(mcp ? { mcp } : {}), ...(github ? { github } : {}), ...(modrinth ? { modrinth } : {}), ...(rendering ? { rendering } : {}), ...(excel ? { excel } : {}), ...(files ? { files } : {}), ...(voice ? { voice } : {}), ...(music ? { music } : {}) }
+  return { qqActions, deferredActions, ...(search ? { search } : {}), ...(web ? { web } : {}), ...(images ? { images } : {}), ...(mcp ? { mcp } : {}), ...(github ? { github } : {}), ...(modrinth ? { modrinth } : {}), ...(rendering ? { rendering } : {}), ...(excel ? { excel } : {}), ...(files ? { files } : {}), ...(voice ? { voice } : {}), ...(music ? { music } : {}), ...(pixiv.enabled ? { pixiv } : {}), ...(videoAnalysis ? { videoAnalysis } : {}), ...(videoSearch.enabled ? { videoSearch } : {}), ...(interactions ? { interactions } : {}) }
 }
 
-export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, options?: { requireCredentials?: boolean }) {
+function parseSource(source: string, label: string): Record<string, unknown> {
+  if (typeof source !== 'string' || Buffer.byteLength(source) > 2 * 1024 * 1024) throw new Error(`${label} 配置源无效`)
+  const document = YAML.parseDocument(source)
+  if (document.errors.length) throw new Error(`无法解析 ${label}`)
+  return object(document.toJS())
+}
+
+function safeJson(value: unknown, depth = 0): AgentConsoleJson {
+  if (depth > 32) throw new Error('人设 JSON 嵌套过深')
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (Array.isArray(value)) return Object.freeze(value.map(item => safeJson(item, depth + 1)))
+  if (value && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, child]) => [key, safeJson(child, depth + 1)])))
+  }
+  throw new Error('人设必须使用安全 JSON 值')
+}
+function safeJsonObject(value: Record<string, unknown>): Readonly<Record<string, AgentConsoleJson>> {
+  return safeJson(value) as Readonly<Record<string, AgentConsoleJson>>
+}
+
+/** Strict source templates; never fall back to a cached library after invalid YAML or references. */
+function parsedPersonaLibrary(source: string | undefined, base: { name?: string; [key: string]: unknown }) {
+  const raw = source === undefined ? {} : parseSource(source, 'persona-library.yaml')
+  const entries = raw.personas === undefined ? [] : raw.personas
+  if (!Array.isArray(entries) || entries.length > 500) throw new Error('人设库 personas 必须是不超过 500 项的列表')
+  const byId = new Map<string, ReturnType<typeof normalizePersonaEntry>>(), names = new Set<string>()
+  const text = (value: unknown, label: string, maximum = 32768, empty = true): string => {
+    if (typeof value !== 'string' || value.length > maximum || !empty && !value.trim() || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) throw new Error(`人设库 ${label} 无效`)
+    return value
+  }
+  for (const item of entries) {
+    const entry = object(item), id = text(entry.id, 'id', 128, false), name = text(entry.name, 'name', 200, false).trim()
+    if (id.trim() !== id || /[\r\n\t]/u.test(id) || id === 'default' || byId.has(id) || names.has(name.toLowerCase())) throw new Error('人设库模板 ID、名字重复或字段无效')
+    const projected: Record<string, unknown> = {}
+    for (const field of PERSONA_ENTRY_FIELDS) {
+      if (!Object.hasOwn(entry, field)) continue
+      const value = entry[field]
+      if (['speechStyle', 'preferences', 'boundaries'].includes(field)) {
+        if (!Array.isArray(value) || value.length > 256) throw new Error(`人设库 ${field} 必须是有界列表`)
+        for (const line of value) text(line, field, 1000)
+      } else if (field === 'moods') {
+        if (!Array.isArray(value) || value.length > 100) throw new Error('人设库 moods 必须是有界列表')
+        for (const item of value) {
+          const mood = object(item)
+          text(mood.name, 'moods.name', 200, false); text(mood.hint, 'moods.hint', 2000)
+          if (mood.probability !== undefined && (typeof mood.probability !== 'number' || !Number.isFinite(mood.probability) || mood.probability < 0 || mood.probability > 1)) throw new Error('人设库 moods.probability 无效')
+        }
+      } else text(value, field, field === 'name' ? 200 : 32768, field !== 'name')
+      // Opaque persisted extensions stay in their source document, outside runtime prompts and public views.
+      projected[field] = field === 'moods' ? (value as unknown[]).map(item => {
+        const mood = object(item)
+        return { name: mood.name, hint: mood.hint, ...(mood.probability === undefined ? {} : { probability: mood.probability }) }
+      }) : value
+    }
+    byId.set(id, normalizePersonaEntry(projected)); names.add(name.toLowerCase())
+  }
+  const exists = (value: unknown, allowEmpty = false) => {
+    if (allowEmpty && value === '') return
+    if (typeof value !== 'string' || value.trim() !== value || value !== 'default' && !byId.has(value)) throw new Error('人设库绑定引用的人设不存在')
+  }
+  for (const key of ['groupBindings', 'accountBindings']) {
+    if (raw[key] === undefined) continue
+    for (const [id, value] of Object.entries(object(raw[key]))) {
+      if (!id || id.trim() !== id || /[\u0000-\u001f\u007f]/u.test(id)) throw new Error('人设库绑定标识无效')
+      exists(value)
+    }
+  }
+  if (raw.privateBinding !== undefined) exists(raw.privateBinding, true)
+  return { detailById(id: string) {
+    if (id === 'default') return { id, source: 'default', persona: { ...base } }
+    const entry = byId.get(id)
+    return entry ? { id, source: 'library', persona: { ...base, ...entry } } : null
+  } }
+}
+
+function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, options: { requireCredentials?: boolean } | undefined, input: {
+  sources: ConfigSources; bindingRevision: string; hostVersion: string
+  readBindings?(initial: ReturnType<typeof createAgentBindingDirectory>): ReturnType<typeof createAgentBindingDirectory> | undefined
+  isConfigCurrent?(): boolean
+}) {
   const directory = path.dirname(file)
-  const hostSource = fs.readFileSync(file, 'utf8')
-  const document = YAML.parseDocument(hostSource)
-  if (document.errors.length) throw new Error(`无法解析 ${path.basename(file)}`)
-  const raw = object(document.toJS())
+  const raw = parseSource(input.sources.host, path.basename(file))
   if (raw.version !== 1 || typeof raw.instance !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(raw.instance)) throw new Error('独立宿主配置需要 version: 1 和有效的 instance')
   const instance = raw.instance
   const dataDir = path.resolve(directory, typeof raw.dataDir === 'string' && raw.dataDir ? raw.dataDir : `data/${instance}`)
+  const logging = raw.logging === undefined ? {} : object(raw.logging)
+  if (Object.keys(logging).some(key => !['maxFileBytes', 'maxFiles', 'retentionDays'].includes(key)) ||
+      (['maxFileBytes', 'maxFiles', 'retentionDays'] as const).some((key, index) => logging[key] !== undefined &&
+        (!Number.isSafeInteger(logging[key]) || Number(logging[key]) < [65536, 1, 1][index]! || Number(logging[key]) > [67108864, 128, 365][index]!))) {
+    throw new Error('logging 需要有界的文件大小、文件数量及保留天数')
+  }
+  const operationLogging = { maxFileBytes: Number(logging.maxFileBytes ?? 8 * 1024 * 1024), maxFiles: Number(logging.maxFiles ?? 14), retentionDays: Number(logging.retentionDays ?? 14) }
   const requireCredentials = options?.requireCredentials !== false
-  const { apiUrl, model: modelName, apiKey, apiKeyEnv } = readModel(raw.model, 'model', env, requireCredentials)
+  const mainModel = readModel(raw.model, 'model', env, requireCredentials)
+  const { apiUrl, model: modelName, apiKey, apiKeyEnv } = mainModel
   const vision = raw.vision === undefined ? undefined : readModel(raw.vision, 'vision', env, requireCredentials)
   const personMemoryExtraction = raw.personMemoryExtraction === undefined ? undefined
     : readModel(raw.personMemoryExtraction, 'personMemoryExtraction', env, requireCredentials)
@@ -385,6 +507,10 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
   })
   const semanticMemory = readSemanticMemory(raw.semanticMemory, env, requireCredentials)
   const history = readHistory(raw.history)
+  const dice = readDice(raw.dice)
+  const textTrigger = resolveAgentTextTriggerConfig(raw.textTrigger)
+  const textTriggerModel = raw.textTriggerModel === undefined ? undefined : readModel(raw.textTriggerModel, 'textTriggerModel', env, requireCredentials)
+  const consoleConfig = readStandaloneAgentConsoleConfig(raw.console, { directory, dataDir, env, requireCredentials })
   const musicExtraction = validateMusicExtractionConfig(raw.musicExtraction)
   const midtermMemory: MidtermMemoryConfig = readMemorySection(raw.midtermMemory, 'midtermMemory', ['enabled'], {
     minMessages: [4, 200], debounceMs: [5000, 3_600_000], maxSummaryChars: [120, 4000], bufferMaxLines: [50, 1000], retentionDays: [1, 30],
@@ -421,15 +547,26 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
     : readModel(raw.characterConsistency, 'characterConsistency', env, reviewEnabled && requireCredentials)
   if (reviewModel?.apiKeyEnv === apiKeyEnv) throw new Error('characterConsistency.apiKeyEnv 必须与 model.apiKeyEnv 分开声明')
   const privateChat = raw.privateChat === undefined ? {} : object(raw.privateChat)
-  if (Object.keys(privateChat).some(key => key !== 'enabled') || (privateChat.enabled !== undefined && typeof privateChat.enabled !== 'boolean')) {
-    throw new Error('独立宿主的 privateChat 仅支持布尔字段 enabled，允许的好友由会话绑定声明')
+  if (Object.keys(privateChat).some(key => !['enabled', 'allowTools'].includes(key)) || (privateChat.enabled !== undefined && typeof privateChat.enabled !== 'boolean')) {
+    throw new Error('独立宿主的 privateChat 仅支持 enabled 和 allowTools，允许的好友由会话绑定声明')
   }
+  const privateAllowTools = privateChat.allowTools === undefined ? [] : privateChat.allowTools
+  if (!Array.isArray(privateAllowTools) || privateAllowTools.some(tool => tool !== 'likeTool' && tool !== 'recallTool') ||
+      new Set(privateAllowTools).size !== privateAllowTools.length) throw new Error('privateChat.allowTools 只接受 likeTool、recallTool，工具名不能重复')
+  const privateTextTools: readonly ('likeTool' | 'recallTool')[] = Object.freeze([...privateAllowTools])
   if (raw.systemContent !== undefined && typeof raw.systemContent !== 'string') throw new Error('systemContent 必须是文本')
   const systemContent = typeof raw.systemContent === 'string' ? raw.systemContent : ''
-  const readBindings = createAgentBindingConfig(path.join(directory, 'agent-bindings.yaml'), validateQqBindingAddress)
-  const bindings = readBindings()
-  if (!bindings) throw new Error('独立宿主需要同目录的 agent-bindings.yaml')
-  const library = createPersonaLibrary({ libraryPath: path.join(directory, 'persona-library.yaml'), getBasePersona: () => hostConfig.persona ?? {} })
+  const rawBindings = parseSource(input.sources.bindings, 'agent-bindings.yaml')
+  const bindings = createAgentBindingDirectory(rawBindings, input.bindingRevision, validateQqBindingAddress)
+  const diceEngineConfig = readStandaloneDiceEngine(raw.dice, bindings.listBindings())
+  const readBindings = () => input.readBindings ? input.readBindings(bindings) : bindings
+  const library = parsedPersonaLibrary(input.sources.personas, hostConfig.persona ?? {})
+  for (const value of rawBindings.agents as unknown[]) {
+    const agent = object(value)
+    if (!library.detailById(String(agent.personaId))) throw new Error('角色绑定引用的人设不存在')
+    if (library.detailById('agent:' + String(agent.id))) throw new Error('角色状态标识与现有人设 ID 冲突')
+  }
+  for (const binding of bindings.listBindings()) resolveConfiguredAgentPersona(binding, library.detailById)
   if (!Array.isArray(raw.connections) || !raw.connections.length) throw new Error('独立宿主配置需要至少一个 connections 条目')
   const accountIds = new Set<string>()
   const connections = raw.connections.map(value => {
@@ -445,7 +582,8 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
     }
     const reverse = item.transport === 'reverse-websocket'
     const url = (reverse ? parseOneBotReverseUrl : parseOneBotUrl)(typeof item.url === 'string' ? item.url : '').href
-    const endpoint = { connection, url, ...(reverse ? { transport: 'reverse-websocket' as const } : {}) }
+    const qqActions = readStandaloneQqActionsConnection(item.qqActions)
+    const endpoint = { connection, url, ...(reverse ? { transport: 'reverse-websocket' as const } : {}), ...(qqActions ? { qqActions } : {}) }
     if (item.accessTokenEnv === undefined) {
       if (reverse) throw new Error('反向 OneBot 连接必须声明 accessTokenEnv')
       return endpoint
@@ -459,9 +597,24 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
     return { ...endpoint, accessToken }
   })
   const mediaRelay = readStandaloneMediaRelayConfig(raw.mediaRelay, connections.map(({ connection }) => connection), env, requireCredentials)
+  const bilibiliQuality = readStandaloneBilibiliQualityConfig(raw.bilibiliQuality, connections.map(({ connection }) => connection))
+  if (tools.pixiv?.enabled && (mediaRelay.bridges.length !== connections.length || connections.some(({ connection }) => !mediaRelay.bridges.some(bridge => bridge.connectionId === connection.id)))) {
+    throw new Error('启用 tools.pixiv 需要为所有连接配置 mediaRelay.bridges')
+  }
+  if (bilibiliQuality.enabled && (mediaRelay.bridges.length !== connections.length || connections.some(({ connection }) => !mediaRelay.bridges.some(bridge => bridge.connectionId === connection.id)))) {
+    throw new Error('启用 bilibiliQuality 需要为所有连接配置 mediaRelay.bridges')
+  }
+  const videoSearchAttachments = tools.videoSearch?.enabled && tools.videoSearch.attachments === true
+  if (videoSearchAttachments && (mediaRelay.bridges.length !== connections.length || connections.some(({ connection }) => !mediaRelay.bridges.some(bridge => bridge.connectionId === connection.id)))) {
+    throw new Error('启用 tools.videoSearch.attachments 需要为所有连接配置 mediaRelay.bridges')
+  }
   const torrentDownload = readStandaloneTorrentConfig(raw.torrentDownload, connections.map(({ connection }) => connection))
-  if (mediaRelay.enabled && torrentDownload.enabled && mediaRelay.bridges.some(media => torrentDownload.bridges.some(torrent =>
+  if ((mediaRelay.enabled || tools.pixiv?.enabled || bilibiliQuality.enabled || videoSearchAttachments) && torrentDownload.enabled && mediaRelay.bridges.some(media => torrentDownload.bridges.some(torrent =>
     torrent.listen.host === media.listen.host && torrent.listen.port === media.listen.port))) throw new Error('媒体搬运和磁链 ZIP 桥须使用不同监听地址')
+  const groupLog = readStandaloneGroupLogConfig(raw.groupLog, connections.map(({ connection }) => connection))
+  if (groupLog.enabled && groupLog.bridges.some(log => [
+    ...(mediaRelay.enabled || tools.pixiv?.enabled || bilibiliQuality.enabled || videoSearchAttachments ? mediaRelay.bridges : []), ...(torrentDownload.enabled ? torrentDownload.bridges : []),
+  ].some(bridge => bridge.listen.port === log.listen.port))) throw new Error('团录桥须使用独立监听端口')
   const textGroups = new Map<string, readonly GroupTextToolName[]>()
   if (raw.textGroups !== undefined) {
     if (!Array.isArray(raw.textGroups)) throw new Error('textGroups 必须是会话列表')
@@ -477,15 +630,13 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
       if (textGroups.has(key) || !bindings.resolve(target)) throw new Error('textGroups 的会话必须已声明角色绑定且不能重复')
       const tools = item.tools === undefined ? [] : item.tools
       if (!Array.isArray(tools) || tools.some(tool => !groupTextToolNames.some(name => name === tool)) || new Set(tools).size !== tools.length) {
-        throw new Error('textGroups.tools 只接受 commitmentTool、delegateMemoryTool 或 groupKnowledgeTool，工具名不能重复')
+        throw new Error(`textGroups.tools 只接受 ${groupTextToolNames.join('、')}，工具名不能重复`)
       }
       textGroups.set(key, Object.freeze([...tools]) as readonly GroupTextToolName[])
     }
   }
-  const hostStat = textGroups.size ? fs.statSync(file, { bigint: true }) : undefined
-  const textGroupRevision = hostStat && createHash('sha256')
-    .update(JSON.stringify([String(hostStat.dev), String(hostStat.ino), String(hostStat.mtimeNs), String(hostStat.ctimeNs), [...textGroups].sort()]))
-    .digest('hex')
+  const textGroupRevision = textGroups.size ? createHash('sha256')
+    .update(JSON.stringify([input.hostVersion, [...textGroups].sort(), privateTextTools])).digest('hex') : undefined
   function resolvePersona(target: ConversationAddress) {
     const binding = readBindings()?.resolve(target)
     if (!binding) return undefined
@@ -511,8 +662,24 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
     return counts
   }
   const forbiddenWords: ForbiddenConfig = hostConfig.forbiddenWords ?? {}
-  return {
-    instance, dataDir, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, history, musicExtraction, mediaRelay, torrentDownload, privateChatEnabled: privateChat.enabled === true, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords,
+  const models: Partial<Record<ConsoleModelSlot, ConsoleModelView>> = {}
+  for (const [slot, selected] of [['model', mainModel], ['vision', vision], ['personMemoryExtraction', personMemoryExtraction],
+    ['midtermSummary', midtermSummary], ['groupMemoryExtraction', groupMemoryExtraction], ['textTriggerModel', textTriggerModel]] as const) {
+    if (selected) models[slot] = Object.freeze({ baseUrl: selected.apiUrl, name: selected.model, apiKeyEnv: selected.apiKeyEnv, apiKeyConfigured: !!selected.apiKey })
+  }
+  const candidate: ValidatedConsoleCandidate = Object.freeze({ dice, persona: safeJsonObject(normalizePersonaEntry(hostConfig.persona ?? {})),
+    personaGuard: safeJsonObject(personaGuard ?? {}), models: Object.freeze(models) })
+  const workspaceAgents = Object.freeze((rawBindings.agents as unknown[]).map(value => {
+    const entry = object(value), id = String(entry.id), personaId = String(entry.personaId)
+    const selected = library.detailById(personaId)!
+    const personaName = typeof selected.persona.name === 'string' && selected.persona.name.trim() ? selected.persona.name.trim() : personaId
+    return Object.freeze({ id, name: personaName, personaId, personaName })
+  }))
+  return { candidate, config: {
+    instance, dataDir, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords,
+    workspaceAgents,
+    loadedBindings: Object.freeze([...bindings.listBindings()]),
+    listBindings: () => readBindings()?.listBindings() ?? [],
     hasMusicGroup(account: ConversationAddress['account']) {
       if (simulation.enabled === false) return false
       return readBindings()?.listBindings().some(binding => binding.target.kind === 'group' &&
@@ -523,12 +690,58 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
     ...(midtermSummary ? { midtermSummary } : {}),
     ...(groupMemoryExtraction ? { groupMemoryExtraction } : {}),
     ...(reviewEnabled && reviewModel ? { characterConsistency: { apiUrl: reviewModel.apiUrl, model: reviewModel.model, apiKey: reviewModel.apiKey } } : {}),
-    isConfigCurrent: () => fs.readFileSync(file, 'utf8') === hostSource,
+    isConfigCurrent: input.isConfigCurrent ?? (() => true),
     ...(textGroupRevision ? {
       useTextGroup: (target: ConversationAddress) => textGroups.has(conversationAddressKey(target)),
       groupTextTools: (target: ConversationAddress) => textGroups.get(conversationAddressKey(target)) ?? [],
       textGroupRevision,
     } : {}),
     redisUrl: env.BL_AGENT_REDIS_URL || 'redis://127.0.0.1:6379',
+  } }
+}
+
+/** Complete offline validation of caller-supplied source bytes in the original host directory. */
+export function createStandaloneAgentCandidateValidator(file: string, env: NodeJS.ProcessEnv, options?: {
+  requireCredentials?: boolean; sourceSnapshot?: SourceSnapshot
+}): (sources: ConfigSources) => ValidatedConsoleCandidate {
+  const hostFile = path.resolve(file)
+  if (options?.sourceSnapshot && options.sourceSnapshot.hostFile !== hostFile) throw new Error('配置候选快照不属于当前宿主')
+  return sources => {
+    const result = decodeStandaloneAgentConfig(hostFile, env, options, { sources,
+      bindingRevision: options?.sourceSnapshot?.sources.bindings === sources.bindings ? options.sourceSnapshot.versions.bindings
+        : createHash('sha256').update(sources.bindings).digest('hex'),
+      hostVersion: createHash('sha256').update(sources.host).digest('hex') })
+    result.config.checkBindings()
+    return result.candidate
   }
+}
+
+/** Startup and live binding reads compile the same complete, fenced source snapshot. */
+export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, options?: { requireCredentials?: boolean }) {
+  const hostFile = path.resolve(file), sourceSnapshot: SourceSnapshot = readStandaloneAgentSourceSnapshot(hostFile)
+  let liveBindingRevision: string | undefined
+  let liveBindings: ReturnType<typeof createAgentBindingDirectory> | undefined
+  const isConfigCurrent = () => {
+    try {
+      const current = inspectStandaloneAgentSourceSnapshot(sourceSnapshot)
+      return current.fence === sourceSnapshot.fence && current.versions.host === sourceSnapshot.versions.host && current.versions.personas === sourceSnapshot.versions.personas
+    } catch { return false }
+  }
+  const { config } = decodeStandaloneAgentConfig(hostFile, env, options, { sources: sourceSnapshot.sources,
+    bindingRevision: sourceSnapshot.versions.bindings, hostVersion: sourceSnapshot.versions.host, isConfigCurrent,
+    readBindings(initial) {
+      try {
+        const current = inspectStandaloneAgentSourceSnapshot(sourceSnapshot)
+        if (current.fence !== sourceSnapshot.fence || current.versions.host !== sourceSnapshot.versions.host || current.versions.personas !== sourceSnapshot.versions.personas) return undefined
+        // Preserve the initial directory identity used by checkBindings while its revision is unchanged.
+        if (current.versions.bindings === sourceSnapshot.versions.bindings) return initial
+        if (liveBindingRevision !== current.versions.bindings) {
+          liveBindings = createAgentBindingDirectory(parseSource(current.sources.bindings, 'agent-bindings.yaml'), current.versions.bindings, validateQqBindingAddress)
+          liveBindingRevision = current.versions.bindings
+        }
+        return liveBindings
+      } catch { return undefined }
+    } })
+  if (inspectStandaloneAgentSourceSnapshot(sourceSnapshot).revision !== sourceSnapshot.revision) throw new Error('检查期间宿主配置已改变，请重试')
+  return { ...config, sourceSnapshot }
 }

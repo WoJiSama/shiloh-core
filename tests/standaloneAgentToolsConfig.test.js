@@ -3,7 +3,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { readStandaloneAgentConfig } from '../dist/backend/bootstrap/standaloneAgentConfig.js'
+import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
+
+const defaultTools = {
+  qqActions: {
+    qzone: { enabled: false }, gift: { enabled: false },
+    redPackets: { enabled: false, allowExplicit: false, allowRecentSearch: false, allowReferenceFallback: false,
+      allowPasswordSend: false, recentLimit: 100, automatic: { enabled: false, toolConfigured: false, allowPasswordSend: false } },
+  },
+  deferredActions: { enabled: false, rules: [], migrationApprovals: [] },
+}
+
+const { readStandaloneAgentConfig } = await importBilibiliHost('bootstrap/standaloneAgentConfig.js')
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tools-config-'))
@@ -29,11 +40,11 @@ function fixture(t) {
 
 test('standalone tools default off and use an explicit search backend with no main model fallback', t => {
   const { read, search } = fixture(t)
-  assert.deepEqual(read().tools, {})
-  assert.deepEqual(read({ web: { enabled: false } }).tools, {})
-  assert.deepEqual(read({ web: { enabled: true } }).tools, { web: { enabled: true } })
+  assert.deepEqual(read().tools, defaultTools)
+  assert.deepEqual(read({ web: { enabled: false } }).tools, defaultTools)
+  assert.deepEqual(read({ web: { enabled: true } }).tools, { ...defaultTools, web: { enabled: true } })
   for (const webSearch of [undefined, 'auto', 'on', 'off']) {
-    assert.deepEqual(read({ search: { ...search, ...(webSearch ? { webSearch } : {}) } }).tools, {
+    assert.deepEqual(read({ search: { ...search, ...(webSearch ? { webSearch } : {}) } }).tools, { ...defaultTools,
       search: { baseUrl: 'https://search.example/v1', name: 'search-model', apiKey: 'search-key', ...(webSearch ? { webSearch } : {}) },
     })
   }
@@ -58,15 +69,15 @@ test('standalone tool configuration rejects ambiguous switches, raw credentials 
 
 test('GitHub is explicit, defaults to anonymous public access and resolves only its declared token environment', t => {
   const { read, env } = fixture(t)
-  assert.deepEqual(read({ github: { enabled: false } }).tools, {})
+  assert.deepEqual(read({ github: { enabled: false } }).tools, defaultTools)
   assert.deepEqual(read({ github: { enabled: true } }, undefined, { ...env, GITHUB_TOKEN: 'ambient-github', GH_TOKEN: 'ambient-gh' }).tools,
-    { github: { enabled: true } })
-  assert.deepEqual(read({ github: { enabled: false, tokenEnv: 'MISSING_TOKEN' } }).tools, {})
+    { ...defaultTools, github: { enabled: true } })
+  assert.deepEqual(read({ github: { enabled: false, tokenEnv: 'MISSING_TOKEN' } }).tools, defaultTools)
   assert.deepEqual(read({ github: { enabled: true, tokenEnv: 'DECLARED_TOKEN' } }, undefined, { ...env, DECLARED_TOKEN: 'declared-github-key' }).tools,
-    { github: { enabled: true, token: 'declared-github-key' } })
+    { ...defaultTools, github: { enabled: true, token: 'declared-github-key' } })
   assert.throws(() => read({ github: { enabled: true, tokenEnv: 'MISSING_TOKEN' } }), /MISSING_TOKEN/u)
   assert.deepEqual(read({ github: { enabled: true, tokenEnv: 'MISSING_TOKEN' } }, { requireCredentials: false }).tools,
-    { github: { enabled: true } })
+    { ...defaultTools, github: { enabled: true } })
 })
 
 test('GitHub configuration closes credential and endpoint fields even while disabled', t => {
@@ -85,12 +96,12 @@ test('GitHub configuration closes credential and endpoint fields even while disa
 test('Modrinth requires its declared compact translation model and disabled declarations never resolve credentials', t => {
   const { read, env } = fixture(t)
   const translation = { baseUrl: 'https://translate.example/v1', name: 'compact-translation', apiKeyEnv: 'MODRINTH_KEY' }
-  assert.deepEqual(read({ modrinth: { enabled: false } }).tools, {})
+  assert.deepEqual(read({ modrinth: { enabled: false } }).tools, defaultTools)
   const noReadEnv = new Proxy(env, { get(target, key) {
     if (key === 'MODRINTH_KEY') assert.fail('disabled Modrinth read its secret')
     return Reflect.get(target, key)
   } })
-  assert.deepEqual(read({ modrinth: { enabled: false, translation } }, undefined, noReadEnv).tools, {})
+  assert.deepEqual(read({ modrinth: { enabled: false, translation } }, undefined, noReadEnv).tools, defaultTools)
   assert.throws(() => read({ modrinth: { enabled: true } }), /translation/u)
   assert.throws(() => read({ modrinth: { enabled: true, translation } }), /MODRINTH_KEY/u)
   assert.deepEqual(read({ modrinth: { enabled: true, translation } }, undefined, { ...env, MODRINTH_KEY: 'translate-key' }).tools.modrinth,

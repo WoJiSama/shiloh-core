@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
-import { createAgentBindingDirectory, createAgentRuntime } from '../dist/backend/core/index.js'
-import { createAgentTools } from '../dist/backend/modules/tools/infrastructure/agentTools.js'
+import { createAgentBindingDirectory } from '../dist/backend/core/index.js'
 import { createDefaultSimSession } from '../dist/backend/modules/simulation/domain/simConfig.js'
 import { simulationAddressKey } from '../dist/backend/modules/simulation/infrastructure/simulationAddress.js'
 import { simulationBusyKey, simulationSessionKey } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
@@ -10,6 +12,28 @@ import { agentBindingToken, agentPersonaScopeId, platformAccountKey } from '../d
 import { createPersonMemoryStore } from '../dist/backend/modules/memory/infrastructure/personMemoryStore.js'
 import { personMemoryAddress } from '../dist/backend/modules/memory/infrastructure/personMemoryContext.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
+
+// Source mode checks coordinated port changes without mutating shared dist.
+// Release verification always imports the installed package's built modules.
+const repo = fileURLToPath(new URL('../', import.meta.url)), release = path.resolve(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo)
+const sourceMode = process.env.BL_CHAT_AGENT_SOURCE_TEST === '1', sourceUrls = new Map()
+const ts = sourceMode ? (await import('typescript')).default : undefined
+const fresh = new Set(['agentRuntime', 'agentTools', 'simulationRuntime', 'groupTextTools', 'textConversation'])
+function sourceUrl(relative) {
+  if (sourceUrls.has(relative)) return sourceUrls.get(relative)
+  const compiled = ts.transpileModule(readFileSync(path.join(repo, relative), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
+  const code = compiled.replace(/(\bfrom\s+)(['"])(\.[^'"]+)\2/gu, (_all, from, quote, specifier) => {
+    const dependency = path.relative(repo, path.resolve(repo, path.dirname(relative), specifier))
+    const url = fresh.has(path.basename(dependency, '.js')) ? sourceUrl(dependency.replace(/\.js$/u, '.ts'))
+      : pathToFileURL(path.join(repo, dependency.replace(/^src\//u, 'dist/backend/'))).href
+    return `${from}${quote}${url}${quote}`
+  })
+  const url = `data:text/javascript;base64,${Buffer.from(`${code}\n//# sourceURL=${relative}`).toString('base64')}`
+  sourceUrls.set(relative, url); return url
+}
+const load = relative => import(sourceMode ? sourceUrl('src/' + relative.replace(/\.js$/u, '.ts')) : pathToFileURL(path.join(release, 'dist/backend', relative)).href)
+const { createAgentRuntime } = await load('core/agentRuntime.js')
+const { createAgentTools } = await load('modules/tools/infrastructure/agentTools.js')
 
 const parameters = { type: 'object', properties: {}, required: [], additionalProperties: false }
 const account = { platform: 'fixture', namespace: 'relay-tools', id: 'robot' }
@@ -19,6 +43,7 @@ const relayPlan = (text = '合成 Pixiv 作品介绍') => ({ version: 1, items: 
 const splitPlan = (left, right) => ({ version: 1, items: [{ parts: [{ kind: 'text', text: left }, { kind: 'text', text: right }] }] })
 const definition = execute => ({ name: 'mediaRelayPortProbe', description: 'Scoped media relay fixture', parameters, execute })
 const done = { status: 'succeeded', content: '受控媒体验证结束' }
+const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done }); return { promise, resolve } }
 function wrapper(execute, settings = {}) {
   const scope = { binding: { id: 'binding', agentId: 'role', revision: 'one', target }, actor: { kind: 'user', user: author },
     isCurrent: () => true, ...settings.scope }
@@ -80,6 +105,30 @@ test('unknown media relay receipts cannot be relabeled success or followed by re
   }
 })
 
+test('media relay wrapper carries source finalizer and cancellation without exposing mutable plans', async () => {
+  const controller = new AbortController(), entered = deferred(), unblock = deferred()
+  let sourceAvailable = true, checks = 0, observed, outcome
+  const pending = wrapper(async (_input, context) => {
+    const plan = relayPlan()
+    const sent = context.sendMediaRelay(plan, { signal: controller.signal, isCurrent: () => true,
+      async ensureCurrent() { checks++; if (!sourceAvailable) throw Error('selected list unavailable') },
+    })
+    plan.items[0].parts[0].text = 'after-call mutation'
+    try { await sent; outcome = 'sent' } catch { outcome = 'rejected' }
+    return done
+  }, { scope: { async sendMediaRelay(plan, current, signal, ensureCurrent) {
+    observed = { plan, current, signal, ensureCurrent }; entered.resolve(); await unblock.promise
+    await ensureCurrent(); assert.equal(current(), true)
+    return { state: 'sent', messageId: 'must-not-publish' }
+  } } })
+  await entered.promise
+  assert.deepEqual(observed.plan, relayPlan()); assert.ok(Object.isFrozen(observed.plan.items[0].parts))
+  assert.equal(observed.current(), true); assert.equal(typeof observed.ensureCurrent, 'function')
+  sourceAvailable = false; controller.abort(); unblock.resolve(); await pending
+  assert.equal(outcome, 'rejected'); assert.equal(observed.signal.aborted, true); assert.equal(observed.current(), false)
+  assert.ok(checks >= 1)
+})
+
 test('source availability snapshots identity, rejects getters and foreign namespace, and never exposes host return objects', async () => {
   let reads = 0, getters = 0, saved
   const result = await wrapper(async (_input, context) => {
@@ -119,7 +168,7 @@ async function runtimeFixture(t, execute, settings = {}) {
   initial.wakeConfig.triggers = { ...initial.wakeConfig.triggers, probability: 0, question: false, nameMention: false, anyMessage: false }; initial.nextProactiveCheckAt = now + 86_400_000
   await storage.set(simulationSessionKey(key), JSON.stringify(initial))
   const archived = { version: 1, conversation: selectedTarget, sender: archivedAuthor, messageId: 'original-search', occurredAt: now - 60_000,
-    text: '最初真人的 Pixiv 搜索请求', parts: [{ kind: 'text', text: '最初真人的 Pixiv 搜索请求' }], mentions: [] }
+    text: '最初真人的 Pixiv 搜索请求', parts: [{ kind: 'text', text: '最初真人的 Pixiv 搜索请求' }], mentions: [], directedToAccount: false }
   const original = { version: 1, conversation: selectedTarget, sender, messageId: 'current-trigger', occurredAt: now,
     text: '请查看上次的结果', parts: [{ kind: 'text', text: '请查看上次的结果' }], mentions: [account], directedToAccount: true }
   currentSource = structuredClone(archived)
@@ -152,7 +201,7 @@ async function runtimeFixture(t, execute, settings = {}) {
     resolvePersona(address) { const selected = directory.resolve(address); return selected && { binding: selected, persona: { name: 'fixture' }, systemContent: '' } },
     toolRegistry: { builtIn: [definition(async (_input, context) => { try { return await execute(context, f) ?? done } catch (error) { executionError = error; throw error } finally { completed = true } })] },
     async YTapi() { if (!completed) return call('mediaRelayPortProbe'); return call('simFinishTurn', { choice: 'silent', reason: '本轮受控验证结束' }) },
-    async reviewCharacter(request) { review.push(request); return { choices: [{ message: { content: JSON.stringify({ verdict: 'accept', issues: [] }) } }] } },
+    async reviewCharacter(request) { review.push(request); await settings.onReview?.(request, f); return { choices: [{ message: { content: JSON.stringify({ verdict: 'accept', issues: [] }) } }] } },
   })
   t.after(async () => { settings.release?.(); await host.stop() })
   const session = async () => JSON.parse(await storage.get(simulationSessionKey(key)) || 'null')
@@ -164,7 +213,9 @@ async function runtimeFixture(t, execute, settings = {}) {
     async run() { await accept({ kind: 'message', message: structuredClone(original) }); await waitFor(async () => completed && await settled(), () => `relay tool turn did not settle: ${JSON.stringify(errors)}`); await host.runtime.drain(); if (executionError) throw executionError },
   }
   await host.start(); await accept({ kind: 'message', message: structuredClone(archived) })
-  await waitFor(async () => (await session())?.recent?.some(message => message.messageId === archived.messageId) && await settled(), 'original source recorded without a model wake')
+  let seedState
+  await waitFor(async () => { seedState = await session(); return seedState?.recent?.some(message => message.messageId === archived.messageId) && await settled() },
+    () => `original source recorded without a model wake: ${JSON.stringify({ seedState, errors })}`)
   return f
 }
 
@@ -239,6 +290,57 @@ test('Core relay transport guards reject a binding replaced during an in-flight 
     return done
   }, { async deliver(_action, guard, run) { run.rebind(); replaced = true; assert.equal(guard.isCurrent(), false); return { state: 'failed', code: 'cancelled' } } })
   await f.run(); assert.equal(replaced, true); assert.equal(f.attempts.length, 1); assert.equal(f.sends.length, 0); assert.equal((await f.session()).sendTimes.length, 0)
+})
+
+for (const revoked of ['source', 'list', 'signal']) test(`Core relay queue rechecks ${revoked} authority before dispatching a queued plan`, redisTest, async t => {
+  const firstEntered = deferred(), unblockFirst = deferred(), firstGuardCompleted = deferred(), controller = new AbortController()
+  let available = true, sourceChecks = 0
+  const f = await runtimeFixture(t, async (context, run) => {
+    const first = context.sendMediaRelay(relayPlan('先发送的作品'))
+    await firstEntered.promise
+    const queued = context.sendMediaRelay(relayPlan('排队中撤权的作品'), { signal: controller.signal,
+      isCurrent: () => true,
+      async ensureCurrent() {
+        sourceChecks++
+        if (revoked === 'source' && !await context.isSourceAvailable({ messageId: run.archived.messageId, author: run.archived.sender }) ||
+            revoked === 'list' && !available) throw Error('selected source or list unavailable')
+        if (sourceChecks === 1) firstGuardCompleted.resolve()
+      },
+    })
+    // Attach rejection before releasing the first send to avoid an unhandled
+    // rejection if a cancelled source is detected immediately on dequeue.
+    const blocked = assert.rejects(queued, /失效|unavailable/u)
+    // Revoke only after the initial asynchronous check has succeeded; entering
+    // its callback does not prove the original source was read before mutation.
+    await firstGuardCompleted.promise
+    if (revoked === 'source') run.setSource({ ...run.archived, sender: run.sender })
+    else if (revoked === 'list') available = false
+    else controller.abort()
+    unblockFirst.resolve()
+    assert.deepEqual(await first, { state: 'sent', messageId: 'relay-confirmed' })
+    await blocked
+    return done
+  }, { maxSends: 3, release() { unblockFirst.resolve() }, async deliver(action, guard, run) {
+    firstEntered.resolve(); await unblockFirst.promise
+    assert.equal(guard.isCurrent(), true); assert.equal(guard.signal.aborted, false)
+    run.sends.push(structuredClone(action)); return { state: 'sent', messageId: 'relay-confirmed' }
+  } })
+  await f.run()
+  assert.equal(f.attempts.length, 1); assert.equal(f.sends.length, 1); assert.equal((await f.session()).sendTimes.length, 1)
+  if (revoked !== 'signal') assert.ok(sourceChecks >= 2)
+})
+
+test('Core relay rechecks asynchronous list authority after content review and before native dispatch', redisTest, async t => {
+  let available = true, sourceChecks = 0
+  const f = await runtimeFixture(t, async context => {
+    await assert.rejects(context.sendMediaRelay(relayPlan(), { signal: new AbortController().signal, isCurrent: () => true,
+      async ensureCurrent() { sourceChecks++; if (!available) throw Error('selected list unavailable after review') },
+    }), /unavailable/u)
+    return done
+  }, { review: true, onReview() { available = false } })
+  await f.run()
+  assert.ok(sourceChecks >= 3); assert.ok(f.review.length > 0)
+  assert.equal(f.attempts.length, 0); assert.equal(f.sends.length, 0); assert.equal((await f.session()).sendTimes.length, 0)
 })
 
 test('Core nongroup simulation tools receive neither relay delivery nor source availability', redisTest, async t => {

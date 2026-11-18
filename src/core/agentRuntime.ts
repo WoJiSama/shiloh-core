@@ -1,7 +1,21 @@
+import type { AgentBilibiliQualityConfig, AgentBilibiliQualityProvider } from '../contracts/agentBilibiliQuality.js'
+import type { AgentBilibiliAuthService } from '../contracts/agentBilibiliAuth.js'
+import { createAgentBilibiliQualityWorkflow, isAgentBilibiliQualityCommand, validateAgentBilibiliQualityConfig } from '../modules/media/infrastructure/agentBilibiliQualityWorkflow.js'
 import { createHash } from 'node:crypto'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { AgentManagementError, type AgentManagementBindings, type AgentManagementContext, type AgentManagementModules } from '../contracts/agentManagement.js'
+import { createAgentProfileManagement } from '../modules/memory/infrastructure/agentProfileManagement.js'
+import { createAgentTrusteeshipManagement } from '../modules/commitments/infrastructure/agentTrusteeshipManagement.js'
+import { captureSynchronousGuardCheck, createSynchronousGuard } from '../modules/runtime/domain/synchronousGuard.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest } from '../contracts/agentFiles.js'
 import type { AgentFileUpload, FileDeliveryReceipt } from '../contracts/agentFileDelivery.js'
 import type { AgentAudioBytes, AgentVideoBytes, SendMediaAction } from '../contracts/agentMedia.js'
+import type { AgentVideoInput } from '../contracts/agentVideo.js'
+import type { AgentInteraction, AgentInteractionPlan, AgentInteractionResult } from '../contracts/agentInteraction.js'
+import { createAgentInteractionWorkflow, normalizeInteractionReceipt } from '../modules/tools/infrastructure/agentInteractions.js'
+import { createAgentInteractionTools } from '../modules/tools/infrastructure/agentInteractionTools.js'
+import { createAgentOutboundMessages } from '../modules/runtime/infrastructure/agentOutboundMessages.js'
+import { canApplyGroupManagement, isAgentGroupManagement } from '../modules/tools/domain/agentGroupManagement.js'
 import type { AgentMusicCard } from '../contracts/agentMusic.js'
 import type { AgentAudioAttachment, AgentMusicExtractionConfig } from '../contracts/agentMusicExtraction.js'
 import type { AgentMediaRelayConfig, AgentMediaRelayProvider, AgentMediaShare } from '../contracts/agentMediaRelayWorkflow.js'
@@ -20,6 +34,11 @@ import { createAgentMusicExtraction, type MusicExtractionProvider } from '../mod
 import { isPersonMemoryRedacted } from '../modules/memory/domain/personMemory.js'
 import { validateAgentMusicCard } from '../modules/media/infrastructure/agentMusicCard.js'
 import type { AgentToolContext } from '../contracts/agentTool.js'
+import type { AgentQqActionRunner, AgentQqActionGuard } from '../contracts/agentTool.js'
+import { createAgentQqActions, type AgentQqActionsConfig } from '../modules/runtime/infrastructure/agentQqActions.js'
+import { validateAgentRedPacketSnapshot } from '../modules/runtime/infrastructure/agentRedPacketValidation.js'
+import { defaultSimRuntimeConfig } from '../modules/simulation/domain/simConfig.js'
+import { resolveSimToolSurface } from '../modules/simulation/domain/toolPolicy.js'
 import { validateAgentMedia } from '../modules/media/infrastructure/agentMediaBytes.js'
 import { validateAgentFileUpload, normalizeFileDeliveryReceipt, agentFileUploadText } from '../modules/messaging/infrastructure/agentFileDelivery.js'
 import { readAgentPublicFile } from '../modules/tools/infrastructure/agentPublicWeb.js'
@@ -42,8 +61,18 @@ import { createAgentTools } from '../modules/tools/infrastructure/agentTools.js'
 import { createAgentMemberTools } from '../modules/tools/infrastructure/agentMemberTools.js'
 import { validateMessageBundle } from '../modules/messaging/infrastructure/messageBundle.js'
 import { createCommitmentRuntime } from '../modules/commitments/infrastructure/commitmentTool.js'
+import type { AgentDeferredActionAuthorizationRequest, AgentDeferredActionDefinition, AgentDeferredAuthorizationCheck, AgentDeferredAuthorizationGuard } from '../contracts/agentDeferredAction.js'
+import { createAgentDeferredActionPolicy, type AgentDeferredActionPolicyConfig } from '../modules/tools/infrastructure/agentDeferredActionPolicy.js'
+import { createAgentDeferredActionExecutor } from '../modules/tools/infrastructure/agentDeferredActionExecutor.js'
+import { createAgentDeferredActionTool } from '../modules/tools/infrastructure/agentDeferredActionTool.js'
+import { createAgentDeferredPokeDefinition } from '../modules/tools/infrastructure/agentDeferredActionPoke.js'
+import { createAgentDeferredActionRuntime, createAgentDeferredReminderSender } from '../modules/runtime/infrastructure/agentDeferredActionRuntime.js'
 import { createTextConversation } from '../modules/conversation/infrastructure/textConversation.js'
-import { createGroupTextTools, type GroupTextToolName } from '../modules/conversation/infrastructure/groupTextTools.js'
+import { createAgentTextTrigger } from '../modules/conversation/infrastructure/agentTextTrigger.js'
+import { createAgentTextTriggerModels } from '../modules/conversation/infrastructure/agentTextTriggerModels.js'
+import type { AgentTextTriggerConfig } from '../contracts/agentTextTrigger.js'
+import { resolveAgentTextTriggerConfig } from '../modules/conversation/infrastructure/agentTextTriggerConfig.js'
+import { createGroupTextTools, groupTextVideoToolNames, type GroupTextToolName } from '../modules/conversation/infrastructure/groupTextTools.js'
 import { createDelegateMemoryRuntime } from '../modules/memory/infrastructure/delegateMemoryTool.js'
 import { matchPersonMemoryCommand, personMemoryCommand, personMemoryCommandText, type PersonMemoryCommand } from '../modules/memory/domain/personMemoryCommands.js'
 import { personMemoryAddress, revokePersonMemorySourceForAccount } from '../modules/memory/infrastructure/personMemoryContext.js'
@@ -64,22 +93,54 @@ import {
   isPlatformIdentifier, platformAccountKey, samePlatformNamespace,
 } from '../modules/runtime/domain/agentBindings.js'
 import { createAgentInbox, inboxEventTarget, textConversationSeconds, type AgentInboxQueue, type AgentInboxRedis, type TextInbox } from '../modules/runtime/infrastructure/agentInbox.js'
+import { createAgentDiagnostics, type AgentDiagnostics } from '../modules/runtime/infrastructure/agentDiagnostics.js'
+import { generateAgentFailureNotice } from '../modules/conversation/infrastructure/agentFailureNotice.js'
+import type { AgentGroupLogConfig } from '../contracts/agentGroupLog.js'
+import type { AgentDiceConfig } from '../contracts/agentDice.js'
+import { resolveAgentDiceConfig } from '../modules/dice/domain/agentDiceCommand.js'
+import { createAgentDiceLedger } from '../modules/dice/infrastructure/agentDiceLedger.js'
+import { createAgentDiceWorkflow } from '../modules/dice/infrastructure/agentDiceWorkflow.js'
+import { createAgentDiceState } from '../modules/dice/infrastructure/agentDiceState.js'
+import { createAgentDiceBuiltin } from '../modules/dice/infrastructure/agentDiceBuiltin.js'
+import { createAgentDiceRules } from '../modules/dice/infrastructure/agentDiceRules.js'
+import type { AgentDiceEngineConfig, AgentDiceEngineContext } from '../modules/dice/infrastructure/agentDiceEngine.js'
+import type { AgentDiceAuthorizationGrant } from '../modules/dice/infrastructure/agentDiceAuthorization.js'
+import { createAgentDiceHostBridge } from '../modules/dice/infrastructure/agentDiceHostBridge.js'
+import { agentDiceSourceFingerprint } from '../modules/dice/infrastructure/agentDiceSource.js'
+import { createAgentGroupLogRenderer, validateAgentGroupLogArtifact } from '../modules/dice/infrastructure/agentGroupLog.js'
+import { createAgentGroupLogStore } from '../modules/dice/infrastructure/agentGroupLogStore.js'
+import { createAgentGroupLogWorkflow } from '../modules/dice/infrastructure/agentGroupLogWorkflow.js'
+import { parseAgentGroupLogCommand } from '../modules/dice/domain/agentGroupLogCommand.js'
+import { createAgentConversationActivity } from '../modules/runtime/infrastructure/agentConversationActivity.js'
+import type { AgentVideoCard, AgentVideoSearchProvider } from '../contracts/agentVideoCard.js'
+import { validateAgentVideoCard } from '../modules/media/infrastructure/agentVideoCard.js'
+import { createAgentVideoSearchStore } from '../modules/media/infrastructure/agentVideoSearchStore.js'
 
 type ResolvePersona = NonNullable<ReturnType<SimulationRuntimePorts['getPersona']>> & { binding: AgentBindingSnapshot }
 type RuntimePorts = Pick<SimulationRuntimePorts, 'logger' | 'getSection' | 'getExecutionConfig' | 'YTapi' | 'recordTokens' | 'getTodaySpendCny' | 'reflectCharacter' | 'reviewCharacter' | 'judgeSocialPermission' | 'describeImages' | 'personProfileExtract' | 'now'>
 
+export const AGENT_DEFERRED_POKE_DEFINITION_ID = 'core:deferred-poke:v1'
+
 export interface AgentRuntimeOptions extends RuntimePorts {
+  diagnostics?: AgentDiagnostics
+  failureNoticeFallback?: string
   storage: SimulationRuntimePorts['redis'] & AgentInboxRedis
   adapters: readonly PlatformConnectionAdapter[]
   resolvePersona(target: ConversationAddress): ResolvePersona | undefined
+  /** Optional trusted directory for scoped management; never supplied by model or browser input. */
+  managementBindings?: AgentManagementBindings
   isExecutionCurrent?(): boolean
   signal?: AbortSignal
   allowsText?(text: string, direction: 'incoming' | 'outgoing'): boolean
   /** Host credentials, including newly refreshed values, cannot become model-selected tool inputs. */
   allowsToolInput?(input: string): boolean
   privateChatEnabled?: boolean
+  privateTextTools?: readonly ('likeTool' | 'recallTool')[]
   useTextGroup?(target: ConversationAddress): boolean
   textGroupRevision?: string
+  textTrigger?: AgentTextTriggerConfig
+  isTextTriggerCurrent?(): boolean
+  textTriggerModel?: Parameters<typeof createAgentTextTriggerModels>[0]['model']
   groupTextTools?(target: ConversationAddress): readonly GroupTextToolName[]
   toolRegistry?: AgentToolRegistry
   memorySystem?: TextPersonMemoryConfig
@@ -92,6 +153,28 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   semanticMemoryBackend?: AgentSemanticMemoryBackend
   history?: AgentHistoryConfig
   musicExtraction?: AgentMusicExtractionConfig
+  groupLog?: AgentGroupLogConfig
+  dice?: AgentDiceConfig
+  /** Explicit independent business engine; the legacy public-expression path remains compatible. */
+  diceEngine?: AgentDiceEngineConfig
+  readDiceGrant?(request: { readonly binding: AgentBindingSnapshot; readonly source: IncomingMessage },
+    guard: import('../modules/dice/infrastructure/agentDiceState.js').AgentDiceStateGuard): Promise<AgentDiceAuthorizationGrant | undefined>
+  isDiceCurrent?(): boolean
+  bilibiliQuality?: AgentBilibiliQualityConfig
+  bilibiliAuthService?: AgentBilibiliAuthService
+  bilibiliQualityProviderFor?(binding: AgentBindingSnapshot): AgentBilibiliQualityProvider | undefined
+  isBilibiliQualityCurrent?(): boolean
+  videoSearchProvider?: AgentVideoSearchProvider
+  isVideoSearchCurrent?(): boolean
+  interactions?: { readonly enabled: boolean }
+  isInteractionsCurrent?(): boolean
+  qqActions?: AgentQqActionsConfig
+  isQqActionsCurrent?(): boolean
+  deferredActions?: AgentDeferredActionPolicyConfig
+  isDeferredActionsCurrent?(): boolean
+  getDeferredActionDefinitions?(): readonly AgentDeferredActionDefinition[]
+  /** Explicit trusted offline approval verification, required for migrated extra actions. */
+  verifyDeferredMigration?(request: AgentDeferredActionAuthorizationRequest, guard: AgentDeferredAuthorizationGuard): Promise<AgentDeferredAuthorizationCheck>
   /** A trusted host may inject its bounded music resolver; model arguments cannot select a provider. */
   musicExtractionProvider?: MusicExtractionProvider
   /** Revokes this deterministic service when its host authorization snapshot changes. */
@@ -138,6 +221,11 @@ function hasValidInboundEvent(event: PlatformConversationEvent, adapter: Platfor
   if (event.kind === 'recall') return isMessageId(event.messageId)
   if (event.kind === 'nudge') return isInboundUser(event.sender, adapter) &&
     Number.isSafeInteger(event.occurredAt) && event.occurredAt > 0
+  if (event.kind === 'red-packet') {
+    try { const packet = validateAgentRedPacketSnapshot(event.packet, Date.now()); return event.target.kind === 'group' &&
+      conversationAddressKey(packet.target) === conversationAddressKey(event.target) && isInboundUser(packet.source.author, adapter) }
+    catch { return false }
+  }
   const message = event.message
   return message.version === 1 && isMessageId(message.messageId) &&
     isInboundUser(message.sender, adapter) && Number.isSafeInteger(message.occurredAt) && message.occurredAt > 0 &&
@@ -156,13 +244,31 @@ const privacyCommandMaxAgeMs = textConversationSeconds * 1000
 const privacyCommandClockSkewMs = 60_000
 
 export function createAgentRuntime(options: AgentRuntimeOptions) {
+  const diagnostics = options.diagnostics ?? createAgentDiagnostics({ logger: options.logger, ...(options.now ? { now: options.now } : {}) })
+  // All module loggers pass this metadata-only boundary; free-form upstream
+  // log strings can include credentials or temporary source content.
+  options = { ...options, logger: diagnostics.logger,
+    failureNoticeFallback: options.failureNoticeFallback ?? '这次服务暂时异常，暂时无法确认结果。请先核实操作状态。' }
   const torrentConfig = validateAgentTorrentConfig(options.torrentDownload)
+  const qualityConfig = validateAgentBilibiliQualityConfig(options.bilibiliQuality)
+  if (qualityConfig.enabled && (!options.bilibiliAuthService || typeof options.bilibiliQualityProviderFor !== 'function')) {
+    throw new TypeError('启用B站高清命令必须配置 Core 授权服务与高清提供器')
+  }
+  options = { ...options, bilibiliQuality: qualityConfig }
   if (torrentConfig.enabled && typeof options.torrentProvider?.prepare !== 'function') throw new TypeError('启用磁链下载必须配置 Core 磁链提供器')
   const mediaRelayConfig = validateAgentMediaRelayConfig(options.mediaRelay)
   if (mediaRelayConfig.enabled && typeof options.mediaRelayProvider?.prepare !== 'function') {
     throw new TypeError('启用媒体搬运必须配置 Core 媒体提供器')
   }
   const { storage, logger, resolvePersona } = options
+  if (options.groupLog !== undefined) {
+    const config = options.groupLog
+    if (!config || typeof config !== 'object' || Object.keys(config).some(key => !['enabled', 'maxBytes', 'masters'].includes(key)) ||
+        typeof config.enabled !== 'boolean' || config.maxBytes !== undefined && (!Number.isSafeInteger(config.maxBytes) || config.maxBytes < 1024 * 1024 || config.maxBytes > 100 * 1024 * 1024) ||
+        config.masters !== undefined && (!Array.isArray(config.masters) || config.masters.length > 100 || config.masters.some(user => !isPlatformAccount(user)))) {
+      throw new Error('团录需要显式开关、完整文件预算和可信主人身份')
+    }
+  }
   if (options.history !== undefined) {
     const history = options.history
     if (!history || typeof history !== 'object' || Object.keys(history).some(key => !['enabled', 'retentionDays', 'maxMessagesPerConversation', 'timeoutMs'].includes(key)) ||
@@ -183,13 +289,42 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
   const adapters = new Map(options.adapters.map(adapter => [platformAccountKey(adapter.account), adapter]))
   if (adapters.size === 0 || adapters.size !== options.adapters.length) throw new Error('独立宿主需要至少一个不重复的平台账号')
+  const diceConfig = resolveAgentDiceConfig(options.dice)
+  const triggerConfigKey = JSON.stringify(resolveAgentTextTriggerConfig(options.textTrigger))
+  const diceConfigKey = JSON.stringify(diceConfig)
+  const diceEngineConfigKey = JSON.stringify(options.diceEngine ?? null)
+  const diceLedger = createAgentDiceLedger(storage)
+  const diceState = createAgentDiceState(storage)
+  const diceRevocationBuiltin = createAgentDiceBuiltin({ ...options.diceEngine?.builtin, enabled: true })
+  const diceRevocationRules = createAgentDiceRules({ packages: options.diceEngine?.rulePackages ?? [] })
+  const diceRevocationCandidate = (message: IncomingMessage) => message.text.trim().split(/(?=[.。])/u)
+    .some(command => diceRevocationBuiltin.isCandidate(command) || diceRevocationRules.isCandidate(command))
+  async function revokeDiceSource(target: ConversationAddress, messageId: string): Promise<void> {
+    const results = await Promise.allSettled([
+      diceState.revokeSourceByTarget(target, messageId), diceLedger.revokeSource(target, messageId),
+    ])
+    const rejected = results.find(result => result.status === 'rejected')
+    if (rejected?.status === 'rejected') throw rejected.reason
+  }
   const inbox = createAgentInbox(storage)
-  const toolLogger = { info() {}, warn: (message: string) => logger.warn(message), error: (message: string) => logger.error(message) }
+  const toolLogger = logger
   const memories = createDelegateMemoryRuntime({ redis: storage, logger: toolLogger, loadConfig: () => ({}), ...(options.now ? { now: options.now } : {}) })
   const personMemory = createPersonMemoryStore({ redis: storage, ...(options.now ? { now: options.now } : {}) })
   const pendingSends = new Map<string, Set<() => void>>()
+  const controlPendingSends = new WeakSet<() => void>()
+  const controlDelivery = new AsyncLocalStorage<boolean>()
   const pendingTools = new Map<string, Set<() => void>>()
-  const memoryTurns = new Map<string, Map<() => void, string>>()
+  const memoryTurns = new Map<string, Map<() => void, { agentId: string; targetKey: string; requiresAI: boolean }>>()
+  const activity = createAgentConversationActivity()
+  const groupLogs = createAgentGroupLogStore(storage)
+  const groupLogEnabled = options.groupLog?.enabled === true
+  let activityHydrated = !groupLogEnabled
+  const activityStates = new Map<string, { target: ConversationAddress; allowed: boolean }>()
+  const silenceReservations = new Map<string, { target: ConversationAddress; messages: Set<string>; admitting: Set<string> }>()
+  const admissions = new Map<string, Promise<void>>()
+  const pendingAdmissions = new Set<Promise<void>>()
+  const automaticQqWork = new Map<string, Promise<void>>()
+  const controlActions = new WeakSet<object>()
   const privacyAdmissions = new Map<string, number>()
   const privacyBacklog = new Set<string>()
   const privacyWaiters = new Map<string, { promise: Promise<void>; resolve: () => void }>()
@@ -210,6 +345,28 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
   function conversationEnabled(target: ConversationAddress): boolean {
     return options.getSection().enabled !== false && (target.kind !== 'private' || options.privateChatEnabled === true)
+  }
+  function diceCurrent(): boolean {
+    try { return isRunning() && (diceConfig.enabled || options.diceEngine?.enabled === true) && options.isDiceCurrent?.() !== false &&
+      JSON.stringify(resolveAgentDiceConfig(options.dice)) === diceConfigKey && JSON.stringify(options.diceEngine ?? null) === diceEngineConfigKey }
+    catch { return false }
+  }
+  function allowsConversationAI(target: ConversationAddress): boolean {
+    return activityHydrated && activity.allows(target)
+  }
+  function setConversationAI(target: ConversationAddress, allowed: boolean): void {
+    const key = conversationAddressKey(target)
+    activityStates.set(key, { target, allowed })
+    const actual = allowed && !silenceReservations.get(key)?.messages.size
+    if (!actual) {
+      activity.set(target, false)
+      textConversation.invalidate(target)
+      textTrigger.invalidate(target)
+      runtime.invalidateConversation(target)
+      for (const invalidate of pendingSends.get(key) ?? []) if (!controlPendingSends.has(invalidate)) invalidate()
+      for (const invalidate of pendingTools.get(key) ?? []) invalidate()
+      for (const [invalidate, turn] of memoryTurns.get(platformAccountKey(target.account)) ?? []) if (turn.targetKey === key && turn.requiresAI) invalidate()
+    } else activity.set(target, true)
   }
   function textInboxFor(target: ConversationAddress): TextInbox | undefined {
     if (target.kind === 'private' || (target.kind === 'group' && options.useTextGroup?.(target))) {
@@ -235,6 +392,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
   function textBindingToken(binding: AgentBindingSnapshot): string {
     const token = agentBindingToken(binding)
+    if (binding.target.kind === 'private' && options.privateTextTools?.length) return JSON.stringify([token, 'private-tools', [...options.privateTextTools].sort()])
+    if (binding.target.kind === 'group' && options.textTrigger !== undefined) return JSON.stringify([token, options.textGroupRevision ?? '', 'text-trigger-v1', triggerConfigKey])
     return binding.target.kind === 'group' && options.textGroupRevision ? JSON.stringify([token, options.textGroupRevision]) : token
   }
   function freshMemberObservation(at: number, startedAt: number): boolean {
@@ -301,6 +460,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     privacyAdmissions.set(key, (privacyAdmissions.get(key) ?? 0) + 1)
     // Shared teaching can originate from another Agent in this account.
     for (const invalidate of memoryTurns.get(key)?.keys() ?? []) invalidate()
+    adapterFor(binding.target)?.invalidateRedPacketSources?.()
+    groupLogWorkflow.invalidateAccount(binding.target.account)
+    bilibiliQuality?.invalidateAccount(binding.target.account)
     return () => {
       const remaining = (privacyAdmissions.get(key) ?? 1) - 1
       if (remaining > 0) privacyAdmissions.set(key, remaining)
@@ -308,7 +470,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       wakeMemoryTurns(key)
     }
   }
-  async function beginMemoryTurn(binding: AgentBindingSnapshot) {
+  async function beginMemoryTurn(binding: AgentBindingSnapshot, requiresAI = true) {
     const key = platformAccountKey(binding.target.account)
     while (isRunning() && privacyBlocked(key)) {
       let waiter = privacyWaiters.get(key)
@@ -320,23 +482,30 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       }
       await waiter.promise
     }
+    return captureMemoryTurn(binding, requiresAI)
+  }
+  function captureMemoryTurn(binding: AgentBindingSnapshot, requiresAI = true) {
+    const key = platformAccountKey(binding.target.account)
     const controller = new AbortController()
+    const aiTurn = requiresAI ? activity.capture(binding.target) : undefined
     const invalidate = () => controller.abort(new Error('人物记忆权限已改变'))
-    const active = memoryTurns.get(key) ?? new Map<() => void, string>()
-    active.set(invalidate, binding.agentId)
+    const active = memoryTurns.get(key) ?? new Map<() => void, { agentId: string; targetKey: string; requiresAI: boolean }>()
+    active.set(invalidate, { agentId: binding.agentId, targetKey: conversationAddressKey(binding.target), requiresAI })
     memoryTurns.set(key, active)
     return {
-      isCurrent: () => isRunning() && !controller.signal.aborted,
-      signal: controller.signal,
+      isCurrent: () => isRunning() && !privacyBlocked(key) && (!requiresAI || allowsConversationAI(binding.target) && aiTurn?.isCurrent() === true) && !controller.signal.aborted,
+      signal: AbortSignal.any([controller.signal, ...(aiTurn ? [aiTurn.signal] : [])]),
       release() {
+        aiTurn?.release()
         active.delete(invalidate)
         if (!active.size && memoryTurns.get(key) === active) memoryTurns.delete(key)
       },
     }
   }
-  function guardPendingSend(targetKey: string, check: () => boolean) {
+  function guardPendingSend(targetKey: string, check: () => boolean, requiresAI = controlDelivery.getStore() !== true) {
     let current = true
     const invalidate = () => { current = false }
+    if (!requiresAI) controlPendingSends.add(invalidate)
     const waiting = pendingSends.get(targetKey) ?? new Set<() => void>()
     waiting.add(invalidate)
     pendingSends.set(targetKey, waiting)
@@ -355,7 +524,106 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     }
   }
 
-  const messageActions: MessageActionPort = {
+  const outboundMessages = createAgentOutboundMessages(storage)
+  const rawMessageActions: MessageActionPort = {
+    async interact(action, guard) {
+      const target = action.target, live = isConversationAddress(target) && bindingFor(target), adapter = isConversationAddress(target) && adapterFor(target)
+      if (!interactionsCurrent() || !live || !adapter || !adapter.actions.interact || !isSameBinding(action.binding, live.binding) ||
+          target.kind === 'private' && (!privatePeerFor(target, adapter) ||
+            action.interaction.kind !== 'profile-like' && action.interaction.kind !== 'message-recall' ||
+            action.interaction.kind === 'profile-like' && action.interaction.user.id !== privatePeerFor(target, adapter))) {
+        return { state: 'failed', code: 'interaction_unavailable' }
+      }
+      const expected = agentBindingToken(live.binding)
+      const pending = guardPendingSend(conversationAddressKey(target), () => isRunning() && interactionsCurrent() && adapter.isReady() &&
+        adapterFor(target) === adapter && !guard?.signal?.aborted && guard?.isCurrent?.() !== false && conversationEnabled(target) && bindingIsCurrent(target, expected))
+      try {
+        if (!pending.isCurrent()) return { state: 'failed', code: 'binding_changed' }
+        return normalizeInteractionReceipt(await adapter.actions.interact(action, { isCurrent: pending.isCurrent,
+          ...(guard?.signal ? { signal: guard.signal } : {}), ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}) }))
+      } catch { return { state: 'unknown' } }
+      finally { pending.release() }
+    },
+    async sendRequesterBilibiliAuth(action, guard) {
+      const target = action.source?.target
+      if (!bilibiliQualityCurrent() || action.version !== 1 || action.kind !== 'bilibili-auth.notify' || !isConversationAddress(target) ||
+          !['private', 'group'].includes(target.kind)) return { state: 'failed', code: 'invalid_bilibili_auth_notice' }
+      const live = bindingFor(target), adapter = adapterFor(target)
+      if (!live || !adapter?.actions.sendRequesterBilibiliAuth || !isSameBinding(action.binding, live.binding)) return { state: 'failed', code: 'bilibili_auth_unavailable' }
+      if (action.content.kind === 'text' && options.allowsText?.(action.content.text, 'outgoing') === false) return { state: 'failed', code: 'forbidden_text' }
+      const token = agentBindingToken(live.binding)
+      const pending = guardPendingSend(conversationAddressKey(target), () => bilibiliQualityCurrent() && adapter.isReady() && adapterFor(target) === adapter &&
+        !guard?.signal?.aborted && guard?.isCurrent?.() === true && conversationEnabled(target) && bindingIsCurrent(target, token))
+      try {
+        if (!pending.isCurrent()) return { state: 'failed', code: 'binding_changed' }
+        return normalizeDeliveryReceipt(await adapter.actions.sendRequesterBilibiliAuth(action, { isCurrent: pending.isCurrent, ...(guard?.signal ? { signal: guard.signal } : {}) }))
+      } catch { return { state: 'unknown' } }
+      finally { pending.release() }
+    },
+    async sendDicePrivate(request, guard) {
+      const target = request.binding?.target, adapter = isConversationAddress(target) ? adapterFor(target) : undefined
+      const live = isConversationAddress(target) ? bindingFor(target)?.binding : undefined
+      if (!controlActions.has(request) || !diceCurrent() || !live || target.kind !== 'group' || !adapter?.actions.sendDicePrivate ||
+          !isSameBinding(live, request.binding) || !isSameBinding(live, request.origin.binding) ||
+          options.allowsText?.(request.text, 'outgoing') === false || options.allowsToolInput?.(request.text) === false) {
+        return { state: 'failed', code: 'dice_private_unavailable' }
+      }
+      const token = agentBindingToken(live)
+      const pending = guardPendingSend(conversationAddressKey(target), () => diceCurrent() && adapterFor(target) === adapter && adapter.isReady() &&
+        !guard.signal.aborted && guard.isCurrent() && conversationEnabled(target) && bindingIsCurrent(target, token))
+      const ensureCurrent = async () => {
+        if (!pending.isCurrent()) throw new Error('骰子私聊来源已失效')
+        await guard.ensureCurrent()
+        if (!pending.isCurrent()) throw new Error('骰子私聊来源已失效')
+      }
+      try {
+        await ensureCurrent()
+        return normalizeDeliveryReceipt(await adapter.actions.sendDicePrivate(request, {
+          signal: guard.signal, isCurrent: pending.isCurrent, ensureCurrent,
+        }))
+      } catch { return { state: 'unknown' } }
+      finally { pending.release() }
+    },
+    async sendVideoCard(action, guard) {
+      const target = action.target
+      if (action.version !== 1 || action.kind !== 'video-card.send' || !isConversationAddress(target) || target.kind !== 'group') return { state: 'failed', code: 'invalid_video_card' }
+      let card: Readonly<AgentVideoCard>
+      try { card = validateAgentVideoCard(action.card, text => options.allowsText?.(text, 'outgoing') !== false) }
+      catch { return { state: 'failed', code: 'invalid_video_card' } }
+      const adapter = adapterFor(target), live = bindingFor(target)
+      if (!adapter?.actions.sendVideoCard || !live || !isSameBinding(action.binding, live.binding)) return { state: 'failed', code: 'video_card_unavailable' }
+      const binding = live.binding, expected = agentBindingToken(binding)
+      const send = guardPendingSend(conversationAddressKey(target), () => isRunning() && conversationEnabled(target) && adapter.isReady() &&
+        adapterFor(target) === adapter && !guard?.signal?.aborted && guard?.isCurrent?.() !== false && bindingIsCurrent(target, expected))
+      try {
+        if (!send.isCurrent()) return { state: 'failed', code: 'binding_changed' }
+        try { return normalizeDeliveryReceipt(await adapter.actions.sendVideoCard({ version: 1, kind: 'video-card.send', target: binding.target, binding, card },
+          { isCurrent: send.isCurrent, ...(guard?.signal ? { signal: guard.signal } : {}), ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}) })) }
+        catch { return { state: 'unknown' } }
+      } finally { send.release() }
+    },
+    async sendGroupLog(action, guard) {
+      const target = action.target
+      if (!groupLogEnabled || action.version !== 1 || action.kind !== 'group-log.upload' || !isConversationAddress(target) || target.kind !== 'group') return { state: 'failed', code: 'invalid_group_log' }
+      let log: ReturnType<typeof validateAgentGroupLogArtifact>
+      try { log = validateAgentGroupLogArtifact(action.log) } catch { return { state: 'failed', code: 'invalid_group_log' } }
+      const adapter = adapterFor(target), live = bindingFor(target), source = action.source
+      if (!adapter?.readMessage || !adapter.actions.sendGroupLog || !live || !isSameBinding(action.binding, live.binding) ||
+          !isMessageId(source?.messageId) || !isPlatformAccount(source?.sender) || !samePlatformNamespace(source.sender, target.account) ||
+          !Number.isSafeInteger(source.occurredAt) || source.occurredAt <= 0 || !/^[a-f\d]{64}$/u.test(source.textSha256)) return { state: 'failed', code: 'group_log_unavailable' }
+      const binding = live.binding, token = agentBindingToken(binding)
+      const send = guardPendingSend(conversationAddressKey(target), () => isRunning() && groupLogEnabled && adapter.isReady() &&
+        adapterFor(target) === adapter && !guard?.signal?.aborted && guard?.isCurrent?.() !== false && bindingIsCurrent(target, token))
+      try {
+        if (!send.isCurrent() || !await inbox.canReply(target, source.messageId)) return { state: 'failed', code: 'source_unavailable' }
+        const observed = await adapter.readMessage(target, source.messageId, { isCurrent: send.isCurrent, ...(guard?.signal ? { signal: guard.signal } : {}) })
+        if (!observed || !sameTorrentSource(observed, target, source) || createHash('sha256').update(observed.text).digest('hex') !== source.textSha256 ||
+            !send.isCurrent() || options.allowsText?.(log.name, 'outgoing') === false) return { state: 'failed', code: 'source_unavailable' }
+        try { return normalizeFileDeliveryReceipt(await adapter.actions.sendGroupLog({ ...action, target: binding.target, binding, log },
+          { isCurrent: send.isCurrent, ...(guard?.signal ? { signal: guard.signal } : {}) })) }
+        catch { return { state: 'unknown' } }
+      } finally { send.release() }
+    },
     async sendRequesterArchive(action, guard) {
       const { target } = action
       if (action.version !== 1 || action.kind !== 'requester-archive.upload' || !isConversationAddress(target) || target.kind !== 'group') return { state: 'failed', code: 'invalid_requester_archive' }
@@ -399,7 +667,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const allowsText = (text: string) => sanitizeFinalReplyText(text) === text && options.allowsText?.(text, 'outgoing') !== false
       let plan: Readonly<AgentMediaRelayPlan>
       try { plan = validateAgentMediaRelayPlan(action.plan, { allowsText }) } catch { return { state: 'failed', code: 'invalid_media_relay' } }
-      const texts = plan.items.map(item => item.parts.flatMap(part => part.kind === 'text' ? [part.text] : []).join('')), allText = texts.join('\n')
+      const texts = plan.items.map(item => item.parts.flatMap(part => part.kind === 'text' ? [part.text] : []).join('')).filter(Boolean), allText = texts.join('\n')
       if (!allowsText(allText) || texts.some(text => !allowsText(text))) return { state: 'failed', code: 'forbidden_text' }
       const targetKey = conversationAddressKey(target), adapter = adapterFor(target)
       let live: ResolvePersona | undefined
@@ -416,7 +684,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       try {
         if (!send.isCurrent()) return { state: 'failed', code: 'binding_changed' }
         try { return normalizeDeliveryReceipt(await adapter.actions.sendMediaRelay({ ...action, plan, binding },
-          { isCurrent: send.isCurrent, ...(guard?.signal ? { signal: guard.signal } : {}) })) }
+          { isCurrent: send.isCurrent, ...(guard?.signal ? { signal: guard.signal } : {}), ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}) })) }
         catch { return { state: 'unknown' } }
       } finally { send.release() }
     },
@@ -561,10 +829,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         return { state: 'failed', code: 'invalid_message' }
       }
       const targetKey = conversationAddressKey(target)
+      const enabled = () => controlActions.has(action) || conversationEnabled(target)
       const adapter = adapterFor(target)
       let live: ResolvePersona | undefined
       try { live = bindingFor(target) } catch { return { state: 'failed', code: 'binding_unavailable' } }
-      if (!adapter || !live || !isRunning() || !conversationEnabled(target)) return { state: 'failed', code: 'unbound_conversation' }
+      if (!adapter || !live || !isRunning() || !enabled()) return { state: 'failed', code: 'unbound_conversation' }
       const { binding } = live
       if (action.binding && !isSameBinding(action.binding, binding)) return { state: 'failed', code: 'binding_changed' }
       if (!adapter.isReady()) return { state: 'failed', code: 'account_disconnected' }
@@ -578,7 +847,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (replyTo !== undefined && !isMessageId(replyTo)) return { state: 'failed', code: 'reply_source_unavailable' }
       const expected = agentBindingToken(binding)
       const send = guardPendingSend(targetKey, () => isRunning() && adapter.isReady() && adapterFor(target) === adapter &&
-        conversationAddressKey(target) === targetKey && conversationEnabled(target) &&
+        conversationAddressKey(target) === targetKey && enabled() &&
         guard?.isCurrent?.() !== false && bindingIsCurrent(target, expected))
       try {
         if (replyTo !== undefined) {
@@ -587,7 +856,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         }
         if (!send.isCurrent()) return { state: 'failed', code: 'binding_changed' }
         try {
-          const receipt = await adapter.actions.send({ ...action, binding }, { isCurrent: send.isCurrent })
+          const ensureCurrent = async () => {
+            if (!send.isCurrent()) throw new Error('消息来源已失效')
+            await guard?.ensureCurrent?.()
+            if (!send.isCurrent()) throw new Error('消息来源已失效')
+          }
+          await ensureCurrent()
+          const receipt = await adapter.actions.send({ ...action, binding }, { isCurrent: send.isCurrent, ensureCurrent })
           if (receipt.state === 'failed') return receipt
           if (receipt.state === 'sent' && isMessageId(receipt.messageId)) return receipt
         } catch { /* Transport may have accepted the send before failing. */ }
@@ -597,7 +872,240 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       }
     },
   }
+  function instrumentActions(ai: boolean): MessageActionPort { return Object.fromEntries(Object.entries(rawMessageActions).map(([name, method]) => [name,
+    (action: Parameters<MessageActionPort['send']>[0], guard: Parameters<MessageActionPort['send']>[1]) => {
+      let binding: AgentBindingSnapshot | undefined
+      const target = (action as unknown as { source?: { target?: ConversationAddress }; binding?: AgentBindingSnapshot })?.source?.target ??
+        action?.target ?? (action as unknown as { binding?: AgentBindingSnapshot })?.binding?.target
+      try { if (isConversationAddress(target)) binding = bindingFor(target)?.binding } catch { /* Invalid requests remain host-scoped. */ }
+      const permission = ai && isConversationAddress(target) ? activity.capture(target) : undefined
+      if (!ai && action && typeof action === 'object') controlActions.add(action)
+      const current = () => (!permission || allowsConversationAI(target) && permission.isCurrent()) && guard?.isCurrent?.() !== false
+      const originalSignal = (guard as { signal?: AbortSignal } | undefined)?.signal
+      const signal = permission ? AbortSignal.any([permission.signal, ...(originalSignal ? [originalSignal] : [])]) : originalSignal
+      return diagnostics.run(binding ? { kind: 'conversation', binding } : { kind: 'host' }, `send_${name}`, () => controlDelivery.run(!ai, () => method(action as never,
+        { isCurrent: current, ...(signal ? { signal } : {}), ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}) })), 'delivery').then(async receipt => {
+          const confirmed = receipt && typeof receipt === 'object' ? receipt as { state?: unknown; messageId?: unknown } : undefined
+          // Requester archives and authentication notices use a different native
+          // destination; their source conversation never acquires recall ownership.
+          if (binding && name !== 'interact' && name !== 'sendRequesterArchive' && name !== 'sendRequesterBilibiliAuth' &&
+              action.target && conversationAddressKey(action.target) === conversationAddressKey(binding.target) &&
+              (confirmed?.state === 'sent' || confirmed?.state === 'uploaded') && isMessageId(confirmed.messageId) &&
+              bindingIsCurrent(binding.target, agentBindingToken(binding))) {
+            try { await outboundMessages.remember(binding, confirmed.messageId) }
+            catch (error) { diagnostics.emit({ stage: 'delivery', operation: 'outbound_ownership', outcome: 'failed', code: 'ownership_not_recorded', error }) }
+          }
+          return receipt
+        }).finally(() => { permission?.release(); if (!ai) controlActions.delete(action) })
+    },
+  ])) as unknown as MessageActionPort }
+  const messageActions = instrumentActions(true)
+  // Only the deterministic control workflow receives this closure; it is never exposed to tools.
+  const controlMessageActions = instrumentActions(false)
+  const workflowDiagnostics = {
+    diagnostics,
+    withDiagnosticScope: diagnostics.run,
+    explainFailure: (input: { detail: string; isCurrent: () => boolean | Promise<boolean>; signal?: AbortSignal }) => generateAgentFailureNotice({
+      stage: 'runtime', outcome: 'failed', detail: input.detail, diagnostics,
+      isCurrent: () => isRunning() && !input.signal?.aborted ? input.isCurrent() : false,
+      allowsText: text => options.allowsText?.(text, 'outgoing') !== false,
+      ...(options.failureNoticeFallback ? { fallbackText: options.failureNoticeFallback } : {}),
+      model: request => options.YTapi(request, options.getExecutionConfig?.() ?? {}, input.signal,
+        () => isRunning() && !input.signal?.aborted,
+        async () => { if (!isRunning() || input.signal?.aborted || !await input.isCurrent()) throw new Error('失败说明来源已失效') }),
+    }),
+  }
+  async function groupLogAuthorized(message: IncomingMessage, binding: AgentBindingSnapshot, signal: AbortSignal, guard: () => boolean): Promise<boolean> {
+    if (!guard() || signal.aborted || !bindingIsCurrent(binding.target, agentBindingToken(binding))) return false
+    if (options.groupLog?.masters?.some(user => platformAccountKey(user) === platformAccountKey(message.sender))) return true
+    const observed = await readGroupMember(binding.target, message.sender.id, signal, guard)
+    return guard() && !signal.aborted && !!observed && (observed.member.role === 'owner' || observed.member.role === 'admin')
+  }
+  const groupLogWorkflow = createAgentGroupLogWorkflow({
+    store: groupLogs, render: createAgentGroupLogRenderer({ ...(options.groupLog?.maxBytes ? { maxBytes: options.groupLog.maxBytes } : {}),
+      allowsText: text => options.allowsText?.(text, 'outgoing') !== false }),
+    diagnostics, isRunning, resolveBinding: target => bindingFor(target)?.binding,
+    isBindingCurrent: binding => !privacyBlocked(platformAccountKey(binding.target.account)) && bindingIsCurrent(binding.target, agentBindingToken(binding)),
+    authorized: groupLogAuthorized, canReply: inbox.canReply,
+    allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
+    async sourceAllowed(row, owner) {
+      const { botId, scene } = personMemoryAddress(owner.target)
+      const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(owner.agentId) }, subjectId: row.authorId })
+      return options.allowsText?.(row.content, 'incoming') !== false && options.allowsText?.(row.name, 'incoming') !== false &&
+        !isPersonMemoryRedacted({ scene, messageId: row.messageId, authorId: row.authorId, at: row.occurredAt, excerpt: row.content.slice(0, 4000) }, row.content, redactions)
+    },
+    actions: controlMessageActions, setAI: setConversationAI,
+    async failureNotice(input) {
+      if (!allowsConversationAI(input.target)) return undefined
+      const permission = activity.capture(input.target)
+      try { return await workflowDiagnostics.explainFailure({ ...input, signal: AbortSignal.any([input.signal, permission.signal]),
+        isCurrent: async () => permission.isCurrent() && allowsConversationAI(input.target) && await input.isCurrent() }) }
+      finally { permission.release() }
+    },
+    ...(options.now ? { now: options.now } : {}),
+  })
+  const diceWorkflow = createAgentDiceWorkflow(diceConfig, { ledger: diceLedger, actions: controlMessageActions, diagnostics,
+    allowsText: text => options.allowsText?.(text, 'outgoing') !== false && options.allowsToolInput?.(text) !== false })
+  const diceBridge = options.diceEngine?.enabled ? createAgentDiceHostBridge(options.diceEngine, {
+    state: diceState, legacyLedger: diceLedger, diagnostics,
+    allowsText: text => options.allowsText?.(text, 'outgoing') !== false && options.allowsToolInput?.(text) !== false,
+    async readGrant(request, guard) { return options.readDiceGrant?.(request, guard) },
+    async readMessage({ binding, messageId }, guard) {
+      const adapter = adapterFor(binding.target)
+      await guard.ensureCurrent?.()
+      if (!guard.isCurrent() || !adapter?.isReady() || !bindingIsCurrent(binding.target, agentBindingToken(binding))) return undefined
+      const result = await adapter.readMessage?.(binding.target, messageId, { signal: guard.signal, isCurrent: guard.isCurrent })
+      await guard.ensureCurrent?.()
+      return guard.isCurrent() && adapterFor(binding.target) === adapter ? result : undefined
+    },
+    async readMembers({ binding }, guard) {
+      await guard.ensureCurrent?.()
+      return readGroupMembers(binding.target, guard.signal, () => diceCurrent() && guard.isCurrent() && bindingIsCurrent(binding.target, agentBindingToken(binding)))
+    },
+    async sourceAllowed({ binding, source }, guard) {
+      if (!guard.isCurrent() || !diceCurrent() || !source.messageId || !bindingIsCurrent(binding.target, agentBindingToken(binding)) ||
+          options.allowsText?.(source.text, 'incoming') === false || options.allowsToolInput?.(source.text) === false ||
+          !await inbox.canReply(binding.target, source.messageId) || await inbox.isRecalled(binding.target, source.messageId)) return false
+      const { botId, scene } = personMemoryAddress(binding.target)
+      const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: source.sender.id })
+      return guard.isCurrent() && diceCurrent() && !isPersonMemoryRedacted({ scene, messageId: source.messageId,
+        authorId: source.sender.id, at: source.occurredAt, excerpt: source.text.slice(0, 4000) }, source.text, redactions)
+    },
+    async sendPublic({ binding, source, text }, guard) {
+      const receipt = await controlMessageActions.send({ version: 1, kind: 'message.send', target: binding.target, binding,
+        replyTo: source.messageId!, parts: [{ kind: 'text', text }] }, { isCurrent: guard.isCurrent,
+        ensureCurrent: async () => { await guard.ensureCurrent?.() } })
+      return receipt.state === 'sent' && isMessageId(receipt.messageId) ? { state: 'sent', messageId: receipt.messageId } :
+        { state: receipt.state === 'failed' ? 'failed' : 'unknown' }
+    },
+    async relayPrivate(request, guard) {
+      const receipt = await controlMessageActions.sendDicePrivate!(request, guard)
+      return receipt.state === 'sent' && isMessageId(receipt.messageId) ? { state: 'sent', messageId: receipt.messageId } :
+        { state: receipt.state === 'failed' ? 'failed' : 'unknown' }
+    },
+    async setGroupCard({ binding, source, subject, name }, guard) {
+      const target = binding.target, adapter = adapterFor(target), token = agentBindingToken(binding)
+      if (!adapter?.actions.interact || options.allowsText?.(name, 'outgoing') === false || options.allowsToolInput?.(name) === false) return { state: 'failed' }
+      const pending = guardPendingSend(conversationAddressKey(target), () => diceCurrent() && guard.isCurrent() && !guard.signal.aborted &&
+        adapterFor(target) === adapter && adapter.isReady() && conversationEnabled(target) && bindingIsCurrent(target, token))
+      const ensureCurrent = async () => {
+        if (!pending.isCurrent()) throw new Error('骰子群名片来源已失效')
+        await guard.ensureCurrent?.()
+        if (!pending.isCurrent()) throw new Error('骰子群名片来源已失效')
+      }
+      try {
+        await ensureCurrent()
+        const receipt = await diagnostics.run({ kind: 'conversation', binding, messageId: source.messageId! }, 'dice_group_card', () =>
+          controlDelivery.run(true, () => adapter.actions.interact!({ version: 1, kind: 'conversation.interact', target, binding,
+            interaction: { kind: 'member-card', user: subject, name, requester: source.sender } },
+          { signal: guard.signal, isCurrent: pending.isCurrent, ensureCurrent })), 'delivery')
+        return { state: receipt.state === 'confirmed' ? 'confirmed' : receipt.state === 'failed' ? 'failed' : 'unknown' }
+      } catch { return { state: 'unknown' } }
+      finally { pending.release() }
+    },
+    async controlLog({ binding, source, operation, ownershipId, title, operationId, index }, guard) {
+      if (!groupLogEnabled || !source.messageId || title !== undefined &&
+          (options.allowsText?.(title, 'outgoing') === false || options.allowsToolInput?.(title) === false)) return { state: 'failed' }
+      await guard.ensureCurrent?.()
+      const epochs = await groupLogs.capture({ target: binding.target, agentId: binding.agentId }, source.sender.id)
+      await guard.ensureCurrent?.()
+      if (!guard.isCurrent() || !diceCurrent()) return { state: 'failed' }
+      const receipt = await groupLogs.controlDiceLog({ target: binding.target, agentId: binding.agentId }, {
+        sourceMessageId: source.messageId, subjectId: source.sender.id, operation, ownershipId, operationId, index,
+        ...(title === undefined ? {} : { title }),
+      }, options.now?.() ?? Date.now(), epochs)
+      await guard.ensureCurrent?.()
+      if (!guard.isCurrent() || !diceCurrent()) return { state: 'unknown' }
+      await groupLogWorkflow.restore(binding.target, binding)
+      await guard.ensureCurrent?.()
+      return guard.isCurrent() ? { state: receipt.state } : { state: 'unknown' }
+    },
+    ...(options.now ? { now: options.now } : {}),
+  }) : undefined
+  const dicePolicy = createHash('sha256').update(JSON.stringify([diceConfigKey, diceBridge?.definitionId ?? null])).digest('hex')
+  const diceCandidate = (message: IncomingMessage) => diceBridge ? diceBridge.isCandidate(message) : diceWorkflow.isCandidate(message)
+  async function handleDice(incoming: IncomingMessage, binding: AgentBindingSnapshot,
+    epochs: import('../modules/dice/infrastructure/agentGroupLogStore.js').AgentGroupLogEpochs): Promise<boolean> {
+    if (!diceCandidate(incoming)) return false
+    const target = binding.target, adapter = adapterFor(target), token = agentBindingToken(binding)
+    if (!incoming.messageId || !adapter?.readMessage) return true
+    const memoryTurn = await beginMemoryTurn(binding, false)
+    const current = () => diceCurrent() && memoryTurn.isCurrent() && conversationEnabled(target) &&
+      adapterFor(target) === adapter && adapter.isReady() && bindingIsCurrent(target, token)
+    const ensureAdmission = async () => {
+      const latest = await groupLogs.capture({ target, agentId: binding.agentId }, incoming.sender.id)
+      if (!current() || latest.globalEpoch !== epochs.globalEpoch || latest.sceneEpoch !== epochs.sceneEpoch) throw new Error('骰子入站隐私权限已改变')
+    }
+    const ensure = async () => {
+      if (!current() || !await inbox.canReply(target, incoming.messageId!) || await inbox.isRecalled(target, incoming.messageId!)) throw new Error('骰子来源已失效')
+      await ensureAdmission()
+      const fresh = await adapter.readMessage!(target, incoming.messageId!, { isCurrent: current, signal: memoryTurn.signal })
+      if (!fresh || !isConversationAddress(fresh.conversation) || conversationAddressKey(fresh.conversation) !== conversationAddressKey(target) ||
+          fresh.messageId !== incoming.messageId || !isPlatformAccount(fresh.sender) || platformAccountKey(fresh.sender) !== platformAccountKey(incoming.sender) ||
+          fresh.occurredAt !== incoming.occurredAt || fresh.text !== incoming.text ||
+          (diceBridge ? agentDiceSourceFingerprint(fresh) !== agentDiceSourceFingerprint(incoming) :
+            fresh.quote || fresh.mentions.length || fresh.parts.some(part => part.kind !== 'text') ||
+            fresh.parts.map(part => part.kind === 'text' ? part.text : '').join('') !== incoming.text) ||
+          options.allowsText?.(fresh.text, 'incoming') === false || options.allowsToolInput?.(fresh.text) === false || !current()) throw new Error('骰子来源已改变')
+      const { botId, scene } = personMemoryAddress(target)
+      const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: incoming.sender.id })
+      if (!current() || !await inbox.canReply(target, incoming.messageId!) || await inbox.isRecalled(target, incoming.messageId!) ||
+          isPersonMemoryRedacted({ scene, messageId: incoming.messageId!, authorId: incoming.sender.id, at: incoming.occurredAt,
+            excerpt: incoming.text.slice(0, 4000) }, incoming.text, redactions)) throw new Error('骰子来源权限已失效')
+      await ensureAdmission()
+    }
+    try {
+      const context: AgentDiceEngineContext = { signal: memoryTurn.signal, isCurrent: current, ensureCurrent: ensure }
+      if (groupLogEnabled) {
+        const owner = { target, agentId: binding.agentId }
+        const log = diceBridge ? await groupLogs.read(owner) : undefined
+        if (log) await ensure()
+        Object.assign(context, {
+          ...(log ? { logActive: log.active } : {}),
+          async archive(result: { readonly eventId: string; readonly text: string; readonly deliveryMessageId: string }) {
+            await ensure()
+            const name = incoming.senderName || incoming.sender.id
+            if (options.allowsText?.(result.text, 'outgoing') === false || options.allowsToolInput?.(result.text) === false ||
+                options.allowsText?.(name, 'incoming') === false) throw new Error('骰子团录内容已失效')
+            await groupLogs.append(owner, { messageId: incoming.messageId!, authorId: incoming.sender.id,
+              occurredAt: incoming.occurredAt, name, content: result.text, type: 'dice_result',
+              eventId: result.eventId, deliveryMessageId: result.deliveryMessageId }, epochs)
+          },
+          async record(event: Parameters<NonNullable<AgentDiceEngineContext['record']>>[0]) {
+            await ensure()
+            if (event.producer !== 'agent-dice-engine' || !['card_change', 'rule_event'].includes(event.kind) ||
+                event.source.messageId !== incoming.messageId || event.source.authorId !== incoming.sender.id ||
+                event.source.at !== incoming.occurredAt) throw new Error('骰子规则事件来源无效')
+            if (event.facts && typeof event.facts === 'object' && !Array.isArray(event.facts) &&
+                (event.facts as Readonly<Record<string, unknown>>).visibility === 'private') return
+            const content = JSON.stringify(event.facts), name = incoming.senderName || incoming.sender.id
+            if (options.allowsText?.(content, 'outgoing') === false || options.allowsToolInput?.(content) === false ||
+                options.allowsText?.(name, 'incoming') === false) throw new Error('骰子规则事件内容已失效')
+            await groupLogs.append(owner, { messageId: incoming.messageId!, authorId: incoming.sender.id,
+              occurredAt: incoming.occurredAt, name, content, type: 'dice_rule', eventId: event.eventId }, epochs)
+          },
+        })
+      }
+      return await diagnostics.run({ kind: 'conversation', binding, messageId: incoming.messageId }, 'dice_command', () =>
+        (diceBridge ?? diceWorkflow).handle(incoming, binding, context), 'runtime')
+    } finally { memoryTurn.release() }
+  }
+  function bilibiliQualityCurrent(): boolean {
+    try { return options.bilibiliQuality?.enabled === true && options.isBilibiliQualityCurrent?.() !== false && isRunning() }
+    catch { return false }
+  }
+  const bilibiliQuality = options.bilibiliQuality?.enabled && options.bilibiliAuthService ? createAgentBilibiliQualityWorkflow(options.bilibiliQuality, {
+    storage, auth: options.bilibiliAuthService, provider: binding => options.bilibiliQualityProviderFor?.(binding), actions: controlMessageActions,
+    diagnostics, allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
+    explainFailure: async input => {
+      await input.ensureCurrent()
+      if (!allowsConversationAI(input.binding.target)) return undefined
+      return workflowDiagnostics.explainFailure(input)
+    },
+    ...(options.now ? { now: options.now } : {}),
+  }) : undefined
   const extraction = createAgentMusicExtraction({
+    ...workflowDiagnostics,
     ...(options.musicExtraction ? { config: options.musicExtraction } : {}), storage, actions: messageActions,
     ...(options.musicExtractionProvider ? { provider: options.musicExtractionProvider } : {}),
     allowsText: text => options.allowsText?.(text, 'outgoing') !== false,
@@ -611,11 +1119,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
   })
   const mediaOutbox = createAgentMediaOutbox({
+    ...workflowDiagnostics,
     storage, actions: messageActions, ...(options.mediaRelayProvider ? { provider: options.mediaRelayProvider } : {}),
     allowsText: text => options.allowsText?.(text, 'outgoing') !== false,
     ...(options.now ? { now: options.now } : {}), openContext: openMediaRelayContext,
   })
   const torrent = createAgentTorrentWorkflow({ config: torrentConfig, storage, actions: messageActions,
+    ...workflowDiagnostics,
     ...(options.torrentProvider ? { provider: options.torrentProvider } : {}),
     ...(options.renderTorrentListing ? { renderListing: options.renderTorrentListing } : {}),
     ...(options.now ? { now: options.now } : {}), allowsText: text => options.allowsText?.(text, 'outgoing') !== false,
@@ -624,11 +1134,198 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   const allowsFileNames = (message: IncomingMessage) => message.parts.every(part => part.kind !== 'file' || !part.name || options.allowsText?.(part.name, 'incoming') !== false)
   const memberTools = options.adapters.some(adapter => adapter.readConversationMember || adapter.listConversationMembers) ? createAgentMemberTools() : []
   const historyTools = options.history?.enabled === true ? [createAgentHistoryTool()] : []
+  const interactionTools = createAgentInteractionTools({ enabled: options.interactions?.enabled === true })
+  const interactionWorkflow = createAgentInteractionWorkflow(storage, { diagnostics })
+  function interactionsCurrent(): boolean { return options.interactions?.enabled === true && options.isInteractionsCurrent?.() !== false }
+  async function performInteractions(input: Parameters<NonNullable<SimulationRuntimePorts['performInteractions']>>[0]): Promise<AgentInteractionResult> {
+    const { target, binding, source, signal, plan } = input
+    const peer = target.kind === 'private' ? privatePeerFor(target) : undefined
+    const current = () => interactionsCurrent() && !signal.aborted && input.isCurrent() && isRunning() &&
+      allowsConversationAI(target) && conversationEnabled(target) && bindingIsCurrent(target, agentBindingToken(binding)) && !!adapterFor(target)?.actions.interact &&
+      (target.kind !== 'private' || !!peer && privatePeerFor(target) === peer && source?.author.id === peer &&
+        options.privateTextTools?.includes(plan.kind === 'profile-like' ? 'likeTool' : 'recallTool') === true &&
+        (plan.kind === 'profile-like' || plan.kind === 'message-recall'))
+    const sourceAllowed = async (messageId: string, expected?: typeof source): Promise<boolean> => {
+      const adapter = adapterFor(target)
+      if (!adapter?.readMessage || !current() || !await inbox.canReply(target, messageId) || await inbox.isRecalled(target, messageId)) return false
+      const message = await adapter.readMessage(target, messageId, { isCurrent: current })
+      if (!message || !isConversationAddress(message.conversation) || conversationAddressKey(message.conversation) !== conversationAddressKey(target) ||
+          message.messageId !== messageId || !isPlatformAccount(message.sender) || !samePlatformNamespace(message.sender, target.account) ||
+          !Number.isSafeInteger(message.occurredAt) || message.occurredAt <= 0 || matchPersonMemoryCommand(message.text) || !allowsFileNames(message) || options.allowsText?.(message.text, 'incoming') === false ||
+          options.allowsToolInput?.(message.text) === false || expected && (platformAccountKey(message.sender) !== platformAccountKey(expected.author) ||
+            message.text !== expected.text || message.occurredAt !== expected.occurredAt)) return false
+      const { botId, scene } = personMemoryAddress(target, peer), excerpt = message.text || '[互动来源]'
+      const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: message.sender.id })
+      return current() && await inbox.canReply(target, messageId) && !await inbox.isRecalled(target, messageId) &&
+        !isPersonMemoryRedacted({ scene, messageId, authorId: message.sender.id, at: message.occurredAt, excerpt }, excerpt, redactions)
+    }
+    const ensure = async () => {
+      if (!current()) throw new Error('互动所属回合已失效')
+      await input.ensureCurrent()
+      if (source && !await sourceAllowed(source.messageId, source) || !current()) throw new Error('互动请求来源已失效')
+    }
+    const result = await interactionWorkflow.execute({ binding, identity: input.identity, plan, signal, isCurrent: current, ensureCurrent: ensure,
+      async validateOperation(operation: AgentInteraction) {
+        await ensure()
+        if (isAgentGroupManagement(operation)) {
+          const adapter = adapterFor(target)
+          if (target.kind !== 'group' || !source || !adapter?.readConversationMember ||
+              platformAccountKey(operation.requester) !== platformAccountKey(source.author) ||
+              operation.kind === 'member-card' && (options.allowsText?.(operation.name, 'outgoing') === false || options.allowsToolInput?.(operation.name) === false)) return false
+          const requester = await readGroupMember(target, source.author.id, signal, current)
+          if (!requester || !current()) return false
+          const bot = await readGroupMember(target, adapter.botUserId, signal, current)
+          if (!bot || !current()) return false
+          const member = operation.kind === 'group-mute' ? undefined : await readGroupMember(target, operation.user.id, signal, current)
+          return current() && canApplyGroupManagement(operation, requester.member, bot.member, member?.member)
+        }
+        if (operation.kind === 'message-recall') {
+          const adapter = adapterFor(target)
+          if (!adapter?.readOwnMessage || !await outboundMessages.owns(binding, operation.messageId) ||
+              await inbox.isRecalled(target, operation.messageId) || !current()) return false
+          const proof = await adapter.readOwnMessage(target, operation.messageId, { signal, isCurrent: current })
+          return !!proof && isConversationAddress(proof.conversation) && conversationAddressKey(proof.conversation) === conversationAddressKey(target) &&
+            proof.messageId === operation.messageId && isPlatformAccount(proof.author) && samePlatformNamespace(proof.author, target.account) &&
+            proof.author.id === adapter.botUserId && Number.isSafeInteger(proof.occurredAt) && proof.occurredAt > 0 && proof.occurredAt <= Date.now() + 60_000 &&
+            current() && await outboundMessages.owns(binding, operation.messageId) && !await inbox.isRecalled(target, operation.messageId) && current()
+        }
+        if (target.kind === 'private') return operation.kind === 'profile-like' && operation.user.id === peer &&
+          samePlatformNamespace(operation.user, target.account) && privatePeerFor(target) === peer && current()
+        return operation.kind === 'message-reaction' ? sourceAllowed(operation.messageId) :
+          !!await readGroupMember(target, operation.user.id, signal, current) && current()
+      },
+      dispatch: (action, guard) => messageActions.interact!(action, guard),
+    })
+    // Apply the same source revocation as a platform recall notification, even
+    // when durable settlement failed after the native delete was confirmed.
+    if (plan.kind === 'message-recall' && result.completed > 0) {
+      const operation = plan.operations[0], adapter = adapterFor(target)
+      if (operation?.kind === 'message-recall' && adapter) try {
+        await acceptEvent(adapter, { kind: 'recall', target, messageId: operation.messageId })
+      } catch (error) {
+        diagnostics.emit({ stage: 'delivery', operation: 'interaction', outcome: 'unknown', code: 'recall_invalidation_failed', error })
+        return { state: 'unknown', completed: result.completed, requested: result.requested, code: 'interaction_settlement_failed' }
+      }
+    }
+    return result
+  }
+  const qqActionsCurrent = (binding: AgentBindingSnapshot) => isRunning() && options.isQqActionsCurrent?.() !== false &&
+    binding.target.kind === 'group' && conversationEnabled(binding.target) && allowsConversationAI(binding.target) &&
+    bindingIsCurrent(binding.target, agentBindingToken(binding)) && adapterFor(binding.target)?.isReady() === true
+  const qqActions = createAgentQqActions({
+    ...(options.qqActions ? { config: options.qqActions } : {}), storage, adapterFor, isCurrent: qqActionsCurrent,
+    authorize(name, binding, actor) {
+      if (!qqActionsCurrent(binding) || actor.kind === 'commitment') return false
+      const config = defaultSimRuntimeConfig(options.getSection())
+      if (textInboxFor(binding.target)) return actor.kind === 'user' && (options.groupTextTools?.(binding.target) ?? []).some(tool => String(tool) === name)
+      return resolveSimToolSurface({ policy: config.toolPolicy, builtInNames: [name], extraTools: config.extraTools, groupId: binding.target.id }).includes(name)
+    },
+    async sourceAvailable(binding, source, guard) {
+      const target = binding.target, adapter = adapterFor(target)
+      const current = () => guard.isCurrent() && !guard.signal.aborted && qqActionsCurrent(binding) && adapterFor(target) === adapter
+      try {
+        if (!adapter?.readMessage || !current() || !isMessageId(source.messageId) || !isPlatformAccount(source.author) ||
+            !samePlatformNamespace(source.author, target.account) || await inbox.isRecalled(target, source.messageId)) return false
+        const fresh = await adapter.readMessage(target, source.messageId, { isCurrent: current })
+        if (!fresh || conversationAddressKey(fresh.conversation) !== conversationAddressKey(target) || fresh.messageId !== source.messageId ||
+            platformAccountKey(fresh.sender) !== platformAccountKey(source.author) || !current() ||
+            options.allowsText?.(fresh.text, 'incoming') === false || options.allowsToolInput?.(fresh.text) === false) return false
+        const { botId, scene } = personMemoryAddress(target), excerpt = fresh.text || '[QQ扩展来源]'
+        const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: source.author.id })
+        return current() && !await inbox.isRecalled(target, source.messageId) &&
+          !isPersonMemoryRedacted({ scene, messageId: source.messageId, authorId: source.author.id, at: fresh.occurredAt, excerpt }, excerpt, redactions)
+      } catch { return false }
+    },
+    allowsText: text => options.allowsText?.(text, 'outgoing') !== false && options.allowsToolInput?.(text) !== false,
+    getQzoneLimits: () => defaultSimRuntimeConfig(options.getSection()).qzone,
+    diagnostics, ...(options.now ? { now: options.now } : {}),
+  })
+  const supportsQqAction = (target: ConversationAddress, name: string): boolean => {
+    const adapter = adapterFor(target), binding = bindingFor(target)?.binding
+    if (!binding || !qqActionsCurrent(binding)) return false
+    if (name === 'sendGiftTool') return options.qqActions?.gift?.enabled === true && !!adapter?.gift
+    if (name === 'grabRedBagTool') return options.qqActions?.redPackets?.enabled === true && options.qqActions.redPackets.allowExplicit === true && !!adapter?.redPackets
+    return name === 'qqZoneTool' ? options.qqActions?.qzone?.enabled === true && !!adapter?.qzone
+      : name === 'simQzoneInteract' && options.getSection().qzone?.enabled === true && !!adapter?.qzone
+  }
+  const deferredHostCurrent = () => isRunning() && options.isDeferredActionsCurrent?.() !== false
+  const deferredMode = (target: ConversationAddress): 'simulation' | 'text' | 'private' | undefined => {
+    if (!isRunning() || !conversationEnabled(target) || !adapterFor(target)?.isReady() || !bindingFor(target)) return undefined
+    return target.kind === 'private' ? 'private' : textInboxFor(target) ? 'text' : 'simulation'
+  }
+  const deferredPoke = createAgentDeferredPokeDefinition({
+    definitionId: AGENT_DEFERRED_POKE_DEFINITION_ID,
+    isCurrent: () => deferredHostCurrent() && interactionsCurrent(),
+    readMember: (id, context) => readGroupMember(context.binding.target, id, context.signal, context.isCurrent),
+    perform: (plan, context) => performInteractions({ target: context.binding.target, binding: context.binding,
+      identity: `deferred:${context.taskId}:${context.delegation.id}`, plan, signal: context.signal,
+      isCurrent: context.isCurrent, ensureCurrent: context.ensureCurrent }),
+  })
+  const deferredExecutor = createAgentDeferredActionExecutor({
+    getDefinitions: () => [deferredPoke, ...(options.getDeferredActionDefinitions?.() ?? [])],
+  })
+  const deferredAuthorization = createAgentDeferredActionPolicy({
+    getConfig: () => deferredHostCurrent() ? options.deferredActions : undefined,
+    resolveDefinition: deferredExecutor.resolve, mode: deferredMode,
+    isToolAllowed(request) {
+      if (!deferredHostCurrent() || !allowsConversationAI(request.binding.target)) return false
+      const config = defaultSimRuntimeConfig(options.getSection())
+      return resolveSimToolSurface({ policy: config.toolPolicy, builtInNames: ['pokeTool', ...(options.toolRegistry?.builtIn ?? []).map(tool => tool.name)],
+        extraTools: config.extraTools, groupId: request.binding.target.id }).includes(request.action.tool)
+    },
+    async verifyAuthority({ phase, request, signal, isCurrent }) {
+      const { binding, creator, source } = request, target = binding.target, adapter = adapterFor(target)
+      const current = () => !signal.aborted && isCurrent() && deferredHostCurrent() && allowsConversationAI(target) &&
+        !privacyBlocked(platformAccountKey(target.account)) && deferredMode(target) === 'simulation' &&
+        bindingIsCurrent(target, agentBindingToken(binding)) && adapterFor(target) === adapter
+      try {
+        if (!adapter || !current() || !isPlatformAccount(creator) || !samePlatformNamespace(creator, target.account) ||
+            [...adapters.values()].some(item => samePlatformNamespace(item.account, creator) && [item.account.id, item.botUserId].includes(creator.id))) return 'denied'
+        if (!adapter.readConversationMember || !adapter.readMessage && source.kind === 'message') return 'unavailable'
+        const member = await readGroupMember(target, creator.id, signal, current)
+        if (!current()) return 'denied'
+        if (!member) return 'unavailable'
+        if (source.kind === 'migration') {
+          if (!options.verifyDeferredMigration) return 'denied'
+          const { botId, scene } = personMemoryAddress(target), excerpt = '[延期迁移授权]'
+          const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: creator.id })
+          if (!current() || isPersonMemoryRedacted({ scene, messageId: source.id, authorId: creator.id, at: source.at, excerpt }, excerpt, redactions)) return 'denied'
+          const result = await options.verifyDeferredMigration(request, { signal, isCurrent: current })
+          return current() ? result : 'denied'
+        }
+        if (!isMessageId(source.messageId) || !current()) return 'denied'
+        if (await inbox.isRecalled(target, source.messageId) || !current()) return 'denied'
+        const fresh = await adapter.readMessage!(target, source.messageId, { isCurrent: current })
+        if (!current()) return 'denied'
+        if (!fresh) return 'unavailable'
+        if (fresh.messageId !== source.messageId || !isConversationAddress(fresh.conversation) ||
+            conversationAddressKey(fresh.conversation) !== conversationAddressKey(target) || !isPlatformAccount(fresh.sender) ||
+            platformAccountKey(fresh.sender) !== platformAccountKey(creator) || fresh.occurredAt !== source.at ||
+            !Number.isSafeInteger(source.at) || source.at <= 0 || source.at > (options.now?.() ?? Date.now()) ||
+            phase === 'create' && fresh.text !== request.requestText || matchPersonMemoryCommand(fresh.text) || !allowsFileNames(fresh) ||
+            options.allowsText?.(fresh.text, 'incoming') === false || options.allowsToolInput?.(fresh.text) === false) return 'denied'
+        const { botId, scene } = personMemoryAddress(target), excerpt = fresh.text || '[延期提醒来源]'
+        const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: creator.id })
+        if (!current() || isPersonMemoryRedacted({ scene, messageId: source.messageId, authorId: creator.id, at: source.at, excerpt }, excerpt, redactions)) return 'denied'
+        return await inbox.isRecalled(target, source.messageId) || !current() ? 'denied' : 'allowed'
+      } catch { return current() ? 'unavailable' : 'denied' }
+    },
+    ...(options.now ? { now: options.now } : {}),
+  })
+  const deferredActions = createAgentDeferredActionRuntime({
+    redis: storage, logger: toolLogger, executor: deferredExecutor, authorization: deferredAuthorization,
+    resolveBinding: target => bindingFor(target)?.binding, mode: deferredMode,
+    ready: account => isRunning() && adapters.get(platformAccountKey(account))?.isReady() === true,
+    capture: binding => captureMemoryTurn(binding), sendReminder: createAgentDeferredReminderSender(messageActions),
+    ...(options.now ? { now: options.now } : {}),
+  })
+  const deferredReminderTool = createAgentDeferredActionTool({ runtime: deferredActions, sourceAt: context => context.request?.occurredAt ?? 0 })
   const registeredTools = createAgentTools({
-    get builtIn() { return [...memberTools, ...historyTools, ...(options.toolRegistry?.builtIn ?? [])] },
+    get builtIn() { return [...memberTools, ...historyTools, ...(interactionsCurrent() ? interactionTools : []), ...qqActions.builtIn,
+      ...(options.deferredActions?.enabled === true && deferredHostCurrent() ? [deferredReminderTool] : []), ...(options.toolRegistry?.builtIn ?? [])] },
     get custom() { return options.toolRegistry?.custom ?? [] },
   }, {
-    signal: toolCancellation.signal,
+    signal: toolCancellation.signal, diagnostics,
     ...(options.allowsToolInput ? { allowsInput: options.allowsToolInput } : {}),
     onStart(event, cancel) {
       const target = (event as AgentBindingTurn)._agentBinding!.target
@@ -646,13 +1343,20 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         _sendAgentToolFile?: (file: AgentFileUpload, isCurrent?: () => boolean, signal?: AbortSignal) => Promise<FileDeliveryReceipt>
         _sendAgentToolMedia?: (media: SendMediaAction['media'], isCurrent?: () => boolean, signal?: AbortSignal) => Promise<DeliveryReceipt>
         _sendAgentToolMusic?: (music: AgentMusicCard, isCurrent?: () => boolean, signal?: AbortSignal) => Promise<DeliveryReceipt>
-        _sendAgentToolMediaRelay?: (plan: AgentMediaRelayPlan, isCurrent?: () => boolean, signal?: AbortSignal) => Promise<DeliveryReceipt>
+        _sendAgentToolVideoCard?: (card: AgentVideoCard, isCurrent?: () => boolean, signal?: AbortSignal, ensureCurrent?: () => Promise<void>) => Promise<DeliveryReceipt>
+        _sendAgentToolMediaRelay?: (plan: AgentMediaRelayPlan, isCurrent?: () => boolean, signal?: AbortSignal, ensureCurrent?: () => Promise<void>) => Promise<DeliveryReceipt>
+        _interactAgentTool?: (plan: AgentInteractionPlan, isCurrent: () => boolean, signal: AbortSignal, ensureCurrent?: () => Promise<void>) => Promise<AgentInteractionResult>
         _agentToolPersona?: AgentToolContext['persona']
+        _runAgentQqAction?: AgentQqActionRunner
+        _qzoneAffinity?: (userId: string) => number
+        _qzoneCandidates?: () => Promise<readonly string[]>
+        _reviewAgentQqText?: (text: string) => Promise<boolean>
         _sendAgentToolBundle?: (items: readonly MessageBundleItem[], isCurrent?: () => boolean) => Promise<DeliveryReceipt>
         _readAgentToolImages?: (sourceSeq: number, isCurrent?: () => boolean, signal?: AbortSignal) => Promise<readonly { readonly mime: string; readonly base64: string }[]>
         _sendAgentToolMessage?: (message: AgentToolMessage, isCurrent?: () => boolean) => Promise<DeliveryReceipt>
         _agentToolRequest?: AgentToolRequest
         _readAgentFile?: (input: AgentFileRequest, guard: () => boolean, signal: AbortSignal) => Promise<AgentFileBytes>
+        _readAgentVideo?: (guard: () => boolean, signal: AbortSignal) => Promise<AgentVideoInput>
         _listAgentFiles?: (input: { readonly query?: string; readonly folderPath?: string }, guard: () => boolean, signal: AbortSignal) => Promise<AgentFileListing>
         _readAgentHistory?: (input: Record<string, unknown>, guard: () => boolean, signal: AbortSignal) => Promise<string>
       }
@@ -664,7 +1368,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const target = binding.target
       const expected = agentBindingToken(binding)
       const isCurrent = () => {
-        try { return isRunning() && adapterFor(target)?.isReady() === true && conversationEnabled(target) &&
+        try { return isRunning() && allowsConversationAI(target) && adapterFor(target)?.isReady() === true && conversationEnabled(target) &&
           !textInboxFor(target) && incoming._isAgentBindingCurrent?.() === true && bindingIsCurrent(target, expected) }
         catch { return false }
       }
@@ -675,6 +1379,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           ...(actor.kind === 'user' ? { user: Object.freeze({ ...target.account, id: actor.userId! }) } : {}),
         }), isCurrent,
         botUserId: adapterFor(target)!.botUserId,
+        ...(actor.kind === 'user' && typeof incoming._runAgentQqAction === 'function' ? { runQqAction: incoming._runAgentQqAction } : {}),
+        ...(actor.kind === 'user' && incoming._qzoneAffinity ? { qzoneAffinity: incoming._qzoneAffinity } : {}),
+        ...(actor.kind === 'user' && incoming._qzoneCandidates ? { qzoneCandidates: incoming._qzoneCandidates } : {}),
+        ...(actor.kind === 'user' && incoming._reviewAgentQqText ? { reviewQqText: incoming._reviewAgentQqText } : {}),
         ...(incoming._agentToolPersona ? { persona: incoming._agentToolPersona } : {}),
         ...(actor.kind === 'user' && incoming._agentToolRequest ? { request: Object.freeze({ ...incoming._agentToolRequest,
           mentions: Object.freeze(incoming._agentToolRequest.mentions.map(user => Object.freeze({ ...user }))),
@@ -698,8 +1406,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
             incoming._sendAgentToolMusic!(music, () => isCurrent() && toolCurrent(), signal),
         } : {}),
         ...(actor.kind === 'user' && target.kind === 'group' && typeof incoming._sendAgentToolMediaRelay === 'function' && adapterFor(target)?.actions.sendMediaRelay ? {
-          sendMediaRelay: (plan: AgentMediaRelayPlan, toolCurrent: () => boolean, signal: AbortSignal) =>
-            incoming._sendAgentToolMediaRelay!(plan, () => isCurrent() && toolCurrent(), signal),
+          sendMediaRelay: (plan: AgentMediaRelayPlan, toolCurrent: () => boolean, signal: AbortSignal, ensureCurrent?: () => Promise<void>) =>
+            incoming._sendAgentToolMediaRelay!(plan, () => isCurrent() && toolCurrent(), signal, ensureCurrent),
+        } : {}),
+        ...(actor.kind === 'user' && target.kind === 'group' && interactionsCurrent() && typeof incoming._interactAgentTool === 'function' && adapterFor(target)?.actions.interact ? {
+          interact: (plan: AgentInteractionPlan, toolCurrent: () => boolean, signal: AbortSignal, ensureCurrent?: () => Promise<void>) =>
+            incoming._interactAgentTool!(plan, () => isCurrent() && interactionsCurrent() && toolCurrent(), signal, ensureCurrent),
+        } : {}),
+        ...(actor.kind === 'user' && target.kind === 'group' && typeof incoming._sendAgentToolVideoCard === 'function' && adapterFor(target)?.actions.sendVideoCard ? {
+          sendVideoCard: (card: AgentVideoCard, toolCurrent: () => boolean, signal: AbortSignal, ensureCurrent?: () => Promise<void>) =>
+            incoming._sendAgentToolVideoCard!(card, () => isCurrent() && toolCurrent(), signal, ensureCurrent),
         } : {}),
         ...(actor.kind === 'user' && target.kind === 'group' && adapterFor(target)?.readMessage ? {
           async isSourceAvailable(source: { readonly messageId: string; readonly author: PlatformUserRef }, toolCurrent: () => boolean, signal: AbortSignal): Promise<boolean> {
@@ -743,6 +1459,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         ...(actor.kind === 'user' && target.kind === 'group' && typeof incoming._readAgentFile === 'function' ? {
           readFile: (input: AgentFileRequest, guard: () => boolean, signal: AbortSignal) => incoming._readAgentFile!(input, () => isCurrent() && guard(), signal),
         } : {}),
+        ...(actor.kind === 'user' && target.kind === 'group' && typeof incoming._readAgentVideo === 'function' ? {
+          readVideo: (guard: () => boolean, signal: AbortSignal) => incoming._readAgentVideo!(() => isCurrent() && guard(), signal),
+        } : {}),
         ...(actor.kind === 'user' && target.kind === 'group' && typeof incoming._listAgentFiles === 'function' ? {
           listFiles: (input: { readonly query?: string; readonly folderPath?: string }, guard: () => boolean, signal: AbortSignal) => incoming._listAgentFiles!(input, () => isCurrent() && guard(), signal),
         } : {}),
@@ -769,15 +1488,44 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
   })
   const runtime = createSimulationRuntime({
+    supportsQqAction,
+    executeQzone: qqActions.executeQzone,
     ...options,
+    logger, diagnostics,
+    withDiagnosticScope: (scope, operation, fn) => diagnostics.run(scope, operation, fn),
+    ...(options.failureNoticeFallback ? { failureNoticeFallback: options.failureNoticeFallback } : {}),
     redis: storage,
     durableIngress: true,
     ...registeredTools,
     extraToolsPlatformNeutral: true,
     messageActions,
+    ...(options.interactions?.enabled === true ? { performInteractions,
+      supportsMessageRecall: (target: ConversationAddress) => interactionsCurrent() && target.kind === 'group' &&
+        !!adapterFor(target)?.actions.interact && !!adapterFor(target)?.readOwnMessage,
+      supportsGroupManagement: (target: ConversationAddress) => interactionsCurrent() && target.kind === 'group' &&
+        !!adapterFor(target)?.actions.interact && !!adapterFor(target)?.readConversationMember && !!adapterFor(target)?.listConversationMembers,
+      supportsInteractions: (target: ConversationAddress) => interactionsCurrent() && target.kind === 'group' &&
+        adapterFor(target)?.isReady() === true && !!adapterFor(target)?.actions.interact,
+    } : {}),
     ...(options.adapters.some(adapter => adapter.listConversationMembers) ? { readGroupMembers } : {}),
     handlesTarget: target => target.kind !== 'private' && !!adapterFor(target),
     allowsSimulation: target => !options.useTextGroup?.(target),
+    allowsConversationAI,
+    ...(options.videoSearchProvider ? { resolveVideoCard: async (input: { readonly query?: string; readonly url?: string }, target: ConversationAddress,
+      context: import('../contracts/agentMediaRelay.js').AgentMediaResourceContext) => {
+      const binding = bindingFor(target)?.binding
+      if (!binding) throw new Error('视频查询会话不可用')
+      const token = agentBindingToken(binding), permission = activity.capture(target)
+      const current = () => isRunning() && allowsConversationAI(target) && permission.isCurrent() && !context.signal.aborted &&
+        context.isCurrent() && options.isVideoSearchCurrent?.() !== false && bindingIsCurrent(target, token)
+      const ensure = async () => { if (!current()) throw new Error('视频查询权限已改变'); await context.ensureCurrent?.(); if (!current()) throw new Error('视频查询权限已改变') }
+      try {
+        await ensure()
+        const card = await options.videoSearchProvider!.resolve(input, { signal: AbortSignal.any([context.signal, permission.signal]), isCurrent: current, ensureCurrent: ensure })
+        await ensure()
+        return validateAgentVideoCard(card, text => options.allowsText?.(text, 'outgoing') !== false)
+      } finally { permission.release() }
+    } } : {}),
     beginMemoryTurn,
     isMemoryInputAvailable: account => !privacyBlocked(platformAccountKey(account)),
     isAccountReady: account => isRunning() && adapters.get(platformAccountKey(account))?.isReady() === true,
@@ -829,7 +1577,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
     async recordGroupReply(target, guard) {
       const selected = bindingFor(target)
-      if (selected) try { await groupMemory.confirmed(selected.binding, guard) } catch { logger.warn('[Agent] 群学习登记失败') }
+      if (selected) try { await groupMemory.confirmed(selected.binding, guard) } catch (error) { diagnostics.emit({ stage: 'memory', operation: 'group_learning_confirm', outcome: 'failed', code: 'confirmed_reply_record_failed', error }) }
     },
     async recordEpisode(input) {
       const binding = input.binding
@@ -891,6 +1639,29 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       await ensureCurrent()
       return result ? validateAgentFileBytes(result) : undefined
     },
+    async readMessageVideo(target, messageId, guard) {
+      const adapter = adapterFor(target)
+      if (!adapter?.readMessageVideo || target.kind !== 'group') return undefined
+      const isCurrent = () => !guard.signal.aborted && isRunning() && adapterFor(target) === adapter && adapter.isReady() &&
+        conversationEnabled(target) && !textInboxFor(target) && guard.isCurrent()
+      const canRead = async () => isCurrent() && await inbox.canReply(target, messageId) && isCurrent()
+      const ensureCurrent = async () => { await guard.ensureCurrent?.(); if (!await canRead()) throw new Error('视频来源已失效') }
+      if (!await canRead()) return undefined
+      const result = await adapter.readMessageVideo(target, messageId, {
+        signal: guard.signal, isCurrent, ensureCurrent, ...(guard.inspectOnly ? { inspectOnly: true } : {}),
+        async allowsSource(original) {
+          return conversationAddressKey(original.conversation) === conversationAddressKey(target) && !!original.messageId &&
+            !matchPersonMemoryCommand(original.text) && !await inbox.isRecalled(target, original.messageId) && options.allowsText?.(original.text, 'incoming') !== false &&
+            allowsFileNames(original) && await guard.allowsSource(original) && await canRead()
+        },
+        async allowsForwardSource(source) {
+          return samePlatformNamespace(source.author, target.account) && Number.isSafeInteger(source.occurredAt) && source.occurredAt > 0 &&
+            await guard.allowsForwardSource(source) && await canRead()
+        },
+      })
+      await ensureCurrent()
+      return result
+    },
     async listConversationFiles(target, guard) {
       const adapter = adapterFor(target)
       if (!adapter?.listConversationFiles || target.kind !== 'group') return undefined
@@ -929,12 +1700,91 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     handlesTarget: target => isRunning() && !!target && adapterFor(target)?.isReady() === true && conversationEnabled(target),
     resolveBinding: target => bindingFor(target)?.binding,
     resolvePrivatePeer: privatePeerFor,
+    allowsExecution: allowsConversationAI,
+    captureExecution: target => activity.capture(target),
     isSimulationGroup: (_id, target) => target ? runtime.isConversationActive(target) : false,
     waitForSimulation: true,
     wakeSim: (id, card, runOptions, target) => runtime.wakeForCommitment(id, card, runOptions, target),
     loadConfig: () => ({}),
     ...(options.now ? { now: options.now } : {}),
   })
+  const management: AgentManagementModules | undefined = options.managementBindings && (() => {
+    const bindings = options.managementBindings!
+    const profiles = createAgentProfileManagement({ redis: storage, bindings, ...(options.now ? { now: options.now } : {}) })
+    // Reuse the runtime's exact store: cancellation must reach its in-flight invalidation listeners.
+    const trusteeship = createAgentTrusteeshipManagement({ store: commitments.store, redis: storage, bindings,
+      ...(options.now ? { now: options.now } : {}) })
+    function authority(context: AgentManagementContext): AgentManagementContext {
+      const signal = AbortSignal.any([context.signal, toolCancellation.signal, ...(options.signal ? [options.signal] : [])])
+      const invalid = (): never => { throw new AgentManagementError('conflict') }
+      const parentCheck = captureSynchronousGuardCheck(context, invalid)
+      const current = () => { try { return !signal.aborted && isRunning() && context.isCurrent() } catch { return false } }
+      const authority = parentCheck ? createSynchronousGuard(signal, () => {
+        parentCheck()
+        // Runtime hooks may synchronously revoke the parent request without aborting it.
+        // Keep its fresh observation after that callback as well as the preflight above.
+        try { if (!isRunning()) invalid(); parentCheck() } catch { invalid() }
+      }, invalid) : { signal, isCurrent: current,
+        ensureCurrent() { context.ensureCurrent(); if (!current()) invalid() } }
+      const { ensureCurrent } = authority
+      return { ...authority, ...(context.binding ? { binding: context.binding } : {}),
+        async authorize(operation, binding, guard) {
+          const ownerCheck = captureSynchronousGuardCheck(authority, invalid), selectedCheck = captureSynchronousGuardCheck(guard, invalid)
+          const selected = ownerCheck && selectedCheck ? createSynchronousGuard(signal, () => {
+            ownerCheck(); selectedCheck()
+          }, invalid) : { signal, isCurrent: () => authority.isCurrent() && guard.isCurrent(),
+            ensureCurrent() { ensureCurrent(); guard.ensureCurrent() } }
+          selected.ensureCurrent()
+          const result = await context.authorize(operation, binding, selected)
+          selected.ensureCurrent()
+          return result
+        },
+      }
+    }
+    async function invoke<T>(context: AgentManagementContext, action: (guard: AgentManagementContext) => Promise<T>) {
+      const guard = authority(context)
+      guard.ensureCurrent()
+      const result = await action(guard)
+      guard.ensureCurrent()
+      return result
+    }
+    async function changeProfile<T>(context: AgentManagementContext, operation: 'profiles.delete' | 'profiles.delete-field',
+      action: (guard: AgentManagementContext) => Promise<T>) {
+      return invoke(context, async guard => {
+        const binding = guard.binding
+        if (!binding) throw new AgentManagementError('invalid_request')
+        const ensureBinding = () => {
+          guard.ensureCurrent()
+          const live = bindings.resolve(binding.target)
+          if (!live || conversationAddressKey(live.target) !== conversationAddressKey(binding.target) ||
+              agentBindingToken(live) !== agentBindingToken(binding)) throw new AgentManagementError('conflict')
+        }
+        ensureBinding()
+        const decision = await guard.authorize(operation, binding, { signal: guard.signal,
+          isCurrent: () => { try { ensureBinding(); return true } catch { return false } }, ensureCurrent: ensureBinding })
+        ensureBinding()
+        if (decision !== 'allowed') throw new AgentManagementError(decision === 'denied' ? 'forbidden' : 'unavailable')
+        // Invalidate existing source consumers before the first storage await. Future turns wait
+        // until the real store has committed its tombstones, then re-read the privacy versions.
+        const finishAdmission = beginPrivacyAdmission(binding)
+        try { const result = await action(guard); ensureBinding(); return result }
+        finally { finishAdmission() }
+      })
+    }
+    return {
+      profiles: {
+        list: context => invoke(context, guard => profiles.list(guard)),
+        remove: (userId, context) => changeProfile(context, 'profiles.delete', guard => profiles.remove(userId, guard)),
+        removeField: (userId, field, value, context) => changeProfile(context, 'profiles.delete-field', guard => profiles.removeField(userId, field, value, guard)),
+      },
+      trusteeship: {
+        overview: context => invoke(context, async guard => ({ ...await trusteeship.overview(guard) })),
+        cancelCommitment: (scopeKey, id, context) => invoke(context, guard => trusteeship.cancelCommitment(scopeKey, id, guard)),
+        deleteDelegated: (scopeKey, id, context) => invoke(context, guard => trusteeship.deleteDelegated(scopeKey, id, guard)),
+        clearFailLog: context => invoke(context, guard => trusteeship.clearFailLog(guard)),
+      },
+    } satisfies AgentManagementModules
+  })()
   const textPersonMemory = createTextPersonMemory({
     redis: storage, memory: personMemory,
     ...(options.personProfileExtract ? { extract: options.personProfileExtract } : {}),
@@ -948,7 +1798,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         (target.kind !== 'private' || privatePeerFor(target) === batch.subjectId && batch.peerId === batch.subjectId) &&
         batch.messages.every(row => options.allowsText?.(row.text, 'incoming') !== false)
     },
-    available: target => isRunning() && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
+    available: target => isRunning() && allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
     begin: beginMemoryTurn,
     isRecalled: inbox.isRecalled,
     logger,
@@ -968,7 +1818,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         personaId: agentPersonaScopeId(selected.binding.agentId), persona: { ...selected.persona, name: String(selected.persona.name ?? '') },
         systemContent: selected.systemContent, binding: selected.binding }) }
     },
-    available: target => isRunning() && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
+    available: target => isRunning() && allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
     privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, begin: beginMemoryTurn,
     isRunning, allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
     logger, ...(options.recordTokens ? { recordUsage: options.recordTokens } : {}), ...(options.now ? { now: options.now } : {}),
@@ -987,7 +1837,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   const history = createAgentHistory({
     redis: storage, memory: personMemory, config: () => options.history,
     resolve: target => isRunning() && conversationEnabled(target) ? bindingFor(target) : undefined,
-    available: target => adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
+    available: target => allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
     privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, begin: beginMemoryTurn, isRunning, authorizePrivateSource,
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
     logger, ...(options.now ? { now: options.now } : {}),
@@ -996,7 +1846,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     redis: storage, memory: personMemory, config: () => options.semanticMemory,
     ...(options.semanticMemoryBackend ? { backend: options.semanticMemoryBackend } : {}),
     resolve: target => isRunning() && conversationEnabled(target) ? bindingFor(target) : undefined,
-    available: target => adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
+    available: target => allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
     privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, begin: beginMemoryTurn, isRunning,
     authorizePrivateSource,
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
@@ -1013,7 +1863,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         systemContent: selected.systemContent, binding: selected.binding }) }
     },
     botUserId: target => adapterFor(target)?.botUserId ?? '',
-    available: target => isRunning() && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
+    available: target => isRunning() && allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
     members: readGroupMembers, member: readGroupMember,
     isRecalled: inbox.isRecalled, begin: beginMemoryTurn, isRunning,
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
@@ -1024,12 +1874,138 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       resolve: bindingFor, isRecalled: inbox.isRecalled, ...(options.now ? { now: options.now } : {}) }),
     member: readGroupMember, actions: messageActions,
   })
+  // Tool and failure-notice scopes share one source pin, even after an
+  // individual tool's signal ends. Weak ownership lasts only for this turn.
+  const textInteractionQuotes = new WeakMap<IncomingMessage, { token: string; author: PlatformUserRef; text: string; at: number }>()
   const textConversation = createTextConversation({
-    inbox, actions: messageActions, personMemory,
+    inbox, actions: messageActions, personMemory, diagnostics,
+    ...(options.failureNoticeFallback ? { fallbackText: options.failureNoticeFallback } : {}),
     bindingToken: textBindingToken,
     groupToolNames: target => options.groupTextTools?.(target) ?? [],
-    groupTools: createGroupTextTools({ commitment: new commitments.CommitmentTool(), memory: new memories.DelegateMemoryTool(),
+    privateToolNames: options.privateTextTools ?? [],
+    groupTools: createGroupTextTools({ diagnostics, commitment: new commitments.CommitmentTool(), memory: new memories.DelegateMemoryTool(),
       ...(options.groupMemory?.enabled === true ? { knowledge: groupKnowledge } : {}) }),
+    ...(options.allowsToolInput ? { allowsToolInput: options.allowsToolInput } : {}),
+    async videoSelection(incoming, binding) {
+      const session = await createAgentVideoSearchStore(storage, { ...(options.now ? { now: options.now } : {}) }).load(binding)
+      if (!session || session.source.messageId !== incoming.messageId || platformAccountKey(session.source.author) !== platformAccountKey(incoming.sender)) return undefined
+      return session.generation
+    },
+    scopedTools: target => adapterFor(target)?.readMessage ? [
+      ...(target.kind === 'group' ? qqActions.builtIn.filter(tool => supportsQqAction(target, tool.name)) : []),
+      ...(target.kind === 'group' && options.isVideoSearchCurrent?.() !== false ? (options.toolRegistry?.builtIn ?? []).filter(tool =>
+        groupTextVideoToolNames.some(name => name === tool.name) && (tool.name === 'searchVideoTool' ||
+          tool.name === 'videoShareTool' && !!adapterFor(target)?.actions.sendVideoCard || tool.name === 'videoDownloadTool' && !!adapterFor(target)?.actions.sendMediaRelay)) : []),
+      ...(interactionsCurrent() && adapterFor(target)?.actions.interact ? interactionTools.filter(tool =>
+        (target.kind === 'group' || (tool.name === 'likeTool' || tool.name === 'recallTool') && options.privateTextTools?.includes(tool.name)) &&
+        (!['jinyanTool', 'changeCardTool'].includes(tool.name) || !!adapterFor(target)?.readConversationMember && !!adapterFor(target)?.listConversationMembers) &&
+        (tool.name !== 'recallTool' || !!adapterFor(target)?.readOwnMessage)) : []),
+    ] : [],
+    scopedContext(incoming, binding, turnCurrent, ensureTurn, signal) {
+      const target = binding.target, adapter = adapterFor(target), token = textBindingToken(binding), peer = privatePeerFor(target, adapter)
+      if (!adapter?.readMessage || !incoming.messageId ||
+          !isPlatformAccount(incoming.sender) || !samePlatformNamespace(incoming.sender, target.account) ||
+          target.kind === 'private' && (!peer || incoming.sender.id !== peer) ||
+          [...adapters.values()].some(row => samePlatformNamespace(row.account, incoming.sender) &&
+            [row.account.id, row.botUserId].includes(incoming.sender.id))) return undefined
+      const current = () => {
+        try { const live = bindingFor(target); return !signal.aborted && turnCurrent() &&
+          adapterFor(target) === adapter && adapter.isReady() && !!live && textBindingToken(live.binding) === token &&
+          (target.kind !== 'private' || !!peer && privatePeerFor(target, adapter) === peer && incoming.sender.id === peer) }
+        catch { return false }
+      }
+      const available = async (source: { readonly messageId: string; readonly author: PlatformUserRef }, expected?: Pick<IncomingMessage, 'text' | 'occurredAt'>) => {
+        try {
+          await ensureTurn()
+          if (!current() || !isMessageId(source.messageId) || !isPlatformAccount(source.author) ||
+              !samePlatformNamespace(source.author, target.account) || !await inbox.canReply(target, source.messageId)) return false
+          const message = await adapter.readMessage!(target, source.messageId, { isCurrent: current })
+          if (!message || !isConversationAddress(message.conversation) || conversationAddressKey(message.conversation) !== conversationAddressKey(target) ||
+              message.messageId !== source.messageId || !isPlatformAccount(message.sender) || platformAccountKey(message.sender) !== platformAccountKey(source.author) ||
+              !Number.isSafeInteger(message.occurredAt) || message.occurredAt <= 0 || matchPersonMemoryCommand(message.text) || !allowsFileNames(message) ||
+              options.allowsText?.(message.text, 'incoming') === false || options.allowsToolInput?.(message.text) === false ||
+              source.messageId === incoming.messageId && (message.text !== incoming.text || message.occurredAt !== incoming.occurredAt) ||
+              expected && (message.text !== expected.text || message.occurredAt !== expected.occurredAt)) return false
+          const { botId, scene } = personMemoryAddress(target, peer), excerpt = message.text || '[工具请求]'
+          const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: source.author.id })
+          await ensureTurn()
+          return current() && await inbox.canReply(target, source.messageId) &&
+            !isPersonMemoryRedacted({ scene, messageId: source.messageId, authorId: source.author.id, at: message.occurredAt, excerpt }, excerpt, redactions)
+        } catch (error) { diagnostics.emit({ stage: 'tool', operation: 'text_tool_source', outcome: 'failed', code: 'source_read_unavailable', error }); return false }
+      }
+      const ensure = async () => {
+        if (!await available({ messageId: incoming.messageId!, author: incoming.sender })) throw new Error('工具请求来源已失效')
+      }
+      const request: { messageId: string; text: string; mentions: readonly PlatformUserRef[]; replyMessageId?: string; replyAuthor?: PlatformUserRef } = {
+        messageId: incoming.messageId, text: incoming.text, mentions: incoming.mentions,
+        ...(incoming.quote?.messageId ? { replyMessageId: incoming.quote.messageId } : {}),
+      }
+      let interactionQuote = textInteractionQuotes.get(incoming)
+      if (interactionQuote?.token !== token) interactionQuote = undefined
+      const ensureInteractionQuote = async () => {
+        if (!request.replyMessageId) return
+        let message: IncomingMessage | undefined
+        try {
+          await ensure()
+          message = await adapter.readMessage!(target, request.replyMessageId, { isCurrent: current })
+          if (!message || !isConversationAddress(message.conversation) || conversationAddressKey(message.conversation) !== conversationAddressKey(target) ||
+              message.messageId !== request.replyMessageId || !isPlatformAccount(message.sender) || !samePlatformNamespace(message.sender, target.account) ||
+              !Number.isSafeInteger(message.occurredAt) || message.occurredAt <= 0 ||
+              !await available({ messageId: request.replyMessageId, author: message.sender }, message)) message = undefined
+        } catch { message = undefined }
+        if (!message) {
+          if (interactionQuote) throw new Error('互动引用来源已失效')
+          return
+        }
+        if (interactionQuote && (platformAccountKey(message.sender) !== platformAccountKey(interactionQuote.author) ||
+            message.text !== interactionQuote.text || message.occurredAt !== interactionQuote.at)) throw new Error('互动引用来源已改变')
+        if (!interactionQuote) {
+          interactionQuote = { token, author: Object.freeze({ ...message.sender }), text: message.text, at: message.occurredAt }
+          textInteractionQuotes.set(incoming, interactionQuote)
+        }
+        request.replyAuthor = interactionQuote.author
+      }
+      const ensureInteraction = async () => { await ensure(); await ensureInteractionQuote(); if (!current()) throw new Error('互动请求来源已失效') }
+      const beforeSend = async (guard?: { readonly signal: AbortSignal; isCurrent(): boolean; ensureCurrent?(): Promise<void> }) => {
+        await ensure()
+        await guard?.ensureCurrent?.()
+        if (!current() || guard?.signal.aborted || guard?.isCurrent() === false) throw new Error('工具投递来源已失效')
+      }
+      return {
+        binding, actor: { kind: 'user', user: incoming.sender }, botUserId: adapter.botUserId,
+        ...(target.kind === 'private' && peer ? { privatePeer: Object.freeze({ ...target.account, id: peer }) } : {}),
+        request, signal, isCurrent: current,
+        ...(target.kind === 'group' && qqActions.builtIn.some(tool => supportsQqAction(target, tool.name)) ? {
+          readMember: async (userId: string) => { await ensureInteraction(); return readGroupMember(target, userId, signal, current) },
+          listMembers: async () => { await ensureInteraction(); return readGroupMembers(target, signal, current) },
+        } : {}),
+        ensureCurrent: async () => { await ensure(); if (textInteractionQuotes.get(incoming)?.token === token) await ensureInteractionQuote() }, isSourceAvailable: available,
+        ...(interactionsCurrent() && adapter.actions.interact ? {
+          readMember: async (userId: string) => { await ensureInteraction(); return readGroupMember(target, userId, signal, current) },
+          listMembers: async () => { await ensureInteraction(); return readGroupMembers(target, signal, current) },
+          interact: async (plan: AgentInteractionPlan) => { await ensureInteraction(); return performInteractions({ target, binding, identity: 'human:' + incoming.messageId,
+            source: { messageId: incoming.messageId!, author: incoming.sender, occurredAt: incoming.occurredAt, text: incoming.text },
+            plan, signal, isCurrent: current, ensureCurrent: ensureInteraction }) },
+        } : {}),
+        ...(target.kind === 'group' && adapter.actions.sendVideoCard ? { async sendVideoCard(card, guard) {
+          const owned = validateAgentVideoCard(card, text => options.allowsToolInput?.(text) !== false && options.allowsText?.(text, 'outgoing') !== false)
+          await beforeSend(guard)
+          return messageActions.sendVideoCard!({ version: 1, kind: 'video-card.send', target, binding, card: owned },
+            { signal: AbortSignal.any([signal, ...(guard ? [guard.signal] : [])]), isCurrent: () => current() && guard?.isCurrent() !== false,
+              ensureCurrent: () => beforeSend(guard) })
+        } } : {}),
+        ...(target.kind === 'group' && adapter.actions.sendMediaRelay ? { async sendMediaRelay(plan, guard) {
+          const owned = validateAgentMediaRelayPlan(plan, { allowsText: text => options.allowsToolInput?.(text) !== false &&
+            sanitizeFinalReplyText(text) === text && options.allowsText?.(text, 'outgoing') !== false })
+          const text = owned.items.flatMap(item => item.parts.flatMap(part => part.kind === 'text' ? [part.text] : [])).join('\n')
+          if (options.allowsToolInput?.(text) === false || options.allowsText?.(text, 'outgoing') === false) throw new Error('视频文字不可用')
+          await beforeSend(guard)
+          return messageActions.sendMediaRelay!({ version: 1, kind: 'media-relay.send', target, binding, mode: 'forward', plan: owned },
+            { signal: AbortSignal.any([signal, ...(guard ? [guard.signal] : [])]), isCurrent: () => current() && guard?.isCurrent() !== false,
+              ensureCurrent: () => beforeSend(guard) })
+        } } : {}),
+      }
+    },
     learnConfirmed: (incoming, binding, isCurrent) => textPersonMemory.enqueue(incoming, binding, isCurrent),
     async readConversationMemory(incoming, viewer, isCurrent) {
       const selected = bindingFor(incoming.conversation)
@@ -1060,7 +2036,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       return !!selected && guard() && await groupMemory.read(selected.binding, guard, true) === expected && guard()
     },
     async recordGroupReply(incoming, binding, guard) {
-      if (incoming.conversation.kind === 'group') try { await groupMemory.confirmed(binding, guard) } catch { logger.warn('[Agent] 群学习登记失败') }
+      if (incoming.conversation.kind === 'group') try { await groupMemory.confirmed(binding, guard) } catch (error) { diagnostics.emit({ stage: 'memory', operation: 'group_learning_confirm', outcome: 'failed', code: 'confirmed_reply_record_failed', error }) }
     },
     async recordEpisode(incoming, source, reply, replyId, isCurrent) {
       if (!source.binding || !incoming.messageId) return
@@ -1087,18 +2063,117 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     ...(options.now ? { now: options.now } : {}),
   })
 
+  const triggerModels = options.textTriggerModel && createAgentTextTriggerModels({
+    model: options.textTriggerModel, diagnostics,
+    allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
+    ...(options.now ? { now: options.now } : {}),
+  })
+  const textTrigger = createAgentTextTrigger<ResolvePersona>({
+    config: () => options.textTrigger,
+    ...(options.now ? { now: options.now } : {}),
+    random: Math.random,
+    async readHistory(input, guard) {
+      await guard.ensureCurrent()
+      const { binding, persona, systemContent } = input.selected
+      const target = input.incoming.conversation, { botId, scene } = personMemoryAddress(target)
+      const identity = { botId, personaId: agentPersonaScopeId(binding.agentId) }
+      const snapshot = createPersonaSnapshot({ ...identity, binding, persona: { ...persona, name: String(persona.name ?? '') }, systemContent })
+      const [saved, redactions] = await Promise.all([inbox.loadTextHistory(target), personMemory.getSceneRedactions({ identity, scene })])
+      await guard.ensureCurrent()
+      return saved?.bindingToken === textBindingToken(binding) && saved.personaVersion === snapshot.personaVersion &&
+        (saved.personMemoryInvalidatedAt ?? 0) === redactions.invalidatedAt ? saved.turns : []
+    },
+    async gate(input, guard) {
+      if (!triggerModels) return { decision: 'no_action', reason: 'gate_unconfigured' }
+      const { binding, persona, systemContent } = input.selected
+      const snapshot = createPersonaSnapshot({ botId: personMemoryAddress(binding.target).botId, personaId: agentPersonaScopeId(binding.agentId),
+        binding, persona: { ...persona, name: String(persona.name ?? '') }, systemContent })
+      return triggerModels.gate({ ...guard, binding, incoming: input.incoming, persona: snapshot,
+        history: input.history.flatMap(turn => [{ speakerId: turn.speakerId ?? '', text: turn.user }, { speakerId: binding.target.account.id, text: turn.reply }]),
+        phase: input.decision.phase, reason: input.decision.reason, recentReplies: input.decision.stats.recentReplyCount,
+        recentIncoming: input.decision.stats.groupMsgRate5min,
+        ...(input.metrics.lastReplyAt ? { lastReplyAt: input.metrics.lastReplyAt } : {}),
+        ...(input.metrics.lastReplyToUserId ? { lastReplyToUserId: input.metrics.lastReplyToUserId } : {}),
+        promptHintBusyGroupRate: options.textTrigger?.smart?.promptHintBusyGroupRate ?? 30,
+        promptHintRateLimitWarn: options.textTrigger?.smart?.promptHintRateLimitWarn ?? 5,
+      })
+    },
+    async tracking(input, guard) {
+      if (!triggerModels) return false
+      const { binding, persona, systemContent } = input.selected
+      const snapshot = createPersonaSnapshot({ botId: personMemoryAddress(binding.target).botId, personaId: agentPersonaScopeId(binding.agentId),
+        binding, persona: { ...persona, name: String(persona.name ?? '') }, systemContent })
+      return triggerModels.tracking({ ...guard, binding, incoming: input.incoming, persona: snapshot, history: input.history })
+    },
+    async reply(input, guard) {
+      return diagnostics.run({ kind: 'conversation', binding: input.selected.binding, messageId: input.incoming.messageId! }, 'text_turn',
+        () => textConversation.replyWithTrigger(input.incoming, input.selected, guard.isCurrent, guard.signal,
+          { reason: input.reason, sources: input.sources, quote: input.quote, ensureCurrent: guard.ensureCurrent,
+            ...(input.repeatText === undefined ? {} : { repeatText: input.repeatText }) }), 'inbox')
+    },
+    async repeat(input, guard) {
+      return textConversation.replyWithTrigger(input.incoming, input.selected, guard.isCurrent, guard.signal,
+        { reason: 'repeat', sources: input.sources, quote: false, ensureCurrent: guard.ensureCurrent,
+          ...(input.repeatText === undefined ? {} : { repeatText: input.repeatText }) })
+    },
+  })
+
   const consumers = new Map<string, Promise<void>>()
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   let maintenance: ReturnType<typeof setInterval> | undefined
   let shuttingDown: Promise<void> | undefined
   let started = false
 
-  async function accept(adapter: PlatformConnectionAdapter, event: PlatformConversationEvent): Promise<void> {
+  function accept(adapter: PlatformConnectionAdapter, event: PlatformConversationEvent): Promise<void> {
+    // Admission order is assigned before any member/storage await, so later messages
+    // cannot overtake an on/off/export command from this receiving account.
+    const key = platformAccountKey(adapter.account)
+    const ordered = event.kind === 'message' && event.message.conversation.kind === 'group' && !personMemoryCommand(event.message) &&
+      (groupLogEnabled || diceCandidate(event.message))
+    const previous = ordered ? admissions.get(key) ?? Promise.resolve() : undefined
+    const task = (previous ? previous.catch(() => {}).then(() => acceptEvent(adapter, event)) : acceptEvent(adapter, event)).catch(error => {
+      diagnostics.emit({ stage: 'inbox', operation: 'admit_event', outcome: 'failed', code: 'admission_not_confirmed', error })
+      throw error
+    })
+    if (ordered) admissions.set(key, task)
+    pendingAdmissions.add(task)
+    void task.finally(() => { pendingAdmissions.delete(task); if (admissions.get(key) === task) admissions.delete(key) }).catch(() => {})
+    return task
+  }
+  async function acceptEvent(adapter: PlatformConnectionAdapter, event: PlatformConversationEvent): Promise<void> {
     if (!isRunning()) throw new Error('独立宿主正在停止')
     const target = inboxEventTarget(event)
     if (!isConversationAddress(target) || adapterFor(target) !== adapter || !adapter.isReady() || !hasValidInboundEvent(event, adapter)) return
     const privateChat = target.kind === 'private'
+    if (event.kind === 'red-packet') {
+      const binding = bindingFor(target)?.binding
+      if (!binding || !adapter.redPackets || !qqActionsCurrent(binding) || !options.qqActions?.redPackets?.automatic?.enabled) return
+      const epochs = await groupLogs.capture({ target, agentId: binding.agentId }, event.packet.source.author.id)
+      const memory = await beginMemoryTurn(binding), key = conversationAddressKey(target), packet = structuredClone(event.packet)
+      const previous = automaticQqWork.get(key) ?? Promise.resolve()
+      const work = previous.catch(() => {}).then(async () => {
+        const current = () => memory.isCurrent() && qqActionsCurrent(binding) && adapterFor(target) === adapter
+        const guard: AgentQqActionGuard = { signal: memory.signal, isCurrent: current, async ensureCurrent() {
+          if (!current() || await inbox.isRecalled(target, packet.source.messageId)) throw new Error('红包来源已失效')
+          const latest = await groupLogs.capture({ target, agentId: binding.agentId }, packet.source.author.id)
+          if (!current() || latest.globalEpoch !== epochs.globalEpoch || latest.sceneEpoch !== epochs.sceneEpoch) throw new Error('红包来源隐私权限已改变')
+        } }
+        await diagnostics.run({ kind: 'conversation', binding, messageId: packet.source.messageId }, 'red_packet_automatic', async () => {
+          await guard.ensureCurrent()
+          const result = await qqActions.automatic(packet, binding, guard)
+          diagnostics.emit({ stage: 'delivery', operation: 'red_packet_automatic', outcome: result.state === 'confirmed' ? 'succeeded' :
+            result.state === 'unknown' ? 'unknown' : result.state === 'failed' ? 'failed' : 'cancelled', code: result.code })
+        }, 'runtime')
+      }).catch(error => { diagnostics.emit({ stage: 'runtime', operation: 'red_packet_automatic', outcome: 'cancelled', code: 'source_unavailable', error }) })
+        .finally(() => { memory.release(); if (automaticQqWork.get(key) === work) automaticQqWork.delete(key) })
+      automaticQqWork.set(key, work)
+      return
+    }
     if (event.kind === 'recall') {
+      textTrigger.invalidateAccount(target.account)
+      adapter.redPackets?.revoke(target, event.messageId)
+      bilibiliQuality?.invalidateSource(target, event.messageId)
+      groupLogWorkflow.invalidate(target)
       textPersonMemory.invalidate(target)
       conversationMemory.invalidate(target)
       semanticMemory.invalidate(target)
@@ -1110,6 +2185,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       for (const invalidate of pendingTools.get(conversationAddressKey(target)) ?? []) invalidate()
       // Each workflow revokes its in-memory owners synchronously. A failing ledger cannot prevent sibling fences.
       const results = await Promise.allSettled([
+        ...(target.kind === 'group' ? [groupLogs.revokeSource(target, event.messageId), revokeDiceSource(target, event.messageId)] : []),
         ...(mediaRelayConfig.enabled ? [mediaOutbox.cancelSource(target, event.messageId)] : []),
         ...(torrentConfig.enabled ? [torrent.cancelSource(target, event.messageId)] : []),
         (async () => {
@@ -1127,13 +2203,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (rejected?.status === 'rejected') throw rejected.reason
       return
     }
-    if (!conversationEnabled(target)) return
     if (event.kind === 'message') {
+      if (target.kind === 'group' && event.message.messageId && (!diceCurrent() || !diceCandidate(event.message)) &&
+          (diceRevocationCandidate(event.message) || await diceState.hasSourceByTarget(target, event.message.messageId))) {
+        await revokeDiceSource(target, event.message.messageId)
+      }
       const request = personMemoryCommand(event.message)
       if (request) {
         const { sender, binding, messageId, occurredAt } = event.message
         const age = (options.now?.() ?? Date.now()) - occurredAt
-        if (!request.standalone || !messageId || age >= privacyCommandMaxAgeMs || age < -privacyCommandClockSkewMs ||
+        if (!conversationEnabled(target) || !request.standalone || !messageId || age >= privacyCommandMaxAgeMs || age < -privacyCommandClockSkewMs ||
             (target.kind !== 'group' && !privateChat) ||
             (privateChat && sender.id !== privatePeerFor(target, adapter))) return
         const persona = bindingFor(target)
@@ -1146,6 +2225,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         try {
           const privacyQueue = await inbox.accept({
             event: commandEvent, bindingToken: agentBindingToken(persona.binding), privacyCommand: request.command,
+            privacyOwner: { agentId: persona.binding.agentId },
           }, undefined, pending => setPrivacyBacklog(accountKey, pending))
           kickInbox(privacyQueue)
         } catch (error) {
@@ -1160,6 +2240,44 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         return
       }
     }
+    if (target.kind === 'group' && event.kind === 'message' && (groupLogEnabled || diceCandidate(event.message))) {
+      const persona = bindingFor(target), message = event.message
+      if (!persona || !message.messageId || message.binding && !isSameBinding(message.binding, persona.binding) ||
+          options.allowsText?.(message.text, 'incoming') === false || !allowsFileNames(message)) return
+      const command = parseAgentGroupLogCommand(message.text)
+      const standalone = !message.quote && !message.mentions.length && message.parts.length > 0 &&
+        message.parts.every(part => part.kind === 'text') && message.parts.map(part => part.kind === 'text' ? part.text : '').join('') === message.text
+      if (groupLogEnabled && standalone && (command?.kind === 'start' || command?.kind === 'ai' && command.enabled === false)) {
+        const controller = new AbortController(), token = agentBindingToken(persona.binding)
+        try {
+          if (await groupLogAuthorized(message, persona.binding, controller.signal, () => isRunning() && bindingIsCurrent(target, token))) {
+            const state = await groupLogs.read({ target, agentId: persona.binding.agentId })
+            if (command.kind === 'start' || state.active) {
+              const key = conversationAddressKey(target), reserved = silenceReservations.get(key) ?? { target, messages: new Set<string>(), admitting: new Set<string>() }
+              reserved.messages.add(message.messageId); reserved.admitting.add(message.messageId); silenceReservations.set(key, reserved)
+              setConversationAI(target, false)
+            }
+          }
+        } catch (error) {
+          diagnostics.emit({ stage: 'runtime', operation: 'group_log_authority', outcome: 'failed', code: 'authority_observation_failed', error })
+        } finally { controller.abort() }
+      }
+      try {
+      const epochs = await groupLogs.capture({ target, agentId: persona.binding.agentId }, message.sender.id)
+      const parts = message.parts.map(part => part.kind === 'image' || part.kind === 'audio' || part.kind === 'video' ? { kind: part.kind } :
+        part.kind === 'file' ? { kind: 'file' as const, ...(part.name ? { name: part.name.slice(0, 255) } : {}) } : part)
+      const { binding: _binding, quote, ...source } = message
+      const queued = { kind: 'message' as const, message: mediaSafeMessage({ ...source, parts,
+        ...(quote ? { quote: { ...(isMessageId(quote.messageId) ? { messageId: quote.messageId } : {}), parts: [] } } : {}) }) }
+      const queue = await inbox.accept({ event: queued, bindingToken: agentBindingToken(persona.binding) }, undefined, undefined,
+        { kind: 'group-log', groupLog: { agentId: persona.binding.agentId, ...epochs,
+          ...(diceCandidate(message) ? { dicePolicy } : {}) } })
+      silenceReservations.get(conversationAddressKey(target))?.admitting.delete(message.messageId)
+      kickInbox(queue)
+      } finally { silenceReservations.get(conversationAddressKey(target))?.admitting.delete(message.messageId) }
+      return
+    }
+    if (!conversationEnabled(target) || !allowsConversationAI(target)) return
     const queue = textInboxFor(target)
     let queued = event
     if (queue) {
@@ -1167,23 +2285,29 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const { sender, occurredAt, messageId, quote, directedToAccount } = event.message
       if (privateChat && sender.id !== privatePeerFor(target, adapter)) return
       const text = event.message.text.trim()
+      const qualityCommand = bilibiliQualityCurrent() && isAgentBilibiliQualityCommand(event.message)
       const extractionCandidate = extraction.isCandidate(event.message), extractionCommand = extraction.isCommand(event.message)
       const mediaCandidate = isMediaRelayCandidate(event.message)
-      if (!text && !extractionCandidate && !mediaCandidate || text.startsWith('#') || (text && !privateChat && '.\\/'.includes(text.charAt(0)) && !extractionCommand)) return
+      if (!text && !extractionCandidate && !mediaCandidate || text.startsWith('#') || (text && !privateChat && '.\\/'.includes(text.charAt(0)) && !extractionCommand && !qualityCommand)) return
       const quoteId = isMessageId(quote?.messageId) ? quote.messageId : undefined
       const message: IncomingMessage = {
         version: 1, conversation: target, sender, occurredAt, text,
-        ...(messageId ? { messageId } : {}), parts: event.message.parts.filter(part => part.kind === 'text' || part.kind === 'forward' || part.kind === 'file' || (extractionCandidate || mediaCandidate) && part.kind === 'extension').map(part => part.kind === 'file' ? { kind: 'file' as const, ...(part.name ? { name: part.name.slice(0, 255) } : {}) } : part),
+        ...(messageId ? { messageId } : {}), parts: event.message.parts.filter(part => part.kind === 'text' || qualityCommand && part.kind === 'mention' || part.kind === 'forward' || part.kind === 'file' || (extractionCandidate || mediaCandidate) && part.kind === 'extension').map(part => part.kind === 'file' ? { kind: 'file' as const, ...(part.name ? { name: part.name.slice(0, 255) } : {}) } : part),
         ...(event.message.senderName ? { senderName: event.message.senderName } : {}),
         mentions: event.message.mentions, directedToAccount: privateChat || directedToAccount,
-        ...((!privateChat || extractionCommand) && quoteId ? {quote: {messageId: quoteId, parts: []}} : {}),
+        ...(qualityCommand && quote ? { quote: { ...(quoteId ? { messageId: quoteId } : {}), parts: [] } }
+          : (!privateChat || extractionCommand || interactionsCurrent() && options.privateTextTools?.includes('recallTool')) && quoteId
+            ? { quote: { messageId: quoteId, parts: [] } } : {}),
       }
-      queued = { kind: 'message', message }
+      // Explicit commands retain their complete neutral source. Its original
+      // text and structure must match the adapter's later authoritative read.
+      queued = { kind: 'message', message: qualityCommand ? event.message : message }
     } else if (event.kind === 'message') {
       const { binding: _binding, quote, ...incoming } = event.message
       const reloadImages = !!adapter.readMessageImages
       const parts = incoming.parts.map(part =>
         part.kind === 'image' && (reloadImages || part.resource?.kind === 'reference') ? { kind: 'image' as const } :
+        part.kind === 'video' ? { kind: 'video' as const } :
         part.kind === 'file' ? { kind: 'file' as const, ...(part.name ? { name: part.name.slice(0, 255) } : {}) } : part)
       queued = { kind: 'message', message: {
         ...incoming, parts, ...quoteReference(quote),
@@ -1202,16 +2326,34 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
 
   async function applyPrivacyCommand(incoming: IncomingMessage, command: PersonMemoryCommand, token: string | undefined,
-    raw: string, adapter: PlatformConnectionAdapter): Promise<boolean> {
+    raw: string, adapter: PlatformConnectionAdapter, privacyOwner?: { readonly agentId: string }): Promise<boolean> {
     const { conversation: target, messageId, sender } = incoming
     const kind = target.kind
-    const persona = bindingFor(target)
-    if ((kind !== 'group' && kind !== 'private') || !conversationEnabled(target) || !messageId ||
-        !persona || agentBindingToken(persona.binding) !== token) return true
+    let persona = bindingFor(target)
+    if ((kind !== 'group' && kind !== 'private') || !messageId) return true
     const state = await inbox.privacyCommandState(target, messageId, raw)
-    if (!state || await inbox.isRecalled(target, messageId)) return true
+    if (!state) return true
+    const originalAgentId = privacyOwner?.agentId ?? (persona && agentBindingToken(persona.binding) === token ? persona.binding.agentId : undefined)
+    const purge = async () => {
+      if (!originalAgentId || command === 'enable') return
+      adapter.invalidateRedPacketSources?.()
+      groupLogWorkflow.invalidateAccount(target.account)
+      const subject = { account: target.account, agentId: originalAgentId, subjectId: sender.id,
+        ...(kind === 'group' ? { target } : {}) }
+      const results = await Promise.allSettled([
+        groupLogs.purgeSubject({ account: target.account, agentId: originalAgentId, subjectId: sender.id,
+          ...(kind === 'group' ? { groupId: target.id } : {}) }),
+        diceState.purgeSubject(subject), diceLedger.purgeSubject(subject),
+      ])
+      const rejected = results.find(result => result.status === 'rejected')
+      if (rejected?.status === 'rejected') throw rejected.reason
+    }
+    // Completing an already committed deletion belongs to its original owner,
+    // even if the binding or the command's recall status changed after the crash.
+    if (state === 'applied') await purge()
+    if (!conversationEnabled(target) || !persona || agentBindingToken(persona.binding) !== token || await inbox.isRecalled(target, messageId)) return true
     if (kind === 'private' && !adapter.isReady()) return false
-    const isCurrent = () => isRunning() && conversationEnabled(target) && bindingIsCurrent(target, token) &&
+    const isCurrent = () => isRunning() && conversationEnabled(target) && typeof token === 'string' && bindingIsCurrent(target, token) &&
       (kind === 'group' || sender.id === privatePeerFor(target, adapter))
     if (!isCurrent()) return true
     if (state === 'pending') {
@@ -1225,14 +2367,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
             !await inbox.privacyCommandState(target, messageId, raw))) return true
         throw error
       }
+      if (await inbox.privacyCommandState(target, messageId, raw) === 'applied') await purge()
     }
+    persona = bindingFor(target)
+    if (!persona || !isCurrent()) return true
     if (!adapter.isReady()) return false
     const confirmation = guardPendingSend(conversationAddressKey(target), isCurrent)
     try {
       if (!confirmation.isCurrent() || !await inbox.claimPrivacyConfirmation(target, messageId, raw)) return true
       const text = sanitizeFinalReplyText(privacyConfirmations[command][kind])
       if (text && confirmation.isCurrent()) {
-        await messageActions.send({ version: 1, kind: 'message.send', target, binding: persona.binding,
+        await controlMessageActions.send({ version: 1, kind: 'message.send', target, binding: persona.binding,
           parts: [{kind: 'text', text}], ...(kind === 'group' ? { replyTo: messageId } : {}) }, { isCurrent: confirmation.isCurrent })
       }
     } finally {
@@ -1426,9 +2571,40 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const queued = await mediaOutbox.ledger.enqueue({ binding, source: { messageId: incoming.messageId,
         sender: incoming.sender, occurredAt: incoming.occurredAt, share: validateAgentMediaShare(result.share) } })
       if (queued === 'full') throw new Error('媒体队列已满')
-      void mediaOutbox.tick().catch(() => {})
+      void mediaOutbox.tick().catch(error => diagnostics.emit({ stage: 'runtime', operation: 'media_outbox_tick', outcome: 'failed', error }))
       return true
     } finally { context.release() }
+  }
+  async function handleBilibiliQuality(incoming: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
+    if (!bilibiliQualityCurrent() || !bilibiliQuality || !isAgentBilibiliQualityCommand(incoming)) return false
+    const target = binding.target, adapter = adapterFor(target), age = (options.now?.() ?? Date.now()) - incoming.occurredAt
+    if (!adapter?.readMessage || !adapter.isReady() || !incoming.messageId || age < -privacyCommandClockSkewMs || age >= textConversationSeconds * 1000) return true
+    const memory = await beginMemoryTurn(binding, false), cancel = new AbortController(), token = agentBindingToken(binding)
+    const signal = AbortSignal.any([cancel.signal, memory.signal, toolCancellation.signal, AbortSignal.timeout(16 * 60_000), ...(options.signal ? [options.signal] : [])])
+    const pending = guardPendingSend(conversationAddressKey(target), () => bilibiliQualityCurrent() && !signal.aborted && memory.isCurrent() &&
+      adapterFor(target) === adapter && adapter.isReady() && conversationEnabled(target) && bindingIsCurrent(target, token), false)
+    const current = () => !signal.aborted && pending.isCurrent()
+    let released = false
+    const release = () => { if (released) return; released = true; clearInterval(timer); cancel.abort(); pending.release(); memory.release() }
+    const timer = setInterval(() => { if (!current()) release() }, 25); timer.unref()
+    const { botId, scene } = personMemoryAddress(target), identity = { botId, personaId: agentPersonaScopeId(binding.agentId) }
+    const readCurrent = async () => {
+      if (!current() || !await inbox.canReply(target, incoming.messageId!) || await inbox.isRecalled(target, incoming.messageId!)) return undefined
+      const observed = await adapter.readMessage!(target, incoming.messageId!, { isCurrent: current })
+      const source = observed && mediaSafeMessage(observed)
+      if (!source || source.messageId !== incoming.messageId || source.occurredAt !== incoming.occurredAt || platformAccountKey(source.sender) !== platformAccountKey(incoming.sender) ||
+          conversationAddressKey(source.conversation) !== conversationAddressKey(target) || options.allowsText?.(source.text, 'incoming') === false || !current()) return undefined
+      const redactions = await personMemory.getRedactions({ identity, subjectId: source.sender.id })
+      if (!current() || isPersonMemoryRedacted({ scene, messageId: source.messageId!, authorId: source.sender.id, at: source.occurredAt, excerpt: source.text }, source.text, redactions)) return undefined
+      return source
+    }
+    const ensureCurrent = async () => { signal.throwIfAborted(); if (!current() || !await readCurrent()) throw new Error('B站命令来源已失效'); signal.throwIfAborted() }
+    try {
+      const result = await diagnostics.run({ kind: 'conversation', binding, messageId: incoming.messageId }, 'bilibili_quality', () =>
+        bilibiliQuality.handle(incoming, binding, { signal, isCurrent: current, ensureCurrent, readCurrent, release }), 'runtime')
+      if (!result.consumed) release()
+      return result.consumed
+    } catch (error) { release(); diagnostics.emit({ stage: 'runtime', operation: 'bilibili_quality', outcome: 'failed', code: 'workflow_failed', error }); return true }
   }
   async function handleMusicExtraction(incoming: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
     if (!extraction.isCandidate(incoming)) return false
@@ -1471,12 +2647,44 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     finally { clearInterval(timer); cancel.abort(); sendGuard.release(); memoryTurn.release() }
   }
 
+  function groupLogForwardMessage(incoming: IncomingMessage, adapter: PlatformConnectionAdapter): IncomingMessage | undefined {
+    const { binding: _binding, quote, ...message } = incoming
+    if (textInboxFor(message.conversation)) {
+      const text = message.text.trim(), extractionCandidate = extraction.isCandidate(message), extractionCommand = extraction.isCommand(message)
+      const mediaCandidate = isMediaRelayCandidate(message)
+      if (!text && !extractionCandidate && !mediaCandidate || text.startsWith('#') ||
+          text && '.\\/'.includes(text.charAt(0)) && !extractionCommand) return undefined
+      return { ...message, text, parts: message.parts.filter(part => part.kind === 'text' || part.kind === 'forward' || part.kind === 'file' ||
+        (extractionCandidate || mediaCandidate) && part.kind === 'extension'), ...quoteReference(quote) }
+    }
+    return { ...message, parts: message.parts.map(part => part.kind === 'image' && adapter.readMessageImages ? { kind: 'image' as const } : part), ...quoteReference(quote) }
+  }
+  function releaseSilence(target: ConversationAddress, messageId: string): void {
+    const key = conversationAddressKey(target), reservation = silenceReservations.get(key)
+    reservation?.messages.delete(messageId)
+    reservation?.admitting.delete(messageId)
+    if (reservation && !reservation.messages.size) silenceReservations.delete(key)
+  }
+
   async function consumeInbox(queue: AgentInboxQueue): Promise<void> {
     const accountKey = platformAccountKey(queue.account)
     const setPrivacyPending = queue.kind === 'privacy' ? (pending: boolean) => setPrivacyBacklog(accountKey, pending) : undefined
     while (isRunning()) {
+      if (queue.kind === 'group-log' && privacyBlocked(accountKey)) return
       const item = await inbox.next(queue, setPrivacyPending)
-      if (!item) return
+      if (!item) {
+        if (queue.kind === 'group-log') {
+          for (const [key, reservation] of silenceReservations) if (platformAccountKey(reservation.target.account) === accountKey) {
+            for (const id of reservation.messages) if (!reservation.admitting.has(id)) reservation.messages.delete(id)
+            if (reservation.messages.size) continue
+            silenceReservations.delete(key)
+            const binding = bindingFor(reservation.target)?.binding
+            if (binding) await groupLogWorkflow.restore(reservation.target, binding)
+            else setConversationAI(reservation.target, true)
+          }
+        }
+        return
+      }
       if (!isRunning()) return
       const { event: originalEvent, bindingToken } = item.entry ?? {}
       // Older inboxes retain their exact ACK bytes, but access queries cannot flow
@@ -1490,21 +2698,54 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         const request = event.kind === 'message' ? personMemoryCommand(event.message) : undefined
         if (queue.kind === 'privacy') {
           if (event.kind === 'message' && request?.standalone && 'privacyCommand' in item.entry && request.command === item.entry.privacyCommand &&
-              !await applyPrivacyCommand(event.message, request.command, bindingToken, item.raw, adapter)) return
+              !await applyPrivacyCommand(event.message, request.command, bindingToken, item.raw, adapter,
+                'privacyOwner' in item.entry ? item.entry.privacyOwner : undefined)) return
+        } else if (queue.kind === 'group-log') {
+          const capture = 'groupLog' in item.entry ? item.entry.groupLog : undefined
+          const selected = target.kind === 'group' ? bindingFor(target) : undefined
+          const diceSource = event.kind === 'message' && (diceRevocationCandidate(event.message) || !!capture && 'dicePolicy' in capture ||
+            !!event.message.messageId && await diceState.hasSourceByTarget(target, event.message.messageId))
+          const diceAdmitted = !!capture && 'dicePolicy' in capture && capture.dicePolicy === dicePolicy
+          const diceRevoked = diceSource && (!diceCurrent() || !diceAdmitted || !selected || capture?.agentId !== selected.binding.agentId ||
+            bindingToken !== agentBindingToken(selected.binding))
+          if (diceRevoked && event.kind === 'message' && event.message.messageId) await revokeDiceSource(target, event.message.messageId)
+          if (event.kind === 'message' && event.message.messageId && capture && selected && capture.agentId === selected.binding.agentId &&
+              bindingToken === agentBindingToken(selected.binding)) {
+            if (!adapter.isReady()) return
+            const incoming = event.message
+            const outcome = groupLogEnabled ? await diagnostics.run({ kind: 'conversation', binding: selected.binding, messageId: incoming.messageId! }, 'group_log',
+              () => groupLogWorkflow.handle(incoming, selected.binding, capture), 'runtime') : { consumed: false, aiAllowed: allowsConversationAI(target) }
+            const diceHandled = diceRevoked || await handleDice(incoming, selected.binding, capture)
+            releaseSilence(target, event.message.messageId)
+            if (groupLogEnabled) await groupLogWorkflow.restore(target, selected.binding)
+            const qualityHandled = !diceHandled && bilibiliQualityCurrent() && isAgentBilibiliQualityCommand(incoming)
+              ? await handleBilibiliQuality(incoming, selected.binding) : false
+            if (!outcome.consumed && !diceHandled && !qualityHandled && outcome.aiAllowed && conversationEnabled(target)) {
+              const message = groupLogForwardMessage(event.message, adapter)
+              if (message) {
+                const destination: AgentInboxQueue = { account: queue.account, kind: textInboxFor(target)?.kind ?? 'simulation' }
+                await inbox.forward(item.raw, queue, destination, { ...item.entry, event: { kind: 'message', message },
+                  bindingToken: destination.kind === 'simulation' ? agentBindingToken(selected.binding) : textBindingToken(selected.binding) })
+                if (activityHydrated) kickInbox(destination)
+                continue
+              }
+            }
+          }
         } else if (event.kind === 'recall') {
           if (queue.kind === 'simulation' && target.kind !== 'private' && await inbox.isRecalled(target, event.messageId)) {
             await runtime.handleRecall({ message_id: event.messageId }, target)
           }
         } else if (!request) {
           const expectedQueue = textInboxFor(target)?.kind ?? 'simulation'
-          const persona = conversationEnabled(target) && expectedQueue === queue.kind ? bindingFor(target) : undefined
+          const persona = conversationEnabled(target) && allowsConversationAI(target) && expectedQueue === queue.kind ? bindingFor(target) : undefined
           if (persona && (queue.kind === 'simulation' ? agentBindingToken(persona.binding) : textBindingToken(persona.binding)) === bindingToken &&
               (event.kind !== 'message' || !event.message.binding || isSameBinding(event.message.binding, persona.binding))) {
             if (event.kind === 'message' && (extraction.isCandidate(event.message) || isMediaRelayCandidate(event.message) || torrent.isCandidate(event.message)) && !adapter.isReady()) return
-            const torrentHandled = event.kind === 'message' && await handleTorrent(event.message, persona.binding)
-            const mediaHandled = !torrentHandled && event.kind === 'message' && await handleMediaRelay(event.message, persona.binding)
-            const musicHandled = !torrentHandled && !mediaHandled && event.kind === 'message' && await handleMusicExtraction(event.message, persona.binding)
-            if (torrentHandled || mediaHandled || musicHandled) {
+            const qualityHandled = event.kind === 'message' && await handleBilibiliQuality(event.message, persona.binding)
+            const torrentHandled = !qualityHandled && event.kind === 'message' && await handleTorrent(event.message, persona.binding)
+            const mediaHandled = !qualityHandled && !torrentHandled && event.kind === 'message' && await handleMediaRelay(event.message, persona.binding)
+            const musicHandled = !qualityHandled && !torrentHandled && !mediaHandled && event.kind === 'message' && await handleMusicExtraction(event.message, persona.binding)
+            if (qualityHandled || torrentHandled || mediaHandled || musicHandled) {
               // Deterministic relay commands and accepted shares never become model prompts.
             } else if (queue.kind !== 'simulation' && event.kind === 'message') {
               if (!adapter.isReady()) return
@@ -1513,16 +2754,39 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
               const memoryTurn = await beginMemoryTurn(persona.binding)
               const isCurrent = () => isRunning() && conversationEnabled(target) && textInboxFor(target)?.kind === queue.kind &&
                 memoryTurn.isCurrent() && bindingIsCurrent(target, expected)
+              let handedToTrigger = false
               try {
                 if (options.allowsText?.(incoming.text, 'incoming') !== false) {
                   await conversationMemory.capture(incoming, persona.binding, isCurrent)
                   await semanticMemory.capture(incoming, persona.binding, isCurrent)
                   await history.capture(incoming, persona.binding, isCurrent)
                   await groupMemory.capture(incoming, persona.binding, isCurrent)
-                  await textConversation.reply(incoming, persona, isCurrent, memoryTurn.signal)
+                  if (target.kind === 'group' && incoming.messageId && options.textTrigger !== undefined) {
+                    const recallVersion = await inbox.textRecallVersion(target)
+                    const current = () => isCurrent() && options.isTextTriggerCurrent?.() !== false && adapterFor(target) === adapter && adapter.isReady()
+                    const sourceCurrent = async () => {
+                      if (!current() || !await inbox.canReply(target, incoming.messageId!) || await inbox.textRecallVersion(target) !== recallVersion) return false
+                      const { botId, scene } = personMemoryAddress(target), excerpt = incoming.text || '[群聊消息]'
+                      const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(persona.binding.agentId) }, subjectId: incoming.sender.id })
+                      if (!current() || isPersonMemoryRedacted({ scene, messageId: incoming.messageId!, authorId: incoming.sender.id,
+                        at: incoming.occurredAt, excerpt }, excerpt, redactions)) return false
+                      const unchanged = await inbox.textRecallVersion(target) === recallVersion
+                      return current() && unchanged
+                    }
+                    const ensureCurrent = async () => {
+                      if (!await sourceCurrent()) throw new Error('文字触发来源已失效')
+                    }
+                    // Known revocation consumes this entry. Storage failures still
+                    // escape to the inbox retry path before any external work.
+                    if (await sourceCurrent()) {
+                      handedToTrigger = true
+                      textTrigger.admit({ incoming, selected: persona, isCurrent: current, ensureCurrent, signal: memoryTurn.signal, release: memoryTurn.release })
+                    }
+                  } else await diagnostics.run({ kind: 'conversation', binding: persona.binding, ...(incoming.messageId ? { messageId: incoming.messageId } : {}) }, 'text_turn',
+                    () => textConversation.reply(incoming, persona, isCurrent, memoryTurn.signal), 'inbox')
                 }
               } finally {
-                memoryTurn.release()
+                if (!handedToTrigger) memoryTurn.release()
               }
             } else if (queue.kind === 'simulation' && event.kind === 'nudge' &&
                 'ingressId' in item.entry && isMessageId(item.entry.ingressId)) {
@@ -1534,7 +2798,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
               await semanticMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
               await history.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
               await groupMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
-              await runtime.ingest({ ...incoming, ...quoteReference(quote), binding: persona.binding }, { isCurrent: isRunning })
+              await diagnostics.run({ kind: 'conversation', binding: persona.binding, ...(incoming.messageId ? { messageId: incoming.messageId } : {}) }, 'simulation_ingest',
+                () => runtime.ingest({ ...incoming, ...quoteReference(quote), binding: persona.binding }, { isCurrent: isRunning }), 'inbox')
             }
           }
         }
@@ -1554,7 +2819,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     if (!isRunning() || retryTimers.has(key)) return undefined
     const current = consumers.get(key)
     if (current) return current
-    const consumer = consumeInbox(queue).catch(() => {
+    const consumer = consumeInbox(queue).catch(error => {
+      void diagnostics.run({ kind: 'account', account: queue.account }, `consume_${queue.kind}`, async () => {
+        diagnostics.emit({ stage: 'inbox', operation: `consume_${queue.kind}`, outcome: 'failed', code: 'inbox_retry_pending', error })
+      }, 'inbox')
       logger.warn('[Agent] 收件处理失败，保留队列并等待重试')
       if (isRunning()) retryTimers.set(key, setTimeout(() => { retryTimers.delete(key); kickInbox(queue) }, 1_000))
     }).finally(() => { consumers.delete(key) })
@@ -1566,6 +2834,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     const recovery: Promise<void>[] = []
     for (const {account} of adapters.values()) {
       const privacy = kickInbox({ account, kind: 'privacy' })
+      kickInbox({ account, kind: 'group-log' })
       const simulation = kickInbox({ account, kind: 'simulation' })
       if (privacy) recovery.push(privacy)
       if (simulation) recovery.push(simulation)
@@ -1575,11 +2844,19 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     return recovery
   }
 
+  const commitmentTasks = new Map<string, Promise<void>>()
   function tickCommitments(): void {
     if (!isRunning()) return
     for (const adapter of adapters.values()) {
       if (!adapter.isReady()) continue
-      void commitments.commitmentTick(adapter.account).catch(() => logger.warn('[Agent] 承诺调度失败，稍后重试'))
+      const key = platformAccountKey(adapter.account)
+      if (commitmentTasks.has(key)) continue
+      const operation = Promise.resolve().then(async () => {
+        await commitments.commitmentTick(adapter.account)
+        if (isRunning()) await deferredActions.tick(adapter.account)
+      }).catch(error => { void diagnostics.run({ kind: 'account', account: adapter.account }, 'commitment_tick', async () => { diagnostics.emit({ stage: 'runtime', operation: 'commitment_tick', outcome: 'failed', code: 'commitment_retry_pending', error }) }) })
+        .finally(() => { if (commitmentTasks.get(key) === operation) commitmentTasks.delete(key) })
+      commitmentTasks.set(key, operation)
     }
   }
 
@@ -1592,16 +2869,37 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (!isRunning()) { await stop(); return }
       const pending = await inbox.accountsWithPrivacyWork(options.adapters.map(adapter => adapter.account))
       for (const account of pending) setPrivacyBacklog(platformAccountKey(account), true)
+      if (groupLogEnabled) {
+        const accounts = options.adapters.map(adapter => adapter.account)
+        await groupLogs.recover(accounts)
+        for (const owner of await groupLogs.listOwners(accounts)) {
+          const current = bindingFor(owner.target)?.binding
+          if (current?.agentId === owner.agentId) await groupLogWorkflow.restore(owner.target, current)
+        }
+      }
       if (!isRunning()) { await stop(); return }
+      await bilibiliQuality?.start()
       await runtime.start()
       if (!isRunning()) { runtime.stop(); await stop(); return }
       await Promise.all([...adapters.values()].map(adapter => adapter.start(event => accept(adapter, event))))
       options.signal?.throwIfAborted()
       if (!isRunning()) return
+      if (groupLogEnabled) {
+        // Restore pending controls before enabling AI or resuming automatic outboxes.
+        await Promise.all(options.adapters.map(adapter => kickInbox({ account: adapter.account, kind: 'privacy' })))
+        for (const adapter of options.adapters) if (privacyBlocked(platformAccountKey(adapter.account))) throw new Error('隐私删除恢复尚未完成，AI保持静默')
+        await Promise.all(options.adapters.map(adapter => kickInbox({ account: adapter.account, kind: 'group-log' })))
+        for (const adapter of options.adapters) if (await inbox.next({ account: adapter.account, kind: 'group-log' })) throw new Error('团录恢复尚未完成，AI保持静默')
+        for (const owner of await groupLogs.listOwners(options.adapters.map(adapter => adapter.account))) {
+          const current = bindingFor(owner.target)?.binding
+          if (current?.agentId === owner.agentId) await groupLogWorkflow.restore(owner.target, current)
+        }
+      }
+      activityHydrated = true
       if (mediaRelayConfig.enabled) await mediaOutbox.start()
       if (torrentConfig.enabled) await torrent.start()
       const recovered = kickInboxes()
-      maintenance = setInterval(() => { kickInboxes(); tickCommitments(); if (mediaRelayConfig.enabled) void mediaOutbox.tick().catch(() => {}); if (torrentConfig.enabled) void torrent.tick().catch(() => {}); void textPersonMemory.tick(); void conversationMemory.tick(); void semanticMemory.tick(); void history.tick(); void groupMemory.tick() }, 1_000)
+      maintenance = setInterval(() => { kickInboxes(); tickCommitments(); if (mediaRelayConfig.enabled) void mediaOutbox.tick().catch(error => diagnostics.emit({ stage: 'runtime', operation: 'media_outbox_tick', outcome: 'failed', error })); if (torrentConfig.enabled) void torrent.tick().catch(error => diagnostics.emit({ stage: 'runtime', operation: 'torrent_tick', outcome: 'failed', error })); void textPersonMemory.tick(); void conversationMemory.tick(); void semanticMemory.tick(); void history.tick(); void groupMemory.tick() }, 1_000)
       maintenance.unref()
       await Promise.all(recovered)
       if (!isRunning()) return
@@ -1621,6 +2919,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   function stop(): Promise<void> {
     if (shuttingDown) return shuttingDown
     stopping = true
+    const textDrained = textTrigger.stop()
+    const deferredDrained = deferredActions.drain()
+    activity.close()
+    for (const state of activityStates.values()) groupLogWorkflow.invalidate(state.target)
     toolCancellation.abort()
     if (maintenance) clearInterval(maintenance)
     for (const retryTimer of retryTimers.values()) clearTimeout(retryTimer)
@@ -1628,7 +2930,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     privacyWaiters.clear()
     for (const adapter of adapters.values()) adapter.stop()
     runtime.stop()
-    shuttingDown = Promise.allSettled([...consumers.values(), torrent.stop(), mediaOutbox.stop(), commitments.drainCommitmentTicks(), runtime.drain(), textPersonMemory.stop(), conversationMemory.stop(), semanticMemory.stop(), history.stop(), groupMemory.stop()]).then(() => {})
+    shuttingDown = Promise.allSettled([textDrained, deferredDrained, ...commitmentTasks.values(), ...pendingAdmissions, ...automaticQqWork.values(), ...consumers.values(), ...(bilibiliQuality ? [bilibiliQuality.stop()] : []), torrent.stop(), mediaOutbox.stop(), commitments.drainCommitmentTicks(), runtime.drain(), textPersonMemory.stop(), conversationMemory.stop(), semanticMemory.stop(), history.stop(), groupMemory.stop()]).then(async results => {
+      for (const result of results) if (result.status === 'rejected') diagnostics.emit({ stage: 'runtime', operation: 'shutdown', outcome: 'failed', error: result.reason })
+      await diagnostics.flush()
+    })
     return shuttingDown
   }
 
@@ -1636,6 +2941,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
 
   return {
     runtime,
+    management,
     start,
     stop,
     async resumePendingWork() {

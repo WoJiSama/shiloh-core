@@ -2,6 +2,32 @@
 
 控制台前端采用 Vue 3、TypeScript、Vite、Vue Router 和 Naive UI。`console/server.js` 保留独立 Node 服务，提供认证、配置和运营 API，并直接返回 `console/frontend/dist/index.html` 与构建后的静态资源。前端源码不再拼接进服务文件。
 
+独立 Agent 的内置 HTTP 宿主复用这份前端，通过认证的 `/api/workspace` 返回已加载的机器人本人、连接、版本化会话及真实管理能力。工作区有总览、机器人、连接、资源库、运行中心、系统六个入口，机器人详情有主页、会话、自我与记忆、行动、能力与边界五个标签。插件模式继续走原导航；接口错误不会切换成空工作区。
+
+人物页显示已有来源的记忆条目，删除仅作用于所选完整来源会话；托付页保留原任务 ID、未知结果和真实取消状态。管理员可见的聚合不会授予机器人跨场景使用原始资料的权限。新增 QQ 连接、本人创建、服务端配置候选预览及跨文件事务已实现；统一认知、完整追溯与遗忘影响状态仍按 [架构进度](../docs/architecture/agent-bindings.md) 推进。
+
+## 独立 Agent 的配置变更与恢复
+
+在机器人页创建本人时，可复用已有模板，也可连同新模板一起创建；经历和成长仍按本人隔离。在连接页可为既有本人新增 QQ，只绑定明确填写的群和好友，不复制旧账号权限。
+
+流程依次使用 `GET /api/configuration/catalog`、`POST /api/configuration/preview` 和 `POST /api/configuration/commit`。预览展示字段差异、受影响本人、连接、完整会话及权限变化，完整候选保留在服务端；提交只携带 `previewId`、`revision`、`candidateDigest` 和包含 host/personas/bindings 的完整 `readSet`。候选过期、身份撤销或配置变化后须重新预览，不能用旧预览覆盖新配置。
+
+宿主配置（示例名 `agent-host.yaml`，实际路径由 `--config` 指定）、`persona-library.yaml` 和 `agent-bindings.yaml` 仍是权威配置源。事务按完整候选一致提交三份配置，保存版本与本进程已加载版本分别记录。旧执行实例退休后，工作区和配置状态仍可认证读取，其他业务操作须等待真实新进程；当前启动器没有 supervisor，保存不会自动在线重启。
+
+提交结果未知时不能自动补交。残留事务使用显式离线恢复；正常启动不抢残留锁，也不按 PID 自动删除锁。先单独检查安全状态：
+
+```sh
+node scripts/start-agent.mjs --config /path/to/agent-host.yaml --inspect-config-transaction
+```
+
+需要恢复时先停止宿主，再单独运行：
+
+```sh
+node scripts/start-agent.mjs --config /path/to/agent-host.yaml --recover-config
+```
+
+检查和恢复不能互相组合，也不能与 `--check`、迁移等命令混用；这两项命令不启动 QQ、Redis 或模型。无有效 commit 时恢复 old，有有效 commit 时完成 new；损坏记录或未知文件身份保留现场并拒绝覆盖。恢复只输出安全回执，不输出配置原文或凭据；完成后仍需正常启动宿主加载配置。
+
 ## 安装、构建和启动
 
 前端构建需要 **Node 20.19 及以上的 20.x，或 Node 22.12 及以上**，建议使用受支持的 LTS。Vite 7 不支持更早的 Node 版本。以下命令均从插件根目录执行；插件根目录的依赖仍需按现有部署流程安装。

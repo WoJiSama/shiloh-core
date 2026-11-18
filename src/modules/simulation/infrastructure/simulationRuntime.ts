@@ -1,14 +1,23 @@
+import type { AgentInteractionPlan, AgentInteractionResult } from '../../../contracts/agentInteraction.js'
+import { normalizeAgentInteractionResult, validateAgentInteractionPlan } from '../../tools/infrastructure/agentInteractions.js'
+import type { AgentDiagnosticScope } from '../../../contracts/agentDiagnostics.js'
+import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import { createAgentConversationActivity, type AgentConversationActivityCapture } from '../../runtime/infrastructure/agentConversationActivity.js'
+import { generateAgentFailureNotice } from '../../conversation/infrastructure/agentFailureNotice.js'
 import type { CommitmentRunOptions, CommitmentRunResult } from '../../../contracts/commitments.js'
 import type { ChatRequestData, ChatResponse } from '../../../contracts/modelGateway.js'
 import type { ExecutionOptions } from '../../../contracts/modelExecution.js'
 import type { AgentHistoryRecall, AgentHistoryRequestSource } from '../../../contracts/agentHistory.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest, ConversationFileCatalog, ConversationFileEntry, ConversationFileReadOptions, FileReadGuard, MessageFileReadOptions } from '../../../contracts/agentFiles.js'
 import type { AgentFileUpload, FileDeliveryReceipt } from '../../../contracts/agentFileDelivery.js'
+import type { AgentMessageVideo, AgentVideoInput, MessageVideoReadOptions } from '../../../contracts/agentVideo.js'
 import type { SendMediaAction } from '../../../contracts/agentMedia.js'
 import type { AgentMusicCard } from '../../../contracts/agentMusic.js'
-import type { AgentMediaArtifact, AgentMediaRelayPlan } from '../../../contracts/agentMediaRelay.js'
+import type { AgentVideoCard } from '../../../contracts/agentVideoCard.js'
+import type { AgentMediaArtifact, AgentMediaRelayPlan, AgentMediaResourceContext } from '../../../contracts/agentMediaRelay.js'
 import { validateAgentMediaRelayPlan } from '../../media/domain/agentMediaRelayPlan.js'
 import { validateAgentMusicCard } from '../../media/infrastructure/agentMusicCard.js'
+import { validateAgentVideoCard } from '../../media/infrastructure/agentVideoCard.js'
 import type { PersonaGuardConfig } from '../../../contracts/persona.js'
 import { validateAgentMedia } from '../../media/infrastructure/agentMediaBytes.js'
 import { agentFileUploadText, normalizeFileDeliveryReceipt, validateAgentFileUpload } from '../../messaging/infrastructure/agentFileDelivery.js'
@@ -17,6 +26,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import type { CharacterScope, CharacterReceipt, CharacterDecision, CharacterState } from '../../../contracts/character.js'
 import { createPersonaSnapshot } from '../../conversation/infrastructure/personaSnapshot.js'
 import { createCharacterStore } from './characterStore.js'
+import { createSimulationAdministration, type SimulationAdministrationGuard } from './simulationAdministration.js'
 import { createCharacterTools } from './characterTools.js'
 import { createCharacterTurnTool, type CharacterTurnFinishResult } from './characterTurn.js'
 import { createCharacterConsistencyReviewer } from './characterConsistency.js'
@@ -33,14 +43,16 @@ import { resolveSimulationActor, AUTONOMOUS_EXTRA_TOOLS, AUTONOMOUS_DENIED_SIM_T
 import type { SimAffinityEntry, SimAffinityMap, SimulationSection, SimHistoryMessage, SimMemoryEntry, SimMessage, SimMoodState, SimRuntimeConfig, SimSessionState, SimToolResultObservation, SimWakeReason } from '../../../contracts/simulation.js'
 import type { PersonMemorySource } from '../../../contracts/personMemory.js'
 import type { PersonProfileExtractor, PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
-import type { AgentBindingSnapshot, AgentBindingTurn, AgentConversationScope, ConversationAddress, PlatformAccountRef } from '../../../contracts/agentBinding.js'
+import type { AgentBindingSnapshot, AgentBindingTurn, AgentConversationScope, ConversationAddress, PlatformAccountRef, PlatformUserRef } from '../../../contracts/agentBinding.js'
 import type { ForwardContent, ForwardReference, MessageImage, MessageImageReadOptions, PlatformNudgeEvent } from '../../../contracts/platformConnection.js'
 import type { IncomingMessage, MessageActionOptions, MessageActionPort, MessagePart, OutgoingPart, MessageBundleItem, MessageBundlePart } from '../../../contracts/platformMessage.js'
 import type { DeliveryReceipt } from '../../../contracts/delivery.js'
-import type { AgentToolMessage, AgentToolRequest } from '../../../contracts/agentTool.js'
+import type { AgentQqActionRunner, AgentToolContext, AgentToolMessage, AgentToolRequest } from '../../../contracts/agentTool.js'
+import type { AgentQzoneOperation, AgentQzoneResult } from '../../../contracts/agentQzone.js'
+import { createAgentQzoneTools } from '../../tools/infrastructure/agentQzoneTools.js'
 import type { ConversationMembersSnapshot } from '../../../contracts/platformConnection.js'
 import type { PersonaScope } from '../../../contracts/persona.js'
-import { agentBindingToken, agentPersonaScopeId, conversationAddressKey } from '../../runtime/domain/agentBindings.js'
+import { agentBindingToken, agentPersonaScopeId, conversationAddressKey, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
 import { createDefaultSimSession, isSimulationUserId } from '../domain/simConfig.js'
 import { affinityLevel, buildMemeExtractionPrompt, bumpMemeUsage, defaultAffinityEntry, dueMemories, formatSelfMemorySection, mergeMemeCandidates, normalizeMemoryList, parseMemeCandidates } from '../domain/simMemory.js'
 import { mineUserCatchphrases } from '../domain/userStyle.js'
@@ -69,7 +81,7 @@ import { createPersonMemoryStore } from '../../memory/infrastructure/personMemor
 import { canReadUnattributedMemory, formatPersonMemoryFacts, personMemoryAddress, revokePersonMemorySourceForAccount } from '../../memory/infrastructure/personMemoryContext.js'
 import type { AgentSemanticMemoryRecall } from '../../../contracts/semanticMemory.js'
 import { isPersonMemoryRedacted } from '../../memory/domain/personMemory.js'
-import type { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { redactInternalStatusLeaks } from '../../conversation/domain/internalStatusLeak.js'
 import { sanitizeFinalReplyText, looksLikeToolArguments } from '../../conversation/domain/replySanitizer.js'
 import { normalizeDelegatedEntries, formatDelegatedSection } from '../../memory/domain/delegatedMemory.js'
@@ -79,6 +91,8 @@ import { validateAgentToolImage } from '../../image/infrastructure/agentToolImag
 import { validateMessageBundle } from '../../messaging/infrastructure/messageBundle.js'
 import { validateAgentToolMessage } from '../../messaging/infrastructure/agentToolMessage.js'
 import { createSimulationAgentFiles, simulationFileMetadata, type SimulationFileProjection, type SimulationMessageFileSource } from './simulationAgentFiles.js'
+import { createSimulationAgentVideo, simulationVideoCount } from './simulationAgentVideo.js'
+import { createSimulationVideoCardLedger } from './simulationVideoCardLedger.js'
 
 export const SIM_RECENT_LIMIT = 60
 export const SIM_SWEEP_INTERVAL_MS = 30_000
@@ -99,6 +113,11 @@ interface NudgeIngressOptions extends MessageActionOptions {
 }
 
 export interface SimulationRuntimePorts {
+  diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'>
+  /** Start a scope after resolving the actual wake owner; timers must not inherit an unrelated ingress. */
+  withDiagnosticScope?<T>(scope: AgentDiagnosticScope, operation: string, run: () => Promise<T>): Promise<T>
+  /** Optional trusted last-resort text when every explanation model is unavailable. */
+  failureNoticeFallback?: string
   redis: Parameters<typeof createSimSessionStore>[0]['redis']
   logger: { info(message: string): void; warn(message: string): void; error(message: string, error?: unknown): void }
   /** 每次调用重读（config 热更新即时生效） */
@@ -123,7 +142,9 @@ export interface SimulationRuntimePorts {
   fetchCharacterFeed?(url: string, kind: 'rss' | 'github'): Promise<CharacterFeedItem[]>
   runCharacterWorker?(task: CharacterWorkerTask, scope: CharacterScope, signal: AbortSignal): Promise<CharacterWorkerResult>
   characterWorkerAvailable?(): boolean
-  /** B站卡片分享:按关键词或链接解析视频并生成 QQ 卡片 JSON(发送由 runtime 统一出站) */
+  /** Core metadata resolver; the runtime retains turn, binding and send ownership. */
+  resolveVideoCard?(input: { readonly query?: string; readonly url?: string }, target: ConversationAddress, context: AgentMediaResourceContext): Promise<AgentVideoCard>
+  /** Legacy QQ compatibility resolver; configured Core hosts use resolveVideoCard. */
   resolveBilibiliCard?(input: { query?: string; url?: string }): Promise<{ ok: boolean; error?: string; title?: string; cardJson?: string }>
   /** 视觉侧模型把图片转成文字描述（主模型纯文本时 simGetMessageImages 的看图走这里）；返回 null/空 表示描述不可用 */
   describeImages?(images: readonly MessageImage[], context: { groupId: string; label: string; isCurrent?: () => boolean; signal?: AbortSignal }): Promise<string | null>
@@ -132,6 +153,8 @@ export interface SimulationRuntimePorts {
   handlesTarget?(target: ConversationAddress): boolean
   /** Mode selection may suppress execution while this host still owns recall and storage. */
   allowsSimulation?(target: ConversationAddress): boolean
+  /** Temporary host permission; does not alter the user's simulation configuration. */
+  allowsConversationAI?(target: ConversationAddress): boolean
   /** Process hosts acknowledge a durable inbox entry after this runtime records its wake. */
   durableIngress?: boolean
   readHealthStyleMemory?(): Promise<unknown>
@@ -144,6 +167,7 @@ export interface SimulationRuntimePorts {
   supportsMessageImages?(target: ConversationAddress): boolean
   readMessageImages?(target: ConversationAddress, source: { messageId: string; quotedMessageId?: string }, guard: MessageImageReadOptions): Promise<readonly MessageImage[] | undefined>
   readMessageFile?(target: ConversationAddress, source: { messageId: string; quotedMessageId?: string }, fileIndex: number, guard: MessageFileReadOptions): Promise<AgentFileBytes | undefined>
+  readMessageVideo?(target: ConversationAddress, messageId: string, guard: MessageVideoReadOptions): Promise<AgentMessageVideo | undefined>
   listConversationFiles?(target: ConversationAddress, guard: FileReadGuard): Promise<ConversationFileCatalog | undefined>
   readConversationFile?(target: ConversationAddress, entry: ConversationFileEntry, guard: ConversationFileReadOptions): Promise<AgentFileBytes | undefined>
   readPublicFile?(url: string, guard: FileReadGuard): Promise<AgentFileBytes>
@@ -180,6 +204,16 @@ export interface SimulationRuntimePorts {
   getStyleBotUserIds?(): string[]
   /** 戳群成员（B2：回应拍一拍/主动逗熟人） */
   pokeMember?(groupId: string, userId: string, selfId?: string): Promise<{ ok: boolean; error?: string }>
+  /** Trusted scoped Core workflow; no native platform arguments or message IDs are fabricated. */
+  performInteractions?(input: { target: ConversationAddress; binding: AgentBindingSnapshot; identity: string; plan: AgentInteractionPlan;
+    source?: { messageId: string; author: PlatformUserRef; occurredAt: number; text: string };
+    signal: AbortSignal; isCurrent(): boolean; ensureCurrent(): Promise<void> }): Promise<AgentInteractionResult>
+  supportsInteractions?(target: ConversationAddress): boolean
+  supportsMessageRecall?(target: ConversationAddress): boolean
+  supportsGroupManagement?(target: ConversationAddress): boolean
+  /** Explicit current capability for QQ extension tools; absence denies the neutral extension surface. */
+  supportsQqAction?(target: ConversationAddress, toolName: string): boolean
+  executeQzone?(operation: AgentQzoneOperation, context: AgentToolContext): Promise<AgentQzoneResult>
   /** 唤醒预判闸：低信号唤醒先判断值不值得进完整回合；返回 null = 预判不可用（fail-open 放行） */
   wakeGateJudge?(input: { reason: string; messages: { name: string; text: string; atSelf: boolean }[] }, isCurrent?: ExecutionOptions['isCurrent']): Promise<{ engage: boolean; reason?: string } | null>
   /** QQ空间互动：看指定成员的最近说说 / 点赞 / 评论（凭据由装配层处理；内容已在上层脱敏） */
@@ -216,12 +250,16 @@ export interface SimulationRuntimePorts {
 }
 
 export interface SimulationRuntime {
+  /** Serialized administration leases follow store queues through each real Redis call. */
+  runAdministration<T>(guard: SimulationAdministrationGuard, operation: () => Promise<T>): Promise<T>
   ingest(message: IncomingMessage, options?: MessageActionOptions): Promise<boolean>
   ingestNudge(event: PlatformNudgeEvent, options?: NudgeIngressOptions): Promise<boolean>
   start(): Promise<void>
   stop(): void
   drain(): Promise<void>
   sweepOnce(): Promise<void>
+  /** Revoke current work and timers synchronously without changing simulation settings. */
+  invalidateConversation(target: ConversationAddress): void
   enableGroup(groupId: string): Promise<string>
   disableGroup(groupId: string): Promise<string>
   /** 按群回复模式：atOnly=仅被@才回（消息照常入库），auto=自主，active=自主·活跃（持续活动按节奏主动跟进）；缺省=query 查询 */
@@ -243,7 +281,7 @@ export interface SimulationRuntime {
   /** 承诺账本兑现口：agent 类承诺到期唤醒仿真回合（timer 类 1s 直醒；群未生效则忽略） */
   wakeForCommitment(groupId: string, detail: string, options?: CommitmentRunOptions, target?: ConversationAddress): Promise<CommitmentRunResult>
   /** 控制台总览：全部生效群的状态列表 */
-  overview(): Promise<Record<string, unknown>>
+  overview(groupIds?: readonly string[]): Promise<Record<string, unknown>>
   describeGroup(groupId: string): Promise<Record<string, unknown>>
   controlCharacter(groupId: string, action: 'pause' | 'resume' | 'cancel-goal' | 'pause-goal' | 'resume-goal' | 'delete-memory', id?: string): Promise<string>
   controlActivity(groupId: string, action: CharacterActivityOperation, id?: string, payload?: Record<string, unknown>): Promise<string>
@@ -260,8 +298,8 @@ export interface SimulationRuntime {
   deletePersonProfile(userId: string): Promise<boolean>
   deletePersonProfileField(userId: string, field: string, value?: string): Promise<unknown>
   /** 控制台「作息与生活」页：总览 + 修改作息 */
-  lifeOverview(): Promise<{ rhythm: { sleepFrom: number; sleepTo: number; setBy?: string }; threads: unknown[]; now: { hour: number; sleeping: boolean } }>
-  setLifeRhythm(from: number, to: number): Promise<string>
+  lifeOverview(groupIds?: readonly string[]): Promise<{ rhythm: { sleepFrom: number; sleepTo: number; setBy?: string }; threads: unknown[]; now: { hour: number; sleeping: boolean } }>
+  setLifeRhythm(from: number, to: number, groupIds?: readonly string[]): Promise<string>
   /** 控制台：健康哨兵告警列表 */
   getHealthAlerts(): Promise<{ alerts: unknown[]; checkedAt: number }>
 }
@@ -301,9 +339,13 @@ function normalizeReplyPayload(payload: unknown): unknown[] {
 
 export function createSimulationRuntime(ports: SimulationRuntimePorts): SimulationRuntime {
   const { logger } = ports
+  const administration = createSimulationAdministration(ports.redis)
+  // Every store created below, including dynamic character scopes, shares this guarded adapter.
+  ports = { ...ports, redis: administration.redis }
   const now = ports.now ?? Date.now
   const random = ports.random ?? Math.random
   const store: SimSessionStore = createSimSessionStore({ redis: ports.redis, logger, now })
+  const videoCardLedger = createSimulationVideoCardLedger(ports.redis, now)
   const initialPromptStore = ports.durableIngress ? createInitialPromptStore(ports.redis) : undefined
   const personMemory = createPersonMemoryStore({ redis: ports.redis, now })
   const workspaceFor = (scope: CharacterScope) => createCharacterWorkspace({ redis: ports.redis, scope, now })
@@ -315,11 +357,20 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   const background = new Set<string>()
   const backgroundControllers = new Set<AbortController>()
   const backgroundByGroup = new Map<string, AbortController>()
+  const activity = createAgentConversationActivity()
+  const groupTargets = new Map<string, ConversationAddress>()
   const recoveredCharacters = new Set<string>()
   let stopped = false
 
   function targetFor(groupId: string, botId: string): ConversationAddress {
-    return decodeSimulationAddressKey(groupId) ?? qqSimulationAddress(groupId, botId)
+    const target = decodeSimulationAddressKey(groupId) ?? qqSimulationAddress(groupId, botId)
+    groupTargets.set(groupId, target)
+    return target
+  }
+
+  function allowsConversationAI(target: ConversationAddress): boolean {
+    try { return ports.allowsConversationAI?.(target) !== false && ports.allowsSimulation?.(target) !== false }
+    catch { return false }
   }
 
   function handlesTarget(target: ConversationAddress): boolean {
@@ -388,7 +439,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     }
     const out: SimMessage[] = []
     for (const message of messages) {
-      const excerpt = message.text || (message.forwardId ? '[合并转发]' : message.imageCount > 0 ? '[图片]' : message.files?.length ? '[文件]' : '')
+      const excerpt = message.text || (message.forwardId ? '[合并转发]' : message.imageCount > 0 ? '[图片]' : message.videoCount ? '[视频]' : message.files?.length ? '[文件]' : message.quoteSource?.video ? '[引用视频]' : '')
       const source = { scene, authorId: message.userId, messageId: String(message.messageId || `sim:${message.at}:${message.seq}`), at: message.at, excerpt }
       if (isPersonMemoryRedacted(source, message.text, await readRedactions(message.userId))) continue
       let filtered = message
@@ -433,6 +484,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       await store.invalidateActivity(groupId)
       const live = liveStates.get(groupId)
       if (live) {
+        administration.ensureCurrent()
         live.agentHistory = []
         await store.save(groupId, live)
       }
@@ -457,8 +509,42 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     } catch { return [] }
   }
 
+  const diagnose = (event: Parameters<AgentDiagnostics['emit']>[0]) => { try { ports.diagnostics?.emit(event) } catch { /* diagnostics never affect execution */ } }
+  function modelResponseFailure(response: ChatResponse): string | undefined {
+    if (response.error) return 'returned_error'
+    const message = record(response.choices?.[0]?.message), calls = message.tool_calls
+    const validCall = (call: unknown) => {
+      const fn = record(record(call).function)
+      return typeof fn.name === 'string' && fn.name.length > 0 && typeof fn.arguments === 'string'
+    }
+    if (calls !== undefined && (!Array.isArray(calls) || calls.some(call => !validCall(call)))) return 'malformed_tool_calls'
+    return typeof message.content === 'string' && message.content.trim() || Array.isArray(calls) && calls.length ? undefined : 'empty_response'
+  }
+  async function invokeSimModel(request: ChatRequestData, config: unknown, signal?: AbortSignal, isCurrent?: ExecutionOptions['isCurrent'], ensureCurrent?: ExecutionOptions['ensureCurrent']): Promise<ChatResponse> {
+    signal?.throwIfAborted()
+    if (isCurrent?.() === false) throw new Error('本会话 AI 活动已暂停')
+    const started = Date.now()
+    diagnose({ stage: 'model', operation: 'simulation_main', outcome: 'started' })
+    try {
+      const response = await ports.YTapi(request, config, signal, isCurrent, ensureCurrent)
+      const code = modelResponseFailure(response)
+      diagnose({ stage: 'model', operation: 'simulation_main', outcome: code ? 'failed' : 'succeeded',
+        code: code ?? 'completed', durationMs: Date.now() - started })
+      return response
+    } catch (error) {
+      diagnose({ stage: 'model', operation: 'simulation_main', outcome: signal?.aborted ? 'cancelled' : 'failed', code: 'model_threw', error, durationMs: Date.now() - started })
+      throw error
+    }
+  }
+
   /** 工具执行统一包装：事件含 reply 绑定（文本段/段数组归一 + message_id 回执） */
   async function runSimTool(tool: { name?: string; execute(args: Record<string, unknown>, event: unknown): Promise<unknown> }, args: Record<string, unknown>, event: AgentBindingTurn & { group_id?: number; self_id: string }, actor: SimulationActor, reply: (payload: unknown) => Promise<unknown>, report?: (status: 'succeeded' | 'failed') => void, taskId?: string): Promise<string> {
+    const started = Date.now(), operation = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(tool.name ?? '') ? tool.name! : 'simulation_tool'
+    if (event._isAgentBindingCurrent?.() === false) {
+      diagnose({ stage: 'tool', operation, outcome: 'cancelled', code: 'conversation_activity_revoked' })
+      return 'error: 工具所属回合已失效，未执行'
+    }
+    diagnose({ stage: 'tool', operation, outcome: 'started' })
     try {
       const result = await tool.execute(args, {
         ...event,
@@ -469,15 +555,20 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         ...(taskId ? { simulationTaskId: taskId } : {}),
         reply,
       })
-      return typeof result === 'string' ? result : JSON.stringify(result) ?? 'null'
+      const text = typeof result === 'string' ? result : JSON.stringify(result) ?? 'null', status = classifyCharacterResult(text)
+      diagnose({ stage: 'tool', operation, outcome: status, code: status === 'succeeded' ? 'completed' : `returned_${status}`, durationMs: Date.now() - started })
+      return text
     } catch (error) {
-      if (error && typeof error === 'object' && 'uncertain' in error && error.uncertain === true) return JSON.stringify({ kind: 'tool_outcome', status: 'unknown', error: { message: safeToolErrorText(String(tool.name || ''), error) } })
+      const uncertain = error && typeof error === 'object' && 'uncertain' in error && error.uncertain === true
+      diagnose({ stage: 'tool', operation, outcome: uncertain ? 'unknown' : 'failed', code: 'tool_threw', error, durationMs: Date.now() - started })
+      if (uncertain) return JSON.stringify({ kind: 'tool_outcome', status: 'unknown', error: { message: safeToolErrorText(String(tool.name || ''), error) } })
       return safeToolErrorText(String(tool.name || ''), error)
     }
   }
 
   const running = new Set<string>()
   const fileTurnControllers = new Set<AbortController>()
+  const turnsByGroup = new Map<string, AbortController>()
   const scheduledTurns = new Set<Promise<void>>()
   const activeSweeps = new Set<Promise<void>>()
   const pendingWakes = new Map<string, PendingWake>()
@@ -485,6 +576,20 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   const commitmentQueue = new Map<string, Promise<CommitmentRunResult>>()
   const commitmentRuns = new Map<string, Promise<CommitmentRunResult>>()
   const retryTimers = new Map<string, PendingWake>()
+
+  function invalidateConversation(target: ConversationAddress): void {
+    const key = conversationAddressKey(target)
+    activity.set(target, false)
+    activity.set(target, true)
+    for (const [groupId, known] of groupTargets) {
+      if (conversationAddressKey(known) !== key) continue
+      turnsByGroup.get(groupId)?.abort()
+      backgroundByGroup.get(groupId)?.abort()
+      const pending = pendingWakes.get(groupId), retry = retryTimers.get(groupId)
+      if (pending) { clearTimeout(pending.timer); pendingWakes.delete(groupId) }
+      if (retry) { clearTimeout(retry.timer); retryTimers.delete(groupId) }
+    }
+  }
   /** 回合进行中的群 → 共享内存状态。回合期间 ingest 直接改这份对象，避免双写者互覆。 */
   const liveStates = new Map<string, SimSessionState>()
   /** wait 实现：群 → 待踢醒的 resolver（新消息到达即全部触发重新判定） */
@@ -542,8 +647,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       overrides = seedSimulationOverrides(ports.getSection())
       await store.saveOverrides(overrides)
     }
+    const knownGroups = await store.loadKnownGroups()
+    administration.ensureCurrent()
     overridesCache = overrides
-    knownGroupsCache = await store.loadKnownGroups()
+    knownGroupsCache = knownGroups
     overridesLoadedAt = now()
   }
 
@@ -551,7 +658,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   function groupActive(cfg: SimRuntimeConfig, groupId: string): boolean {
     if (!cfg.enabled || !overridesCache) return false
     const target = decodeSimulationAddressKey(groupId)
-    if (target && (!handlesTarget(target) || ports.allowsSimulation?.(target) === false)) return false
+    if (target && (!handlesTarget(target) || !allowsConversationAI(target))) return false
     return simulationGroupOverride(overridesCache, groupId) ?? cfg.allGroups
   }
 
@@ -563,18 +670,19 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   async function conversationKey(target: ConversationAddress): Promise<string | null> {
     const scoped = simulationAddressKey(target)
     if (!decodeSimulationAddressKey(scoped) || !handlesTarget(target)) return null
-    if (!isQqSimulationAddress(target)) return scoped
+    const remember = (key: string) => { groupTargets.set(key, target); return key }
+    if (!isQqSimulationAddress(target)) return remember(scoped)
     const { id, account } = target
     const legacy = liveStates.get(id) ?? await store.load(id)
-    if (legacy.botId === account.id) return id
+    if (legacy.botId === account.id) return remember(id)
     const existing = liveStates.get(scoped) ?? await store.load(scoped)
-    if (existing.botId === account.id) return scoped
-    if (personaFor(target).binding?.source === 'configured') return scoped
-    return legacy.botId ? null : id
+    if (existing.botId === account.id) return remember(scoped)
+    if (personaFor(target).binding?.source === 'configured') return remember(scoped)
+    return legacy.botId ? null : remember(id)
   }
 
   async function isConversationActive(target: ConversationAddress): Promise<boolean> {
-    if (ports.allowsSimulation?.(target) === false) return false
+    if (!allowsConversationAI(target)) return false
     const key = await conversationKey(target)
     if (!key) return false
     await refreshGroupState()
@@ -586,7 +694,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (target && (groupId !== target.id || (options?.botId && options.botId !== target.account.id))) {
       return { status: 'cancelled', sent: 0, error: '承诺会话地址与账号不一致' }
     }
-    if (target && ports.allowsSimulation?.(target) === false) {
+    if (target && !allowsConversationAI(target)) {
       return { status: ports.durableIngress ? 'deferred' : 'cancelled', sent: 0, error: '会话当前使用文字回复' }
     }
     const gid = target ? await conversationKey(target) : String(groupId || '')
@@ -635,12 +743,18 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   function resolveExtraToolNames(cfg: SimRuntimeConfig, groupId: string): string[] {
     const target = decodeSimulationAddressKey(groupId)
     if (target && !isQqSimulationAddress(target) && !ports.extraToolsPlatformNeutral) return []
-    if (cfg.toolPolicy.mode === 'legacy' || typeof ports.listRegistryToolNames !== 'function') return cfg.extraTools
+    const available = (names: string[]) => names.filter(name =>
+      (!['qqZoneTool', 'sendGiftTool', 'grabRedBagTool', 'simQzoneInteract'].includes(name) ||
+        !!target && (ports.supportsQqAction?.(target, name) === true || name === 'simQzoneInteract' && isQqSimulationAddress(target) && typeof ports.qzoneInteract === 'function')) &&
+      (!target || !(ports.supportsInteractions?.(target) === false && ['pokeTool', 'likeTool', 'reactionTool', 'recallTool', 'jinyanTool', 'changeCardTool'].includes(name)) &&
+      !(['jinyanTool', 'changeCardTool'].includes(name) && ports.supportsGroupManagement?.(target) === false) &&
+      !(name === 'recallTool' && ports.supportsMessageRecall?.(target) === false)))
+    if (cfg.toolPolicy.mode === 'legacy' || typeof ports.listRegistryToolNames !== 'function') return available(cfg.extraTools)
     try {
       const registry = ports.listRegistryToolNames()
-      return resolveSimToolSurface({ policy: cfg.toolPolicy, builtInNames: registry.builtIn, extraTools: cfg.extraTools, groupId: target?.id ?? groupId })
+      return available(resolveSimToolSurface({ policy: cfg.toolPolicy, builtInNames: registry.builtIn, extraTools: cfg.extraTools, groupId: target?.id ?? groupId }))
     } catch {
-      return cfg.extraTools
+      return available(cfg.extraTools)
     }
   }
 
@@ -724,7 +838,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
 
   async function ingest(incoming: IncomingMessage, options?: MessageActionOptions): Promise<boolean> {
     const target = incoming.conversation
-    if (ports.allowsSimulation?.(target) === false) return false
+    if (!allowsConversationAI(target)) return false
+    const ingressActivity = activity.capture(target)
+    try {
     if (ports.getSection().enabled === false) return false
     let key: string | null
     try { key = await conversationKey(target) } catch {
@@ -739,11 +855,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       }
       return false
     }
-    return queueIngress(key, () => ingestGroup(key, incoming, options))
+    return await queueIngress(key, () => ingestGroup(key, incoming, { ...options,
+      isCurrent: () => ingressActivity.isCurrent() && allowsConversationAI(target) && options?.isCurrent?.() !== false }))
+    } finally { ingressActivity.release() }
   }
 
   async function ingestGroup(groupId: string, incoming: IncomingMessage, options?: MessageActionOptions): Promise<boolean> {
     const target = incoming.conversation
+    if (!allowsConversationAI(target)) return true
     const { account } = target
     await refreshGroupState()
     if (!isSimulationGroup(groupId)) return false
@@ -768,7 +887,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const bindingCurrent = () => {
       try {
         const resolved = personaFor(target)
-        return options?.isCurrent?.() !== false && (resolved.personaId || 'default') === scope.personaId &&
+        return allowsConversationAI(target) && options?.isCurrent?.() !== false && (resolved.personaId || 'default') === scope.personaId &&
           (resolved.binding ? agentBindingToken(resolved.binding) : undefined) === capturedBinding
       } catch { return false }
     }
@@ -778,6 +897,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const selfUserId = self.userId ?? self.id
     if (!isSimulationUserId(userId) || userId === selfUserId) return true
     const images = incoming.parts.filter(part => part.kind === 'image').length
+    const videos = simulationVideoCount(incoming.parts)
     const files = simulationFileMetadata(incoming.parts)
     const state = await sessionForIncoming(groupId, self.id, capturedBinding, bindingCurrent)
     if (!state || !bindingCurrent() || !isSimulationGroup(groupId)) return true
@@ -790,7 +910,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const knownBotReply = Boolean(quoteId && state.bindingToken === capturedBinding && state.confirmedMessageIds?.includes(quoteId))
     const canReadImages = !!ports.readMessageImages
     const canReadFiles = !!ports.readMessageFile
-    if (ports.readQuotedMessage && quoteId && !quote?.author && (!knownBotReply || (canReadImages && images === 0) || (canReadFiles && files.length === 0))) {
+    const canReadVideos = !!ports.readMessageVideo
+    if (ports.readQuotedMessage && quoteId && (!quote?.author || canReadVideos) && (!knownBotReply || (canReadImages && images === 0) || (canReadFiles && files.length === 0) || canReadVideos)) {
       quote = { messageId: quoteId, parts: [] }
       let original: IncomingMessage | undefined
       // Read only the id attached by the incoming event.
@@ -801,7 +922,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           Number.isSafeInteger(original.occurredAt) && original.occurredAt > 0 && original.occurredAt <= incoming.occurredAt &&
           conversationAddressKey(original.conversation) === conversationAddressKey(target)) {
         const scene = { kind: 'group' as const, id: scope.groupId }
-        const excerpt = original.text || (original.parts.some(part => part.kind === 'file') ? '[文件]' : '引用消息')
+        const excerpt = original.text || (original.parts.some(part => part.kind === 'file') ? '[文件]' : original.parts.some(part => part.kind === 'video') ? '[视频]' : '引用消息')
         const source = { messageId: quoteId, authorId: original.sender.id, at: original.occurredAt, excerpt }
         const { invalidatedAt } = await personMemory.getSceneRedactions({ identity: scope, scene })
         const redactions = await personMemory.getRedactions({ identity: scope, subjectId: source.authorId })
@@ -809,9 +930,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         if (!staleBotReply && !isPersonMemoryRedacted({ scene, ...source }, excerpt, redactions)) {
           const count = canReadImages ? original.parts.filter(part => part.kind === 'image').length : 0
           const quotedFiles = canReadFiles ? simulationFileMetadata(original.parts) : []
+          const quotedVideos = canReadVideos ? simulationVideoCount(original.parts) : 0
+          const quotedForward = canReadVideos && original.parts.some(part => part.kind === 'forward')
           quoteSource = { messageId: quoteId, invalidatedAt,
             ...(count ? { image: { count, authorId: source.authorId, occurredAt: source.at } } : {}),
-            ...(quotedFiles.length ? { file: { files: quotedFiles, authorId: source.authorId, occurredAt: source.at } } : {}) }
+            ...(quotedFiles.length ? { file: { files: quotedFiles, authorId: source.authorId, occurredAt: source.at } } : {}),
+            ...(quotedVideos || quotedForward ? { video: { count: quotedVideos, authorId: source.authorId, occurredAt: source.at, ...(quotedForward ? { hasForward: true } : {}) } } : {}) }
           quote = { messageId: quoteId, author: original.sender, text: original.text, parts: [],
             ...(original.senderName ? { authorName: sanitizeUntrustedText(original.senderName.replace(/\s+/gu, ' ').trim()).slice(0, 80) } : {}) }
         }
@@ -824,7 +948,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       || (atSelf ? '@你' : atOther ? '@了某人' : '')
     const forwardId = incoming.parts.find((part): part is Extract<MessagePart, { kind: 'forward' }> =>
       part.kind === 'forward' && part.id.length > 0 && part.id.length <= 256)?.id
-    if (!text && images === 0 && !files.length && !quoteSource?.file?.files.length && !forwardId) return true
+    if (!text && images === 0 && !videos && !files.length && !quoteSource?.file?.files.length && !quoteSource?.video && !forwardId) return true
     if (text && /^[#./\\]/.test(text) && !atSelf && !quoteToSelf) return true
 
     if (ports.durableIngress) {
@@ -863,6 +987,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       ...(quoteImageUrls.length ? { quoteImageUrls } : {}),
       ...(forwardId ? { forwardId } : {}),
       imageCount: images,
+      ...(videos ? { videoCount: videos } : {}),
       ...(files.length ? { files } : {}),
       ...(imageUrls.length ? { imageUrls } : {}),
       kind: 'text',
@@ -938,6 +1063,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
 
   async function scheduleWake(groupId: string, reason: SimWakeReason, bindingToken: string | undefined, cfg?: SimRuntimeConfig, ingressState?: SimSessionState) {
     if (stopped) return
+    const target = groupTargets.get(groupId) ?? decodeSimulationAddressKey(groupId)
+    if (target && !allowsConversationAI(target)) return
     const config = cfg ?? runtimeConfig()
     if (running.has(groupId)) {
       const live = liveStates.get(groupId)
@@ -972,19 +1099,21 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     }
     // 定时器类唤醒到点即醒（不再等合并窗），消息类按 batchWindowMs 合并可能更高优先级的触发
     const delay = TIMER_WAKE_REASONS.includes(reason.kind) ? 1_000 : config.wake.batchWindowMs
-    const timer = safeSetTimeout(() => {
+    const timer = administration.background(() => safeSetTimeout(() => {
       // 读 map 里的最新 reason：合并窗口内高优先级触发会替换 map 条目，闭包里的旧值会把它降级（实测抓到的潜伏 bug）
       const entry = pendingWakes.get(groupId)
       pendingWakes.delete(groupId)
       if (entry) launchTurn(groupId, entry.reason, entry.bindingToken)
-    }, delay, 3_600_000)
+    }, delay, 3_600_000))
     pendingWakes.set(groupId, { timer, reason, bindingToken })
   }
 
   function launchTurn(groupId: string, reason: SimWakeReason, bindingToken: string | undefined): void {
-    const turn = startTurn(groupId, reason, undefined, bindingToken)
-    scheduledTurns.add(turn)
-    void turn.catch(error => logger.error('[仿真] 调度回合失败', error)).finally(() => scheduledTurns.delete(turn))
+    administration.background(() => {
+      const turn = startTurn(groupId, reason, undefined, bindingToken)
+      scheduledTurns.add(turn)
+      void turn.catch(error => logger.error('[仿真] 调度回合失败', error)).finally(() => scheduledTurns.delete(turn))
+    })
   }
 
   const sameWake = (queued: SimWakeReason | undefined, reason: SimWakeReason) =>
@@ -1045,6 +1174,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     let confirmedActions = 0, uncertainAction = false, executionError = '', cancelled = false
     const checkCommitment = async () => {
       if (!commitment) return
+      const target = scopedTarget ?? groupTargets.get(groupId)
+      if (target && !allowsConversationAI(target)) {
+        if (!commitment.started) deferred = true
+        else cancelled = true
+        throw new Error('本会话 AI 活动已暂停')
+      }
       if (!commitment.started && hostUnavailable()) {
         deferred = true; throw new Error('宿主或原账号暂不可用')
       }
@@ -1065,6 +1200,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     let memoryTurn: Awaited<ReturnType<NonNullable<SimulationRuntimePorts['beginMemoryTurn']>>> | undefined
     const fileTurnController = new AbortController()
     fileTurnControllers.add(fileTurnController)
+    turnsByGroup.set(groupId, fileTurnController)
+    let activityTurn: AgentConversationActivityCapture | undefined
     const durableWake = ports.durableIngress === true && !commitment
     try {
       await store.markBusy(groupId)
@@ -1109,7 +1246,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const cfg = runtimeConfig(groupId)
       if (!state.botId && scopedTarget && !commitment) return
       const target = scopedTarget ?? targetFor(groupId, state.botId || ports.getSelf().id)
-      if (!handlesTarget(target) || ports.allowsSimulation?.(target) === false || (state.botId && target.account.id !== state.botId)) return
+      groupTargets.set(groupId, target)
+      if (!handlesTarget(target) || !allowsConversationAI(target) || (state.botId && target.account.id !== state.botId)) {
+        if (commitment && !commitment.started && !allowsConversationAI(target)) deferred = true
+        return
+      }
+      activityTurn = activity.capture(target)
       const self = selfFor(target)
       if (self.id !== target.account.id) return
       const resolvedPersona = personaFor(target)
@@ -1121,6 +1263,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (resolvedPersona.binding && ports.beginMemoryTurn) {
         memoryTurn = await ports.beginMemoryTurn(resolvedPersona.binding)
       }
+      const commitmentSignal = (commitment?.options as (CommitmentRunOptions & { signal?: AbortSignal }) | undefined)?.signal
+      const turnSignal = AbortSignal.any([fileTurnController.signal, activityTurn.signal,
+        ...(memoryTurn ? [memoryTurn.signal] : []), ...(commitmentSignal ? [commitmentSignal] : [])])
       if (alignSessionBinding(state, resolvedPersona.binding)) await store.save(groupId, state)
       const characterScope = characterScopeFor(target, resolvedPersona.personaId || 'default')
       const persona = createPersonaSnapshot({ botId: characterScope.botId, personaId: characterScope.personaId, persona: { ...resolvedPersona.persona, name: String(resolvedPersona.persona.name || self.name) }, systemContent: resolvedPersona.systemContent, ...(resolvedPersona.personaGuard ? { personaGuard: resolvedPersona.personaGuard } : {}), ...(resolvedPersona.binding ? {binding: resolvedPersona.binding} : {}) })
@@ -1139,7 +1284,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const turnState = state
       const queuedWake = durableWake ? state.queuedIngressWake : undefined
       let wakeStarted = false
-      const canRunTurn = () => !stopped && groupActive(runtimeConfig(), groupId) && ports.isAccountReady?.(target.account) !== false &&
+      const canRunTurn = () => !stopped && !turnSignal.aborted && activityTurn?.isCurrent() !== false && allowsConversationAI(target) && groupActive(runtimeConfig(), groupId) && ports.isAccountReady?.(target.account) !== false &&
         isBindingCurrent() && memoryTurn?.isCurrent() !== false
       const wakeSourceExists = () => reason.seq === undefined || turnState.recent.some(message => message.seq === reason.seq)
       const canCallModel = () => canRunTurn() && wakeSourceExists()
@@ -1186,58 +1331,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const fileProjections: SimulationFileProjection[] = []
       let historyRead = false
       let ephemeralRead = false
-      const toolEvent = {
-        ...(isQqSimulationAddress(target) ? { group_id: Number(target.id) } : {}),
-        self_id: self.id, _isAgentBindingCurrent: canCallModel,
-        _ensureAgentToolCurrent: async () => {
-          await ensureExecution()
-          if (!canCallModel()) throw new Error('工具所属回合或消息来源已失效')
-        },
-        _sendAgentToolImage: (image: { readonly mime: string; readonly base64: string }, isCurrent?: () => boolean) => sendAgentToolImage(image, isCurrent),
-        _sendAgentToolFile: (file: AgentFileUpload, isCurrent?: () => boolean, signal?: AbortSignal) => sendAgentToolFile(file, isCurrent, signal),
-        _sendAgentToolMedia: (media: SendMediaAction['media'], isCurrent?: () => boolean, signal?: AbortSignal) => sendAgentToolMedia(media, isCurrent, signal),
-        _sendAgentToolMusic: (music: AgentMusicCard, isCurrent?: () => boolean, signal?: AbortSignal) => sendAgentToolMusic(music, isCurrent, signal),
-        _sendAgentToolMediaRelay: (plan: AgentMediaRelayPlan, isCurrent?: () => boolean, signal?: AbortSignal) => sendAgentToolMediaRelay(plan, isCurrent, signal),
-        _agentToolPersona: Object.freeze({ name: persona.personaName, version: persona.personaVersion, aliases: Object.freeze([self.name]), ...(persona.personaGuard ? { guard: persona.personaGuard } : {}) }),
-        _sendAgentToolBundle: (items: readonly MessageBundleItem[], isCurrent?: () => boolean) => sendAgentToolBundle(items, isCurrent),
-        _sendAgentToolMessage: (message: AgentToolMessage, isCurrent?: () => boolean) => sendAgentToolMessage(message, isCurrent),
-        ...(ports.readHistory ? { _readAgentHistory: async (input: Record<string, unknown>, guard: () => boolean, signal: AbortSignal) => {
-          if (actor.kind !== 'user' || !actor.userId || !triggerSource?.messageId || triggerSource.textTruncated || triggerSource.userId !== actor.userId) throw new Error('历史查询缺少当前真人请求')
-          await ensureExecution()
-          if (!guard() || signal.aborted) throw new Error('历史查询工具已失效')
-          historyRead = ephemeralRead = true
-          const projection = await ports.readHistory!(target, input, {
-            messageId: String(triggerSource.messageId), authorId: actor.userId, text: triggerSource.text, at: triggerSource.at,
-            mentions: (triggerSource.mentionUserIds ?? []).map(id => ({ ...target.account, id })),
-            ...(triggerSource.replyToUserId ? { replyAuthor: { ...target.account, id: triggerSource.replyToUserId } } : {}),
-          }, canCallModel, signal)
-          historyProjections.push(projection)
-          await ensureExecution()
-          if (!guard() || signal.aborted) throw new Error('历史查询工具已失效')
-          return projection.text
-        } } : {}),
-        ...(triggerSource?.messageId && !triggerSource.textTruncated ? { _agentToolRequest: {
-          messageId: String(triggerSource.messageId), text: triggerSource.text,
-          mentions: (triggerSource.mentionUserIds ?? []).map(id => ({ ...target.account, id })),
-          ...(triggerSource.replyToUserId ? { replyAuthor: { ...target.account, id: triggerSource.replyToUserId } } : {}),
-        } satisfies AgentToolRequest } : {}),
-        _readAgentToolImages: (sourceSeq: number, isCurrent?: () => boolean, signal?: AbortSignal) => readAgentToolImages(sourceSeq, isCurrent, signal),
-        _readAgentFile: async (input: AgentFileRequest, isCurrent: () => boolean, signal: AbortSignal): Promise<AgentFileBytes> => {
-          ephemeralRead = true
-          if (!agentFiles) throw new Error('文件读取缺少当前已核验的真人请求')
-          return agentFiles.readFile(input, isCurrent, signal)
-        },
-        _listAgentFiles: async (input: { query?: string; folderPath?: string }, isCurrent: () => boolean, signal: AbortSignal): Promise<AgentFileListing> => {
-          ephemeralRead = true
-          if (!agentFiles) throw new Error('文件目录读取缺少当前已核验的真人请求')
-          return agentFiles.listFiles(input, isCurrent, signal)
-        },
-        ...(memoryTurn?.signal ? { _agentToolSignal: memoryTurn.signal } : {}),
-        ...(triggerSource?.messageId !== undefined ? { _agentRequestMessageId: String(triggerSource.messageId) } : {}),
-        ...(triggerSource?.text !== undefined ? { _agentUserText: triggerSource.text } : {}),
-        _agentAllowsText: (_text: string) => true,
-        ...(resolvedPersona.binding ? {_agentBinding: resolvedPersona.binding} : {}),
-      }
+      let unrelatedEphemeralRead = false
       const sendText = (text: string, mentions: readonly string[] = [], replyTo?: string) =>
         sendTextMessage(groupId, self.id, text, sendOptions, mentions, replyTo)
       const selfStore = scopedStore(characterScope, resolvedPersona.binding)
@@ -1308,1567 +1402,1957 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       state.botId = self.id
       let actor = resolveSimulationActor(characterScope, reason, state.recent)
       const triggerMessage = actor.kind === 'user' ? state.recent.find(message => message.seq === reason.seq) : undefined
-      const anchor = reason.kind !== 'session' ? triggerMessage : undefined
-      const conversationUserId = anchor?.userId
-      if (actor.kind === 'autonomous' && character.paused) {
-        if (durableWake) await discardWake()
-        return
-      }
-      let focusedGoalId: string | undefined
-      let focusedGoalRevision: number | undefined
-      let decision: CharacterDecision['kind'] | undefined
-      let turnClosed = false
-      let requiresClosing = false
-      // Only the synchronous final announcement can use the committed goal version.
-      // This permit is never exposed to a subsequent model tool call.
-      type AnnouncementPermit = { revision: number; goalRevision?: number; goalStatus?: string }
-      let announcement: AnnouncementPermit | undefined
-      const focusGoal = async (id: string) => {
-        if (reason.kind === 'commitment') throw new Error('正式托付回合不能转为自主目标并借用托付预算')
-        if ((overridesCache?.atOnly || []).includes(groupId)) throw new Error('仅被@回应模式下不执行自主目标')
-        if (focusedGoalId && focusedGoalId !== id) throw new Error('一回合只能推进一个自主目标')
-        if (focusedGoalId) return
-        if (!characterMemoryVisibility(character, memorySceneState.invalidatedAt).goals.some(goal => goal.id === id)) throw new Error('目标的聊天来源已失效')
-        const receiptId = randomUUID()
-        character = await characters.update(characterScope, current => beginCharacterGoalAttempt(current, id, { id: receiptId, toolName: 'simGoalCheck' }, now()))
-        const pending = character.receipts.find(item => item.id === receiptId)!
-        focusedGoalId = id
-        focusedGoalRevision = pending.goalRevision
-        actor = { ...characterScope, kind: 'autonomous' }
-        character = await characters.update(characterScope, current => recordCharacterReceipt(current, { ...pending, status: 'unknown', summary: '已进行一次目标检查，尚无外部行动结果', at: now() }, now()))
-      }
-      liveStates.set(groupId, state)
-      rollBudgetDay(state, now())
-      const verdict = await checkGroupWakeBudget(state, cfg, groupId, reason)
-      if (!verdict.allowed) {
-        // 预算类(回合/金额)今日不会再放行:群内提示一次后不再重试;
-        // 限频类延后重试（丢弃会让 timeout 唤醒停在无定时器静默态）
-        const limitText = describeBudgetLimit(verdict.reason)
-        if (limitText) {
-          const announceBudget = () => {
-            logger.warn(`[仿真] 群 ${groupId} 唤醒被预算拦截：${verdict.reason}（今日剩余唤醒不再重试）`)
-            const hasAudience = shouldAnnounceBudgetLimit(String(reason.kind), Number(turnState.lastIncomingAt) || 0, now())
-            if (hasAudience && limitNoticeDue(limitNoticeAt.get(groupId) || 0, now())) {
-              limitNoticeAt.set(groupId, now())
-              void sendText(`（${limitText}，调用已限额，明天自动恢复喵）`)
-                .then(receipt => { if (!receipt.ok) logger.warn(`[仿真] 群 ${groupId} 限额提示发送失败: ${receipt.error || ''}`) })
-                .catch(() => { /* 提示失败不影响主流程 */ })
-            }
-          }
-          if (durableWake) await beginWake(announceBudget)
-          else announceBudget()
-          return
+      const runResolvedTurn = async (state: SimSessionState): Promise<void> => {
+        const toolEvent = {
+          ...(isQqSimulationAddress(target) ? { group_id: Number(target.id) } : {}),
+          self_id: self.id, _isAgentBindingCurrent: canCallModel,
+          _ensureAgentToolCurrent: async () => {
+            await ensureExecution()
+            if (!canCallModel()) throw new Error('工具所属回合或消息来源已失效')
+          },
+          _sendAgentToolImage: (image: { readonly mime: string; readonly base64: string }, isCurrent?: () => boolean) => sendAgentToolImage(image, isCurrent),
+          _sendAgentToolFile: (file: AgentFileUpload, isCurrent?: () => boolean, signal?: AbortSignal) => sendAgentToolFile(file, isCurrent, signal),
+          _sendAgentToolMedia: (media: SendMediaAction['media'], isCurrent?: () => boolean, signal?: AbortSignal) => sendAgentToolMedia(media, isCurrent, signal),
+          _sendAgentToolMusic: (music: AgentMusicCard, isCurrent?: () => boolean, signal?: AbortSignal) => sendAgentToolMusic(music, isCurrent, signal),
+          _sendAgentToolVideoCard: (card: AgentVideoCard, isCurrent?: () => boolean, signal?: AbortSignal, ensureCurrent?: () => Promise<void>) => sendAgentToolVideoCard(card, isCurrent, signal, ensureCurrent),
+          _sendAgentToolMediaRelay: (plan: AgentMediaRelayPlan, isCurrent?: () => boolean, signal?: AbortSignal, ensureCurrent?: () => Promise<void>) => sendAgentToolMediaRelay(plan, isCurrent, signal, ensureCurrent),
+          ...(ports.performInteractions ? { _interactAgentTool: (plan: AgentInteractionPlan, isCurrent: () => boolean, signal: AbortSignal, ensureCurrent?: () => Promise<void>) => sendAgentToolInteraction(plan, isCurrent, signal, ensureCurrent) } : {}),
+          _runAgentQqAction: ((kind, operation) => runAgentQqAction(kind, operation)) satisfies AgentQqActionRunner,
+          _qzoneAffinity: (userId: string) => affinityBox.map[userId]?.score ?? 0,
+          _qzoneCandidates: async () => {
+            await ensureToolSend()
+            if (actor.kind !== 'user' || !triggerSource?.messageId || triggerSource.textTruncated || !ports.readGroupMembers) return []
+            const snapshot = await ports.readGroupMembers(target, turnSignal, canCallModel)
+            await ensureToolSend()
+            if (!snapshot || snapshot.complete !== true || conversationAddressKey(snapshot.target) !== conversationAddressKey(target) || !Array.isArray(snapshot.members)) return []
+            return [...new Set(snapshot.members.filter(member => member.user.platform === target.account.platform &&
+              member.user.namespace === target.account.namespace && member.user.id !== self.id && isPlatformIdentifier(member.user.id) &&
+              Object.hasOwn(affinityBox.map, member.user.id) && Number.isFinite(affinityBox.map[member.user.id]?.score) &&
+              affinityBox.map[member.user.id]!.score >= cfg.qzone.minAffinity).map(member => member.user.id))].slice(0, 2000)
+          },
+          _reviewAgentQqText: async (text: string) => {
+            try {
+              await ensureToolSend()
+              if (typeof text !== 'string' || !text.trim() || ports.allowsToolInput?.(text) === false || looksLikeToolArguments(text)) return false
+              const safe = redactInternalStatusLeaks(sanitizeFinalReplyText(text))
+              if (safe.heavy || safe.text !== text) return false
+              await reviewCandidate('toolReply', { messages: [text] })
+              await ensureToolSend()
+              return true
+            } catch { return false }
+          },
+          _agentToolPersona: Object.freeze({ name: persona.personaName, version: persona.personaVersion, aliases: Object.freeze([self.name]), ...(persona.personaGuard ? { guard: persona.personaGuard } : {}) }),
+          _sendAgentToolBundle: (items: readonly MessageBundleItem[], isCurrent?: () => boolean) => sendAgentToolBundle(items, isCurrent),
+          _sendAgentToolMessage: (message: AgentToolMessage, isCurrent?: () => boolean) => sendAgentToolMessage(message, isCurrent),
+          ...(ports.readHistory ? { _readAgentHistory: async (input: Record<string, unknown>, guard: () => boolean, signal: AbortSignal) => {
+            if (actor.kind !== 'user' || !actor.userId || !triggerSource?.messageId || triggerSource.textTruncated || triggerSource.userId !== actor.userId) throw new Error('历史查询缺少当前真人请求')
+            await ensureExecution()
+            if (!guard() || signal.aborted) throw new Error('历史查询工具已失效')
+            historyRead = ephemeralRead = unrelatedEphemeralRead = true
+            const projection = await ports.readHistory!(target, input, {
+              messageId: String(triggerSource.messageId), authorId: actor.userId, text: triggerSource.text, at: triggerSource.at,
+              mentions: (triggerSource.mentionUserIds ?? []).map(id => ({ ...target.account, id })),
+              ...(triggerSource.quoteSource?.messageId ? { replyMessageId: triggerSource.quoteSource.messageId } : {}),
+            ...(triggerSource.replyToUserId ? { replyAuthor: { ...target.account, id: triggerSource.replyToUserId } } : {}),
+            }, canCallModel, signal)
+            historyProjections.push(projection)
+            await ensureExecution()
+            if (!guard() || signal.aborted) throw new Error('历史查询工具已失效')
+            return projection.text
+          } } : {}),
+          ...(triggerSource?.messageId && !triggerSource.textTruncated ? { _agentToolRequest: {
+            messageId: String(triggerSource.messageId), text: triggerSource.text, occurredAt: triggerSource.at,
+            mentions: (triggerSource.mentionUserIds ?? []).map(id => ({ ...target.account, id })),
+            ...(triggerSource.quoteSource?.messageId ? { replyMessageId: triggerSource.quoteSource.messageId } : {}),
+            ...(triggerSource.replyToUserId ? { replyAuthor: { ...target.account, id: triggerSource.replyToUserId } } : {}),
+          } satisfies AgentToolRequest } : {}),
+          _readAgentToolImages: (sourceSeq: number, isCurrent?: () => boolean, signal?: AbortSignal) => readAgentToolImages(sourceSeq, isCurrent, signal),
+          _readAgentFile: async (input: AgentFileRequest, isCurrent: () => boolean, signal: AbortSignal): Promise<AgentFileBytes> => {
+            ephemeralRead = unrelatedEphemeralRead = true
+            if (!agentFiles) throw new Error('文件读取缺少当前已核验的真人请求')
+            return agentFiles.readFile(input, isCurrent, signal)
+          },
+          _readAgentVideo: async (isCurrent: () => boolean, signal: AbortSignal): Promise<AgentVideoInput> => {
+            ephemeralRead = unrelatedEphemeralRead = true
+            if (!agentVideo) throw new Error('视频读取缺少当前已核验的真人群聊请求')
+            return agentVideo.readVideo(isCurrent, signal)
+          },
+          _listAgentFiles: async (input: { query?: string; folderPath?: string }, isCurrent: () => boolean, signal: AbortSignal): Promise<AgentFileListing> => {
+            ephemeralRead = unrelatedEphemeralRead = true
+            if (!agentFiles) throw new Error('文件目录读取缺少当前已核验的真人请求')
+            return agentFiles.listFiles(input, isCurrent, signal)
+          },
+          ...(memoryTurn?.signal ? { _agentToolSignal: memoryTurn.signal } : {}),
+          ...(triggerSource?.messageId !== undefined ? { _agentRequestMessageId: String(triggerSource.messageId) } : {}),
+          ...(triggerSource?.text !== undefined ? { _agentUserText: triggerSource.text } : {}),
+          _agentAllowsText: (_text: string) => true,
+          ...(resolvedPersona.binding ? {_agentBinding: resolvedPersona.binding} : {}),
         }
-        if (!retryTimers.has(groupId)) {
-          const timer = safeSetTimeout(() => {
-            retryTimers.delete(groupId)
-            launchTurn(groupId, reason, capturedBinding)
-          }, 60_000)
-          retryTimers.set(groupId, { timer, reason, bindingToken: capturedBinding })
-        }
-        return
-      }
-      if (reason.kind === 'characterGoal') {
-        const goal = dueCharacterGoal(character, now())
-        if (!goal || (reason.detail && reason.detail !== goal.id)) {
+        const anchor = reason.kind !== 'session' ? triggerMessage : undefined
+        const conversationUserId = anchor?.userId
+        if (actor.kind === 'autonomous' && character.paused) {
           if (durableWake) await discardWake()
           return
         }
-        if (durableWake) {
-          const attempt = await beginWake(() => focusGoal(goal.id).then(() => undefined, error => ({ error })))
-          if (!attempt) return
-          const failure = await attempt.result
-          if (failure) throw failure.error
-        } else await focusGoal(goal.id)
-      }
-      if (!durableWake && !commitment) recordWakeStart()
-      const memories = normalizeMemoryList(await selfStore.loadMemories(groupId), now(), isQqSimulationAddress(target) ? undefined : isSimulationUserId)
-      const followUpId = reason.kind === 'proactiveCheck' ? reason.detail : undefined
-      let noteProactiveCheck: (() => void) | undefined
-      if (reason.kind === 'proactiveCheck') {
-        let offeredFollowUpIds: string[] | undefined
-        if (followUpId) {
-          const due = dueMemories(memories, now())
-          if (!due.some(item => item.id === followUpId && item.proactiveSourceSeq !== undefined) || state.offeredFollowUpIds?.includes(followUpId)) {
+        let focusedGoalId: string | undefined
+        let focusedGoalRevision: number | undefined
+        let decision: CharacterDecision['kind'] | undefined
+        let turnClosed = false
+        let requiresClosing = false
+        let managementTerminal = false
+        let qqActionTerminal = false
+        let qqActionSends = 0
+        // Only the synchronous final announcement can use the committed goal version.
+        // This permit is never exposed to a subsequent model tool call.
+        type AnnouncementPermit = { revision: number; goalRevision?: number; goalStatus?: string }
+        let announcement: AnnouncementPermit | undefined
+        const focusGoal = async (id: string) => {
+          if (reason.kind === 'commitment') throw new Error('正式托付回合不能转为自主目标并借用托付预算')
+          if ((overridesCache?.atOnly || []).includes(groupId)) throw new Error('仅被@回应模式下不执行自主目标')
+          if (focusedGoalId && focusedGoalId !== id) throw new Error('一回合只能推进一个自主目标')
+          if (focusedGoalId) return
+          if (!characterMemoryVisibility(character, memorySceneState.invalidatedAt).goals.some(goal => goal.id === id)) throw new Error('目标的聊天来源已失效')
+          const receiptId = randomUUID()
+          character = await characters.update(characterScope, current => beginCharacterGoalAttempt(current, id, { id: receiptId, toolName: 'simGoalCheck' }, now()))
+          const pending = character.receipts.find(item => item.id === receiptId)!
+          focusedGoalId = id
+          focusedGoalRevision = pending.goalRevision
+          actor = { ...characterScope, kind: 'autonomous' }
+          character = await characters.update(characterScope, current => recordCharacterReceipt(current, { ...pending, status: 'unknown', summary: '已进行一次目标检查，尚无外部行动结果', at: now() }, now()))
+        }
+        liveStates.set(groupId, state)
+        rollBudgetDay(state, now())
+        const verdict = await checkGroupWakeBudget(state, cfg, groupId, reason)
+        if (!verdict.allowed) {
+          // 预算类(回合/金额)今日不会再放行:群内提示一次后不再重试;
+          // 限频类延后重试（丢弃会让 timeout 唤醒停在无定时器静默态）
+          const limitText = describeBudgetLimit(verdict.reason)
+          if (limitText) {
+            const announceBudget = () => {
+              logger.warn(`[仿真] 群 ${groupId} 唤醒被预算拦截：${verdict.reason}（今日剩余唤醒不再重试）`)
+              const hasAudience = shouldAnnounceBudgetLimit(String(reason.kind), Number(turnState.lastIncomingAt) || 0, now())
+              if (hasAudience && limitNoticeDue(limitNoticeAt.get(groupId) || 0, now())) {
+                limitNoticeAt.set(groupId, now())
+                void sendText(`（${limitText}，调用已限额，明天自动恢复喵）`)
+                  .then(receipt => { if (!receipt.ok) logger.warn(`[仿真] 群 ${groupId} 限额提示发送失败: ${receipt.error || ''}`) })
+                  .catch(() => { /* 提示失败不影响主流程 */ })
+              }
+            }
+            if (durableWake) await beginWake(announceBudget)
+            else announceBudget()
+            return
+          }
+          if (!retryTimers.has(groupId)) {
+            const timer = administration.background(() => safeSetTimeout(() => {
+              retryTimers.delete(groupId)
+              launchTurn(groupId, reason, capturedBinding)
+            }, 60_000))
+            retryTimers.set(groupId, { timer, reason, bindingToken: capturedBinding })
+          }
+          return
+        }
+        if (reason.kind === 'characterGoal') {
+          const goal = dueCharacterGoal(character, now())
+          if (!goal || (reason.detail && reason.detail !== goal.id)) {
             if (durableWake) await discardWake()
             return
           }
-          const offered = new Set(state.offeredFollowUpIds)
-          offeredFollowUpIds = [...due.filter(item => offered.has(item.id)).map(item => item.id), followUpId]
+          if (durableWake) {
+            const attempt = await beginWake(() => focusGoal(goal.id).then(() => undefined, error => ({ error })))
+            if (!attempt) return
+            const failure = await attempt.result
+            if (failure) throw failure.error
+          } else await focusGoal(goal.id)
         }
-        noteProactiveCheck = () => {
-          if (offeredFollowUpIds) turnState.offeredFollowUpIds = offeredFollowUpIds
-          turnState.lastProactiveCheckedSeq = turnState.seq
-        }
-        if (!durableWake) noteProactiveCheck()
-      }
-
-      // 唤醒预判闸：低信号唤醒（关键词/概率/延续/旁观类）先由便宜模型小上下文预判；
-      // 判定不值得 → 等价 simMarkRead 静默收尾（推进水位、清未读），不进完整回合。
-      // 预判不可用/异常 → 放行（fail-open，宁多花一次也不丢回复）。
-      const judgeWake = ports.wakeGateJudge
-      if (!followUpId && cfg.wakeGate.enabled && judgeWake && !WAKE_GATE_BYPASS_KINDS.has(reason.kind)) {
-        const invokeGate = async () => {
-          if (!canCallModel()) return null
-          if (durableWake) { recordWakeStart(); noteProactiveCheck?.() }
-          return await judgeWake({
-            reason: formatWakeReason(reason),
-            messages: [...turnState.unread].sort((a, b) => a.seq - b.seq).slice(-10)
-              .map(m => ({ name: String(m.name || ''), text: String(m.text || '').slice(0, 80), atSelf: Boolean(m.atSelf || m.quoteToSelf) })),
-          }, canCallModel)
-        }
-        const runGate = () => invokeGate().catch(() => null)
-        const gate = durableWake ? await beginWake(runGate) : { result: runGate() }
-        if (!gate) return
-        const verdict = await gate.result
-        if (!canCallModel()) return
-        if (verdict && verdict.engage === false) {
-          state.lastReadThroughSeq = state.unread.reduce((max, m) => Math.max(max, m.seq), state.lastReadThroughSeq)
-          state.unread = []
-          await store.save(groupId, state)
-          logger.info(`[仿真] 群 ${groupId} 预判闸拦截 wake=${reason.kind}${verdict.reason ? `（${verdict.reason}）` : ''}，省一次完整回合`)
-          return
-        }
-        if (verdict) logger.info(`[仿真] 群 ${groupId} 预判闸放行 wake=${reason.kind}${verdict.reason ? `（${verdict.reason}）` : ''}`)
-      }
-
-      const snapshot = buildWakeSnapshot(state, { limit: cfg.turn.wakeMessageLimit, maxChars: cfg.turn.wakeMaxChars, now: now(), ...(anchor ? { anchor } : {}) })
-      const snapshotSeqs = snapshot.includedSeqs
-      const projectedWatermark = { unread: state.unread, modelSeenSeqs: state.modelSeenSeqs, lastReadThroughSeq: state.lastReadThroughSeq }
-      noteModelSeen(projectedWatermark, snapshotSeqs)
-      if (!durableWake) state.modelSeenSeqs = projectedWatermark.modelSeenSeqs
-      const visibleMessageSeqs = new Set(anchor ? snapshotSeqs : [...projectedWatermark.modelSeenSeqs, ...snapshotSeqs])
-      // agent 长期记忆/好感度/近期动态装配（.仿真 重置不清这些）
-      const affinityRaw = await selfStore.loadAffinity(groupId)
-      const affinity: SimAffinityMap = Object.create(null)
-      for (const [userId, value] of Object.entries(affinityRaw)) {
-        const entry = value && typeof value === 'object' && !Array.isArray(value) ? value as Partial<SimAffinityEntry> : {}
-        affinity[userId] = {
-          score: Math.max(0, Math.min(100, Math.floor(Number(entry.score ?? 50)))),
-          updatedAt: Number(entry.updatedAt) || now(),
-          today: String(entry.today || ''),
-          todayDelta: Math.floor(Number(entry.todayDelta) || 0),
-          reasons: Array.isArray(entry.reasons) ? entry.reasons.map(String).slice(0, 8) : [],
-        }
-      }
-      const session = state
-      const recentFirst = session.recent.slice().reverse()
-      const nameOf = (userId: string) => recentFirst.find(m => m.userId === userId)?.name
-        || session.unread.find(m => m.userId === userId)?.name
-        || memories.find(m => m.aboutUser === userId)?.content.split('说')[0]?.slice(0, 12)
-        || `群友${userId.slice(-4)}`
-      const addressedBy = actor.kind === 'user' ? actor.userId : undefined
-      const speakers = conversationUserId ? [conversationUserId] : [...new Set([
-        ...(addressedBy ? [addressedBy] : []),
-        ...session.recent.slice(-10).reverse().map(m => m.userId),
-      ])]
-      // 委托记忆（群友托付记的事）：原文注入【群友托付的事】段（在场优先、到期高亮）
-      const delegatedScope = resolvedPersona.binding?.source === 'configured' ? resolvedPersona.binding : groupId
-      const delegatedEntries = normalizeDelegatedEntries(await (async () => {
-        try { return await ports.loadDelegatedMemories?.(delegatedScope) ?? [] } catch { return [] }
-      })(), now())
-      const delegatedSection = formatDelegatedSection(anchor ? delegatedEntries.filter(entry => entry.owner === anchor.userId) : delegatedEntries, now(), speakers)
-      // 独立宿主在首次合格模型调用前领取已核验的初始提示词。原 QQ 入口继续沿用 bootstrap。
-      const initialPrompt = !initialPromptStore && reason.kind === 'bootstrap' ? await store.getInitPrompt(groupId) : ''
-      const styleDigest = anchor || !allowUnprovenAggregates ? '' : await (async () => { try { return String((await ports.getStyleDigest?.(groupId)) || '') } catch { return '' } })()
-      const userStyle = allowUnprovenAggregates ? (await store.loadUserStyle(groupId).catch(() => ({ users: {} as Record<string, string[]>, updatedAt: 0 }))).users || {} : {}
-      // 在场群友的人物核心档案（跨群身份级事实，≤5 人；原始字段交给人物卡合并注入）
-      const speakerIds = speakers.slice(0, 5)
-      const personProfiles: Record<string, PersonProfile | undefined> = Object.create(null)
-      for (const speakerId of speakerIds) {
-        const profile = await selfStore.loadPersonProfile(speakerId).catch(() => undefined)
-        if (profile && (profile.name || profile.interests.length || profile.taboos.length || profile.traits?.length || profile.facts?.length)) personProfiles[speakerId] = profile
-      }
-      let personRecall = ''
-      if (anchor) {
-        const notebookIds = new Set(memories.map(memory => memory.personMemoryId))
-        const recalled = await personMemory.query({ identity: characterScope, subjectId: anchor.userId, viewerUserId: anchor.userId,
-          scene: memoryScene, localOnly: true, query: anchor.text, limit: 16 })
-        const facts = formatPersonMemoryFacts(recalled.items.filter(entry => !notebookIds.has(entry.id)).slice(0, 4))
-        if (facts) personRecall = `【本群人物记忆】当前发言者的历史资料。只在与当前话题相关时参考，保留陈述的来源和确定性。\n${facts}`
-      }
-      const globalAffinity = await selfStore.loadGlobalAffinity(speakerIds).catch(() => ({} as Record<string, number>))
-      // 生物节律+生活线注入
-      const hourNow2 = new Date(now() + 8 * 3600_000).getUTCHours()
-      const rhythmWin2 = cfg.rhythm.enabled ? await loadRhythmWindow(cfg, characterScope) : null
-      const sleepNote = rhythmWin2 ? sleepinessNote(hourNow2, rhythmWin2) : ''
-      const staleNote = staleMessageNote(state.lastIncomingAt || 0, now())
-      const lifeThreadsRaw = cfg.lifeThreads.enabled ? await selfStore.loadLifeThreads().catch(() => []) : []
-      const lifeThreads = normalizeLifeThreads(lifeThreadsRaw)
-      // 生活线×档案兴趣连接：在追的作品恰好也是某位在场群友的爱好 → 提示共同话题（社交连接点）
-      const commonTopicLines: string[] = []
-      for (const thread of lifeThreads.filter(t => t.status === 'active').slice(0, 3)) {
-        const sharers = speakerIds.filter(id => (personProfiles[id]?.interests || []).some(interest => interestMatchesTitle(interest, thread.title)))
-        if (sharers.length) commonTopicLines.push(`《${thread.title}》：${sharers.map(nameOf).join('、')}也喜欢——你们有天然共同话题，聊到时可以自然提起`)
-      }
-      const lifeThreadSection = formatLifeThreads(lifeThreads, commonTopicLines)
-      // 本群角色自我笔记
-      const selfNotesText = formatSelfMemorySection(normalizeMemoryList(await selfStore.loadSelfMemories().catch(() => []), now()))
-      // 情绪四轴（跨群全局）：回合开始投影一次——注入底色段 + 本回合更新的包络锚点共用；
-      // 中性带/从未写过时段落为空串，不注入（缺席=情绪平常）
-      const moodCurrent = cfg.mood.enabled ? normalizeSimMood(await selfStore.loadMood().catch(() => null), now()) : null
-      const moodAnchor = projectMood(moodCurrent, now(), cfg.mood.halfLifeMs)
-      const moodBox = { current: moodCurrent }
-      const moodSection = formatMoodSection(moodCurrent, now(), cfg.mood.halfLifeMs)
-      // 长程语义召回：未读末尾消息做查询，检索"两天情节窗之外"的相关片段（1s 预算）。
-      // 失败/超时不注入内容，但必须与"检索无结果"区分开——注入未完成提示，防止模型把"没召回到"当"没发生过"。
-      const focusedGoal = character.goals.find(goal => goal.id === focusedGoalId)
-      const recallQuery = anchor ? '' : [focusedGoal ? `${focusedGoal.title} ${focusedGoal.nextStep}` : '', ...[...state.unread].sort((a, b) => a.seq - b.seq).slice(-6).map(m => String(m.text || '').trim())].filter(Boolean).join(' ').slice(0, 160)
-      let semanticRecall = ''
-      let semanticRecallIncomplete = false
-      let semanticProjection: AgentSemanticMemoryRecall | undefined
-      if (recallQuery && ports.readSemanticMemory) {
-        try {
-          semanticProjection = await ports.readSemanticMemory(target, recallQuery, canCallModel, memoryTurn?.signal,
-            state.unread.flatMap(message => message.messageId == null ? [] : [String(message.messageId)]))
-          semanticRecall = semanticProjection?.text ?? ''
-        } catch { semanticRecallIncomplete = true }
-      } else if (recallQuery && typeof ports.getSemanticRecall === 'function') {
-        type RecallOutcome = { ok: boolean; value: string }
-        const redactions = new Map<string, Awaited<ReturnType<typeof personMemory.getRedactions>>>()
-        const filterSource = Object.assign(async (source: PersonMemorySource, text: string) => {
-          if (source.scene.kind !== 'group' || source.scene.id !== personMemoryAddress(target).scene.id) return false
-          let snapshot = redactions.get(source.authorId)
-          if (!snapshot) { snapshot = await personMemory.getRedactions({ identity: characterScope, subjectId: source.authorId }); redactions.set(source.authorId, snapshot) }
-          return !isPersonMemoryRedacted(source, text, snapshot)
-        }, { refresh() { redactions.clear() } })
-        const outcome = await Promise.race<RecallOutcome>([
-          Promise.resolve(ports.getSemanticRecall(groupId, recallQuery, { botId: characterScope.botId, personaId: characterScope.personaId, filterSource }))
-            .then((value: string) => ({ ok: true, value: String(value || '') }))
-            .catch(() => ({ ok: false, value: '' })),
-          new Promise<RecallOutcome>(resolve => { const timer = setTimeout(() => resolve({ ok: false, value: '' }), 1000); timer.unref?.() }),
-        ])
-        semanticRecall = outcome.ok ? outcome.value : ''
-        semanticRecallIncomplete = !outcome.ok
-      }
-      const narrativeMemory = !anchor && allowRebuiltAggregates && ports.readConversationMemory
-        ? await ports.readConversationMemory(target, persona, canCallModel).catch(() => ({ digest: '', episodes: '' }))
-        : undefined
-      const groupMemoryContext = await ports.readGroupMemory?.(target, persona,
-        actor.kind === 'user' && triggerMessage?.messageId != null ? String(triggerMessage.messageId) : undefined, canCallModel).catch(() => '') ?? ''
-      const assertGroupMemoryCurrent = async () => {
-        for (const projection of historyProjections) if (!await projection.isCurrent()) throw new Error('显式历史来源已改变，停止使用旧上下文')
-        for (const projection of fileProjections) if (!await projection.isCurrent()) throw new Error('文件资料来源已改变，停止使用旧上下文')
-        if (semanticProjection?.text && !await semanticProjection.isCurrent()) throw new Error('语义记忆来源已改变，停止使用旧上下文')
-        if (ports.isGroupMemoryCurrent && !await ports.isGroupMemoryCurrent(target, groupMemoryContext, actor.kind === 'user', canCallModel)) throw new Error('本群资料来源已改变，停止使用旧上下文')
-      }
-      const ensureModelCurrent = async () => {
-        if (!canCallModel()) throw new Error('模型请求的来源或绑定已改变')
-        await assertTriggerCurrent()
-        await assertGroupMemoryCurrent()
-        const sourceState = await characters.load(characterScope)
-        if ((await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt ||
-            await shared.fingerprint() !== sharedFingerprint ||
-            [...sourceMemoryIds].some(id => !activeCharacterMemories(sourceState).some(memory => memory.id === id))) {
-          throw new Error('模型请求的记忆来源已改变')
-        }
-        if (await store.loadActivityVersion(groupId) !== activityVersion) throw new Error('角色活动已撤销，停止模型请求')
-        if (!canCallModel()) throw new Error('模型请求的来源或绑定已改变')
-      }
-      if (!canCallModel()) return
-      const wakeInput: Parameters<typeof buildWakePrompt>[0] = {
-        state, reason, ...(addressedBy ? { speakerId: addressedBy } : {}), ...(anchor ? { focusSeq: anchor.seq } : {}), snapshotText: snapshot.text, unreadTotal: snapshot.unreadTotal, now: now(), selfName,
-        ...(initialPrompt ? { initialPrompt } : {}),
-        memories: anchor ? memories.filter(memory => memory.aboutUser === anchor.userId) : memories,
-        affinity: anchor ? (affinity[anchor.userId] ? { [anchor.userId]: affinity[anchor.userId]! } : {}) : affinity,
-        speakers, nameOf,
-        userCatchphrases: (userId: string) => userStyle[userId],
-        ...(Object.keys(personProfiles).length ? { personProfiles } : {}),
-        ...(Object.keys(globalAffinity).length ? { globalAffinity } : {}),
-        ...(selfNotesText ? { selfNotesText } : {}),
-        ...(moodSection ? { moodSection } : {}),
-        ...(semanticRecall ? { semanticRecall } : {}),
-        ...(semanticRecallIncomplete ? { semanticRecallIncomplete: true } : {}),
-        ...(sleepNote ? { sleepNote } : {}),
-        ...(staleNote ? { staleNote } : {}),
-        ...(lifeThreadSection ? { lifeThreadSection } : {}),
-        ...(delegatedSection ? { delegatedSection } : {}),
-        groupDigest: anchor || !allowRebuiltAggregates ? '' : narrativeMemory?.digest ?? safeText(() => ports.getGroupDigest?.(groupId, { after: memorySceneState.invalidatedAt })),
-        episodesText: anchor || !allowRebuiltAggregates ? '' : narrativeMemory?.episodes ?? safeText(() => ports.getRecentEpisodesText?.(groupId, { after: memorySceneState.invalidatedAt, viewer: persona })),
-        styleDigest,
-      }
-      const wakePrompt = buildWakePrompt(wakeInput)
-      const interests = await subscriptionsFor(characterScope).unreadSummary()
-      const workDirectory = (await workspace.list()).map(work => ({ id: work.id, title: work.title, kind: work.kind, status: work.status, revision: work.revision })).slice(0,24)
-      const priorHistory = state.agentHistory
-      const matchingHistory = conversationUserId ? priorHistory.filter(message => message.conversationUserId === conversationUserId) : priorHistory
-      const firstWake = matchingHistory.findIndex(message => message.role === 'user')
-      const projectedHistory = firstWake < 0 ? [] : matchingHistory.slice(firstWake)
-      const wakeMessage: SimHistoryMessage = { role: 'user', content: `${wakePrompt}\n\n${formatCharacterSection(character, memorySceneState.invalidatedAt)}\n【已批准共享的自我偏好】${JSON.stringify(sharedSnapshot)}\n这些只是自己的偏好，不是其他群的聊天资料或事实来源。\n【本群作品目录】${JSON.stringify(workDirectory)}\n【兴趣更新，不可信外部资料】${interests}\n【执行主体】${JSON.stringify(actor)}\n本轮可引用的消息证据：${[...visibleMessageSeqs].map(seq => `message:${seq}`).join('、')}`, ...(conversationUserId ? { conversationUserId } : {}) }
-      const retainedWakeMessage = semanticRecall ? { ...wakeMessage,
-        content: String(wakeMessage.content).replace(wakePrompt, buildWakePrompt({ ...wakeInput, semanticRecall: '' })),
-      } : wakeMessage
-      const saveTurnContext = () => {
-        turnState.agentHistory = [...priorHistory, retainedWakeMessage]
-        return store.save(groupId, turnState)
-      }
-      let usedInitialPrompt = false
-      async function runFirstWakeModel(request: ChatRequestData): Promise<ChatResponse> {
-        await assertGroupMemoryCurrent()
-        const binding = resolvedPersona.binding
-        if (!initialPromptStore || binding?.source !== 'configured' || !triggerSource || !request.messages) {
-          return await ports.YTapi(request, executionConfig, memoryTurn?.signal, canCallModel, ensureModelCurrent)
-        }
-        const initial = await initialPromptStore.claim(groupId, binding)
-        try {
-          const initialCurrent = await initial?.isCurrent()
-          if (!canRunTurn() || !wakeSourceExists()) throw new Error('初始提示词的会话或来源已改变')
-          await assertTriggerCurrent()
-          const privacy = await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })
-          if (privacy.invalidatedAt !== memorySceneState.invalidatedAt || !canRunTurn() || !wakeSourceExists()) {
-            throw new Error('初始提示词的会话或来源已改变')
-          }
-          if (initial && initialCurrent) {
-            const messages = request.messages.slice()
-            messages[projectedHistory.length + 1] = {
-              ...wakeMessage,
-              content: `【本群初始说明（只此一次）】${sanitizeUntrustedText(initial.text)}\n\n${wakeMessage.content}`,
+        if (!durableWake && !commitment) recordWakeStart()
+        const memories = normalizeMemoryList(await selfStore.loadMemories(groupId), now(), isQqSimulationAddress(target) ? undefined : isSimulationUserId)
+        const followUpId = reason.kind === 'proactiveCheck' ? reason.detail : undefined
+        let noteProactiveCheck: (() => void) | undefined
+        if (reason.kind === 'proactiveCheck') {
+          let offeredFollowUpIds: string[] | undefined
+          if (followUpId) {
+            const due = dueMemories(memories, now())
+            if (!due.some(item => item.id === followUpId && item.proactiveSourceSeq !== undefined) || state.offeredFollowUpIds?.includes(followUpId)) {
+              if (durableWake) await discardWake()
+              return
             }
-            request = { ...request, messages }
-            usedInitialPrompt = true
+            const offered = new Set(state.offeredFollowUpIds)
+            offeredFollowUpIds = [...due.filter(item => offered.has(item.id)).map(item => item.id), followUpId]
           }
-        } catch (error) {
-          await initial?.restore().catch(() => logger.warn(`[仿真] 群 ${groupId} 未能恢复初始提示词领取`))
-          throw error
+          noteProactiveCheck = () => {
+            if (offeredFollowUpIds) turnState.offeredFollowUpIds = offeredFollowUpIds
+            turnState.lastProactiveCheckedSeq = turnState.seq
+          }
+          if (!durableWake) noteProactiveCheck()
         }
-        // The durable queue was saved before this claim. A failed or interrupted
-        // provider call must not replay the claimed administrator content.
-        return await ports.YTapi(request, executionConfig, memoryTurn?.signal, canCallModel, ensureModelCurrent)
-      }
-      if (!durableWake && !commitment) await saveTurnContext()
 
-      const extraToolNames = resolveExtraToolNames(cfg, groupId)
-      const extraTools = [...resolveExtraTools(extraToolNames), ...(ports.getBoundTools?.(target) ?? [])]
-
-      const memoryBox = { list: memories, sentTexts: [] as string[], deliveryUnknown: false }
-      const sourceResults = new Map<string, { toolName: string; content: string; truncated: boolean }>()
-      const reviewer = ports.getSection().consistency?.enabled === true ? createCharacterConsistencyReviewer({
-        infer: (request, signal) => {
-          if (!ports.reviewCharacter) throw new Error('角色审核端口未配置')
-          return ports.reviewCharacter(request, ports.getExecutionConfig(), memoryTurn ? AbortSignal.any([signal, memoryTurn.signal]) : signal, canCallModel, ensureModelCurrent)
-        },
-        onResult: result => {
-          tokens += Number(record(result.usage).total_tokens) || 0
-          try { ports.recordTokens?.({ scope: groupId, stage: 'character-consistency', model: result.model ?? '', usage: result.usage, ms: result.ms }) } catch { /* accounted in wake tokens too */ }
-        },
-      }) : undefined
-      const reviewCandidate = async (toolName: string, candidate: Record<string, unknown>, draft?: CharacterState) => {
-        if (!reviewer || ports.getSection().consistency?.enabled !== true) return
-        if (Array.isArray(candidate.messages)) candidate = { ...candidate, messages: [...new Set(candidate.messages)].filter(message => typeof message !== 'string' || !memoryBox.sentTexts.includes(message)) }
-        if (Array.isArray(candidate.messages) && candidate.messages.length === 0) { candidate = { ...candidate }; delete candidate.messages }
-        if (toolName === 'simFinishTurn' && !candidate.messages && !candidate.goal && !(Array.isArray(candidate.memories) && candidate.memories.length)) return
-        await ensureExecution()
-        if (ports.getSection().consistency?.enabled !== true) return
-        if (toolName !== 'simFinishTurn' && reviewer.stats().checks >= 2) {
-          requiresClosing = true
-          throw new Error('保留最后一次一致性检查给收尾，本次未保存或发送；请把剩余记忆、目标及消息合并到 simFinishTurn，或安静放弃')
+        // 唤醒预判闸：低信号唤醒（关键词/概率/延续/旁观类）先由便宜模型小上下文预判；
+        // 判定不值得 → 等价 simMarkRead 静默收尾（推进水位、清未读），不进完整回合。
+        // 预判不可用/异常 → 放行（fail-open，宁多花一次也不丢回复）。
+        const judgeWake = ports.wakeGateJudge
+        if (!followUpId && cfg.wakeGate.enabled && judgeWake && !WAKE_GATE_BYPASS_KINDS.has(reason.kind)) {
+          const invokeGate = async () => {
+            if (!canCallModel()) return null
+            if (durableWake) { recordWakeStart(); noteProactiveCheck?.() }
+            return await judgeWake({
+              reason: formatWakeReason(reason),
+              messages: [...turnState.unread].sort((a, b) => a.seq - b.seq).slice(-10)
+                .map(m => ({ name: String(m.name || ''), text: String(m.text || '').slice(0, 80), atSelf: Boolean(m.atSelf || m.quoteToSelf) })),
+            }, canCallModel)
+          }
+          const runGate = () => invokeGate().catch(() => {
+            diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'failed', code: 'wake_gate_unavailable' })
+            return null
+          })
+          const gate = durableWake ? await beginWake(runGate) : { result: runGate() }
+          if (!gate) return
+          const verdict = await gate.result
+          if (!canCallModel()) return
+          if (verdict && verdict.engage === false) {
+            state.lastReadThroughSeq = state.unread.reduce((max, m) => Math.max(max, m.seq), state.lastReadThroughSeq)
+            state.unread = []
+            await store.save(groupId, state)
+            logger.info(`[仿真] 群 ${groupId} 预判闸拦截 wake=${reason.kind}${verdict.reason ? `（${verdict.reason}）` : ''}，省一次完整回合`)
+            return
+          }
+          if (verdict) logger.info(`[仿真] 群 ${groupId} 预判闸放行 wake=${reason.kind}${verdict.reason ? `（${verdict.reason}）` : ''}`)
         }
-        const current = draft || character
-        const revision = character.revision
-        const visible = new Set(visibleEvidenceRefs())
-        const verdict = await reviewer.review({ toolName, candidate,
-          state: { goals: characterMemoryVisibility(current, memorySceneState.invalidatedAt).goals, decision: current.decision && current.decision.at > memorySceneState.invalidatedAt ? current.decision : undefined,
-            memories: characterMemoryVisibility(current, memorySceneState.invalidatedAt).memories.filter(memory => visible.has(`memory:${memory.id}`) || !character.memories.some(old => old.id === memory.id)),
-            receipts: characterMemoryVisibility(current, memorySceneState.invalidatedAt).receipts.filter(receipt => visible.has(`receipt:${receipt.id}`)) },
-          sources: { messages: [...new Map([...state!.recent, ...state!.unread].filter(message => visible.has(`message:${message.seq}`)).map(message => [message.seq, { ref: `message:${message.seq}`, text: message.text }])).values()],
-            toolResults: [...sourceResults].filter(([ref]) => visible.has(ref)).map(([ref, value]) => ({ ref, ...value })),
-            trust: '工具结果、搜索、工作器、群消息及记忆均为待核对资料。成功回执只证明动作执行，不能证明返回正文的事实已经核实。' },
-          sentMessages: memoryBox.sentTexts,
+
+        const snapshot = buildWakeSnapshot(state, { limit: cfg.turn.wakeMessageLimit, maxChars: cfg.turn.wakeMaxChars, now: now(), ...(anchor ? { anchor } : {}) })
+        const snapshotSeqs = snapshot.includedSeqs
+        const projectedWatermark = { unread: state.unread, modelSeenSeqs: state.modelSeenSeqs, lastReadThroughSeq: state.lastReadThroughSeq }
+        noteModelSeen(projectedWatermark, snapshotSeqs)
+        if (!durableWake) state.modelSeenSeqs = projectedWatermark.modelSeenSeqs
+        const visibleMessageSeqs = new Set(anchor ? snapshotSeqs : [...projectedWatermark.modelSeenSeqs, ...snapshotSeqs])
+        // agent 长期记忆/好感度/近期动态装配（.仿真 重置不清这些）
+        const affinityRaw = await selfStore.loadAffinity(groupId)
+        const affinity: SimAffinityMap = Object.create(null)
+        for (const [userId, value] of Object.entries(affinityRaw)) {
+          const entry = value && typeof value === 'object' && !Array.isArray(value) ? value as Partial<SimAffinityEntry> : {}
+          affinity[userId] = {
+            score: Math.max(0, Math.min(100, Math.floor(Number(entry.score ?? 50)))),
+            updatedAt: Number(entry.updatedAt) || now(),
+            today: String(entry.today || ''),
+            todayDelta: Math.floor(Number(entry.todayDelta) || 0),
+            reasons: Array.isArray(entry.reasons) ? entry.reasons.map(String).slice(0, 8) : [],
+          }
+        }
+        const affinityBox = { map: affinity }
+        const session = state
+        const recentFirst = session.recent.slice().reverse()
+        const nameOf = (userId: string) => recentFirst.find(m => m.userId === userId)?.name
+          || session.unread.find(m => m.userId === userId)?.name
+          || memories.find(m => m.aboutUser === userId)?.content.split('说')[0]?.slice(0, 12)
+          || `群友${userId.slice(-4)}`
+        const addressedBy = actor.kind === 'user' ? actor.userId : undefined
+        const speakers = conversationUserId ? [conversationUserId] : [...new Set([
+          ...(addressedBy ? [addressedBy] : []),
+          ...session.recent.slice(-10).reverse().map(m => m.userId),
+        ])]
+        // 委托记忆（群友托付记的事）：原文注入【群友托付的事】段（在场优先、到期高亮）
+        const delegatedScope = resolvedPersona.binding?.source === 'configured' ? resolvedPersona.binding : groupId
+        const delegatedEntries = normalizeDelegatedEntries(await (async () => {
+          try { return await ports.loadDelegatedMemories?.(delegatedScope) ?? [] } catch {
+            diagnose({ stage: 'memory', operation: 'simulation_delegated_memory_read', outcome: 'failed', code: 'delegated_memory_unavailable' })
+            return []
+          }
+        })(), now())
+        const delegatedSection = formatDelegatedSection(anchor ? delegatedEntries.filter(entry => entry.owner === anchor.userId) : delegatedEntries, now(), speakers)
+        // 独立宿主在首次合格模型调用前领取已核验的初始提示词。原 QQ 入口继续沿用 bootstrap。
+        const initialPrompt = !initialPromptStore && reason.kind === 'bootstrap' ? await store.getInitPrompt(groupId) : ''
+        const styleDigest = anchor || !allowUnprovenAggregates ? '' : await (async () => {
+          try { return String((await ports.getStyleDigest?.(groupId)) || '') } catch {
+            diagnose({ stage: 'memory', operation: 'simulation_style_digest_read', outcome: 'failed', code: 'style_digest_unavailable' })
+            return ''
+          }
+        })()
+        const userStyle = allowUnprovenAggregates ? (await store.loadUserStyle(groupId).catch(() => {
+          diagnose({ stage: 'memory', operation: 'simulation_user_style_read', outcome: 'failed', code: 'user_style_unavailable' })
+          return { users: {} as Record<string, string[]>, updatedAt: 0 }
+        })).users || {} : {}
+        // 在场群友的人物核心档案（跨群身份级事实，≤5 人；原始字段交给人物卡合并注入）
+        const speakerIds = speakers.slice(0, 5)
+        const personProfiles: Record<string, PersonProfile | undefined> = Object.create(null)
+        for (const speakerId of speakerIds) {
+          const profile = await selfStore.loadPersonProfile(speakerId).catch(() => {
+            diagnose({ stage: 'memory', operation: 'simulation_person_profile_read', outcome: 'failed', code: 'person_profile_unavailable' })
+            return undefined
+          })
+          if (profile && (profile.name || profile.interests.length || profile.taboos.length || profile.traits?.length || profile.facts?.length)) personProfiles[speakerId] = profile
+        }
+        let personRecall = ''
+        if (anchor) {
+          const notebookIds = new Set(memories.map(memory => memory.personMemoryId))
+          const recalled = await personMemory.query({ identity: characterScope, subjectId: anchor.userId, viewerUserId: anchor.userId,
+            scene: memoryScene, localOnly: true, query: anchor.text, limit: 16 })
+          const facts = formatPersonMemoryFacts(recalled.items.filter(entry => !notebookIds.has(entry.id)).slice(0, 4))
+          if (facts) personRecall = `【本群人物记忆】当前发言者的历史资料。只在与当前话题相关时参考，保留陈述的来源和确定性。\n${facts}`
+        }
+        const globalAffinity = await selfStore.loadGlobalAffinity(speakerIds).catch(() => {
+          diagnose({ stage: 'memory', operation: 'simulation_global_affinity_read', outcome: 'failed', code: 'global_affinity_unavailable' })
+          return {} as Record<string, number>
         })
-        await ensureExecution()
-        if (character.revision !== revision) throw new Error('一致性检查期间角色状态已改变，请重新读取后提交')
-        if (verdict.verdict !== 'accept') {
-          requiresClosing = true
-          throw new Error(`提交前一致性检查未通过，本次未保存或发送。${verdict.error ? `检查不可用(${verdict.error})` : JSON.stringify(verdict.issues)}。请用 simFinishTurn 修正正文、选择或依据，或放弃本次表达；不要重复已发送消息。`)
+        // 生物节律+生活线注入
+        const hourNow2 = new Date(now() + 8 * 3600_000).getUTCHours()
+        const rhythmWin2 = cfg.rhythm.enabled ? await loadRhythmWindow(cfg, characterScope) : null
+        const sleepNote = rhythmWin2 ? sleepinessNote(hourNow2, rhythmWin2) : ''
+        const staleNote = staleMessageNote(state.lastIncomingAt || 0, now())
+        const lifeThreadsRaw = cfg.lifeThreads.enabled ? await selfStore.loadLifeThreads().catch(() => {
+          diagnose({ stage: 'memory', operation: 'simulation_life_threads_read', outcome: 'failed', code: 'life_threads_unavailable' })
+          return []
+        }) : []
+        const lifeThreads = normalizeLifeThreads(lifeThreadsRaw)
+        // 生活线×档案兴趣连接：在追的作品恰好也是某位在场群友的爱好 → 提示共同话题（社交连接点）
+        const commonTopicLines: string[] = []
+        for (const thread of lifeThreads.filter(t => t.status === 'active').slice(0, 3)) {
+          const sharers = speakerIds.filter(id => (personProfiles[id]?.interests || []).some(interest => interestMatchesTitle(interest, thread.title)))
+          if (sharers.length) commonTopicLines.push(`《${thread.title}》：${sharers.map(nameOf).join('、')}也喜欢——你们有天然共同话题，聊到时可以自然提起`)
         }
-      }
-      const selfMemoryBox = { list: normalizeMemoryList(await selfStore.loadSelfMemories().catch(() => []), now()) }
-      const readForward = ports.readForward && ports.supportsForwardRead?.(target) !== false ? ports.readForward : undefined
-      const describeImages = ports.describeImages
-      const readImages = describeImages && ports.supportsMessageImages?.(target) !== false ? ports.readMessageImages : undefined
-      let visionAttempts = 0
-      let usedImageDescription = false
-      const ctx = buildToolContext(groupId, state, cfg, delta => { sends += delta }, memoryBox, { map: affinity }, selfMemoryBox, moodBox, moodAnchor, characterScope, async () => { await ensureExecution(announcement); if (decision === 'silent' || decision === 'deferred') throw new Error('本轮已选择沉默或暂缓') }, () => sends, async messages => { if (!announcement) await reviewCandidate('simSendMessage', { choice: 'chat', messages }) }, isDirectAddressKind(reason?.kind), () => [...new Map([...state!.recent, ...state!.unread].filter(message => visibleMessageSeqs.has(message.seq)).map(message => [message.seq, message])).values()], sendOptions)
-      if (ports.durableIngress && !readForward) delete ctx.getForward
-      if (ports.durableIngress && !readImages) delete ctx.getMessageImages
-      ctx.assertMemoryCurrent = async () => {
-        await ensureExecution()
-        state!.recent = await redactSceneMessages(characterScope, state!.recent)
-        state!.unread = await redactSceneMessages(characterScope, state!.unread)
-        const remaining = new Set([...state!.recent, ...state!.unread].map(message => message.seq))
-        for (const seq of visibleMessageSeqs) if (!remaining.has(seq)) visibleMessageSeqs.delete(seq)
-        await ensureExecution()
-      }
-      // Projection checks intentionally use this lower-level guard. Calling
-      // ensureExecution here would recursively recheck the same projection.
-      const ensureFileTurnCurrent = async () => {
-        if (!canCallModel()) throw new Error('文件读取所属回合或角色绑定已失效')
-        await assertTriggerCurrent()
-        if ((await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt ||
-            await store.loadActivityVersion(groupId) !== activityVersion || !canCallModel()) throw new Error('文件读取来源或隐私权限已改变')
-      }
-      const fileWrapperCurrent = (source: SimulationMessageFileSource) => {
-        const wrapper = state!.recent.find(message => message.seq === source.wrapper.seq) ?? state!.unread.find(message => message.seq === source.wrapper.seq)
-        if (wrapper !== source.wrapper || String(wrapper.messageId) !== String(source.wrapper.messageId)) return false
-        if (!source.quoted) return wrapper.userId === source.authorId && wrapper.at === source.occurredAt && JSON.stringify(wrapper.files ?? []) === JSON.stringify(source.files)
-        const quote = wrapper.quoteSource
-        return quote?.messageId === source.messageId && quote.invalidatedAt === memorySceneState.invalidatedAt &&
-          quote.file?.authorId === source.authorId && quote.file.occurredAt === source.occurredAt && JSON.stringify(quote.file.files) === JSON.stringify(source.files)
-      }
-      const fileOriginalAllowed = async (original: IncomingMessage, messageId: string, authorId: string, occurredAt: number) => {
-        if (original.messageId !== messageId || conversationAddressKey(original.conversation) !== conversationAddressKey(target) ||
-            original.sender.id !== authorId || original.sender.platform !== target.account.platform || original.sender.namespace !== target.account.namespace ||
-            original.occurredAt !== occurredAt || original.text.length > 4000 || await ports.isMessageRecalled?.(target, messageId)) return false
-        const excerpt = original.text || '[文件]'
-        const redactions = await personMemory.getRedactions({ identity: characterScope, subjectId: authorId })
-        return !isPersonMemoryRedacted({ scene: memoryScene, messageId, authorId, at: occurredAt, excerpt }, excerpt, redactions)
-      }
-      const fileRequestTextCurrent = (wrapper: SimMessage, original: IncomingMessage) => wrapper.seq !== triggerMessage?.seq ||
-        !wrapper.textTruncated && sanitizeUntrustedText(original.text.replace(/\s+/g, ' ').trim() ||
-          (wrapper.atSelf ? '@你' : wrapper.atOther ? '@了某人' : '')) === wrapper.text
-      const allowsFileSource = async (source: SimulationMessageFileSource, original: IncomingMessage): Promise<boolean> => {
-        try {
-          await ensureFileTurnCurrent()
-          if (!fileWrapperCurrent(source) || !await fileOriginalAllowed(original, source.messageId, source.authorId, source.occurredAt) ||
-              JSON.stringify(simulationFileMetadata(original.parts)) !== JSON.stringify(source.files) ||
-              !source.quoted && !fileRequestTextCurrent(source.wrapper, original)) return false
-          if (source.quoted) {
-            const wrapper = await ports.readQuotedMessage?.(target, String(source.wrapper.messageId), { isCurrent: canCallModel })
-            if (!wrapper || wrapper.quote?.messageId !== source.messageId || !await fileOriginalAllowed(wrapper, String(source.wrapper.messageId), source.wrapper.userId, source.wrapper.at) ||
-                !fileRequestTextCurrent(source.wrapper, wrapper)) return false
+        const lifeThreadSection = formatLifeThreads(lifeThreads, commonTopicLines)
+        // 本群角色自我笔记
+        const selfNotesText = formatSelfMemorySection(normalizeMemoryList(await selfStore.loadSelfMemories().catch(() => {
+          diagnose({ stage: 'memory', operation: 'simulation_self_notes_read', outcome: 'failed', code: 'self_notes_unavailable' })
+          return []
+        }), now()))
+        // 情绪四轴（跨群全局）：回合开始投影一次——注入底色段 + 本回合更新的包络锚点共用；
+        // 中性带/从未写过时段落为空串，不注入（缺席=情绪平常）
+        const moodCurrent = cfg.mood.enabled ? normalizeSimMood(await selfStore.loadMood().catch(() => null), now()) : null
+        const moodAnchor = projectMood(moodCurrent, now(), cfg.mood.halfLifeMs)
+        const moodBox = { current: moodCurrent }
+        const moodSection = formatMoodSection(moodCurrent, now(), cfg.mood.halfLifeMs)
+        // 长程语义召回：未读末尾消息做查询，检索"两天情节窗之外"的相关片段（1s 预算）。
+        // 失败/超时不注入内容，但必须与"检索无结果"区分开——注入未完成提示，防止模型把"没召回到"当"没发生过"。
+        const focusedGoal = character.goals.find(goal => goal.id === focusedGoalId)
+        const recallQuery = anchor ? '' : [focusedGoal ? `${focusedGoal.title} ${focusedGoal.nextStep}` : '', ...[...state.unread].sort((a, b) => a.seq - b.seq).slice(-6).map(m => String(m.text || '').trim())].filter(Boolean).join(' ').slice(0, 160)
+        let semanticRecall = ''
+        let semanticRecallIncomplete = false
+        let semanticProjection: AgentSemanticMemoryRecall | undefined
+        if (recallQuery && ports.readSemanticMemory) {
+          try {
+            semanticProjection = await ports.readSemanticMemory(target, recallQuery, canCallModel, memoryTurn?.signal,
+              state.unread.flatMap(message => message.messageId == null ? [] : [String(message.messageId)]))
+            semanticRecall = semanticProjection?.text ?? ''
+          } catch {
+            diagnose({ stage: 'memory', operation: 'simulation_semantic_memory_read', outcome: 'failed', code: 'semantic_recall_unavailable' })
+            semanticRecallIncomplete = true
           }
-          await ensureFileTurnCurrent()
-          return fileWrapperCurrent(source)
-        } catch { return false }
-      }
-      const loadFileMessage = async (source: SimulationMessageFileSource): Promise<IncomingMessage | undefined> => {
-        await ensureFileTurnCurrent()
-        if (!fileWrapperCurrent(source) || !ports.readQuotedMessage) return undefined
-        const original = await ports.readQuotedMessage(target, source.messageId, { isCurrent: canCallModel })
-        return original && await allowsFileSource(source, original) ? original : undefined
-      }
-      const allowsRepositoryFile = async (entry: ConversationFileEntry): Promise<boolean> => {
-        await ensureFileTurnCurrent()
-        if (!entry.uploadedBy || entry.uploadedAt === undefined) return false
-        const authorId = entry.uploadedBy.id, occurredAt = entry.uploadedAt
-        const linked = [...new Map([...state!.unread, ...state!.recent].map(message => [message.seq, message])).values()]
-          .filter(message => message.messageId && message.userId === authorId && message.at === occurredAt && message.files?.some(file => file.name === entry.name))
-        if (linked.length === 1) {
-          const wrapper = linked[0]!
-          return !!await loadFileMessage({ wrapper, messageId: String(wrapper.messageId), authorId, occurredAt, files: (wrapper.files ?? []).map(({ name }) => ({ name })), quoted: false })
+        } else if (recallQuery && typeof ports.getSemanticRecall === 'function') {
+          type RecallOutcome = { ok: boolean; value: string }
+          const redactions = new Map<string, Awaited<ReturnType<typeof personMemory.getRedactions>>>()
+          const filterSource = Object.assign(async (source: PersonMemorySource, text: string) => {
+            if (source.scene.kind !== 'group' || source.scene.id !== personMemoryAddress(target).scene.id) return false
+            let snapshot = redactions.get(source.authorId)
+            if (!snapshot) { snapshot = await personMemory.getRedactions({ identity: characterScope, subjectId: source.authorId }); redactions.set(source.authorId, snapshot) }
+            return !isPersonMemoryRedacted(source, text, snapshot)
+          }, { refresh() { redactions.clear() } })
+          const outcome = await Promise.race<RecallOutcome>([
+            Promise.resolve(ports.getSemanticRecall(groupId, recallQuery, { botId: characterScope.botId, personaId: characterScope.personaId, filterSource }))
+              .then((value: string) => ({ ok: true, value: String(value || '') }))
+              .catch(() => ({ ok: false, value: '' })),
+            new Promise<RecallOutcome>(resolve => { const timer = setTimeout(() => resolve({ ok: false, value: '' }), 1000); timer.unref?.() }),
+          ])
+          semanticRecall = outcome.ok ? outcome.value : ''
+          semanticRecallIncomplete = !outcome.ok
+          if (!outcome.ok) diagnose({ stage: 'memory', operation: 'simulation_semantic_memory_read', outcome: 'failed', code: 'semantic_recall_unavailable' })
         }
-        // A repository upload has no message ID. Do not fabricate one to pass
-        // message-source validation: only uploader/time can prove the broad
-        // privacy cutoffs, while old unlinked erased evidence fails closed.
-        const privacy = await personMemory.getRedactions({ identity: characterScope, subjectId: authorId })
-        const rule = privacy.scenes.find(rule => rule.scene.kind === memoryScene.kind && rule.scene.id === memoryScene.id)
-        if (privacy.disabled || rule?.disabled || occurredAt <= privacy.forgottenBefore || occurredAt <= (rule?.forgottenBefore ?? 0)) return false
-        const inScene = (key: string) => {
-          try { const value = JSON.parse(key); return Array.isArray(value) && value[0] === memoryScene.kind && value[1] === memoryScene.id } catch { return true }
-        }
-        if (occurredAt <= memorySceneState.invalidatedAt && privacy.revokedSources.some(inScene) ||
-            privacy.tombstones.some(tombstone => occurredAt <= tombstone.before && (!tombstone.sourceKey || inScene(tombstone.sourceKey)))) return false
-        await ensureFileTurnCurrent()
-        return true
-      }
-      const agentFiles = actor.kind === 'user' && actor.userId && triggerMessage?.messageId && !triggerMessage.textTruncated && triggerMessage.userId === actor.userId && ports.readQuotedMessage
-        ? createSimulationAgentFiles({
-          target, actorId: actor.userId, request: triggerMessage, now,
-          signal: memoryTurn ? AbortSignal.any([fileTurnController.signal, memoryTurn.signal]) : fileTurnController.signal,
-          messages: () => [...new Map([...state!.unread, ...state!.recent].map(message => [message.seq, message])).values()],
-          isVisible: seq => visibleMessageSeqs.has(seq), isCurrent: canCallModel, ensureCurrent: ensureFileTurnCurrent,
-          markEphemeral: () => { ephemeralRead = true }, registerProjection: projection => { fileProjections.push(projection) },
-          loadMessage: loadFileMessage, allowsSource: allowsFileSource, allowsRepositoryFile,
-          ...(ports.readMessageFile ? { readMessageFile: ports.readMessageFile } : {}),
-          ...(ports.listConversationFiles ? { listConversationFiles: ports.listConversationFiles } : {}),
-          ...(ports.readConversationFile ? { readConversationFile: ports.readConversationFile } : {}),
-          ...(ports.readPublicFile ? { readPublicFile: ports.readPublicFile } : {}),
-        }) : undefined
-      const readAgentToolImages = async (seq: number, toolCurrent?: () => boolean, toolSignal?: AbortSignal): Promise<readonly MessageImage[]> => {
-        const signals = [toolSignal, memoryTurn?.signal].filter((value): value is AbortSignal => !!value)
-        const signal = signals.length ? AbortSignal.any(signals) : undefined
-        if (!Number.isSafeInteger(seq) || seq < 1) throw new Error('请使用本轮可见的附图消息正整数序号')
-        if (signal?.aborted || toolCurrent?.() === false) throw new Error('工具所属回合已失效')
-        await ctx.assertMemoryCurrent?.()
-        const visibleMessage = () => visibleMessageSeqs.has(seq)
-          ? state!.recent.find(message => message.seq === seq) ?? state!.unread.find(message => message.seq === seq)
+        const narrativeMemory = !anchor && allowRebuiltAggregates && ports.readConversationMemory
+          ? await ports.readConversationMemory(target, persona, canCallModel).catch(() => {
+            diagnose({ stage: 'memory', operation: 'simulation_narrative_memory_read', outcome: 'failed', code: 'narrative_memory_unavailable' })
+            return { digest: '', episodes: '' }
+          })
           : undefined
-        const message = visibleMessage()
-        if (!message?.messageId) throw new Error('请使用本轮可见的附图消息序号')
-        const quote = message.imageCount === 0 ? message.quoteSource : undefined
-        if (!message.imageCount && !quote?.image) throw new Error('这条消息没有可取的附图')
-        if (!ports.readMessageImages) return []
-        const messageId = String(message.messageId)
-        const originalId = quote?.messageId ?? messageId
-        const authorId = quote?.image?.authorId ?? message.userId
-        const occurredAt = quote?.image?.occurredAt ?? message.at
-        const isCurrent = () => !signal?.aborted && canRunTurn() && toolCurrent?.() !== false && visibleMessage() === message
-        const ensureReadCurrent = async () => {
+        const groupMemoryContext = await ports.readGroupMemory?.(target, persona,
+          actor.kind === 'user' && triggerMessage?.messageId != null ? String(triggerMessage.messageId) : undefined, canCallModel).catch(() => {
+            diagnose({ stage: 'memory', operation: 'simulation_group_memory_read', outcome: 'failed', code: 'group_memory_unavailable' })
+            return ''
+          }) ?? ''
+        const assertGroupMemoryCurrent = async () => {
+          for (const projection of historyProjections) if (!await projection.isCurrent()) throw new Error('显式历史来源已改变，停止使用旧上下文')
+          for (const projection of fileProjections) if (!await projection.isCurrent()) throw new Error('文件资料来源已改变，停止使用旧上下文')
+          if (semanticProjection?.text && !await semanticProjection.isCurrent()) throw new Error('语义记忆来源已改变，停止使用旧上下文')
+          if (ports.isGroupMemoryCurrent && !await ports.isGroupMemoryCurrent(target, groupMemoryContext, actor.kind === 'user', canCallModel)) throw new Error('本群资料来源已改变，停止使用旧上下文')
+        }
+        const ensureModelCurrent = async () => {
+          if (!canCallModel()) throw new Error('模型请求的来源或绑定已改变')
+          await assertTriggerCurrent()
+          await assertGroupMemoryCurrent()
+          const sourceState = await characters.load(characterScope)
+          if ((await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt ||
+              await shared.fingerprint() !== sharedFingerprint ||
+              [...sourceMemoryIds].some(id => !activeCharacterMemories(sourceState).some(memory => memory.id === id))) {
+            throw new Error('模型请求的记忆来源已改变')
+          }
+          if (await store.loadActivityVersion(groupId) !== activityVersion) throw new Error('角色活动已撤销，停止模型请求')
+          if (!canCallModel()) throw new Error('模型请求的来源或绑定已改变')
+        }
+        if (!canCallModel()) return
+        const wakeInput: Parameters<typeof buildWakePrompt>[0] = {
+          state, reason, ...(addressedBy ? { speakerId: addressedBy } : {}), ...(anchor ? { focusSeq: anchor.seq } : {}), snapshotText: snapshot.text, unreadTotal: snapshot.unreadTotal, now: now(), selfName,
+          ...(initialPrompt ? { initialPrompt } : {}),
+          memories: anchor ? memories.filter(memory => memory.aboutUser === anchor.userId) : memories,
+          affinity: anchor ? (affinity[anchor.userId] ? { [anchor.userId]: affinity[anchor.userId]! } : {}) : affinity,
+          speakers, nameOf,
+          userCatchphrases: (userId: string) => userStyle[userId],
+          ...(Object.keys(personProfiles).length ? { personProfiles } : {}),
+          ...(Object.keys(globalAffinity).length ? { globalAffinity } : {}),
+          ...(selfNotesText ? { selfNotesText } : {}),
+          ...(moodSection ? { moodSection } : {}),
+          ...(semanticRecall ? { semanticRecall } : {}),
+          ...(semanticRecallIncomplete ? { semanticRecallIncomplete: true } : {}),
+          ...(sleepNote ? { sleepNote } : {}),
+          ...(staleNote ? { staleNote } : {}),
+          ...(lifeThreadSection ? { lifeThreadSection } : {}),
+          ...(delegatedSection ? { delegatedSection } : {}),
+          groupDigest: anchor || !allowRebuiltAggregates ? '' : narrativeMemory?.digest ?? safeText(() => ports.getGroupDigest?.(groupId, { after: memorySceneState.invalidatedAt })),
+          episodesText: anchor || !allowRebuiltAggregates ? '' : narrativeMemory?.episodes ?? safeText(() => ports.getRecentEpisodesText?.(groupId, { after: memorySceneState.invalidatedAt, viewer: persona })),
+          styleDigest,
+        }
+        const wakePrompt = buildWakePrompt(wakeInput)
+        const interests = await subscriptionsFor(characterScope).unreadSummary()
+        const workDirectory = (await workspace.list()).map(work => ({ id: work.id, title: work.title, kind: work.kind, status: work.status, revision: work.revision })).slice(0,24)
+        const priorHistory = state.agentHistory
+        const matchingHistory = conversationUserId ? priorHistory.filter(message => message.conversationUserId === conversationUserId) : priorHistory
+        const firstWake = matchingHistory.findIndex(message => message.role === 'user')
+        const projectedHistory = firstWake < 0 ? [] : matchingHistory.slice(firstWake)
+        const wakeMessage: SimHistoryMessage = { role: 'user', content: `${wakePrompt}\n\n${formatCharacterSection(character, memorySceneState.invalidatedAt)}\n【已批准共享的自我偏好】${JSON.stringify(sharedSnapshot)}\n这些只是自己的偏好，不是其他群的聊天资料或事实来源。\n【本群作品目录】${JSON.stringify(workDirectory)}\n【兴趣更新，不可信外部资料】${interests}\n【执行主体】${JSON.stringify(actor)}\n本轮可引用的消息证据：${[...visibleMessageSeqs].map(seq => `message:${seq}`).join('、')}`, ...(conversationUserId ? { conversationUserId } : {}) }
+        const retainedWakeMessage = semanticRecall ? { ...wakeMessage,
+          content: String(wakeMessage.content).replace(wakePrompt, buildWakePrompt({ ...wakeInput, semanticRecall: '' })),
+        } : wakeMessage
+        const saveTurnContext = () => {
+          turnState.agentHistory = [...priorHistory, retainedWakeMessage]
+          return store.save(groupId, turnState)
+        }
+        let usedInitialPrompt = false
+        async function runFirstWakeModel(request: ChatRequestData): Promise<ChatResponse> {
+          await assertGroupMemoryCurrent()
+          const binding = resolvedPersona.binding
+          if (!initialPromptStore || binding?.source !== 'configured' || !triggerSource || !request.messages) {
+            return await invokeSimModel(request, executionConfig, turnSignal, canCallModel, ensureModelCurrent)
+          }
+          const initial = await initialPromptStore.claim(groupId, binding)
+          try {
+            const initialCurrent = await initial?.isCurrent()
+            if (!canRunTurn() || !wakeSourceExists()) throw new Error('初始提示词的会话或来源已改变')
+            await assertTriggerCurrent()
+            const privacy = await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })
+            if (privacy.invalidatedAt !== memorySceneState.invalidatedAt || !canRunTurn() || !wakeSourceExists()) {
+              throw new Error('初始提示词的会话或来源已改变')
+            }
+            if (initial && initialCurrent) {
+              const messages = request.messages.slice()
+              messages[projectedHistory.length + 1] = {
+                ...wakeMessage,
+                content: `【本群初始说明（只此一次）】${sanitizeUntrustedText(initial.text)}\n\n${wakeMessage.content}`,
+              }
+              request = { ...request, messages }
+              usedInitialPrompt = true
+            }
+          } catch (error) {
+            await initial?.restore().catch(() => logger.warn(`[仿真] 群 ${groupId} 未能恢复初始提示词领取`))
+            throw error
+          }
+          // The durable queue was saved before this claim. A failed or interrupted
+          // provider call must not replay the claimed administrator content.
+          return await invokeSimModel(request, executionConfig, turnSignal, canCallModel, ensureModelCurrent)
+        }
+        if (!durableWake && !commitment) await saveTurnContext()
+
+        const extraToolNames = resolveExtraToolNames(cfg, groupId)
+        const ownsQzone = typeof ports.executeQzone === 'function'
+        const qzoneDefinition = ownsQzone && ports.supportsQqAction?.(target, 'simQzoneInteract') === true
+          ? createAgentQzoneTools({ simulationEnabled: true })[0] : undefined
+        const qzoneTool = qzoneDefinition ? Object.assign(new AbstractTool(), {
+          name: qzoneDefinition.name, description: qzoneDefinition.description, agentDataPolicy: 'ephemeral' as const,
+          parameters: { ...qzoneDefinition.parameters, required: [...qzoneDefinition.parameters.required] },
+          async func(input: Record<string, unknown>) {
+            if (!resolvedPersona.binding || actor.kind !== 'user' || !actor.userId) return { status: 'failed', content: 'qzone_not_authorized' }
+            const context: AgentToolContext = { binding: resolvedPersona.binding, actor: { kind: 'user', user: { ...target.account, id: actor.userId } },
+              signal: turnSignal, ...(toolEvent._agentToolRequest ? { request: toolEvent._agentToolRequest } : {}), botUserId: self.id, persona: toolEvent._agentToolPersona,
+              isCurrent: canCallModel, ensureCurrent: ensureToolSend, runQqAction: runAgentQqAction,
+              qzoneAffinity: toolEvent._qzoneAffinity, qzoneCandidates: toolEvent._qzoneCandidates, reviewQqText: toolEvent._reviewAgentQqText,
+              qzone: operation => ports.executeQzone!(operation, context) }
+            return qzoneDefinition.execute(input, context)
+          },
+        }) : undefined
+        const extraTools = [...resolveExtraTools(extraToolNames).filter(tool => !ownsQzone || tool.name !== 'simQzoneInteract'), ...(ports.getBoundTools?.(target) ?? []).filter(tool =>
+          (!ownsQzone || tool.name !== 'simQzoneInteract') &&
+          (!['qqZoneTool', 'sendGiftTool', 'grabRedBagTool', 'simQzoneInteract'].includes(tool.name) || ports.supportsQqAction?.(target, tool.name) === true)),
+          ...(qzoneTool ? [qzoneTool] : [])]
+
+        let failureNoticeTurn = false
+        const memoryBox = { list: memories, sentTexts: [] as string[], deliveryUnknown: false }
+        const sourceResults = new Map<string, { toolName: string; content: string; truncated: boolean }>()
+        const reviewer = ports.getSection().consistency?.enabled === true ? createCharacterConsistencyReviewer({
+          infer: (request, signal) => {
+            if (!ports.reviewCharacter) throw new Error('角色审核端口未配置')
+            return ports.reviewCharacter(request, ports.getExecutionConfig(), AbortSignal.any([signal, turnSignal]), canCallModel, ensureModelCurrent)
+          },
+          onResult: result => {
+            tokens += Number(record(result.usage).total_tokens) || 0
+            try { ports.recordTokens?.({ scope: groupId, stage: 'character-consistency', model: result.model ?? '', usage: result.usage, ms: result.ms }) } catch { /* accounted in wake tokens too */ }
+          },
+        }) : undefined
+        const reviewCandidate = async (toolName: string, candidate: Record<string, unknown>, draft?: CharacterState) => {
+          if (!reviewer || ports.getSection().consistency?.enabled !== true) return
+          if (Array.isArray(candidate.messages)) candidate = { ...candidate, messages: [...new Set(candidate.messages)].filter(message => typeof message !== 'string' || !memoryBox.sentTexts.includes(message)) }
+          if (Array.isArray(candidate.messages) && candidate.messages.length === 0) { candidate = { ...candidate }; delete candidate.messages }
+          if (toolName === 'simFinishTurn' && !candidate.messages && !candidate.goal && !(Array.isArray(candidate.memories) && candidate.memories.length)) return
           await ensureExecution()
-          if (!isCurrent() || await ports.isMessageRecalled?.(target, messageId) ||
-              originalId !== messageId && await ports.isMessageRecalled?.(target, originalId) || !isCurrent()) {
-            throw new Error('附图消息来源或工具权限已失效')
+          if (ports.getSection().consistency?.enabled !== true) return
+          if (toolName !== 'simFinishTurn' && reviewer.stats().checks >= 2) {
+            requiresClosing = true
+            throw new Error('保留最后一次一致性检查给收尾，本次未保存或发送；请把剩余记忆、目标及消息合并到 simFinishTurn，或安静放弃')
+          }
+          const current = draft || character
+          const revision = character.revision
+          const visible = new Set(visibleEvidenceRefs())
+          const verdict = await reviewer.review({ toolName, candidate,
+            state: { goals: characterMemoryVisibility(current, memorySceneState.invalidatedAt).goals, decision: current.decision && current.decision.at > memorySceneState.invalidatedAt ? current.decision : undefined,
+              memories: characterMemoryVisibility(current, memorySceneState.invalidatedAt).memories.filter(memory => visible.has(`memory:${memory.id}`) || !character.memories.some(old => old.id === memory.id)),
+              receipts: characterMemoryVisibility(current, memorySceneState.invalidatedAt).receipts.filter(receipt => visible.has(`receipt:${receipt.id}`)) },
+            sources: { messages: [...new Map([...state!.recent, ...state!.unread].filter(message => visible.has(`message:${message.seq}`)).map(message => [message.seq, { ref: `message:${message.seq}`, text: message.text }])).values()],
+              toolResults: [...sourceResults].filter(([ref]) => visible.has(ref)).map(([ref, value]) => ({ ref, ...value })),
+              trust: '工具结果、搜索、工作器、群消息及记忆均为待核对资料。成功回执只证明动作执行，不能证明返回正文的事实已经核实。' },
+            sentMessages: memoryBox.sentTexts,
+          })
+          await ensureExecution()
+          if (character.revision !== revision) throw new Error('一致性检查期间角色状态已改变，请重新读取后提交')
+          if (verdict.verdict !== 'accept') {
+            requiresClosing = true
+            throw new Error(`提交前一致性检查未通过，本次未保存或发送。${verdict.error ? `检查不可用(${verdict.error})` : JSON.stringify(verdict.issues)}。请用 simFinishTurn 修正正文、选择或依据，或放弃本次表达；不要重复已发送消息。`)
           }
         }
-        await ensureReadCurrent()
-        const images = await ports.readMessageImages(target, { messageId, ...(quote ? { quotedMessageId: originalId } : {}) }, {
-          isCurrent,
-          ...(signal ? { signal } : {}),
-          async allowsSource(original) {
-            if (original.messageId !== originalId || conversationAddressKey(original.conversation) !== conversationAddressKey(target) ||
-                original.sender.id !== authorId || original.sender.platform !== target.account.platform ||
-                original.sender.namespace !== target.account.namespace || original.occurredAt !== occurredAt) return false
-            const excerpt = original.text || '[图片]'
-            const redactions = await personMemory.getRedactions({ identity: characterScope, subjectId: authorId })
-            if (isPersonMemoryRedacted({ scene: memoryScene, messageId: originalId, authorId, at: occurredAt, excerpt }, excerpt, redactions)) return false
-            await ensureReadCurrent()
-            return isCurrent()
-          },
-        })
-        await ensureReadCurrent()
-        if (!images?.length) return []
-        attachmentSourceIds.add(messageId)
-        attachmentSourceIds.add(originalId)
-        return images.slice(0, 2)
-      }
-      if (readImages && describeImages) {
-        ctx.getMessageImages = async seq => {
-          const refused = { seq, error: '本轮无法读取这条消息的图片' }
+        const selfMemoryBox = { list: normalizeMemoryList(await selfStore.loadSelfMemories().catch(() => {
+          diagnose({ stage: 'memory', operation: 'simulation_self_notes_read', outcome: 'failed', code: 'self_notes_unavailable' })
+          return []
+        }), now()) }
+        const readForward = ports.readForward && ports.supportsForwardRead?.(target) !== false ? ports.readForward : undefined
+        const describeImages = ports.describeImages
+        const readImages = describeImages && ports.supportsMessageImages?.(target) !== false ? ports.readMessageImages : undefined
+        let visionAttempts = 0
+        let usedImageDescription = false
+        const scopedInteractions = () => !!ports.performInteractions && ports.supportsInteractions?.(target) !== false
+        const ctx = buildToolContext(groupId, state, cfg, delta => { sends += delta }, memoryBox, affinityBox, selfMemoryBox, moodBox, moodAnchor, characterScope, async () => { await ensureExecution(announcement); if (qqActionTerminal) throw new Error('QQ 动作已结束本回合'); if (decision === 'silent' || decision === 'deferred') throw new Error('本轮已选择沉默或暂缓') }, () => sends, async messages => { if (!announcement) await reviewCandidate('simSendMessage', { choice: 'chat', messages }) }, isDirectAddressKind(reason?.kind), () => [...new Map([...state!.recent, ...state!.unread].filter(message => visibleMessageSeqs.has(message.seq)).map(message => [message.seq, message])).values()], sendOptions, () => !failureNoticeTurn, scopedInteractions() ? async (userId: string) => {
+          const result = await sendAgentToolInteraction({ version: 1, kind: 'poke', operations: [{ kind: 'poke', user: { ...target.account, id: userId } }] });
+          return result.state === 'confirmed' ? { ok: true } : { ok: false, error: result.state === 'unknown' ? '互动结果未知，禁止重试' : '本次未戳' }
+        } : undefined)
+        if (ports.resolveVideoCard) {
+          // Neutral Core capability owns this path, including unavailable delivery.
+          delete ctx.shareVideoCard
+          if (ports.messageActions?.sendVideoCard && sendOptions.binding) ctx.shareVideoCard = async input => {
+            await ensureToolSend()
+            assertToolSendAllowance()
+            const current: AgentMediaResourceContext = { signal: turnSignal, isCurrent: canCallModel, ensureCurrent: ensureToolSend }
+            const card = validateAgentVideoCard(await ports.resolveVideoCard!(input, target, current), ports.allowsToolInput)
+            await ensureToolSend()
+            const receipt = await sendAgentToolVideoCard(card, canCallModel, turnSignal, ensureToolSend)
+            return receipt.state === 'sent' ? { ok: true, title: card.title } : receipt.state === 'unknown'
+              ? { ok: false, unknown: true, error: '卡片回执未确认，是否送达未知，本回合不再发送' }
+              : { ok: false, error: receipt.code === 'video_card_cooldown' ? 'B站卡片冷却中（每20分钟一张），本回合换文字说' : receipt.code === 'duplicate_video_card_attempt' ? '本回合已尝试发送视频卡片，不再次发送' : '视频卡片未发送' }
+          }
+        }
+        if (ports.durableIngress && !readForward) delete ctx.getForward
+        if (ports.durableIngress && !readImages) delete ctx.getMessageImages
+        ctx.assertMemoryCurrent = async () => {
+          await ensureExecution()
+          state!.recent = await redactSceneMessages(characterScope, state!.recent)
+          state!.unread = await redactSceneMessages(characterScope, state!.unread)
+          const remaining = new Set([...state!.recent, ...state!.unread].map(message => message.seq))
+          for (const seq of visibleMessageSeqs) if (!remaining.has(seq)) visibleMessageSeqs.delete(seq)
+          await ensureExecution()
+        }
+        // Projection checks intentionally use this lower-level guard. Calling
+        // ensureExecution here would recursively recheck the same projection.
+        const ensureFileTurnCurrent = async () => {
+          if (!canCallModel()) throw new Error('文件读取所属回合或角色绑定已失效')
+          await assertTriggerCurrent()
+          if ((await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt ||
+              await store.loadActivityVersion(groupId) !== activityVersion || !canCallModel()) throw new Error('文件读取来源或隐私权限已改变')
+        }
+        const fileWrapperCurrent = (source: SimulationMessageFileSource) => {
+          const wrapper = state!.recent.find(message => message.seq === source.wrapper.seq) ?? state!.unread.find(message => message.seq === source.wrapper.seq)
+          if (wrapper !== source.wrapper || String(wrapper.messageId) !== String(source.wrapper.messageId)) return false
+          if (!source.quoted) return wrapper.userId === source.authorId && wrapper.at === source.occurredAt && JSON.stringify(wrapper.files ?? []) === JSON.stringify(source.files)
+          const quote = wrapper.quoteSource
+          return quote?.messageId === source.messageId && quote.invalidatedAt === memorySceneState.invalidatedAt &&
+            quote.file?.authorId === source.authorId && quote.file.occurredAt === source.occurredAt && JSON.stringify(quote.file.files) === JSON.stringify(source.files)
+        }
+        const fileOriginalAllowed = async (original: IncomingMessage, messageId: string, authorId: string, occurredAt: number) => {
+          if (original.messageId !== messageId || conversationAddressKey(original.conversation) !== conversationAddressKey(target) ||
+              original.sender.id !== authorId || original.sender.platform !== target.account.platform || original.sender.namespace !== target.account.namespace ||
+              original.occurredAt !== occurredAt || original.text.length > 4000 || await ports.isMessageRecalled?.(target, messageId)) return false
+          const excerpt = original.text || (original.parts.some(part => part.kind === 'video') ? '[视频]' : '[文件]')
+          const redactions = await personMemory.getRedactions({ identity: characterScope, subjectId: authorId })
+          return !isPersonMemoryRedacted({ scene: memoryScene, messageId, authorId, at: occurredAt, excerpt }, excerpt, redactions)
+        }
+        const fileRequestTextCurrent = (wrapper: SimMessage, original: IncomingMessage) => wrapper.seq !== triggerMessage?.seq ||
+          !wrapper.textTruncated && sanitizeUntrustedText(original.text.replace(/\s+/g, ' ').trim() ||
+            (wrapper.atSelf ? '@你' : wrapper.atOther ? '@了某人' : '')) === wrapper.text
+        const allowsFileSource = async (source: SimulationMessageFileSource, original: IncomingMessage): Promise<boolean> => {
+          try {
+            await ensureFileTurnCurrent()
+            if (!fileWrapperCurrent(source) || !await fileOriginalAllowed(original, source.messageId, source.authorId, source.occurredAt) ||
+                JSON.stringify(simulationFileMetadata(original.parts)) !== JSON.stringify(source.files) ||
+                !source.quoted && !fileRequestTextCurrent(source.wrapper, original)) return false
+            if (source.quoted) {
+              const wrapper = await ports.readQuotedMessage?.(target, String(source.wrapper.messageId), { isCurrent: canCallModel })
+              if (!wrapper || wrapper.quote?.messageId !== source.messageId || !await fileOriginalAllowed(wrapper, String(source.wrapper.messageId), source.wrapper.userId, source.wrapper.at) ||
+                  !fileRequestTextCurrent(source.wrapper, wrapper)) return false
+            }
+            await ensureFileTurnCurrent()
+            return fileWrapperCurrent(source)
+          } catch { return false }
+        }
+        const loadFileMessage = async (source: SimulationMessageFileSource): Promise<IncomingMessage | undefined> => {
+          await ensureFileTurnCurrent()
+          if (!fileWrapperCurrent(source) || !ports.readQuotedMessage) return undefined
+          const original = await ports.readQuotedMessage(target, source.messageId, { isCurrent: canCallModel })
+          return original && await allowsFileSource(source, original) ? original : undefined
+        }
+        const allowsRepositoryFile = async (entry: ConversationFileEntry): Promise<boolean> => {
+          await ensureFileTurnCurrent()
+          if (!entry.uploadedBy || entry.uploadedAt === undefined) return false
+          const authorId = entry.uploadedBy.id, occurredAt = entry.uploadedAt
+          const linked = [...new Map([...state!.unread, ...state!.recent].map(message => [message.seq, message])).values()]
+            .filter(message => message.messageId && message.userId === authorId && message.at === occurredAt && message.files?.some(file => file.name === entry.name))
+          if (linked.length === 1) {
+            const wrapper = linked[0]!
+            return !!await loadFileMessage({ wrapper, messageId: String(wrapper.messageId), authorId, occurredAt, files: (wrapper.files ?? []).map(({ name }) => ({ name })), quoted: false })
+          }
+          // A repository upload has no message ID. Do not fabricate one to pass
+          // message-source validation: only uploader/time can prove the broad
+          // privacy cutoffs, while old unlinked erased evidence fails closed.
+          const privacy = await personMemory.getRedactions({ identity: characterScope, subjectId: authorId })
+          const rule = privacy.scenes.find(rule => rule.scene.kind === memoryScene.kind && rule.scene.id === memoryScene.id)
+          if (privacy.disabled || rule?.disabled || occurredAt <= privacy.forgottenBefore || occurredAt <= (rule?.forgottenBefore ?? 0)) return false
+          const inScene = (key: string) => {
+            try { const value = JSON.parse(key); return Array.isArray(value) && value[0] === memoryScene.kind && value[1] === memoryScene.id } catch { return true }
+          }
+          if (occurredAt <= memorySceneState.invalidatedAt && privacy.revokedSources.some(inScene) ||
+              privacy.tombstones.some(tombstone => occurredAt <= tombstone.before && (!tombstone.sourceKey || inScene(tombstone.sourceKey)))) return false
+          await ensureFileTurnCurrent()
+          return true
+        }
+        const agentFiles = actor.kind === 'user' && actor.userId && triggerMessage?.messageId && !triggerMessage.textTruncated && triggerMessage.userId === actor.userId && ports.readQuotedMessage
+          ? createSimulationAgentFiles({
+            target, actorId: actor.userId, request: triggerMessage, now,
+            signal: memoryTurn ? AbortSignal.any([fileTurnController.signal, memoryTurn.signal]) : fileTurnController.signal,
+            messages: () => [...new Map([...state!.unread, ...state!.recent].map(message => [message.seq, message])).values()],
+            isVisible: seq => visibleMessageSeqs.has(seq), isCurrent: canCallModel, ensureCurrent: ensureFileTurnCurrent,
+            markEphemeral: () => { ephemeralRead = unrelatedEphemeralRead = true }, registerProjection: projection => { fileProjections.push(projection) },
+            loadMessage: loadFileMessage, allowsSource: allowsFileSource, allowsRepositoryFile,
+            ...(ports.readMessageFile ? { readMessageFile: ports.readMessageFile } : {}),
+            ...(ports.listConversationFiles ? { listConversationFiles: ports.listConversationFiles } : {}),
+            ...(ports.readConversationFile ? { readConversationFile: ports.readConversationFile } : {}),
+            ...(ports.readPublicFile ? { readPublicFile: ports.readPublicFile } : {}),
+          }) : undefined
+        const agentVideo = actor.kind === 'user' && actor.userId && target.kind === 'group' && triggerSource?.messageId &&
+            !triggerSource.textTruncated && triggerSource.userId === actor.userId && ports.readMessageVideo && ports.readQuotedMessage
+          ? createSimulationAgentVideo({
+            target, request: triggerSource,
+            signal: memoryTurn ? AbortSignal.any([fileTurnController.signal, memoryTurn.signal]) : fileTurnController.signal,
+            isCurrent: canCallModel, ensureCurrent: ensureFileTurnCurrent, cancelTurn: () => fileTurnController.abort(),
+            requestCurrent: () => (state!.recent.find(message => message.seq === triggerSource.seq) ?? state!.unread.find(message => message.seq === triggerSource.seq)) === triggerSource,
+            markEphemeral: () => { ephemeralRead = unrelatedEphemeralRead = true }, registerProjection: projection => { fileProjections.push(projection) },
+            loadMessage: id => ports.readQuotedMessage!(target, id, { isCurrent: canCallModel }),
+            allowsOriginal: fileOriginalAllowed,
+            requestTextCurrent: original => fileRequestTextCurrent(triggerSource, original),
+            async allowsForwardSource(source) {
+              await ensureFileTurnCurrent()
+              if (source.author.platform !== target.account.platform || source.author.namespace !== target.account.namespace ||
+                  !isSimulationUserId(source.author.id) || !Number.isSafeInteger(source.occurredAt) || source.occurredAt <= 0 || source.occurredAt > triggerSource.at) return false
+              const privacy = await personMemory.getRedactions({ identity: characterScope, subjectId: source.author.id })
+              const rule = privacy.scenes.find(rule => rule.scene.kind === memoryScene.kind && rule.scene.id === memoryScene.id)
+              if (privacy.disabled || rule?.disabled || source.occurredAt <= privacy.forgottenBefore || source.occurredAt <= (rule?.forgottenBefore ?? 0)) return false
+              // A forward node has no verifiable original-message ID. Broadly deny
+              // old erased evidence rather than inventing a message identity.
+              const inScene = (key: string) => { try { const value = JSON.parse(key); return Array.isArray(value) && value[0] === memoryScene.kind && value[1] === memoryScene.id } catch { return true } }
+              if (source.occurredAt <= memorySceneState.invalidatedAt && privacy.revokedSources.some(inScene) ||
+                  privacy.tombstones.some(tombstone => source.occurredAt <= tombstone.before && (!tombstone.sourceKey || inScene(tombstone.sourceKey)))) return false
+              await ensureFileTurnCurrent()
+              return true
+            },
+            readMessageVideo: ports.readMessageVideo,
+          }) : undefined
+        const readAgentToolImages = async (seq: number, toolCurrent?: () => boolean, toolSignal?: AbortSignal): Promise<readonly MessageImage[]> => {
+          const signals = [toolSignal, memoryTurn?.signal].filter((value): value is AbortSignal => !!value)
+          const signal = signals.length ? AbortSignal.any(signals) : undefined
+          if (!Number.isSafeInteger(seq) || seq < 1) throw new Error('请使用本轮可见的附图消息正整数序号')
+          if (signal?.aborted || toolCurrent?.() === false) throw new Error('工具所属回合已失效')
+          await ctx.assertMemoryCurrent?.()
           const visibleMessage = () => visibleMessageSeqs.has(seq)
             ? state!.recent.find(message => message.seq === seq) ?? state!.unread.find(message => message.seq === seq)
             : undefined
-          await ctx.assertMemoryCurrent?.()
           const message = visibleMessage()
-          if (!message?.messageId) return { seq, error: '请使用本轮可见的附图消息序号' }
+          if (!message?.messageId) throw new Error('请使用本轮可见的附图消息序号')
           const quote = message.imageCount === 0 ? message.quoteSource : undefined
-          if (!message.imageCount && !quote?.image) return { seq, error: '这条消息没有可取的附图' }
-          if (visionAttempts >= 2) return { seq, error: '已达本轮看图次数上限' }
-          visionAttempts++
-          const isCurrent = () => canRunTurn() && visibleMessage() === message
-          let images: readonly MessageImage[] | undefined
-          try { images = await readAgentToolImages(seq) } catch { return refused }
-          if (!images?.length || !isCurrent()) return refused
-          await ensureExecution()
-          await assertTriggerCurrent()
-          if (!isCurrent()) return refused
-          let description: string | null = null
-          try {
-            description = await describeImages(images.slice(0, 2), { groupId, label: `消息 ${seq} 的图片`, isCurrent,
-              ...(memoryTurn ? { signal: memoryTurn.signal } : {}) })
-          } catch { /* The model can ask for a text description. */ }
-          await ensureExecution()
-          if (!isCurrent() || !description?.trim()) return { seq, error: '图片描述暂不可用，可请群友用文字说明' }
-          usedImageDescription = true
-          return { seq, description: safeTruncateUnicode(sanitizeUntrustedText(description.replace(/\s+/gu, ' ').trim()), 360, '…') }
-        }
-      }
-      if (readForward) {
-        ctx.getForward = async (forwardId, seq) => {
-          const refused = { lines: [], error: FORWARD_READ_ERROR }
-          const message = state!.recent.find(item => item.seq === seq && visibleMessageSeqs.has(item.seq))
-          if (!message?.messageId || !message.forwardId || (forwardId && message.forwardId !== forwardId)) {
-            return { lines: [], error: '请使用本轮可见的合并转发消息序号' }
-          }
-          if (!await canReadUnattributedMemory(personMemory, characterScope, memoryScene)) {
-            return { lines: [], error: '当前群的人物记忆规则限制读取合并转发' }
-          }
+          if (!message.imageCount && !quote?.image) throw new Error('这条消息没有可取的附图')
+          if (!ports.readMessageImages) return []
           const messageId = String(message.messageId)
-          try { await ensureExecution() } catch { return refused }
-          let content: ForwardContent | undefined
-          try { content = await readForward(target, { messageId, forwardId: message.forwardId }, sendOptions) } catch { return refused }
-          if (!content) return refused
-          const lines: string[] = []
-          let partial = content.partial || content.entries.length > 50
-          let chars = 2
-          const compact = (text: string) => sanitizeUntrustedText(text.replace(/\s+/gu, ' ').trim())
-          for (const entry of content.entries.slice(0, 50)) {
-            if (memorySceneState.invalidatedAt > 0 && (!entry.occurredAt || entry.occurredAt <= memorySceneState.invalidatedAt || entry.occurredAt > message.at)) {
-              partial = true
-              continue
+          const originalId = quote?.messageId ?? messageId
+          const authorId = quote?.image?.authorId ?? message.userId
+          const occurredAt = quote?.image?.occurredAt ?? message.at
+          const isCurrent = () => !signal?.aborted && canRunTurn() && toolCurrent?.() !== false && visibleMessage() === message
+          const ensureReadCurrent = async () => {
+            await ensureExecution()
+            if (!isCurrent() || await ports.isMessageRecalled?.(target, messageId) ||
+                originalId !== messageId && await ports.isMessageRecalled?.(target, originalId) || !isCurrent()) {
+              throw new Error('附图消息来源或工具权限已失效')
             }
-            const name = safeTruncateUnicode(compact(entry.senderName || '群友'), 80, '…')
-            const text = compact(entry.text) || '[无可读内容]'
-            const excerpt = safeTruncateUnicode(text, 250, '…')
-            const line = `${'  '.repeat(Math.min(2, Math.max(0, entry.depth)))}${name}：${excerpt}`
-            chars += JSON.stringify(line).length + 1
-            if (chars > 3_500) { partial = true; break }
-            if (excerpt !== text) partial = true
-            lines.push(line)
           }
-          if (lines.length) attachmentSourceIds.add(messageId)
-          return { lines, ...(partial ? { partial: true } : {}) }
-        }
-        ctx.forwardTextOnly = true
-      }
-      let proactiveSourceSeq: number | undefined
-      ctx.proactiveSourceSeq = () => proactiveSourceSeq
-      if (anchor) ctx.waitMessageFilter = message => message.userId === anchor.userId &&
-        (message.atSelf || message.quoteToSelf || (!message.atOther && !message.replyToUserId))
-      const sendMessage = ctx.sendMessage
-      if (followUpId) {
-        ctx.sendMessage = messages => {
-          if (sends > 0 || messages.length > 1) return Promise.resolve({ ok: false, error: '社交跟进只发一句；请安静收尾或合为一条' })
-          return sendMessage(messages, {})
-        }
-      }
-      const visibleCharacterRefs = new Set([
-        ...characterMemoryVisibility(character, memorySceneState.invalidatedAt).memories.slice(-12).map(memory => `memory:${memory.id}`),
-        ...characterMemoryVisibility(character, memorySceneState.invalidatedAt).receipts.slice(-8).map(receipt => `receipt:${receipt.id}`),
-      ])
-      const visibleEvidenceRefs = () => [...new Set([
-        ...[...visibleMessageSeqs].filter(seq => state!.recent.some(message => message.seq === seq) || state!.unread.some(message => message.seq === seq)).map(seq => `message:${seq}`),
-        ...visibleCharacterRefs,
-      ])]
-      ctx.noteVisibleMessages = seqs => {
-        for (const seq of seqs) visibleMessageSeqs.add(seq)
-      }
-      const exposeToolResult = (toolName: string, result: string) => {
-        try {
-          const value = record(JSON.parse(result))
-          if (toolName === 'simCharacterMemory') {
-            if (record(value.memory).id) visibleCharacterRefs.add(`memory:${record(value.memory).id}`)
-            if (Array.isArray(value.memories)) for (const memory of value.memories) if (record(memory).id) visibleCharacterRefs.add(`memory:${record(memory).id}`)
-          }
-        } catch { /* plain text tool result exposes no new character records */ }
-      }
-      const updateCharacter = async (mutate: (state: CharacterState) => CharacterState) => {
-        const previousSources = new Set(characterMemoryVisibility(character, memorySceneState.invalidatedAt).memories.map(memory => memory.id))
-        character = await characters.update(characterScope, mutate)
-        const currentSources = new Set(characterMemoryVisibility(character, memorySceneState.invalidatedAt).memories.map(memory => memory.id))
-        if ([...previousSources].some(id => !currentSources.has(id))) {
-          revisedSources = true; requiresClosing = true
-          await store.invalidateActivity(groupId)
-          activityVersion = await store.loadActivityVersion(groupId)
-          state!.activityVersion = activityVersion
-          for (const id of sourceMemoryIds) if (!currentSources.has(id)) sourceMemoryIds.delete(id)
-          for (const ref of visibleCharacterRefs) if (ref.startsWith('memory:') && !currentSources.has(ref.slice(7))) visibleCharacterRefs.delete(ref)
-          await workspace.pruneEvidence([...currentSources].map(id => `memory:${id}`).concat(characterMemoryVisibility(character, memorySceneState.invalidatedAt).receipts.map(receipt => `receipt:${receipt.id}`)))
-        }
-        return character
-      }
-      const characterTools = createCharacterTools({
-        now, read: () => characters.load(characterScope),
-        update: updateCharacter,
-        visibleEvidenceRefs, selectGoal: focusGoal,
-        onDecision: kind => { decision = kind }, makeId: prefix => `${prefix}-${randomUUID()}`,
-        sharedSourceIds: () => sharedIds,
-        memoryInvalidatedAt: () => memorySceneState.invalidatedAt,
-        reviewMemory: (candidate, draft) => reviewCandidate('simCharacterMemory', candidate, draft),
-      })
-      const activityTools = [
-        ...createCharacterWorkspaceTools({ workspace, visibleEvidenceRefs, ensureActive: () => ensureExecution(), sharedSourceIds: () => sharedIds }),
-        ...createCharacterSubscriptionTools({ subscriptions: subscriptionsFor(characterScope), ensureActive: () => ensureExecution() }),
-        ...createSharedSelfTools({ shared, visibleEvidenceRefs, ensureActive: () => ensureExecution() }),
-        ...createCharacterWorkerTools({ ensureActive: async () => { await ensureExecution(); if (ports.characterWorkerAvailable?.() === false) throw new Error('工作器连接已停用') }, visibleEvidenceRefs,
-          ...(ports.runCharacterWorker && ports.characterWorkerAvailable?.() !== false ? { run: (task: CharacterWorkerTask, signal: AbortSignal) => ports.runCharacterWorker!(task, characterScope, signal) } : {}),
-        }),
-      ]
-      ctx.requireExplicitContinuation = true
-      const simulationTools = createSimTools(ctx)
-      const finishTool = createCharacterTurnTool({
-        now, read: () => characters.load(characterScope),
-        ...(ctx.platformUserId ? { platformUserId: ctx.platformUserId } : {}),
-        update: updateCharacter,
-        visibleEvidenceRefs, makeId: prefix => `${prefix}-${randomUUID()}`,
-        sharedSourceIds: () => sharedIds,
-        memoryInvalidatedAt: () => memorySceneState.invalidatedAt, ensureActive: () => ensureExecution(), finish: result => finishTurn(result),
-        review: ({ candidate, state }) => reviewCandidate('simFinishTurn', candidate, state),
-      })
-      const tools = [...simulationTools, ...characterTools, finishTool, ...activityTools, ...extraTools]
-      let toolSendQueue: Promise<void> = Promise.resolve()
-      const queueToolSend = <T>(send: () => Promise<T>): Promise<T> => {
-        const pending = toolSendQueue.then(send)
-        toolSendQueue = pending.then(() => {}, () => {})
-        return pending
-      }
-      const ensureToolSend = async () => {
-        await ensureExecution()
-        if (memoryBox.deliveryUnknown) throw new Error('上次发送结果未知，本回合不再发送，请核对回执')
-        if (decision === 'silent' || decision === 'deferred') throw new Error('本轮已选择沉默或暂缓')
-      }
-      const assertToolSendAllowance = () => {
-        const allowance = checkSendAllowance(state!, cfg, now(), sends, isDirectAddressKind(reason?.kind))
-        if (!allowance.allowed) throw new Error(allowance.reason)
-      }
-      const recordToolSend = async () => {
-        sends += 1
-        recordSend(state!, now(), 1)
-        state!.lastAiSendAt = now()
-        await store.save(groupId, state!)
-      }
-      const sentBundles = new Set<string>()
-      const sentFiles = new Set<string>()
-      const sentMedia = new Set<string>()
-      const sentMusic = new Set<string>()
-      const sentMediaRelays = new Set<string>()
-      const sendAgentToolMediaRelay = (plan: AgentMediaRelayPlan, isCurrent?: () => boolean, signal?: AbortSignal): Promise<DeliveryReceipt> => {
-        const owned = validateAgentMediaRelayPlan(plan)
-        return queueToolSend(async () => {
-          if (isCurrent?.() === false || signal?.aborted) throw new Error('工具所属回合已失效')
-          await ensureToolSend()
-          if (ephemeralRead) return { state: 'failed', code: 'temporary_sources' }
-          if (actor.kind !== 'user' || target.kind !== 'group') return { state: 'failed', code: 'invalid_media_relay_target' }
-          const safeText = (text: string) => {
-            const redacted = redactInternalStatusLeaks(sanitizeFinalReplyText(text))
-            return !redacted.heavy && redacted.text === text && !looksLikeToolArguments(text)
-          }
-          const texts = owned.items.map(item => item.parts.flatMap(part => part.kind === 'text' ? [part.text] : []).join(''))
-          if ([...texts, texts.join('\n'), ...owned.items.flatMap(item => item.parts.flatMap(part => part.kind === 'text' ? [part.text] : []))].some(text => !safeText(text))) return { state: 'failed', code: 'unsafe_media_relay_text' }
-          const artifactKey = (artifact: AgentMediaArtifact) => ({ kind: artifact.kind, mime: artifact.mime, sizeBytes: artifact.sizeBytes, sha256: artifact.sha256 })
-          const canonical = owned.items.map(item => {
-            const parts: Record<string, unknown>[] = []
-            for (const part of item.parts) {
-              const last = parts.at(-1)
-              if (part.kind === 'text') {
-                if (last?.kind === 'text') last.text = String(last.text) + part.text
-                else parts.push({ kind: 'text', text: part.text })
-              } else parts.push({ kind: part.kind, artifact: artifactKey(part.artifact), ...(part.kind === 'video' && part.thumbnail ? { thumbnail: artifactKey(part.thumbnail) } : {}) })
-            }
-            return { parts }
+          await ensureReadCurrent()
+          const images = await ports.readMessageImages(target, { messageId, ...(quote ? { quotedMessageId: originalId } : {}) }, {
+            isCurrent,
+            ...(signal ? { signal } : {}),
+            async allowsSource(original) {
+              if (original.messageId !== originalId || conversationAddressKey(original.conversation) !== conversationAddressKey(target) ||
+                  original.sender.id !== authorId || original.sender.platform !== target.account.platform ||
+                  original.sender.namespace !== target.account.namespace || original.occurredAt !== occurredAt) return false
+              const excerpt = original.text || '[图片]'
+              const redactions = await personMemory.getRedactions({ identity: characterScope, subjectId: authorId })
+              if (isPersonMemoryRedacted({ scene: memoryScene, messageId: originalId, authorId, at: occurredAt, excerpt }, excerpt, redactions)) return false
+              await ensureReadCurrent()
+              return isCurrent()
+            },
           })
-          const fingerprint = createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
-          if (sentMediaRelays.has(fingerprint)) return { state: 'failed', code: 'duplicate_media_relay' }
-          if (!ports.messageActions?.sendMediaRelay) return { state: 'failed', code: 'media_relay_unavailable' }
-          assertToolSendAllowance()
-          if (texts.some(Boolean)) await reviewCandidate('toolReply', { messages: texts.filter(Boolean) })
-          await ensureExecution()
-          const guard = () => !signal?.aborted && !ephemeralRead && sendOptions.isCurrent?.() !== false && isCurrent?.() !== false
-          if (!guard()) throw new Error('工具所属回合已失效')
-          let receipt: DeliveryReceipt
-          try { receipt = normalizeDeliveryReceipt(await ports.messageActions.sendMediaRelay({
-            version: 1, kind: 'media-relay.send', target, mode: 'forward', plan: owned,
-            ...(sendOptions.binding ? { binding: sendOptions.binding } : {}),
-          }, { isCurrent: guard, ...(signal ? { signal } : {}) })) }
-          catch { receipt = { state: 'unknown' } }
-          if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
-          if (receipt.state === 'sent') {
-            sentMediaRelays.add(fingerprint)
-            memoryBox.sentTexts.push(...texts.filter(Boolean))
-            rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
-            try { await recordToolSend() }
-            catch { memoryBox.deliveryUnknown = true; return { state: 'unknown' } }
-          }
-          return receipt
-        })
-      }
-      const sendAgentToolMusic = (music: AgentMusicCard, isCurrent?: () => boolean, signal?: AbortSignal): Promise<DeliveryReceipt> => {
-        const owned = validateAgentMusicCard(music)
-        return queueToolSend(async () => {
-          if (isCurrent?.() === false || signal?.aborted) throw new Error('工具所属回合已失效')
-          await ensureToolSend()
-          if (ephemeralRead) return { state: 'failed', code: 'temporary_sources' }
-          if (target.kind !== 'group') return { state: 'failed', code: 'invalid_music_target' }
-          for (const value of [owned.title, owned.artist ?? '']) {
-            const redacted = redactInternalStatusLeaks(sanitizeFinalReplyText(value))
-            if (redacted.heavy || redacted.text.trim() !== value.trim() || looksLikeToolArguments(value)) return { state: 'failed', code: 'unsafe_music_text' }
-          }
-          // A refreshed vkey must not turn the same song into a second card in one turn.
-          const fingerprint = createHash('sha256').update(owned.pageUrl).digest('hex')
-          if (sentMusic.has(fingerprint)) return { state: 'failed', code: 'duplicate_music' }
-          if (!ports.messageActions?.sendMusic) return { state: 'failed', code: 'music_delivery_unavailable' }
-          assertToolSendAllowance()
-          await reviewCandidate('toolReply', { messages: [[owned.title, owned.artist].filter(Boolean).join(' - ')] })
-          await ensureExecution()
-          const guard = () => !signal?.aborted && sendOptions.isCurrent?.() !== false && isCurrent?.() !== false
-          if (!guard()) throw new Error('工具所属回合已失效')
-          let receipt: DeliveryReceipt
-          try { receipt = normalizeDeliveryReceipt(await ports.messageActions.sendMusic({
-            version: 1, kind: 'music.send', target, music: owned,
-            ...(sendOptions.binding ? { binding: sendOptions.binding } : {}),
-          }, { isCurrent: guard, ...(signal ? { signal } : {}) })) }
-          catch { receipt = { state: 'unknown' } }
-          if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
-          if (receipt.state === 'sent') {
-            sentMusic.add(fingerprint)
-            rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
-            try { await recordToolSend() }
-            catch { memoryBox.deliveryUnknown = true; return { state: 'unknown' } }
-          }
-          return receipt
-        })
-      }
-      const sendAgentToolMedia = (media: SendMediaAction['media'], isCurrent?: () => boolean, signal?: AbortSignal): Promise<DeliveryReceipt> => {
-        const owned = validateAgentMedia(media)
-        return queueToolSend(async () => {
-          if (isCurrent?.() === false || signal?.aborted) throw new Error('工具所属回合已失效')
-          await ensureToolSend()
-          if (ephemeralRead) return { state: 'failed', code: 'temporary_sources' }
-          const spoken = owned.kind === 'audio' ? owned.spokenText : undefined
-          if (spoken !== undefined) {
-            const redacted = redactInternalStatusLeaks(sanitizeFinalReplyText(spoken))
-            if (redacted.heavy || redacted.text.trim() !== spoken.trim() || looksLikeToolArguments(spoken)) return { state: 'failed', code: 'unsafe_spoken_text' }
-          }
-          const fingerprint = createHash('sha256').update(owned.kind).update('\0').update(owned.mime).update('\0').update(owned.base64).digest('hex')
-          if (sentMedia.has(fingerprint) || spoken && memoryBox.sentTexts.includes(spoken)) return { state: 'failed', code: 'duplicate_media' }
-          if (!ports.messageActions?.sendMedia) return { state: 'failed', code: 'media_delivery_unavailable' }
-          assertToolSendAllowance()
-          if (spoken) await reviewCandidate('toolReply', { messages: [spoken] })
-          await ensureExecution()
-          const guard = () => !signal?.aborted && sendOptions.isCurrent?.() !== false && isCurrent?.() !== false
-          if (!guard()) throw new Error('工具所属回合已失效')
-          let receipt: DeliveryReceipt
-          try { receipt = normalizeDeliveryReceipt(await ports.messageActions.sendMedia({
-            version: 1, kind: 'media.send', target, media: owned,
-            ...(sendOptions.binding ? { binding: sendOptions.binding } : {}),
-          }, { isCurrent: guard, ...(signal ? { signal } : {}) })) }
-          catch { receipt = { state: 'unknown' } }
-          if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
-          if (receipt.state === 'sent') {
-            sentMedia.add(fingerprint)
-            if (spoken) memoryBox.sentTexts.push(spoken)
-            rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
-            try { await recordToolSend() }
-            catch { memoryBox.deliveryUnknown = true; return { state: 'unknown' } }
-          }
-          return receipt
-        })
-      }
-      const sendAgentToolFile = (file: AgentFileUpload, isCurrent?: () => boolean, signal?: AbortSignal): Promise<FileDeliveryReceipt> => {
-        const owned = validateAgentFileUpload(file)
-        return queueToolSend(async () => {
-          if (isCurrent?.() === false || signal?.aborted) throw new Error('工具所属回合已失效')
-          await ensureToolSend()
-          if (ephemeralRead) return { state: 'failed', code: 'temporary_sources' }
-          const text = agentFileUploadText(owned)
-          for (const value of [owned.name, ...(text === undefined ? [] : [text])]) {
-            const cleaned = sanitizeFinalReplyText(value), redacted = redactInternalStatusLeaks(cleaned)
-            if (redacted.heavy || redacted.text.trim() !== value.trim() || looksLikeToolArguments(value)) return { state: 'failed', code: 'unsafe_file_text' }
-          }
-          const fingerprint = createHash('sha256').update(owned.name).update('\0').update(owned.mime).update('\0').update(owned.base64).digest('hex')
-          if (sentFiles.has(fingerprint)) return { state: 'failed', code: 'duplicate_file' }
-          if (!ports.messageActions?.sendFile) return { state: 'failed', code: 'file_delivery_unavailable' }
-          assertToolSendAllowance()
-          if (text !== undefined && text.trim()) await reviewCandidate('toolReply', { messages: [text] })
-          await ensureExecution()
-          const guard = () => !signal?.aborted && sendOptions.isCurrent?.() !== false && isCurrent?.() !== false
-          if (!guard()) throw new Error('工具所属回合已失效')
-          let receipt: FileDeliveryReceipt
-          try { receipt = normalizeFileDeliveryReceipt(await ports.messageActions.sendFile({
-            version: 1, kind: 'file.upload', target, file: owned,
-            ...(sendOptions.binding ? { binding: sendOptions.binding } : {}),
-          }, { isCurrent: guard, ...(signal ? { signal } : {}) })) }
-          catch { receipt = { state: 'unknown' } }
-          if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
-          if (receipt.state === 'uploaded') {
-            sentFiles.add(fingerprint)
-            if (receipt.messageId) rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
-            try { await recordToolSend() }
-            catch {
-              // The platform accepted the file. A failed local budget write must
-              // still fence callers that catch errors or misreport success.
-              memoryBox.deliveryUnknown = true
-              return { state: 'unknown' }
-            }
-          }
-          return receipt
-        })
-      }
-      const sentToolMessages = new Set<string>()
-      const sendAgentToolMessage = (message: AgentToolMessage, isCurrent?: () => boolean): Promise<DeliveryReceipt> => {
-        const owned = validateAgentToolMessage(message)
-        const text = owned.text, mentions = [...(owned.mentionUserIds ?? [])]
-        return queueToolSend(async () => {
-          if (isCurrent?.() === false) throw new Error('工具所属回合已失效')
-          await ensureToolSend()
-          if (looksLikeToolArguments(text)) throw new Error('工具回复含参数内容，已拦截')
-          const redacted = redactInternalStatusLeaks(sanitizeFinalReplyText(text))
-          if (redacted.heavy || text.trim() && !redacted.text) throw new Error('通知内容无法安全发送')
-          const cleaned = redacted.text || ' '
-          const fingerprint = JSON.stringify([cleaned, [...mentions].sort()])
-          if (sentToolMessages.has(fingerprint) || (redacted.text && memoryBox.sentTexts.includes(redacted.text))) return { state: 'failed', code: 'duplicate_message' }
-          assertToolSendAllowance()
-          if (redacted.text) await reviewCandidate('toolReply', { messages: [redacted.text] })
-          await ensureExecution()
-          const guard = () => sendOptions.isCurrent?.() !== false && isCurrent?.() !== false
-          if (!guard()) throw new Error('工具所属回合已失效')
-          let receipt: DeliveryReceipt
-          try {
-            const delivered = await sendTextMessage(groupId, self.id, cleaned, { ...sendOptions, isCurrent: guard }, mentions)
-            receipt = delivered.unknown ? { state: 'unknown' } : delivered.ok && delivered.messageId
-              ? { state: 'sent', messageId: String(delivered.messageId) } : { state: 'failed', code: 'message_delivery_failed' }
-          } catch { receipt = { state: 'unknown' } }
-          if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
-          if (receipt.state === 'sent') {
-            sentToolMessages.add(fingerprint)
-            if (redacted.text) memoryBox.sentTexts.push(redacted.text)
-            rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
-            await recordToolSend()
-          }
-          return receipt
-        })
-      }
-      const coalesceBundleParts = (parts: readonly MessageBundlePart[]) => {
-        const combined: MessageBundlePart[] = []
-        for (const part of parts) {
-          const previous = combined.at(-1)
-          if (part.kind === 'text' && previous?.kind === 'text') combined[combined.length - 1] = { kind: 'text', text: previous.text + part.text }
-          else combined.push(part)
+          await ensureReadCurrent()
+          if (!images?.length) return []
+          attachmentSourceIds.add(messageId)
+          attachmentSourceIds.add(originalId)
+          return images.slice(0, 2)
         }
-        return combined
-      }
-      const sendAgentToolBundle = (items: readonly MessageBundleItem[], isCurrent?: () => boolean): Promise<DeliveryReceipt> => {
-        // Take ownership before waiting behind another send in this turn.
-        const owned = validateMessageBundle(items)
-        return queueToolSend(async () => {
+        if (readImages && describeImages) {
+          ctx.getMessageImages = async seq => {
+            const refused = { seq, error: '本轮无法读取这条消息的图片' }
+            const visibleMessage = () => visibleMessageSeqs.has(seq)
+              ? state!.recent.find(message => message.seq === seq) ?? state!.unread.find(message => message.seq === seq)
+              : undefined
+            await ctx.assertMemoryCurrent?.()
+            const message = visibleMessage()
+            if (!message?.messageId) return { seq, error: '请使用本轮可见的附图消息序号' }
+            const quote = message.imageCount === 0 ? message.quoteSource : undefined
+            if (!message.imageCount && !quote?.image) return { seq, error: '这条消息没有可取的附图' }
+            if (visionAttempts >= 2) return { seq, error: '已达本轮看图次数上限' }
+            visionAttempts++
+            const isCurrent = () => canRunTurn() && visibleMessage() === message
+            let images: readonly MessageImage[] | undefined
+            try { images = await readAgentToolImages(seq) } catch { return refused }
+            if (!images?.length || !isCurrent()) return refused
+            await ensureExecution()
+            await assertTriggerCurrent()
+            if (!isCurrent()) return refused
+            let description: string | null = null
+            try {
+              description = await describeImages(images.slice(0, 2), { groupId, label: `消息 ${seq} 的图片`, isCurrent,
+                ...(memoryTurn ? { signal: memoryTurn.signal } : {}) })
+            } catch {
+              diagnose({ stage: 'model', operation: 'simulation_image_description', outcome: 'failed', code: 'image_description_unavailable' })
+            }
+            await ensureExecution()
+            if (!isCurrent() || !description?.trim()) return { seq, error: '图片描述暂不可用，可请群友用文字说明' }
+            usedImageDescription = true
+            return { seq, description: safeTruncateUnicode(sanitizeUntrustedText(description.replace(/\s+/gu, ' ').trim()), 360, '…') }
+          }
+        }
+        if (readForward) {
+          ctx.getForward = async (forwardId, seq) => {
+            const refused = { lines: [], error: FORWARD_READ_ERROR }
+            const message = state!.recent.find(item => item.seq === seq && visibleMessageSeqs.has(item.seq))
+            if (!message?.messageId || !message.forwardId || (forwardId && message.forwardId !== forwardId)) {
+              return { lines: [], error: '请使用本轮可见的合并转发消息序号' }
+            }
+            if (!await canReadUnattributedMemory(personMemory, characterScope, memoryScene)) {
+              return { lines: [], error: '当前群的人物记忆规则限制读取合并转发' }
+            }
+            const messageId = String(message.messageId)
+            try { await ensureExecution() } catch { return refused }
+            let content: ForwardContent | undefined
+            try { content = await readForward(target, { messageId, forwardId: message.forwardId }, sendOptions) } catch { return refused }
+            if (!content) return refused
+            const lines: string[] = []
+            let partial = content.partial || content.entries.length > 50
+            let chars = 2
+            const compact = (text: string) => sanitizeUntrustedText(text.replace(/\s+/gu, ' ').trim())
+            for (const entry of content.entries.slice(0, 50)) {
+              if (memorySceneState.invalidatedAt > 0 && (!entry.occurredAt || entry.occurredAt <= memorySceneState.invalidatedAt || entry.occurredAt > message.at)) {
+                partial = true
+                continue
+              }
+              const name = safeTruncateUnicode(compact(entry.senderName || '群友'), 80, '…')
+              const text = compact(entry.text) || '[无可读内容]'
+              const excerpt = safeTruncateUnicode(text, 250, '…')
+              const line = `${'  '.repeat(Math.min(2, Math.max(0, entry.depth)))}${name}：${excerpt}`
+              chars += JSON.stringify(line).length + 1
+              if (chars > 3_500) { partial = true; break }
+              if (excerpt !== text) partial = true
+              lines.push(line)
+            }
+            if (lines.length) attachmentSourceIds.add(messageId)
+            return { lines, ...(partial ? { partial: true } : {}) }
+          }
+          ctx.forwardTextOnly = true
+        }
+        let proactiveSourceSeq: number | undefined
+        ctx.proactiveSourceSeq = () => proactiveSourceSeq
+        if (anchor) ctx.waitMessageFilter = message => message.userId === anchor.userId &&
+          (message.atSelf || message.quoteToSelf || (!message.atOther && !message.replyToUserId))
+        const sendMessage = ctx.sendMessage
+        if (followUpId) {
+          ctx.sendMessage = messages => {
+            if (sends > 0 || messages.length > 1) return Promise.resolve({ ok: false, error: '社交跟进只发一句；请安静收尾或合为一条' })
+            return sendMessage(messages, {})
+          }
+        }
+        const visibleCharacterRefs = new Set([
+          ...characterMemoryVisibility(character, memorySceneState.invalidatedAt).memories.slice(-12).map(memory => `memory:${memory.id}`),
+          ...characterMemoryVisibility(character, memorySceneState.invalidatedAt).receipts.slice(-8).map(receipt => `receipt:${receipt.id}`),
+        ])
+        const visibleEvidenceRefs = () => [...new Set([
+          ...[...visibleMessageSeqs].filter(seq => state!.recent.some(message => message.seq === seq) || state!.unread.some(message => message.seq === seq)).map(seq => `message:${seq}`),
+          ...visibleCharacterRefs,
+        ])]
+        ctx.noteVisibleMessages = seqs => {
+          for (const seq of seqs) visibleMessageSeqs.add(seq)
+        }
+        const exposeToolResult = (toolName: string, result: string) => {
+          try {
+            const value = record(JSON.parse(result))
+            if (toolName === 'simCharacterMemory') {
+              if (record(value.memory).id) visibleCharacterRefs.add(`memory:${record(value.memory).id}`)
+              if (Array.isArray(value.memories)) for (const memory of value.memories) if (record(memory).id) visibleCharacterRefs.add(`memory:${record(memory).id}`)
+            }
+          } catch { /* plain text tool result exposes no new character records */ }
+        }
+        const updateCharacter = async (mutate: (state: CharacterState) => CharacterState) => {
+          const previousSources = new Set(characterMemoryVisibility(character, memorySceneState.invalidatedAt).memories.map(memory => memory.id))
+          character = await characters.update(characterScope, mutate)
+          const currentSources = new Set(characterMemoryVisibility(character, memorySceneState.invalidatedAt).memories.map(memory => memory.id))
+          if ([...previousSources].some(id => !currentSources.has(id))) {
+            revisedSources = true; requiresClosing = true
+            await store.invalidateActivity(groupId)
+            activityVersion = await store.loadActivityVersion(groupId)
+            state!.activityVersion = activityVersion
+            for (const id of sourceMemoryIds) if (!currentSources.has(id)) sourceMemoryIds.delete(id)
+            for (const ref of visibleCharacterRefs) if (ref.startsWith('memory:') && !currentSources.has(ref.slice(7))) visibleCharacterRefs.delete(ref)
+            await workspace.pruneEvidence([...currentSources].map(id => `memory:${id}`).concat(characterMemoryVisibility(character, memorySceneState.invalidatedAt).receipts.map(receipt => `receipt:${receipt.id}`)))
+          }
+          return character
+        }
+        const characterTools = createCharacterTools({
+          now, read: () => characters.load(characterScope),
+          update: updateCharacter,
+          visibleEvidenceRefs, selectGoal: focusGoal,
+          onDecision: kind => { decision = kind }, makeId: prefix => `${prefix}-${randomUUID()}`,
+          sharedSourceIds: () => sharedIds,
+          memoryInvalidatedAt: () => memorySceneState.invalidatedAt,
+          reviewMemory: (candidate, draft) => reviewCandidate('simCharacterMemory', candidate, draft),
+        })
+        const activityTools = [
+          ...createCharacterWorkspaceTools({ workspace, visibleEvidenceRefs, ensureActive: () => ensureExecution(), sharedSourceIds: () => sharedIds }),
+          ...createCharacterSubscriptionTools({ subscriptions: subscriptionsFor(characterScope), ensureActive: () => ensureExecution() }),
+          ...createSharedSelfTools({ shared, visibleEvidenceRefs, ensureActive: () => ensureExecution() }),
+          ...createCharacterWorkerTools({ ensureActive: async () => { await ensureExecution(); if (ports.characterWorkerAvailable?.() === false) throw new Error('工作器连接已停用') }, visibleEvidenceRefs,
+            ...(ports.runCharacterWorker && ports.characterWorkerAvailable?.() !== false ? { run: (task: CharacterWorkerTask, signal: AbortSignal) => ports.runCharacterWorker!(task, characterScope, signal) } : {}),
+          }),
+        ]
+        ctx.requireExplicitContinuation = true
+        const simulationTools = createSimTools(ctx).filter(tool => !ownsQzone || tool.name !== 'simQzoneInteract')
+        const finishTool = createCharacterTurnTool({
+          now, read: () => characters.load(characterScope),
+          ...(ctx.platformUserId ? { platformUserId: ctx.platformUserId } : {}),
+          update: updateCharacter,
+          visibleEvidenceRefs, makeId: prefix => `${prefix}-${randomUUID()}`,
+          sharedSourceIds: () => sharedIds,
+          memoryInvalidatedAt: () => memorySceneState.invalidatedAt, ensureActive: () => ensureExecution(), finish: result => finishTurn(result),
+          review: ({ candidate, state }) => reviewCandidate('simFinishTurn', candidate, state),
+        })
+        const tools = [...simulationTools, ...characterTools, finishTool, ...activityTools, ...extraTools]
+        let toolSendQueue: Promise<void> = Promise.resolve()
+        const queueToolSend = <T>(send: () => Promise<T>): Promise<T> => {
+          const pending = toolSendQueue.then(send)
+          toolSendQueue = pending.then(() => {}, () => {})
+          return pending
+        }
+        const ensureToolSend = async () => {
+          await ensureExecution()
+          if (memoryBox.deliveryUnknown) throw new Error('上次发送结果未知，本回合不再发送，请核对回执')
+          if (qqActionTerminal) throw new Error('QQ 动作已结束本回合，不再发送或调用')
+          if (decision === 'silent' || decision === 'deferred') throw new Error('本轮已选择沉默或暂缓')
+        }
+        const assertToolSendAllowance = () => {
+          const allowance = checkSendAllowance(state!, cfg, now(), sends, isDirectAddressKind(reason?.kind))
+          if (!allowance.allowed) throw new Error(allowance.reason)
+        }
+        const recordToolSend = async () => {
+          sends += 1
+          recordSend(state!, now(), 1)
+          state!.lastAiSendAt = now()
+          await store.save(groupId, state!)
+        }
+        const sentBundles = new Set<string>()
+        const sentFiles = new Set<string>()
+        const sentMedia = new Set<string>()
+        const sentMusic = new Set<string>()
+        const sentMediaRelays = new Set<string>()
+        const videoCardTurnIdentity = JSON.stringify([reason.kind, reason.seq ?? null, reason.detail ?? null,
+          triggerSource?.messageId ?? null, triggerSource?.at ?? null, commitment?.options.taskId ?? null,
+          triggerSource?.messageId ? null : state.lastWakeAt])
+        const runAgentQqAction: AgentQqActionRunner = (kind, operation) => queueToolSend(async () => {
+          const names = kind === 'gift' ? ['sendGiftTool'] : kind === 'red-packet' ? ['grabRedBagTool'] : ['qqZoneTool', 'simQzoneInteract']
+          const current = () => !turnSignal.aborted && canCallModel() && !qqActionTerminal && !memoryBox.deliveryUnknown &&
+            decision !== 'silent' && decision !== 'deferred' && (!ephemeralRead || kind === 'qzone' && !unrelatedEphemeralRead) &&
+            names.some(name => ports.supportsQqAction?.(target, name) === true)
+          const ensure = async () => {
+            if (!current()) throw new Error('QQ 动作所属回合或能力已失效')
+            await ensureToolSend()
+            assertToolSendAllowance()
+            if (!current()) throw new Error('QQ 动作所属回合或能力已失效')
+          }
+          if (!['gift', 'red-packet', 'qzone'].includes(kind) || !isQqSimulationAddress(target) || target.kind !== 'group' ||
+              actor.kind !== 'user' || !actor.userId || actor.userId === self.id || !sendOptions.binding ||
+              !triggerSource?.messageId || triggerSource.textTruncated || triggerSource.userId !== actor.userId ||
+              ephemeralRead && (kind !== 'qzone' || unrelatedEphemeralRead)) throw new Error('QQ 动作需要当前完整真人群聊请求，不能借用临时资料')
+          await ensure()
+          const result = await (async () => {
+            try { return await operation({ signal: turnSignal, isCurrent: current, ensureCurrent: ensure }) }
+            catch (error) { memoryBox.deliveryUnknown = qqActionTerminal = true; throw error }
+          })()
+          const unknown = result.state === 'unknown'
+          const wrote = kind === 'gift' ? 'completed' in result && result.completed > 0 : kind === 'red-packet'
+            ? 'grabbed' in result && (result.grabbed || result.passwordConfirmed)
+            : 'kind' in result && result.kind !== 'visit' && result.state === 'confirmed'
+          qqActionTerminal = unknown || kind === 'gift' && result.state === 'confirmed' || wrote || 'terminal' in result && result.terminal
+          if (unknown) memoryBox.deliveryUnknown = true
+          if ('kind' in result && result.kind === 'visit' && result.state === 'confirmed') ephemeralRead = true
+          if (wrote) try { qqActionSends++; await recordToolSend() } catch { memoryBox.deliveryUnknown = qqActionTerminal = true; return { ...result, state: 'unknown' } }
+          return result
+        })
+        const sendAgentToolInteraction = (input: AgentInteractionPlan, isCurrent: () => boolean = () => true, signal: AbortSignal = turnSignal,
+          ensureCurrent?: () => Promise<void>): Promise<AgentInteractionResult> => {
+          const plan = validateAgentInteractionPlan(input, target.account)
+          return queueToolSend(async () => {
+            const combined = AbortSignal.any([signal, turnSignal])
+            const current = () => scopedInteractions() && !combined.aborted && canCallModel() && isCurrent() && !ephemeralRead &&
+              decision !== 'silent' && decision !== 'deferred' && !memoryBox.deliveryUnknown
+            const ensure = async () => { if (!current()) throw new Error('互动回合已失效'); await ensureToolSend(); await ensureCurrent?.(); if (!current()) throw new Error('互动回合已失效') }
+            const failed: AgentInteractionResult = { state: 'failed', completed: 0, requested: plan.operations.length }
+            if (!ports.performInteractions || !sendOptions.binding || ephemeralRead || target.kind !== 'group' || actor.kind === 'commitment' ||
+                actor.kind === 'autonomous' && plan.kind !== 'poke' || actor.kind === 'user' && (!triggerSource?.messageId || triggerSource.textTruncated)) return failed
+            await ensure()
+            assertToolSendAllowance()
+            const result = normalizeAgentInteractionResult(await ports.performInteractions({ target, binding: sendOptions.binding, plan,
+              identity: actor.kind === 'user' ? 'human:' + triggerSource!.messageId : 'turn:' + videoCardTurnIdentity,
+              ...(actor.kind === 'user' ? { source: { messageId: String(triggerSource!.messageId), author: { ...target.account, id: triggerSource!.userId }, occurredAt: triggerSource!.at, text: triggerSource!.text } } : {}),
+              signal: combined, isCurrent: current, ensureCurrent: ensure }), plan.operations.length)
+            // Confirmed management effects finish the human request themselves.
+            // Partial and uncertain plans also fence the rest of this turn.
+            if (['member-mute', 'group-mute', 'member-card'].includes(plan.kind) && (result.completed > 0 || result.state === 'unknown')) managementTerminal = true
+            if (result.state === 'unknown') memoryBox.deliveryUnknown = true
+            if (result.completed > 0) try { await recordToolSend() } catch { memoryBox.deliveryUnknown = true; return { ...result, state: 'unknown' } }
+            return result
+          })
+        }
+        const sendAgentToolVideoCard = (input: AgentVideoCard, isCurrent?: () => boolean, signal?: AbortSignal, ensureCurrent?: () => Promise<void>): Promise<DeliveryReceipt> => {
+          const owned = validateAgentVideoCard(input, ports.allowsToolInput)
+          return queueToolSend(async () => {
+            const combinedSignal = signal ? AbortSignal.any([signal, turnSignal]) : turnSignal
+            const guard = () => !combinedSignal.aborted && canCallModel() && isCurrent?.() !== false &&
+              decision !== 'silent' && decision !== 'deferred' && !memoryBox.deliveryUnknown
+            const ensure = async () => {
+              if (!guard()) throw new Error('工具所属回合或视频来源已失效')
+              await ensureToolSend()
+              await ensureCurrent?.()
+              if (!guard()) throw new Error('工具所属回合或视频来源已失效')
+            }
+            await ensure()
+            if (ephemeralRead) return { state: 'failed', code: 'temporary_sources' }
+            if (!ports.messageActions?.sendVideoCard || !sendOptions.binding || target.kind !== 'group') return { state: 'failed', code: 'video_card_delivery_unavailable' }
+            const text = [owned.title, owned.author, owned.id, owned.pageUrl, `时长 ${owned.durationSeconds} 秒`].filter(Boolean).join('\n')
+            const redacted = redactInternalStatusLeaks(sanitizeFinalReplyText(text))
+            if (redacted.heavy || redacted.text !== text || looksLikeToolArguments(text)) return { state: 'failed', code: 'unsafe_video_card_text' }
+            assertToolSendAllowance()
+            await reviewCandidate('toolReply', { messages: [text] })
+            await ensure()
+            assertToolSendAllowance()
+            let claim: Awaited<ReturnType<typeof videoCardLedger.claim>>
+            try { claim = await videoCardLedger.claim(sendOptions.binding, videoCardTurnIdentity) }
+            catch { memoryBox.deliveryUnknown = true; return { state: 'unknown' } }
+            if (claim.state === 'unconfirmed') { memoryBox.deliveryUnknown = true; return { state: 'unknown' } }
+            if (claim.state !== 'claimed') return { state: 'failed', code: claim.state === 'cooldown' ? 'video_card_cooldown' : 'duplicate_video_card_attempt' }
+            // The pending receipt is committed before the final transport guard.
+            try { await ensure(); assertToolSendAllowance() }
+            catch {
+              try { await claim.finish({ state: 'failed', code: 'video_card_cancelled' }) } catch { memoryBox.deliveryUnknown = true; return { state: 'unknown' } }
+              return { state: 'failed', code: 'video_card_cancelled' }
+            }
+            let receipt: DeliveryReceipt
+            try { receipt = normalizeDeliveryReceipt(await ports.messageActions.sendVideoCard({ version: 1, kind: 'video-card.send', target, binding: sendOptions.binding, card: owned }, { isCurrent: guard, signal: combinedSignal, ensureCurrent: ensure })) }
+            catch { receipt = { state: 'unknown' } }
+            try { await claim.finish(receipt) }
+            catch { memoryBox.deliveryUnknown = true; return { state: 'unknown' } }
+            if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
+            if (receipt.state === 'sent') {
+              rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
+              try { await recordToolSend() }
+              catch { memoryBox.deliveryUnknown = true; return { state: 'unknown' } }
+            }
+            return receipt
+          })
+        }
+        const sendAgentToolMediaRelay = (plan: AgentMediaRelayPlan, isCurrent?: () => boolean, signal?: AbortSignal, ensureCurrent?: () => Promise<void>): Promise<DeliveryReceipt> => {
+          const owned = validateAgentMediaRelayPlan(plan)
+          return queueToolSend(async () => {
+            const combinedSignal = signal ? AbortSignal.any([signal, turnSignal]) : turnSignal
+            const guard = () => !combinedSignal.aborted && !ephemeralRead && canCallModel() && isCurrent?.() !== false &&
+              decision !== 'silent' && decision !== 'deferred' && !memoryBox.deliveryUnknown
+            const ensure = async () => {
+              if (!guard()) throw new Error('工具所属回合或媒体来源已失效')
+              await ensureToolSend()
+              await ensureCurrent?.()
+              if (!guard()) throw new Error('工具所属回合或媒体来源已失效')
+            }
+            if (ephemeralRead) return { state: 'failed', code: 'temporary_sources' }
+            await ensure()
+            if (actor.kind !== 'user' || target.kind !== 'group') return { state: 'failed', code: 'invalid_media_relay_target' }
+            const safeText = (text: string) => {
+              const redacted = redactInternalStatusLeaks(sanitizeFinalReplyText(text))
+              return !redacted.heavy && redacted.text === text && !looksLikeToolArguments(text)
+            }
+            const texts = owned.items.map(item => item.parts.flatMap(part => part.kind === 'text' ? [part.text] : []).join('')).filter(Boolean)
+            if ([...texts, texts.join('\n'), ...owned.items.flatMap(item => item.parts.flatMap(part => part.kind === 'text' ? [part.text] : []))].some(text => !safeText(text))) return { state: 'failed', code: 'unsafe_media_relay_text' }
+            const artifactKey = (artifact: AgentMediaArtifact) => ({ kind: artifact.kind, mime: artifact.mime, sizeBytes: artifact.sizeBytes, sha256: artifact.sha256 })
+            const canonical = owned.items.map(item => {
+              const parts: Record<string, unknown>[] = []
+              for (const part of item.parts) {
+                const last = parts.at(-1)
+                if (part.kind === 'text') {
+                  if (last?.kind === 'text') last.text = String(last.text) + part.text
+                  else parts.push({ kind: 'text', text: part.text })
+                } else parts.push({ kind: part.kind, artifact: artifactKey(part.artifact), ...(part.kind === 'video' && part.thumbnail ? { thumbnail: artifactKey(part.thumbnail) } : {}) })
+              }
+              return { parts }
+            })
+            const fingerprint = createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
+            if (sentMediaRelays.has(fingerprint)) return { state: 'failed', code: 'duplicate_media_relay' }
+            if (!ports.messageActions?.sendMediaRelay) return { state: 'failed', code: 'media_relay_unavailable' }
+            assertToolSendAllowance()
+            if (texts.some(Boolean)) await reviewCandidate('toolReply', { messages: texts.filter(Boolean) })
+            await ensure()
+            assertToolSendAllowance()
+            let receipt: DeliveryReceipt
+            try { receipt = normalizeDeliveryReceipt(await ports.messageActions.sendMediaRelay({
+              version: 1, kind: 'media-relay.send', target, mode: 'forward', plan: owned,
+              ...(sendOptions.binding ? { binding: sendOptions.binding } : {}),
+            }, { isCurrent: guard, signal: combinedSignal, ensureCurrent: ensure })) }
+            catch { receipt = { state: 'unknown' } }
+            if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
+            if (receipt.state === 'sent') {
+              sentMediaRelays.add(fingerprint)
+              memoryBox.sentTexts.push(...texts.filter(Boolean))
+              rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
+              try { await recordToolSend() }
+              catch { memoryBox.deliveryUnknown = true; return { state: 'unknown' } }
+            }
+            return receipt
+          })
+        }
+        const sendAgentToolMusic = (music: AgentMusicCard, isCurrent?: () => boolean, signal?: AbortSignal): Promise<DeliveryReceipt> => {
+          const owned = validateAgentMusicCard(music)
+          return queueToolSend(async () => {
+            if (isCurrent?.() === false || signal?.aborted) throw new Error('工具所属回合已失效')
+            await ensureToolSend()
+            if (ephemeralRead) return { state: 'failed', code: 'temporary_sources' }
+            if (target.kind !== 'group') return { state: 'failed', code: 'invalid_music_target' }
+            for (const value of [owned.title, owned.artist ?? '']) {
+              const redacted = redactInternalStatusLeaks(sanitizeFinalReplyText(value))
+              if (redacted.heavy || redacted.text.trim() !== value.trim() || looksLikeToolArguments(value)) return { state: 'failed', code: 'unsafe_music_text' }
+            }
+            // A refreshed vkey must not turn the same song into a second card in one turn.
+            const fingerprint = createHash('sha256').update(owned.pageUrl).digest('hex')
+            if (sentMusic.has(fingerprint)) return { state: 'failed', code: 'duplicate_music' }
+            if (!ports.messageActions?.sendMusic) return { state: 'failed', code: 'music_delivery_unavailable' }
+            assertToolSendAllowance()
+            await reviewCandidate('toolReply', { messages: [[owned.title, owned.artist].filter(Boolean).join(' - ')] })
+            await ensureExecution()
+            const guard = () => !signal?.aborted && sendOptions.isCurrent?.() !== false && isCurrent?.() !== false
+            if (!guard()) throw new Error('工具所属回合已失效')
+            let receipt: DeliveryReceipt
+            try { receipt = normalizeDeliveryReceipt(await ports.messageActions.sendMusic({
+              version: 1, kind: 'music.send', target, music: owned,
+              ...(sendOptions.binding ? { binding: sendOptions.binding } : {}),
+            }, { isCurrent: guard, ...(signal ? { signal } : {}) })) }
+            catch { receipt = { state: 'unknown' } }
+            if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
+            if (receipt.state === 'sent') {
+              sentMusic.add(fingerprint)
+              rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
+              try { await recordToolSend() }
+              catch { memoryBox.deliveryUnknown = true; return { state: 'unknown' } }
+            }
+            return receipt
+          })
+        }
+        const sendAgentToolMedia = (media: SendMediaAction['media'], isCurrent?: () => boolean, signal?: AbortSignal): Promise<DeliveryReceipt> => {
+          const owned = validateAgentMedia(media)
+          return queueToolSend(async () => {
+            if (isCurrent?.() === false || signal?.aborted) throw new Error('工具所属回合已失效')
+            await ensureToolSend()
+            if (ephemeralRead) return { state: 'failed', code: 'temporary_sources' }
+            const spoken = owned.kind === 'audio' ? owned.spokenText : undefined
+            if (spoken !== undefined) {
+              const redacted = redactInternalStatusLeaks(sanitizeFinalReplyText(spoken))
+              if (redacted.heavy || redacted.text.trim() !== spoken.trim() || looksLikeToolArguments(spoken)) return { state: 'failed', code: 'unsafe_spoken_text' }
+            }
+            const fingerprint = createHash('sha256').update(owned.kind).update('\0').update(owned.mime).update('\0').update(owned.base64).digest('hex')
+            if (sentMedia.has(fingerprint) || spoken && memoryBox.sentTexts.includes(spoken)) return { state: 'failed', code: 'duplicate_media' }
+            if (!ports.messageActions?.sendMedia) return { state: 'failed', code: 'media_delivery_unavailable' }
+            assertToolSendAllowance()
+            if (spoken) await reviewCandidate('toolReply', { messages: [spoken] })
+            await ensureExecution()
+            const guard = () => !signal?.aborted && sendOptions.isCurrent?.() !== false && isCurrent?.() !== false
+            if (!guard()) throw new Error('工具所属回合已失效')
+            let receipt: DeliveryReceipt
+            try { receipt = normalizeDeliveryReceipt(await ports.messageActions.sendMedia({
+              version: 1, kind: 'media.send', target, media: owned,
+              ...(sendOptions.binding ? { binding: sendOptions.binding } : {}),
+            }, { isCurrent: guard, ...(signal ? { signal } : {}) })) }
+            catch { receipt = { state: 'unknown' } }
+            if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
+            if (receipt.state === 'sent') {
+              sentMedia.add(fingerprint)
+              if (spoken) memoryBox.sentTexts.push(spoken)
+              rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
+              try { await recordToolSend() }
+              catch { memoryBox.deliveryUnknown = true; return { state: 'unknown' } }
+            }
+            return receipt
+          })
+        }
+        const sendAgentToolFile = (file: AgentFileUpload, isCurrent?: () => boolean, signal?: AbortSignal): Promise<FileDeliveryReceipt> => {
+          const owned = validateAgentFileUpload(file)
+          return queueToolSend(async () => {
+            if (isCurrent?.() === false || signal?.aborted) throw new Error('工具所属回合已失效')
+            await ensureToolSend()
+            if (ephemeralRead) return { state: 'failed', code: 'temporary_sources' }
+            const text = agentFileUploadText(owned)
+            for (const value of [owned.name, ...(text === undefined ? [] : [text])]) {
+              const cleaned = sanitizeFinalReplyText(value), redacted = redactInternalStatusLeaks(cleaned)
+              if (redacted.heavy || redacted.text.trim() !== value.trim() || looksLikeToolArguments(value)) return { state: 'failed', code: 'unsafe_file_text' }
+            }
+            const fingerprint = createHash('sha256').update(owned.name).update('\0').update(owned.mime).update('\0').update(owned.base64).digest('hex')
+            if (sentFiles.has(fingerprint)) return { state: 'failed', code: 'duplicate_file' }
+            if (!ports.messageActions?.sendFile) return { state: 'failed', code: 'file_delivery_unavailable' }
+            assertToolSendAllowance()
+            if (text !== undefined && text.trim()) await reviewCandidate('toolReply', { messages: [text] })
+            await ensureExecution()
+            const guard = () => !signal?.aborted && sendOptions.isCurrent?.() !== false && isCurrent?.() !== false
+            if (!guard()) throw new Error('工具所属回合已失效')
+            let receipt: FileDeliveryReceipt
+            try { receipt = normalizeFileDeliveryReceipt(await ports.messageActions.sendFile({
+              version: 1, kind: 'file.upload', target, file: owned,
+              ...(sendOptions.binding ? { binding: sendOptions.binding } : {}),
+            }, { isCurrent: guard, ...(signal ? { signal } : {}) })) }
+            catch { receipt = { state: 'unknown' } }
+            if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
+            if (receipt.state === 'uploaded') {
+              sentFiles.add(fingerprint)
+              if (receipt.messageId) rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
+              try { await recordToolSend() }
+              catch {
+                // The platform accepted the file. A failed local budget write must
+                // still fence callers that catch errors or misreport success.
+                memoryBox.deliveryUnknown = true
+                return { state: 'unknown' }
+              }
+            }
+            return receipt
+          })
+        }
+        const sentToolMessages = new Set<string>()
+        const sendAgentToolMessage = (message: AgentToolMessage, isCurrent?: () => boolean): Promise<DeliveryReceipt> => {
+          const owned = validateAgentToolMessage(message)
+          const text = owned.text, mentions = [...(owned.mentionUserIds ?? [])]
+          return queueToolSend(async () => {
+            if (isCurrent?.() === false) throw new Error('工具所属回合已失效')
+            await ensureToolSend()
+            if (looksLikeToolArguments(text)) throw new Error('工具回复含参数内容，已拦截')
+            const redacted = redactInternalStatusLeaks(sanitizeFinalReplyText(text))
+            if (redacted.heavy || text.trim() && !redacted.text) throw new Error('通知内容无法安全发送')
+            const cleaned = redacted.text || ' '
+            const fingerprint = JSON.stringify([cleaned, [...mentions].sort()])
+            if (sentToolMessages.has(fingerprint) || (redacted.text && memoryBox.sentTexts.includes(redacted.text))) return { state: 'failed', code: 'duplicate_message' }
+            assertToolSendAllowance()
+            if (redacted.text) await reviewCandidate('toolReply', { messages: [redacted.text] })
+            await ensureExecution()
+            const guard = () => sendOptions.isCurrent?.() !== false && isCurrent?.() !== false
+            if (!guard()) throw new Error('工具所属回合已失效')
+            let receipt: DeliveryReceipt
+            try {
+              const delivered = await sendTextMessage(groupId, self.id, cleaned, { ...sendOptions, isCurrent: guard }, mentions)
+              receipt = delivered.unknown ? { state: 'unknown' } : delivered.ok && delivered.messageId
+                ? { state: 'sent', messageId: String(delivered.messageId) } : { state: 'failed', code: 'message_delivery_failed' }
+            } catch { receipt = { state: 'unknown' } }
+            if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
+            if (receipt.state === 'sent') {
+              sentToolMessages.add(fingerprint)
+              if (redacted.text) memoryBox.sentTexts.push(redacted.text)
+              rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
+              await recordToolSend()
+            }
+            return receipt
+          })
+        }
+        const coalesceBundleParts = (parts: readonly MessageBundlePart[]) => {
+          const combined: MessageBundlePart[] = []
+          for (const part of parts) {
+            const previous = combined.at(-1)
+            if (part.kind === 'text' && previous?.kind === 'text') combined[combined.length - 1] = { kind: 'text', text: previous.text + part.text }
+            else combined.push(part)
+          }
+          return combined
+        }
+        const sendAgentToolBundle = (items: readonly MessageBundleItem[], isCurrent?: () => boolean): Promise<DeliveryReceipt> => {
+          // Take ownership before waiting behind another send in this turn.
+          const owned = validateMessageBundle(items)
+          return queueToolSend(async () => {
+            if (isCurrent?.() === false) throw new Error('工具所属回合已失效')
+            await ensureToolSend()
+            if (isCurrent?.() === false) throw new Error('工具所属回合已失效')
+            const hasImages = owned.some(item => item.parts.some(part => part.kind === 'image'))
+            const cleaned = validateMessageBundle(owned.map(item => {
+              // QQ displays successive text segments without an inserted separator.
+              // Validate that actual text, not each attacker-controlled fragment.
+              const fullText = item.parts.flatMap(part => part.kind === 'text' ? [part.text] : []).join('')
+              if (looksLikeToolArguments(fullText)) throw new Error('工具回复含参数内容，已拦截')
+              const parts = coalesceBundleParts(item.parts).map(part => {
+                if (part.kind !== 'text') return part
+                if (looksLikeToolArguments(part.text)) throw new Error('工具回复含参数内容，已拦截')
+                const text = sanitizeFinalReplyText(part.text)
+                const redacted = redactInternalStatusLeaks(text)
+                if (!text || redacted.heavy || !redacted.text) throw new Error('工具回复包含内部状态或清理后为空，已拦截')
+                // A rendered card cannot be edited by the text sanitizer. Reject a
+                // changed companion text rather than send pixels of its old version.
+                if (hasImages && redacted.text !== part.text) throw new Error('图文内容需要清理，未发送')
+                return { kind: 'text' as const, text: redacted.text }
+              })
+              const cleanedText = parts.flatMap(part => part.kind === 'text' ? [part.text] : []).join('')
+              if (fullText && redactInternalStatusLeaks(sanitizeFinalReplyText(fullText)).text !== cleanedText) throw new Error('合并文字需要清理，未发送')
+              // Preserve already-valid 4000-character segments when no content
+              // changed; a temporary coalesced run may exceed the per-part cap.
+              if (cleanedText === fullText) return item
+              return { parts }
+            }))
+            const fingerprint = createHash('sha256').update(JSON.stringify(cleaned.map(item => coalesceBundleParts(item.parts)))).digest('hex')
+            if (sentBundles.has(fingerprint)) return { state: 'failed', code: 'duplicate_bundle' }
+            if (!ports.messageActions?.sendBundle) return { state: 'failed', code: 'bundle_delivery_unavailable' }
+            const texts = cleaned.map(item => item.parts.flatMap(part => part.kind === 'text' ? [part.text] : []).join('')).filter(Boolean)
+            assertToolSendAllowance()
+            if (texts.length) await reviewCandidate('toolReply', { messages: texts })
+            await ensureExecution()
+            const guard = () => sendOptions.isCurrent?.() !== false && isCurrent?.() !== false
+            if (!guard()) throw new Error('工具所属回合已失效')
+            let receipt: DeliveryReceipt
+            try {
+              receipt = normalizeDeliveryReceipt(await ports.messageActions.sendBundle({
+                version: 1, kind: 'message.bundle.send', target, items: cleaned,
+                ...(sendOptions.binding ? { binding: sendOptions.binding } : {}),
+              }, { isCurrent: guard }))
+            } catch { receipt = { state: 'unknown' } }
+            if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
+            if (receipt.state === 'sent') {
+              sentBundles.add(fingerprint)
+              memoryBox.sentTexts.push(...texts)
+              rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
+              await recordToolSend()
+            }
+            return receipt
+          })
+        }
+        const sendAgentToolImage = (image: { readonly mime: string; readonly base64: string }, isCurrent?: () => boolean): Promise<DeliveryReceipt> => queueToolSend(async () => {
           if (isCurrent?.() === false) throw new Error('工具所属回合已失效')
           await ensureToolSend()
           if (isCurrent?.() === false) throw new Error('工具所属回合已失效')
-          const hasImages = owned.some(item => item.parts.some(part => part.kind === 'image'))
-          const cleaned = validateMessageBundle(owned.map(item => {
-            // QQ displays successive text segments without an inserted separator.
-            // Validate that actual text, not each attacker-controlled fragment.
-            const fullText = item.parts.flatMap(part => part.kind === 'text' ? [part.text] : []).join('')
-            if (looksLikeToolArguments(fullText)) throw new Error('工具回复含参数内容，已拦截')
-            const parts = coalesceBundleParts(item.parts).map(part => {
-              if (part.kind !== 'text') return part
-              if (looksLikeToolArguments(part.text)) throw new Error('工具回复含参数内容，已拦截')
-              const text = sanitizeFinalReplyText(part.text)
-              const redacted = redactInternalStatusLeaks(text)
-              if (!text || redacted.heavy || !redacted.text) throw new Error('工具回复包含内部状态或清理后为空，已拦截')
-              // A rendered card cannot be edited by the text sanitizer. Reject a
-              // changed companion text rather than send pixels of its old version.
-              if (hasImages && redacted.text !== part.text) throw new Error('图文内容需要清理，未发送')
-              return { kind: 'text' as const, text: redacted.text }
-            })
-            const cleanedText = parts.flatMap(part => part.kind === 'text' ? [part.text] : []).join('')
-            if (fullText && redactInternalStatusLeaks(sanitizeFinalReplyText(fullText)).text !== cleanedText) throw new Error('合并文字需要清理，未发送')
-            // Preserve already-valid 4000-character segments when no content
-            // changed; a temporary coalesced run may exceed the per-part cap.
-            if (cleanedText === fullText) return item
-            return { parts }
-          }))
-          const fingerprint = createHash('sha256').update(JSON.stringify(cleaned.map(item => coalesceBundleParts(item.parts)))).digest('hex')
-          if (sentBundles.has(fingerprint)) return { state: 'failed', code: 'duplicate_bundle' }
-          if (!ports.messageActions?.sendBundle) return { state: 'failed', code: 'bundle_delivery_unavailable' }
-          const texts = cleaned.map(item => item.parts.flatMap(part => part.kind === 'text' ? [part.text] : []).join('')).filter(Boolean)
+          const validated = validateAgentToolImage(image)
+          if (!ports.messageActions) return { state: 'failed', code: 'image_delivery_unavailable' }
           assertToolSendAllowance()
-          if (texts.length) await reviewCandidate('toolReply', { messages: texts })
           await ensureExecution()
           const guard = () => sendOptions.isCurrent?.() !== false && isCurrent?.() !== false
           if (!guard()) throw new Error('工具所属回合已失效')
           let receipt: DeliveryReceipt
           try {
-            receipt = normalizeDeliveryReceipt(await ports.messageActions.sendBundle({
-              version: 1, kind: 'message.bundle.send', target, items: cleaned,
+            receipt = normalizeDeliveryReceipt(await ports.messageActions.send({
+              version: 1, kind: 'message.send', target,
+              parts: [{ kind: 'image', resource: { kind: 'reference', value: `base64://${validated.base64}` } }],
               ...(sendOptions.binding ? { binding: sendOptions.binding } : {}),
             }, { isCurrent: guard }))
           } catch { receipt = { state: 'unknown' } }
           if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
           if (receipt.state === 'sent') {
-            sentBundles.add(fingerprint)
-            memoryBox.sentTexts.push(...texts)
             rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
             await recordToolSend()
           }
           return receipt
         })
-      }
-      const sendAgentToolImage = (image: { readonly mime: string; readonly base64: string }, isCurrent?: () => boolean): Promise<DeliveryReceipt> => queueToolSend(async () => {
-        if (isCurrent?.() === false) throw new Error('工具所属回合已失效')
-        await ensureToolSend()
-        if (isCurrent?.() === false) throw new Error('工具所属回合已失效')
-        const validated = validateAgentToolImage(image)
-        if (!ports.messageActions) return { state: 'failed', code: 'image_delivery_unavailable' }
-        assertToolSendAllowance()
-        await ensureExecution()
-        const guard = () => sendOptions.isCurrent?.() !== false && isCurrent?.() !== false
-        if (!guard()) throw new Error('工具所属回合已失效')
-        let receipt: DeliveryReceipt
-        try {
-          receipt = normalizeDeliveryReceipt(await ports.messageActions.send({
-            version: 1, kind: 'message.send', target,
-            parts: [{ kind: 'image', resource: { kind: 'reference', value: `base64://${validated.base64}` } }],
-            ...(sendOptions.binding ? { binding: sendOptions.binding } : {}),
-          }, { isCurrent: guard }))
-        } catch { receipt = { state: 'unknown' } }
-        if (receipt.state === 'unknown') memoryBox.deliveryUnknown = true
-        if (receipt.state === 'sent') {
-          rememberDelivery(state!, { ok: true, messageId: receipt.messageId })
-          await recordToolSend()
-        }
-        return receipt
-      })
-      const toolReply = (payload: unknown) => queueToolSend(async () => {
-        await ensureToolSend()
-        const segments = normalizeReplyPayload(payload)
-        const safeSegments = segments.map(segment => {
-          const item = record(segment)
-          if (item.type !== 'text') return segment
-          const text = String(record(item.data).text || '')
-          if (looksLikeToolArguments(text)) throw new Error('工具回复含参数内容，已拦截')
-          const sanitized = sanitizeFinalReplyText(text)
-          if (!sanitized) throw new Error('工具回复清理后为空')
-          const redacted = redactInternalStatusLeaks(sanitized)
-          if (redacted.heavy) throw new Error('工具回复包含内部状态，已拦截')
-          return { ...item, data: { ...record(item.data), text: redacted.text } }
-        })
-        const replySeen = new Set(memoryBox.sentTexts)
-        let duplicatesSkipped = 0
-        const transportSegments = safeSegments.filter(segment => {
-          if (record(segment).type !== 'text') return true
-          const text = String(record(record(segment).data).text || '')
-          if (replySeen.has(text)) { duplicatesSkipped++; return false }
-          replySeen.add(text); return true
-        })
-        const replyTexts = transportSegments.filter(segment => record(segment).type === 'text').map(segment => String(record(record(segment).data).text || ''))
-        if (!transportSegments.some(segment => !['at', 'reply'].includes(String(record(segment).type)))) return { message_id: '', sent: 0, duplicatesSkipped }
-        assertToolSendAllowance()
-        if (replyTexts.length) await reviewCandidate('toolReply', { messages: replyTexts })
-        await ensureExecution()
-        let receipt
-        try { receipt = await sendNativeMessage(target, transportSegments, sendOptions) }
-        catch { memoryBox.deliveryUnknown = true; throw new Error('工具消息传输中断，是否送达未知，本回合不再发送') }
-        if (receipt.unknown) { memoryBox.deliveryUnknown = true; throw new Error('工具消息回执未确认，是否送达未知，本回合不再发送') }
-        if (!receipt.ok) throw new Error(receipt.error || '发送失败')
-        memoryBox.sentTexts.push(...replyTexts)
-        await recordToolSend()
-        return { message_id: receipt.messageId ?? '', data: { message_id: receipt.messageId ?? '' } }
-      })
-      const allowedTool = (name: string) => actor.kind === 'user' || (
-        !AUTONOMOUS_DENIED_SIM_TOOLS.includes(name) && (simulationTools.some(tool => tool.name === name) || characterTools.some(tool => tool.name === name) || name === finishTool.name || activityTools.some(tool => tool.name === name) ||
-          (ports.isExtraToolAutonomous?.(name) !== false && (AUTONOMOUS_EXTRA_TOOLS.includes(name) ||
-            (AUTONOMOUS_CREATIVE_TOOLS.includes(name) && (ports.getSection().autonomousTools || []).includes(name) && resolveExtraToolNames(runtimeConfig(), groupId).includes(name)))))
-      )
-      const ensureExecution = async (permit?: AnnouncementPermit) => {
-        if (turnClosed && !permit) throw new Error('回合已结束，未执行')
-        if (stopped) throw new Error('仿真运行时已停止')
-        await refreshGroupState(true)
-        await checkCommitment()
-        if (!groupActive(runtimeConfig(), groupId)) throw new Error('本群仿真已关闭')
-        if (!isBindingCurrent()) throw new Error('角色绑定已改变，本回合停止行动')
-        if (memoryTurn?.isCurrent() === false) throw new Error('人物记忆权限已改变，本回合停止行动')
-        await assertTriggerCurrent()
-        await assertGroupMemoryCurrent()
-        if ((await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt) {
-          visibleMessageSeqs.clear()
-          state!.recent = await redactSceneMessages(characterScope, state!.recent)
-          state!.unread = await redactSceneMessages(characterScope, state!.unread)
-          throw new Error('人物记忆来源已改变，停止使用旧上下文')
-        }
-        if (await shared.fingerprint() !== sharedFingerprint) throw new Error('共享偏好已改变，停止使用旧上下文')
-        character = await characters.load(characterScope)
-        if ([...sourceMemoryIds].some(id => !activeCharacterMemories(character).some(memory => memory.id === id))) throw new Error('本轮引用的记忆已被删除，停止使用旧上下文')
-        if (actor.kind === 'autonomous' && (character.paused || (overridesCache?.atOnly || []).includes(groupId))) throw new Error('自主行动已暂停或仅被@回应')
-        if (focusedGoalId && (overridesCache?.atOnly || []).includes(groupId)) throw new Error('本群已切为仅被@回应，自主目标暂停执行')
-        if (permit && character.revision !== permit.revision) throw new Error('收尾保存后角色状态已改变，停止公告或标读')
-        if (focusedGoalId) {
-          const goal = character.goals.find(item => item.id === focusedGoalId)
-          if (permit) {
-            if (!goal || goal.revision !== permit.goalRevision || goal.status !== permit.goalStatus || ['paused', 'failed'].includes(goal.status) || (['active', 'waiting'].includes(goal.status) && goal.expiresAt <= now())) throw new Error('收尾目标已改变或到期，停止公告或标读')
-          } else if (!goal || !['active', 'waiting'].includes(goal.status) || goal.expiresAt <= now() || goal.revision !== focusedGoalRevision) throw new Error('目标已暂停、取消、到期或更新，本回合停止行动')
-        }
-        // Last asynchronous read before the caller executes/sends: the console
-        // may have revoked the work while the permission checks were pending.
-        if (await store.loadActivityVersion(groupId) !== activityVersion) throw new Error('角色活动内容已被管理员撤销，停止旧回合')
-        if (!isBindingCurrent()) throw new Error('角色绑定已改变，本回合停止行动')
-        if (memoryTurn?.isCurrent() === false) throw new Error('人物记忆权限已改变，本回合停止行动')
-      }
-      const finishTurn = async (result: CharacterTurnFinishResult) => {
-        turnClosed = true
-        if (result.decision) decision = result.decision
-        const committedGoal = result.state.goals.find(goal => goal.id === focusedGoalId)
-        const permit: AnnouncementPermit = {
-          revision: result.state.revision,
-          ...(committedGoal ? { goalRevision: committedGoal.revision, goalStatus: committedGoal.status } : {}),
-        }
-        let sendStatus: 'not_requested' | 'succeeded' | 'failed' = 'not_requested'
-        let readStatus: 'not_requested' | 'succeeded' | 'failed' = 'not_requested'
-        let error: string | undefined
-        let duplicatesSkipped = 0
-        const sentBefore = sends
-        const finishErrorText = (failure: unknown) => uncertainAction || memoryBox.deliveryUnknown
-          ? '前序外部动作结果未知，已保存收尾状态；核实前不再发送公告'
-          : safeToolErrorText('simFinishTurn', failure)
-        if (result.messages) {
-          sendStatus = 'failed'
-          const id = randomUUID()
-          let pending: CharacterReceipt | undefined
-          try {
-            if (uncertainAction || memoryBox.deliveryUnknown) throw new Error('前序外部动作结果未知，已保存收尾状态；核实前不再发送公告')
-            await ensureExecution(permit)
-            character = await characters.update(characterScope, current => {
-              if (current.revision !== permit.revision) throw new Error('角色状态已改变，公告未登记')
-              return recordCharacterReceipt(current, { id, toolName: 'simFinishTurn', status: 'pending', summary: '收尾状态已保存，等待最终消息发送回执', at: now() }, now())
-            })
-            permit.revision = character.revision
-            pending = character.receipts.find(receipt => receipt.id === id)!
-            announcement = permit
-            const sender = simulationTools.find(tool => tool.name === 'simSendMessage')!
-            const response = await runSimTool(sender, {
-              continuation: 'chat', messages: result.messages,
-              ...(result.replyToSeq === undefined ? {} : { replyToSeq: result.replyToSeq }),
-              ...(result.atUserIds === undefined ? {} : { atUserIds: result.atUserIds }),
-            }, toolEvent, actor, toolReply)
-            sendStatus = classifyCharacterResult(response) === 'succeeded' ? 'succeeded' : 'failed'
-            try { duplicatesSkipped = Number(record(JSON.parse(response.replace(/^error: /, ''))).duplicatesSkipped) || 0 } catch { /* error response retains its own delivery evidence */ }
-            if (sendStatus === 'failed') error = response
-          } catch (failure) { error = finishErrorText(failure) }
-          finally { announcement = undefined }
-          if (pending) {
-            try {
-              character = await characters.update(characterScope, current => {
-                if (current.revision !== permit.revision) throw new Error('公告期间角色状态已改变，保留 pending 待核实，不覆盖新状态')
-                return recordCharacterReceipt(current, { ...pending, status: sendStatus === 'succeeded' ? 'succeeded' : memoryBox.deliveryUnknown || sends > sentBefore ? 'unknown' : 'failed', summary: sendStatus === 'succeeded' ? `最终消息已确认发送 ${sends - sentBefore} 条，跳过重复 ${duplicatesSkipped} 条` : '最终消息发送未全部确认；已保存状态保留，不自动重发', at: now() }, now())
-              })
-              permit.revision = character.revision
-            } catch (failure) {
-              error = finishErrorText(failure)
-              logger.warn(`[仿真] 群 ${groupId} 收尾发送最终回执未保存，禁止自动重发`)
-            }
-          }
-        }
-        if (sendStatus === 'failed') executionError = error || '最终消息未确认'
-        if (memoryBox.deliveryUnknown) uncertainAction = true
-        if (result.throughSeq !== undefined) {
-          readStatus = 'failed'
-          try {
-            if (sendStatus === 'failed') throw new Error('最终消息未确认，保留未读，已保存角色状态不回滚')
-            await ensureExecution(permit)
-            if (!acknowledgeMessages(state!, result.throughSeq)) throw new Error('标读范围已改变，保留未读')
-            await store.save(groupId, state!)
-            readStatus = 'succeeded'
-          } catch (failure) { error = finishErrorText(failure) }
-        }
-        if (error) executionError = error
-        const outcome = {
-          ok: true, choice: result.choice, saved: true,
-          ...(result.goal ? { goal: result.goal } : {}), memories: result.memories || [],
-          ...(result.decision ? { decision: result.decision } : {}),
-          sendStatus, sent: sends - sentBefore, duplicatesSkipped, ...(memoryBox.deliveryUnknown ? { deliveryUnknown: true } : {}), readStatus, ...(error ? { error: error.slice(0, 500) } : {}),
-        }
-        if (JSON.stringify(outcome).length <= 3500) return outcome
-        // Preserve a whole acknowledgement within the tool-history budget.
-        // Full records remain in storage and can be read with the paged tools.
-        const recordHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
-        return { ...outcome,
-          ...(result.goal ? { goal: { id: result.goal.id, revision: result.goal.revision, status: result.goal.status, recordHash: recordHash(result.goal) } } : {}),
-          memories: (result.memories || []).map(memory => ({ id: memory.id, recordHash: recordHash(memory) })),
-        }
-      }
-      const socialAttempts = new Set<SocialAction>()
-      const judgeSocial = async (action: SocialAction, proposed: unknown) => {
-        if (!triggerMessage || !ports.judgeSocialPermission || socialAttempts.has(action)) return 'unclear'
-        if (action === 'follow_up' && triggerMessage.textTruncated) return 'unclear'
-        socialAttempts.add(action)
-        const started = now()
-        const timeout = AbortSignal.timeout(12_000)
-        const signal = memoryTurn ? AbortSignal.any([timeout, memoryTurn.signal]) : timeout
-        try {
-          const response = await ports.judgeSocialPermission(buildSocialPermissionRequest(action, triggerMessage.text, proposed), ports.getExecutionConfig(), signal, canCallModel, ensureModelCurrent)
-          const usage = record(response.usage)
-          tokens += Number(usage.total_tokens) || 0
-          try { ports.recordTokens?.({ scope: groupId, stage: 'sim-social-permission', model: String(response.model || ''), usage, ms: now() - started }) } catch { /* aggregate still counts usage */ }
-          return signal.aborted ? 'unclear' : readSocialVerdict(action, triggerMessage.text, response)
-        } catch { return 'unclear' }
-      }
-      const executeTool = async (tool: typeof tools[number], args: Record<string, unknown>) => {
-        if (turnClosed) return 'error: 回合已结束，未执行'
-        const ephemeralTool = extraTools.includes(tool) && tool.agentDataPolicy === 'ephemeral'
-        if (ephemeralRead) {
-          // Explicit historical evidence has a revocable, per-turn grant. Do
-          // not turn it (or a model paraphrase) into durable role state/actions.
-          if (tool === finishTool) {
-            if (args.goal !== undefined || Array.isArray(args.memories) && args.memories.length || ['schedule', 'wait', 'complete', 'abandon'].includes(String(args.choice))) return `error: 本轮${historyRead ? '历史' : '文件'}资料仅供临时查证，不能保存为记忆、目标或派生作品；请回复或安静收尾`
-            args = { ...args, reason: '本轮临时资料仅用于查证' }
-          } else if (!ephemeralTool && !['chatHistoryTool', 'excelWorkbookTool', 'simSendMessage', 'simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simMarkRead'].includes(tool.name)) {
-            return `error: 本轮${historyRead ? '历史' : '文件'}资料仅供临时查证，请继续查询或回复，不保存派生状态或执行其他动作`
-          }
-        }
-        if (requiresClosing && tool !== finishTool) return 'error: 已进入收尾阶段，仅允许 simFinishTurn，未执行'
-        if (!requiresClosing && tool === finishTool && Array.isArray(args.memories) &&
-          args.memories.some(memory => ['pendingEvent', 'interaction'].includes(String(record(memory).kind)))) {
-          return 'error: 本群社交记忆未保存。请先单独调用 simRemember 保存 pendingEvent 或 interaction，成功后再用 simFinishTurn 收尾。'
-        }
-        // A failed save cannot subsequently fall through the ordinary-text sender.
-        if (tool === finishTool) requiresClosing = true
-        if (tool.name === 'simWorkerTask' && ports.characterWorkerAvailable?.() === false) return 'error: 工作器连接已停用'
-        if (!allowedTool(tool.name)) return 'error: 自主执行主体没有此工具权限，不能借用群友身份'
-        try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
-        if (tool.name === 'simRemember') {
-          proactiveSourceSeq = undefined
-          if (args.kind === 'pendingEvent' && args.scope !== 'self' && actor.kind === 'user' && actor.userId &&
-            (args.aboutUser === undefined || String(args.aboutUser) === actor.userId)) {
-            args = { ...args, aboutUser: actor.userId }
-            if (args.welcomeProactiveFollowUp === true &&
-              await judgeSocial('follow_up', args.content) === 'explicit_invitation' &&
-              triggerMessage && state!.recent.some(message => message.seq === triggerMessage.seq)) {
-              proactiveSourceSeq = triggerMessage.seq
-            }
-            try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
-          }
-        }
-        const newGoal = tool === finishTool && args.choice === 'schedule' ? args.goal : tool.name === 'simGoal' && args.action === 'create' ? args : undefined
-        if (newGoal && triggerMessage && ports.judgeSocialPermission) {
-          if (await judgeSocial('goal', newGoal) !== 'own_goal') {
-            // Nothing has been saved. Allow a valid chat or silent close.
-            if (tool === finishTool) requiresClosing = false
-            return 'error: 此安排没有核实为角色自己的目标。社交问候用 simRemember；请正常聊天或安静收尾。'
-          }
-          try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
-        }
-        if ((decision === 'silent' || decision === 'deferred') && ['simSendMessage', 'simShareVideoCard', 'simSendPoke', 'simQzoneInteract', 'sendLocalEmojiTool'].includes(tool.name)) return 'error: 本轮已选择沉默或暂缓'
-        if (tool === finishTool && Object.hasOwn(args, 'throughSeq') && (typeof args.throughSeq !== 'number' || !Number.isSafeInteger(args.throughSeq) || args.throughSeq < 0 || args.throughSeq > readThroughSeq(state!))) return 'error: throughSeq 超过了实际看过的范围或不是非负整数，本次未保存'
-        if (tool === finishTool && Object.hasOwn(args, 'replyToSeq') && (typeof args.replyToSeq !== 'number' || !Number.isSafeInteger(args.replyToSeq) || args.replyToSeq < 1 || ![...state!.unread, ...state!.recent].some(message => message.seq === args.replyToSeq))) return 'error: replyToSeq 不是近期消息的有效序号，本次未保存'
-        const internal = tool === finishTool || characterTools.includes(tool) || ['simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simMarkRead', 'simWaitForMessages', 'simSetWakeConfig', 'simGetGroupMembers', 'simGetMessageImages', 'simGetForward'].includes(tool.name)
-          || (['simRemember', 'simLifeThread'].includes(tool.name) && args.action === 'list')
-        const activityRead = ['simWorkspace', 'simSubscription', 'simSharedSelf'].includes(tool.name) && ['list', 'read'].includes(String(args.action))
-        if (uncertainAction && !internal && !activityRead) return 'error: 前序外部动作结果未知，本回合不再执行外部动作，核实前禁止重复提交或发送'
-        if (extraTools.includes(tool) && (ephemeralTool || tool.name === 'excelWorkbookTool' || ports.readHistory && tool.name === 'chatHistoryTool')) {
-          // File reads (including failures and directory listings) must bypass
-          // durable action receipts before the tool can expose any content.
-          ephemeralRead = true
-          const result = await runSimTool(tool, args, toolEvent, actor, toolReply)
-          try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
-          return result
-        }
-        if (internal) {
-          const result = await runSimTool(tool, args, toolEvent, actor, toolReply)
-          if (['simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simGetMessageImages', 'simGetForward', 'simWaitForMessages'].includes(tool.name)) {
-            try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
-          }
-          exposeToolResult(tool.name, result.slice(0, 4000))
-          return result
-        }
-        const id = randomUUID()
-        try {
-          character = await characters.update(characterScope, current => focusedGoalId
-            ? beginCharacterGoalAction(current, focusedGoalId, { id, toolName: tool.name }, now(), focusedGoalRevision)
-            : recordCharacterReceipt(current, { id, toolName: tool.name, status: 'pending', summary: '等待工具回执', at: now() }, now()))
-        } catch (error) { return safeToolErrorText(tool.name, error) }
-        const pending = character.receipts.find(item => item.id === id)!
-        // A cancellation arriving while persistence was pending must be observed before the external call.
-        try { await ensureExecution() } catch (error) {
-          character = await characters.update(characterScope, current => recordCharacterReceipt(current, { ...pending, status: 'failed', summary: '执行前已取消或授权变化，未调用工具', at: now() }, now()))
-          return safeToolErrorText(tool.name, error)
-        }
-        let reported: 'succeeded' | 'failed' | undefined
-        const alreadyUnknown = memoryBox.deliveryUnknown
-        let result = await runSimTool(tool, args, toolEvent, actor, toolReply, status => { reported = status }, tool.name === 'simWorkerTask' ? id : undefined)
-        let status = memoryBox.deliveryUnknown && !alreadyUnknown ? 'unknown' : reported ?? classifyCharacterResult(result)
-        if (status === 'unknown') uncertainAction = true
-        if (status === 'failed') executionError = '工具执行失败，承诺未完整兑现'
-        if (status === 'succeeded' && (extraTools.includes(tool) || tool.name === 'simWorkerTask' || (tool.name === 'simWorkspace' && ['write', 'restore'].includes(String(args.action))))) confirmedActions++
-        if (tool.name === 'simWorkerTask' && status === 'succeeded') {
-          try {
-            const value = record(JSON.parse(result)), artifact = record(value.artifact)
-            if (typeof artifact.content === 'string' && typeof artifact.title === 'string') {
-              await ensureExecution()
-              const work = await workspace.write({ title: artifact.title.slice(0,120), kind: 'research', content: artifact.content, evidenceRefs: [`receipt:${id}`], ...(sharedIds.length ? {sharedSources: sharedIds} : {}) })
-              result = formatSavedCharacterWorkResult(String(value.summary || ''), id, work, artifact.content)
-            }
-          } catch {
-            uncertainAction = true
-            status = 'unknown'
-            executionError = '工作器已执行，但作品未能保存'
-            result = JSON.stringify({ status, summary: '工作器返回成功，但作品未能保存，请核对回执后处理。' })
-          }
-        }
-        const summary = ephemeralRead ? `${tool.name}: ${status}（临时资料正文不留存）` : redactInternalStatusLeaks(result).text.slice(0, 500) || `${tool.name}: ${status}`
-        const receipt: CharacterReceipt = { ...pending, status, summary, at: now() }
-        // Finalize once, after worker artifacts are saved. A lost write leaves
-        // pending for unknown recovery; an immutable success must not precede it.
-        character = await characters.update(characterScope, current => recordCharacterReceipt(current, receipt, now()))
-        if (status === 'unknown' && focusedGoalId && !(ports.isExtraToolAutonomous?.(tool.name) !== false && AUTONOMOUS_EXTRA_TOOLS.includes(tool.name))) {
-          character = await characters.update(characterScope, current => {
-            const goal = current.goals.find(item => item.id === focusedGoalId)
-            return goal && ['active', 'waiting'].includes(goal.status)
-              ? transitionCharacterGoal(current, goal.id, 'paused', { now: now(), lastOutcome: '外部动作结果未知，暂停以免重复副作用；核对后由管理员恢复' }) : current
+        const toolReply = (payload: unknown) => queueToolSend(async () => {
+          await ensureToolSend()
+          const segments = normalizeReplyPayload(payload)
+          const safeSegments = segments.map(segment => {
+            const item = record(segment)
+            if (item.type !== 'text') return segment
+            const text = String(record(item.data).text || '')
+            if (looksLikeToolArguments(text)) throw new Error('工具回复含参数内容，已拦截')
+            const sanitized = sanitizeFinalReplyText(text)
+            if (!sanitized) throw new Error('工具回复清理后为空')
+            const redacted = redactInternalStatusLeaks(sanitized)
+            if (redacted.heavy) throw new Error('工具回复包含内部状态，已拦截')
+            return { ...item, data: { ...record(item.data), text: redacted.text } }
           })
-        }
-        visibleCharacterRefs.add(`receipt:${id}`)
-        if (!ephemeralRead) sourceResults.set(`receipt:${id}`, { toolName: tool.name, content: result.slice(0, 8000), truncated: result.length > 8000 })
-        return `${result}\n【运行时行动回执】${JSON.stringify({ evidenceRef: `receipt:${id}`, status, goalId: focusedGoalId })}`
-      }
-      const executionConfig = ports.getExecutionConfig()
-      const providerConfig = record(executionConfig) as Parameters<typeof buildChatRequestData>[0]
-      const systemPrompt = buildSimSystemPrompt({ persona: persona.persona, systemContent: persona.systemContent, selfName, hasExtraTools: extraTools.length > 0, extraToolNames, hasEmojiTool: extraToolNames.includes('sendLocalEmojiTool'), hasMoodTool: cfg.mood.enabled, availableToolNames: tools.filter(tool => allowedTool(tool.name)).map(tool => tool.name) })
-
-      const history: SimHistoryMessage[] = [...projectedHistory, wakeMessage, ...(groupMemoryContext ? [{ role: 'user' as const, content: groupMemoryContext }] : [])]
-      const firstCurrentMessage = projectedHistory.length
-      const appendToolReply = (toolCallId: string, name: string, content: string) => {
-        history.push({ role: 'tool', tool_call_id: toolCallId, name, content })
-        if (ports.recordToolResult && !ephemeralRead) {
-          const failed = () => logger.warn(`[仿真] 群 ${groupId} 工具回复观察失败，不影响执行`)
-          try {
-            // Give observers an immutable copy, and isolate an accidental async rejection too.
-            void Promise.resolve(ports.recordToolResult(Object.freeze({ toolCallId, name, content }))).catch(failed)
-          } catch { failed() }
-        }
-      }
-      type RawToolCall = NonNullable<SimHistoryMessage['tool_calls']>[number]
-      let rounds = 0
-      // 用户对话/正式托付的未外发文本兜底：自主回合的最终文本只留在内部历史。
-      let nudgedForUnsent = false
-      while (rounds < cfg.turn.maxToolRounds) {
-        rounds += 1
-        const closing = requiresClosing || rounds > cfg.turn.maxToolRounds - 2
-        const roundTools = closing ? [finishTool] : tools.filter(tool => allowedTool(tool.name))
-        const context = buildCharacterTurnContext({ phase: closing ? 'closing' : 'acting', remainingToolRounds: cfg.turn.maxToolRounds - rounds + 1, ...(focusedGoalId ? { focusedGoalId } : {}), visibleEvidenceRefs: visibleEvidenceRefs() }) +
-          (anchor ? `\n当前只回应 #${anchor.seq} 的话题；同一人的前文也仅在有关时用。throughSeq 当前上限是 ${readThroughSeq(durableWake && rounds === 1 ? projectedWatermark : state)}，可省略。` : '') +
-          (reviewer ? `\n本轮剩余提交检查次数：${Math.max(0, 3 - reviewer.stats().checks)}。将需要保存的观点、目标和最终消息合并进 simFinishTurn；检查退回后自行修正或安静放弃，检查提示不发到群里。` : '')
-        const requestHistory = history.map(({ conversationUserId: _user, ...message }) => message)
-        const currentContext = personRecall ? `${personRecall}\n\n${context}` : context
-        const requestData = buildChatRequestData(providerConfig, [{ role: 'system', content: systemPrompt }, ...requestHistory, { role: 'user', content: currentContext }], simToolsAsFunctions(roundTools), closing ? 'required' : 'auto')
-        if (closing && (!requestData.tools?.length || !requestData.tool_choice)) {
-          logger.warn(`[仿真] 群 ${groupId} 模型配置未提供收尾工具，停止本轮`)
-          if (durableWake && rounds === 1) { await discardWake(); return }
-          break
-        }
-        let response: ChatResponse
-        try {
+          const replySeen = new Set(memoryBox.sentTexts)
+          let duplicatesSkipped = 0
+          const transportSegments = safeSegments.filter(segment => {
+            if (record(segment).type !== 'text') return true
+            const text = String(record(record(segment).data).text || '')
+            if (replySeen.has(text)) { duplicatesSkipped++; return false }
+            replySeen.add(text); return true
+          })
+          const replyTexts = transportSegments.filter(segment => record(segment).type === 'text').map(segment => String(record(record(segment).data).text || ''))
+          if (!transportSegments.some(segment => !['at', 'reply'].includes(String(record(segment).type)))) return { message_id: '', sent: 0, duplicatesSkipped }
+          assertToolSendAllowance()
+          if (replyTexts.length) await reviewCandidate('toolReply', { messages: replyTexts })
+          await ensureExecution()
+          let receipt
+          try { receipt = await sendNativeMessage(target, transportSegments, sendOptions) }
+          catch { memoryBox.deliveryUnknown = true; throw new Error('工具消息传输中断，是否送达未知，本回合不再发送') }
+          if (receipt.unknown) { memoryBox.deliveryUnknown = true; throw new Error('工具消息回执未确认，是否送达未知，本回合不再发送') }
+          if (!receipt.ok) throw new Error(receipt.error || '发送失败')
+          memoryBox.sentTexts.push(...replyTexts)
+          await recordToolSend()
+          return { message_id: receipt.messageId ?? '', data: { message_id: receipt.messageId ?? '' } }
+        })
+        const allowedTool = (name: string) => actor.kind === 'user' || (
+          (!AUTONOMOUS_DENIED_SIM_TOOLS.includes(name) || actor.kind === 'autonomous' && name === 'simSendPoke' && scopedInteractions()) && (simulationTools.some(tool => tool.name === name) || characterTools.some(tool => tool.name === name) || name === finishTool.name || activityTools.some(tool => tool.name === name) ||
+            (ports.isExtraToolAutonomous?.(name) !== false && (AUTONOMOUS_EXTRA_TOOLS.includes(name) ||
+              (AUTONOMOUS_CREATIVE_TOOLS.includes(name) && (ports.getSection().autonomousTools || []).includes(name) && resolveExtraToolNames(runtimeConfig(), groupId).includes(name)))))
+        )
+        const ensureExecution = async (permit?: AnnouncementPermit) => {
+          if (turnClosed && !permit) throw new Error('回合已结束，未执行')
+          if (stopped) throw new Error('仿真运行时已停止')
+          if (!allowsConversationAI(target) || activityTurn?.isCurrent() === false) {
+            if (commitment && !commitment.started) deferred = true
+            throw new Error('本会话 AI 活动已暂停')
+          }
+          if (turnSignal.aborted) throw new Error('本轮资料权限已失效，停止行动')
+          await refreshGroupState(true)
           await checkCommitment()
+          if (!groupActive(runtimeConfig(), groupId)) throw new Error('本群仿真已关闭')
+          if (!isBindingCurrent()) throw new Error('角色绑定已改变，本回合停止行动')
+          if (memoryTurn?.isCurrent() === false) throw new Error('人物记忆权限已改变，本回合停止行动')
           await assertTriggerCurrent()
           await assertGroupMemoryCurrent()
-          if (semanticProjection?.text && !await semanticProjection.isCurrent()) throw new Error('语义记忆来源已改变，停止使用旧上下文')
-          // Goal completion can legitimately lead to a final model round. The
-          // privacy guard is independent of those action/version permissions.
           if ((await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt) {
             visibleMessageSeqs.clear()
+            state!.recent = await redactSceneMessages(characterScope, state!.recent)
+            state!.unread = await redactSceneMessages(characterScope, state!.unread)
             throw new Error('人物记忆来源已改变，停止使用旧上下文')
           }
-          if (durableWake && rounds === 1) {
-            const model = await beginWake(async () => {
-              recordWakeStart()
-              noteProactiveCheck?.()
-              noteModelSeen(turnState, snapshotSeqs)
-              const write = saveTurnContext().catch(() => logger.warn(`[仿真] 群 ${groupId} 回合上下文保存失败`))
-              try { return { response: await runFirstWakeModel(requestData) } }
-              catch (error) { return { error } }
-              finally { await write }
+          if (await shared.fingerprint() !== sharedFingerprint) throw new Error('共享偏好已改变，停止使用旧上下文')
+          character = await characters.load(characterScope)
+          if ([...sourceMemoryIds].some(id => !activeCharacterMemories(character).some(memory => memory.id === id))) throw new Error('本轮引用的记忆已被删除，停止使用旧上下文')
+          if (actor.kind === 'autonomous' && (character.paused || (overridesCache?.atOnly || []).includes(groupId))) throw new Error('自主行动已暂停或仅被@回应')
+          if (focusedGoalId && (overridesCache?.atOnly || []).includes(groupId)) throw new Error('本群已切为仅被@回应，自主目标暂停执行')
+          if (permit && character.revision !== permit.revision) throw new Error('收尾保存后角色状态已改变，停止公告或标读')
+          if (focusedGoalId) {
+            const goal = character.goals.find(item => item.id === focusedGoalId)
+            if (permit) {
+              if (!goal || goal.revision !== permit.goalRevision || goal.status !== permit.goalStatus || ['paused', 'failed'].includes(goal.status) || (['active', 'waiting'].includes(goal.status) && goal.expiresAt <= now())) throw new Error('收尾目标已改变或到期，停止公告或标读')
+            } else if (!goal || !['active', 'waiting'].includes(goal.status) || goal.expiresAt <= now() || goal.revision !== focusedGoalRevision) throw new Error('目标已暂停、取消、到期或更新，本回合停止行动')
+          }
+          // Last asynchronous read before the caller executes/sends: the console
+          // may have revoked the work while the permission checks were pending.
+          if (await store.loadActivityVersion(groupId) !== activityVersion) throw new Error('角色活动内容已被管理员撤销，停止旧回合')
+          if (!isBindingCurrent()) throw new Error('角色绑定已改变，本回合停止行动')
+          if (memoryTurn?.isCurrent() === false) throw new Error('人物记忆权限已改变，本回合停止行动')
+          if (!allowsConversationAI(target) || activityTurn?.isCurrent() === false) throw new Error('本会话 AI 活动已暂停')
+        }
+        const finishTurn = async (result: CharacterTurnFinishResult) => {
+          turnClosed = true
+          if (result.decision) decision = result.decision
+          const committedGoal = result.state.goals.find(goal => goal.id === focusedGoalId)
+          const permit: AnnouncementPermit = {
+            revision: result.state.revision,
+            ...(committedGoal ? { goalRevision: committedGoal.revision, goalStatus: committedGoal.status } : {}),
+          }
+          let sendStatus: 'not_requested' | 'succeeded' | 'failed' = 'not_requested'
+          let readStatus: 'not_requested' | 'succeeded' | 'failed' = 'not_requested'
+          let error: string | undefined
+          let duplicatesSkipped = 0
+          const sentBefore = sends
+          const finishErrorText = (failure: unknown) => uncertainAction || memoryBox.deliveryUnknown
+            ? '前序外部动作结果未知，已保存收尾状态；核实前不再发送公告'
+            : safeToolErrorText('simFinishTurn', failure)
+          if (result.messages) {
+            sendStatus = 'failed'
+            const id = randomUUID()
+            let pending: CharacterReceipt | undefined
+            try {
+              if (uncertainAction || memoryBox.deliveryUnknown) throw new Error('前序外部动作结果未知，已保存收尾状态；核实前不再发送公告')
+              await ensureExecution(permit)
+              character = await characters.update(characterScope, current => {
+                if (current.revision !== permit.revision) throw new Error('角色状态已改变，公告未登记')
+                return recordCharacterReceipt(current, { id, toolName: 'simFinishTurn', status: 'pending', summary: '收尾状态已保存，等待最终消息发送回执', at: now() }, now())
+              })
+              permit.revision = character.revision
+              pending = character.receipts.find(receipt => receipt.id === id)!
+              announcement = permit
+              const sender = simulationTools.find(tool => tool.name === 'simSendMessage')!
+              const response = await runSimTool(sender, {
+                continuation: 'chat', messages: result.messages,
+                ...(result.replyToSeq === undefined ? {} : { replyToSeq: result.replyToSeq }),
+                ...(result.atUserIds === undefined ? {} : { atUserIds: result.atUserIds }),
+              }, toolEvent, actor, toolReply)
+              sendStatus = classifyCharacterResult(response) === 'succeeded' ? 'succeeded' : 'failed'
+              try { duplicatesSkipped = Number(record(JSON.parse(response.replace(/^error: /, ''))).duplicatesSkipped) || 0 } catch { /* error response retains its own delivery evidence */ }
+              if (sendStatus === 'failed') error = response
+            } catch (failure) { error = finishErrorText(failure) }
+            finally { announcement = undefined }
+            if (pending) {
+              try {
+                character = await characters.update(characterScope, current => {
+                  if (current.revision !== permit.revision) throw new Error('公告期间角色状态已改变，保留 pending 待核实，不覆盖新状态')
+                  return recordCharacterReceipt(current, { ...pending, status: sendStatus === 'succeeded' ? 'succeeded' : memoryBox.deliveryUnknown || sends > sentBefore ? 'unknown' : 'failed', summary: sendStatus === 'succeeded' ? `最终消息已确认发送 ${sends - sentBefore} 条，跳过重复 ${duplicatesSkipped} 条` : '最终消息发送未全部确认；已保存状态保留，不自动重发', at: now() }, now())
+                })
+                permit.revision = character.revision
+              } catch (failure) {
+                error = finishErrorText(failure)
+                diagnose({ stage: 'delivery', operation: 'simulation_finish_receipt', outcome: 'unknown', code: 'finish_receipt_not_saved', error: failure })
+              }
+            }
+          }
+          if (sendStatus === 'failed') executionError = error || '最终消息未确认'
+          if (memoryBox.deliveryUnknown) uncertainAction = true
+          if (result.throughSeq !== undefined) {
+            readStatus = 'failed'
+            try {
+              if (sendStatus === 'failed') throw new Error('最终消息未确认，保留未读，已保存角色状态不回滚')
+              await ensureExecution(permit)
+              if (!acknowledgeMessages(state!, result.throughSeq)) throw new Error('标读范围已改变，保留未读')
+              await store.save(groupId, state!)
+              readStatus = 'succeeded'
+            } catch (failure) { error = finishErrorText(failure) }
+          }
+          if (error) executionError = error
+          const outcome = {
+            ok: true, choice: result.choice, saved: true,
+            ...(result.goal ? { goal: result.goal } : {}), memories: result.memories || [],
+            ...(result.decision ? { decision: result.decision } : {}),
+            sendStatus, sent: sends - sentBefore, duplicatesSkipped, ...(memoryBox.deliveryUnknown ? { deliveryUnknown: true } : {}), readStatus, ...(error ? { error: error.slice(0, 500) } : {}),
+          }
+          if (JSON.stringify(outcome).length <= 3500) return outcome
+          // Preserve a whole acknowledgement within the tool-history budget.
+          // Full records remain in storage and can be read with the paged tools.
+          const recordHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+          return { ...outcome,
+            ...(result.goal ? { goal: { id: result.goal.id, revision: result.goal.revision, status: result.goal.status, recordHash: recordHash(result.goal) } } : {}),
+            memories: (result.memories || []).map(memory => ({ id: memory.id, recordHash: recordHash(memory) })),
+          }
+        }
+        const socialAttempts = new Set<SocialAction>()
+        const judgeSocial = async (action: SocialAction, proposed: unknown) => {
+          if (!triggerMessage || !ports.judgeSocialPermission || socialAttempts.has(action)) return 'unclear'
+          if (action === 'follow_up' && triggerMessage.textTruncated) return 'unclear'
+          socialAttempts.add(action)
+          const started = now()
+          const timeout = AbortSignal.timeout(12_000)
+          const signal = AbortSignal.any([timeout, turnSignal])
+          try {
+            const response = await ports.judgeSocialPermission(buildSocialPermissionRequest(action, triggerMessage.text, proposed), ports.getExecutionConfig(), signal, canCallModel, ensureModelCurrent)
+            const usage = record(response.usage)
+            tokens += Number(usage.total_tokens) || 0
+            try { ports.recordTokens?.({ scope: groupId, stage: 'sim-social-permission', model: String(response.model || ''), usage, ms: now() - started }) } catch { /* aggregate still counts usage */ }
+            return signal.aborted ? 'unclear' : readSocialVerdict(action, triggerMessage.text, response)
+          } catch { return 'unclear' }
+        }
+        const executeTool = async (tool: typeof tools[number], args: Record<string, unknown>) => {
+          if (turnClosed) return 'error: 回合已结束，未执行'
+          const ephemeralTool = extraTools.includes(tool) && tool.agentDataPolicy === 'ephemeral'
+          if (ephemeralRead) {
+            // Explicit historical evidence has a revocable, per-turn grant. Do
+            // not turn it (or a model paraphrase) into durable role state/actions.
+            if (tool === finishTool) {
+              if (args.goal !== undefined || Array.isArray(args.memories) && args.memories.length || ['schedule', 'wait', 'complete', 'abandon'].includes(String(args.choice))) return `error: 本轮${historyRead ? '历史' : '文件'}资料仅供临时查证，不能保存为记忆、目标或派生作品；请回复或安静收尾`
+              args = { ...args, reason: '本轮临时资料仅用于查证' }
+            } else if (!ephemeralTool && !['chatHistoryTool', 'excelWorkbookTool', 'simSendMessage', 'simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simMarkRead'].includes(tool.name)) {
+              return `error: 本轮${historyRead ? '历史' : '文件'}资料仅供临时查证，请继续查询或回复，不保存派生状态或执行其他动作`
+            }
+          }
+          if (requiresClosing && tool !== finishTool) return 'error: 已进入收尾阶段，仅允许 simFinishTurn，未执行'
+          if (!requiresClosing && tool === finishTool && Array.isArray(args.memories) &&
+            args.memories.some(memory => ['pendingEvent', 'interaction'].includes(String(record(memory).kind)))) {
+            return 'error: 本群社交记忆未保存。请先单独调用 simRemember 保存 pendingEvent 或 interaction，成功后再用 simFinishTurn 收尾。'
+          }
+          // A failed save cannot subsequently fall through the ordinary-text sender.
+          if (tool === finishTool) requiresClosing = true
+          if (tool.name === 'simWorkerTask' && ports.characterWorkerAvailable?.() === false) return 'error: 工作器连接已停用'
+          if (!allowedTool(tool.name)) return 'error: 自主执行主体没有此工具权限，不能借用群友身份'
+          try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
+          if (tool.name === 'simRemember') {
+            proactiveSourceSeq = undefined
+            if (args.kind === 'pendingEvent' && args.scope !== 'self' && actor.kind === 'user' && actor.userId &&
+              (args.aboutUser === undefined || String(args.aboutUser) === actor.userId)) {
+              args = { ...args, aboutUser: actor.userId }
+              if (args.welcomeProactiveFollowUp === true &&
+                await judgeSocial('follow_up', args.content) === 'explicit_invitation' &&
+                triggerMessage && state!.recent.some(message => message.seq === triggerMessage.seq)) {
+                proactiveSourceSeq = triggerMessage.seq
+              }
+              try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
+            }
+          }
+          const newGoal = tool === finishTool && args.choice === 'schedule' ? args.goal : tool.name === 'simGoal' && args.action === 'create' ? args : undefined
+          if (newGoal && triggerMessage && ports.judgeSocialPermission) {
+            if (await judgeSocial('goal', newGoal) !== 'own_goal') {
+              // Nothing has been saved. Allow a valid chat or silent close.
+              if (tool === finishTool) requiresClosing = false
+              return 'error: 此安排没有核实为角色自己的目标。社交问候用 simRemember；请正常聊天或安静收尾。'
+            }
+            try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
+          }
+          if ((decision === 'silent' || decision === 'deferred') && ['simSendMessage', 'simShareVideoCard', 'simSendPoke', 'simQzoneInteract', 'sendLocalEmojiTool'].includes(tool.name)) return 'error: 本轮已选择沉默或暂缓'
+          if (tool === finishTool && Object.hasOwn(args, 'throughSeq') && (typeof args.throughSeq !== 'number' || !Number.isSafeInteger(args.throughSeq) || args.throughSeq < 0 || args.throughSeq > readThroughSeq(state!))) return 'error: throughSeq 超过了实际看过的范围或不是非负整数，本次未保存'
+          if (tool === finishTool && Object.hasOwn(args, 'replyToSeq') && (typeof args.replyToSeq !== 'number' || !Number.isSafeInteger(args.replyToSeq) || args.replyToSeq < 1 || ![...state!.unread, ...state!.recent].some(message => message.seq === args.replyToSeq))) return 'error: replyToSeq 不是近期消息的有效序号，本次未保存'
+          const internal = tool === finishTool || characterTools.includes(tool) || ['simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simMarkRead', 'simWaitForMessages', 'simSetWakeConfig', 'simGetGroupMembers', 'simGetMessageImages', 'simGetForward'].includes(tool.name)
+            || (['simRemember', 'simLifeThread'].includes(tool.name) && args.action === 'list')
+          const activityRead = ['simWorkspace', 'simSubscription', 'simSharedSelf'].includes(tool.name) && ['list', 'read'].includes(String(args.action))
+          if (uncertainAction && !internal && !activityRead) return 'error: 前序外部动作结果未知，本回合不再执行外部动作，核实前禁止重复提交或发送'
+          if (extraTools.includes(tool) && (ephemeralTool || tool.name === 'excelWorkbookTool' || ports.readHistory && tool.name === 'chatHistoryTool')) {
+            // File reads (including failures and directory listings) must bypass
+            // durable action receipts before the tool can expose any content.
+            // The explicit wallet tool validates and consumes its own source
+            // inside the guarded action. Fence its result after that action;
+            // earlier unrelated ephemeral reads still prevent dispatch.
+            if (tool.name !== 'grabRedBagTool') {
+              ephemeralRead = true
+              if (tool.name !== 'simQzoneInteract') unrelatedEphemeralRead = true
+            }
+            const result = await runSimTool(tool, args, toolEvent, actor, toolReply)
+            if (tool.name === 'grabRedBagTool') ephemeralRead = unrelatedEphemeralRead = true
+            try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
+            return result
+          }
+          if (internal) {
+            const result = await runSimTool(tool, args, toolEvent, actor, toolReply)
+            if (['simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simGetMessageImages', 'simGetForward', 'simWaitForMessages'].includes(tool.name)) {
+              try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
+            }
+            exposeToolResult(tool.name, result.slice(0, 4000))
+            return result
+          }
+          const id = randomUUID()
+          try {
+            character = await characters.update(characterScope, current => focusedGoalId
+              ? beginCharacterGoalAction(current, focusedGoalId, { id, toolName: tool.name }, now(), focusedGoalRevision)
+              : recordCharacterReceipt(current, { id, toolName: tool.name, status: 'pending', summary: '等待工具回执', at: now() }, now()))
+          } catch (error) { return safeToolErrorText(tool.name, error) }
+          const pending = character.receipts.find(item => item.id === id)!
+          // A cancellation arriving while persistence was pending must be observed before the external call.
+          try { await ensureExecution() } catch (error) {
+            character = await characters.update(characterScope, current => recordCharacterReceipt(current, { ...pending, status: 'failed', summary: '执行前已取消或授权变化，未调用工具', at: now() }, now()))
+            return safeToolErrorText(tool.name, error)
+          }
+          let reported: 'succeeded' | 'failed' | undefined
+          const alreadyUnknown = memoryBox.deliveryUnknown
+          let result = await runSimTool(tool, args, toolEvent, actor, toolReply, status => { reported = status }, tool.name === 'simWorkerTask' ? id : undefined)
+          let status = memoryBox.deliveryUnknown && !alreadyUnknown ? 'unknown' : reported ?? classifyCharacterResult(result)
+          if (status === 'unknown') uncertainAction = true
+          if (status === 'failed') executionError = '工具执行失败，承诺未完整兑现'
+          if (status === 'succeeded' && (extraTools.includes(tool) || tool.name === 'simWorkerTask' || (tool.name === 'simWorkspace' && ['write', 'restore'].includes(String(args.action))))) confirmedActions++
+          if (tool.name === 'simWorkerTask' && status === 'succeeded') {
+            try {
+              const value = record(JSON.parse(result)), artifact = record(value.artifact)
+              if (typeof artifact.content === 'string' && typeof artifact.title === 'string') {
+                await ensureExecution()
+                const work = await workspace.write({ title: artifact.title.slice(0,120), kind: 'research', content: artifact.content, evidenceRefs: [`receipt:${id}`], ...(sharedIds.length ? {sharedSources: sharedIds} : {}) })
+                result = formatSavedCharacterWorkResult(String(value.summary || ''), id, work, artifact.content)
+              }
+            } catch {
+              uncertainAction = true
+              status = 'unknown'
+              executionError = '工作器已执行，但作品未能保存'
+              result = JSON.stringify({ status, summary: '工作器返回成功，但作品未能保存，请核对回执后处理。' })
+            }
+          }
+          const summary = ephemeralRead ? `${tool.name}: ${status}（临时资料正文不留存）` : redactInternalStatusLeaks(result).text.slice(0, 500) || `${tool.name}: ${status}`
+          const receipt: CharacterReceipt = { ...pending, status, summary, at: now() }
+          // Finalize once, after worker artifacts are saved. A lost write leaves
+          // pending for unknown recovery; an immutable success must not precede it.
+          character = await characters.update(characterScope, current => recordCharacterReceipt(current, receipt, now()))
+          if (status === 'unknown' && focusedGoalId && !(ports.isExtraToolAutonomous?.(tool.name) !== false && AUTONOMOUS_EXTRA_TOOLS.includes(tool.name))) {
+            character = await characters.update(characterScope, current => {
+              const goal = current.goals.find(item => item.id === focusedGoalId)
+              return goal && ['active', 'waiting'].includes(goal.status)
+                ? transitionCharacterGoal(current, goal.id, 'paused', { now: now(), lastOutcome: '外部动作结果未知，暂停以免重复副作用；核对后由管理员恢复' }) : current
             })
-            if (!model) return
-            const result = await model.result
-            if ('error' in result) throw result.error
-            response = result.response
-          } else if (commitment && !commitment.started) {
-            await checkCommitment()
-            if (needsSession) await store.addKnownGroup(groupId)
-            if (!canRunTurn()) {
-              cancelled = true; throw new Error('承诺绑定或执行环境已改变')
-            }
-            if (commitment.options.beforeExecution && !await commitment.options.beforeExecution()) {
-              cancelled = true; throw new Error('承诺执行领取已失效')
-            }
-            commitment.started = true
-            if (!canRunTurn()) throw new Error('承诺开始后执行环境已改变')
-            recordWakeStart()
-            noteModelSeen(turnState, snapshotSeqs)
-            const write = saveTurnContext().catch(() => logger.warn(`[仿真] 群 ${groupId} 回合上下文保存失败`))
-            try { response = await ports.YTapi(requestData, executionConfig, memoryTurn?.signal, canCallModel, ensureModelCurrent) }
-            finally { await write }
-          } else {
-            if (!canRunTurn()) throw new Error('角色绑定或运行状态已改变，本回合停止行动')
-            response = await ports.YTapi(requestData, executionConfig, memoryTurn?.signal, canCallModel, ensureModelCurrent)
           }
-        } catch (error) {
-          executionError = error instanceof Error ? error.message : '模型调用失败'
-          logger.error(`[仿真] 群 ${groupId} 模型调用失败`, error)
-          break
+          visibleCharacterRefs.add(`receipt:${id}`)
+          if (!ephemeralRead) sourceResults.set(`receipt:${id}`, { toolName: tool.name, content: result.slice(0, 8000), truncated: result.length > 8000 })
+          return `${result}\n【运行时行动回执】${JSON.stringify({ evidenceRef: `receipt:${id}`, status, goalId: focusedGoalId })}`
         }
-        if (response.error) executionError = '模型返回错误'
-        tokens += Number(record(response.usage).total_tokens) || 0
-        try {
-          ports.recordTokens?.({ scope: groupId, stage: 'sim', model: String((response as { model?: unknown }).model || ''), usage: record(response.usage), ms: 0 })
-        } catch { /* 账本不可用不影响回合 */ }
-        const message = { ...record(record((response as { choices?: { message?: unknown }[] }).choices?.[0])?.message) }
-        const safeModelData = (value: unknown) => {
-          try { return ports.allowsToolInput?.(JSON.stringify(value) ?? '') !== false } catch { return false }
-        }
-        if (!safeModelData(message.content)) message.content = ''
-        const rejectedToolCalls = new Set<RawToolCall>()
-        const toolCallsRaw: RawToolCall[] = (Array.isArray(message.tool_calls) ? message.tool_calls as RawToolCall[] : []).map(call => {
-          if (safeModelData(call)) return call
-          const raw = record(call), fn = record(raw.function)
-          const blocked: RawToolCall = {
-            id: typeof raw.id === 'string' && safeModelData(raw.id) ? raw.id : randomUUID(),
-            type: 'function',
-            function: { name: typeof fn.name === 'string' && safeModelData(fn.name) ? fn.name : 'blockedTool', arguments: '{}' },
+        const executionConfig = ports.getExecutionConfig()
+        const providerConfig = record(executionConfig) as Parameters<typeof buildChatRequestData>[0]
+        const systemPrompt = buildSimSystemPrompt({ persona: persona.persona, systemContent: persona.systemContent, selfName, hasExtraTools: extraTools.length > 0, extraToolNames, hasEmojiTool: extraToolNames.includes('sendLocalEmojiTool'), hasMoodTool: cfg.mood.enabled, availableToolNames: tools.filter(tool => allowedTool(tool.name)).map(tool => tool.name) })
+
+        const history: SimHistoryMessage[] = [...projectedHistory, wakeMessage, ...(groupMemoryContext ? [{ role: 'user' as const, content: groupMemoryContext }] : [])]
+        const firstCurrentMessage = projectedHistory.length
+        const appendToolReply = (toolCallId: string, name: string, content: string) => {
+          history.push({ role: 'tool', tool_call_id: toolCallId, name, content })
+          if (ports.recordToolResult && !ephemeralRead) {
+            const failed = () => logger.warn(`[仿真] 群 ${groupId} 工具回复观察失败，不影响执行`)
+            try {
+              // Give observers an immutable copy, and isolate an accidental async rejection too.
+              void Promise.resolve(ports.recordToolResult(Object.freeze({ toolCallId, name, content }))).catch(failed)
+            } catch { failed() }
           }
-          rejectedToolCalls.add(blocked)
-          return blocked
-        })
-        if (!toolCallsRaw.length) {
-          const text = String(message.content || '').trim()
-          // 先保留模型最终文本；自主回合是否发言必须由显式发送工具决定。
-          if (text) history.push({ role: 'assistant', content: text })
-          if (closing || actor.kind === 'autonomous') {
-            if (text) logger.info(`[仿真] 群 ${groupId} 自主回合最终文本仅保留内部历史（${text.length} 字），结束回合`)
+        }
+        type RawToolCall = NonNullable<SimHistoryMessage['tool_calls']>[number]
+        let rounds = 0
+        let failureStage: 'model' | 'tool' | 'runtime' | undefined
+        // 用户对话/正式托付的未外发文本兜底：自主回合的最终文本只留在内部历史。
+        let nudgedForUnsent = false
+        while (rounds < cfg.turn.maxToolRounds) {
+          rounds += 1
+          const closing = requiresClosing || rounds > cfg.turn.maxToolRounds - 2
+          const roundTools = closing ? [finishTool] : tools.filter(tool => allowedTool(tool.name))
+          const context = buildCharacterTurnContext({ phase: closing ? 'closing' : 'acting', remainingToolRounds: cfg.turn.maxToolRounds - rounds + 1, ...(focusedGoalId ? { focusedGoalId } : {}), visibleEvidenceRefs: visibleEvidenceRefs() }) +
+            (anchor ? `\n当前只回应 #${anchor.seq} 的话题；同一人的前文也仅在有关时用。throughSeq 当前上限是 ${readThroughSeq(durableWake && rounds === 1 ? projectedWatermark : state)}，可省略。` : '') +
+            (reviewer ? `\n本轮剩余提交检查次数：${Math.max(0, 3 - reviewer.stats().checks)}。将需要保存的观点、目标和最终消息合并进 simFinishTurn；检查退回后自行修正或安静放弃，检查提示不发到群里。` : '')
+          const requestHistory = history.map(({ conversationUserId: _user, ...message }) => message)
+          const currentContext = personRecall ? `${personRecall}\n\n${context}` : context
+          const requestData = buildChatRequestData(providerConfig, [{ role: 'system', content: systemPrompt }, ...requestHistory, { role: 'user', content: currentContext }], simToolsAsFunctions(roundTools), closing ? 'required' : 'auto')
+          if (closing && (!requestData.tools?.length || !requestData.tool_choice)) {
+            logger.warn(`[仿真] 群 ${groupId} 模型配置未提供收尾工具，停止本轮`)
+            if (durableWake && rounds === 1) { await discardWake(); return }
             break
           }
-          // 兜底：写了像"要说的话"的文本但本回合一条都没发过 → 提醒一次（模型惯性问题，实测高发）。
-          // 沉默声明（「旁听，结束回合。」「无需发送，结束回合。」）除外：那是模型在宣布不说话，
-          // 提醒/直发都会把元话术漏进群里——按其意愿安静结束。
-          if (!decision && text.length >= 6 && sends === 0 && !/^\[(?:不发了|SILENT|沉默)\]$/.test(text) && !isSilentDeclaration(text)) {
-            if (!nudgedForUnsent) {
-              nudgedForUnsent = true
-              logger.info(`[仿真] 群 ${groupId} 检测到未外发文本（${text.length} 字，本回合 0 发送），已提醒模型用 simSendMessage 发出`)
-              history.push({ role: 'user', content: '【系统提醒】你刚才写的这段话群友看不到——本模式下只有 simSendMessage 发出的内容才会出现在群里，群里刚才只能看到你发的表情/动作。如果那段话就是你想说的，现在用 simSendMessage 原样（或更口语化、可拆几条）发出去；如果改变主意不想说了，从此不要再输出任何文字——「无需发送」「结束回合」「已静默结束」「不是对我说的」「(已经决定不说话)」这类说明不要写，括号里的状态标注也一样不行，直接停下即可。' })
-              continue
+          let response: ChatResponse
+          try {
+            await checkCommitment()
+            await assertTriggerCurrent()
+            await assertGroupMemoryCurrent()
+            if (semanticProjection?.text && !await semanticProjection.isCurrent()) throw new Error('语义记忆来源已改变，停止使用旧上下文')
+            // Goal completion can legitimately lead to a final model round. The
+            // privacy guard is independent of those action/version permissions.
+            if ((await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt) {
+              visibleMessageSeqs.clear()
+              throw new Error('人物记忆来源已改变，停止使用旧上下文')
             }
-            // 提醒过一次还是把话写在文本里(实测高发:连续多轮 6 字文本 0 发送,群里看着就是已读不回)——
-            // 直接替它发出去。内容照原样,不走模型再加工,避免又一轮哑火。
-            // 最后防线：提醒后还输出含元话术的文本，按沉默处理不直发——漏发可以下轮补，误发进群里收不回。
-            // ①词表拦截（子串级）；②形状拦截（2026-11-09 实拍「(已经决定不说话，直接停。)」漏网后新增）：
-            //   整条被括号/引号包裹的"状态标注"一律不直发——词表追不上模型造句，形状是稳定的；
-            //   真想发言写裸文本，括号动作（（笑））远短于 6 字门槛。
-            if (mentionsSilenceVocabulary(text) || isWrappedAnnotation(text)) {
-              logger.info(`[仿真] 群 ${groupId} 提醒后文本仍含元话术或为括号标注（${text.slice(0, 24)}），按沉默处理不直发`)
-            } else {
-              logger.info(`[仿真] 群 ${groupId} 提醒后仍未发送，兜底直发 ${text.length} 字`)
-              try {
-                const sender = simulationTools.find(tool => tool.name === 'simSendMessage')!
-                const result = await executeTool(sender, { continuation: 'chat', messages: [text.slice(0, cfg.turn.messageTextMaxChars)] })
-                history.push({ role: 'user', content: classifyCharacterResult(result) === 'succeeded' ? '【系统】已替你把上面那段话发出去了。以后想说的话必须自己调 simSendMessage。' : `【系统】这段文本未确认发送：${result.slice(0, 1000)}` })
-              } catch (error) {
-                logger.warn(`[仿真] 群 ${groupId} 兜底直发失败: ${error instanceof Error ? error.message : String(error)}`)
+            if (durableWake && rounds === 1) {
+              const model = await beginWake(async () => {
+                recordWakeStart()
+                noteProactiveCheck?.()
+                noteModelSeen(turnState, snapshotSeqs)
+                const write = saveTurnContext().catch(error => diagnose({ stage: 'runtime', operation: 'simulation_context_save', outcome: 'failed', code: 'turn_context_not_saved', error }))
+                try { return { response: await runFirstWakeModel(requestData) } }
+                catch (error) { return { error } }
+                finally { await write }
+              })
+              if (!model) return
+              const result = await model.result
+              if ('error' in result) throw result.error
+              response = result.response
+            } else if (commitment && !commitment.started) {
+              await checkCommitment()
+              if (needsSession) await store.addKnownGroup(groupId)
+              if (!canRunTurn()) {
+                cancelled = true; throw new Error('承诺绑定或执行环境已改变')
               }
+              if (commitment.options.beforeExecution && !await commitment.options.beforeExecution()) {
+                cancelled = true; throw new Error('承诺执行领取已失效')
+              }
+              commitment.started = true
+              if (!canRunTurn()) throw new Error('承诺开始后执行环境已改变')
+              recordWakeStart()
+              noteModelSeen(turnState, snapshotSeqs)
+              const write = saveTurnContext().catch(error => diagnose({ stage: 'runtime', operation: 'simulation_context_save', outcome: 'failed', code: 'turn_context_not_saved', error }))
+              try { response = await invokeSimModel(requestData, executionConfig, turnSignal, canCallModel, ensureModelCurrent) }
+              finally { await write }
+            } else {
+              if (!canRunTurn()) throw new Error('角色绑定或运行状态已改变，本回合停止行动')
+              response = await invokeSimModel(requestData, executionConfig, turnSignal, canCallModel, ensureModelCurrent)
             }
-          } else if (text.length >= 6 && sends === 0) {
-            logger.info(`[仿真] 群 ${groupId} 模型以沉默声明收尾（${text.slice(0, 24)}），按其意愿安静结束回合`)
+          } catch (error) {
+            failureStage = 'model'
+            executionError = error instanceof Error ? error.message : '模型调用失败'
+            logger.error(`[仿真] 群 ${groupId} 模型调用失败`, error)
+            break
           }
-          break
-        }
-        history.push({ role: 'assistant', content: String(message.content || ''), tool_calls: toolCallsRaw })
-        for (const call of toolCallsRaw) {
-          toolCalls += 1
-          const callRecord = record(call)
-          const fn = record(callRecord.function)
-          const name = String(fn.name || '')
-          const tool = tools.find(t => t.name === name)
-          let resultText: string
-          if (turnClosed) {
-            resultText = 'error: 回合已结束，未执行'
-          } else if (rejectedToolCalls.has(call)) {
-            resultText = 'error: 工具参数包含宿主禁止外发的内容，未执行'
-          } else if (closing && name !== finishTool.name) {
-            resultText = 'error: 当前仅允许 simFinishTurn 收尾，未执行'
-          } else if (!tool) {
-            resultText = `error: 未知工具 ${name}`
-          } else {
-            let args: Record<string, unknown>
-            try { args = record(JSON.parse(String(fn.arguments || '{}'))) } catch { args = {} }
-            const textOutsideTool = typeof message.content === 'string' && message.content.trim()
-            const missingChatMessage = tool === finishTool && args.choice === 'chat' && actor.kind === 'user' &&
-              isDirectAddressKind(reason.kind) && sends === 0 && toolCallsRaw.length === 1 &&
-              (!Array.isArray(args.messages) || args.messages.length === 0) &&
-              textOutsideTool && !isSilentDeclaration(textOutsideTool)
-            if (missingChatMessage && !nudgedForUnsent && rounds < cfg.turn.maxToolRounds) {
-              nudgedForUnsent = true
-              resultText = 'error: 回复正文写在工具参数外，群友看不到，且本次没有提交。请把想发送的正文写进 simFinishTurn 的 messages 再提交；选择安静收尾时无需发送。'
-            } else if (name === 'sendLocalEmojiTool') {
-              // 仿真回合表情冷却：跨回合短冷却防刷屏（与主链路 postSendCooldownMs 同参）
-              const cooldownMs = safeNumber(() => ports.getEmojiCooldownMs?.()) || 90_000
-              const lastAt = emojiLastSentAt.get(groupId) || 0
-              if (now() - lastAt < cooldownMs) {
-                const waitSec = Math.ceil((cooldownMs - (now() - lastAt)) / 1000)
-                resultText = `error: 表情包冷却中（还要 ${waitSec} 秒）。请直接用文字回应，本回合不要再发表情。`
+          if (modelResponseFailure(response)) { executionError = '模型没有返回有效结果'; failureStage = 'model'; break }
+          tokens += Number(record(response.usage).total_tokens) || 0
+          try {
+            ports.recordTokens?.({ scope: groupId, stage: 'sim', model: String((response as { model?: unknown }).model || ''), usage: record(response.usage), ms: 0 })
+          } catch { /* 账本不可用不影响回合 */ }
+          const message = { ...record(record((response as { choices?: { message?: unknown }[] }).choices?.[0])?.message) }
+          const safeModelData = (value: unknown) => {
+            try { return ports.allowsToolInput?.(JSON.stringify(value) ?? '') !== false } catch { return false }
+          }
+          if (!safeModelData(message.content)) message.content = ''
+          const rejectedToolCalls = new Set<RawToolCall>()
+          const toolCallsRaw: RawToolCall[] = (Array.isArray(message.tool_calls) ? message.tool_calls as RawToolCall[] : []).map(call => {
+            if (safeModelData(call)) return call
+            const raw = record(call), fn = record(raw.function)
+            const blocked: RawToolCall = {
+              id: typeof raw.id === 'string' && safeModelData(raw.id) ? raw.id : randomUUID(),
+              type: 'function',
+              function: { name: typeof fn.name === 'string' && safeModelData(fn.name) ? fn.name : 'blockedTool', arguments: '{}' },
+            }
+            rejectedToolCalls.add(blocked)
+            return blocked
+          })
+          const completeTools = toolCallsRaw.every(call => {
+            const fn = record(record(call).function)
+            return typeof fn.name === 'string' && fn.name.length > 0 && typeof fn.arguments === 'string'
+          })
+          if (!completeTools || !toolCallsRaw.length && !(typeof message.content === 'string' && message.content.trim())) {
+            executionError = '模型未返回可用结果'; failureStage = 'model'; break
+          }
+          if (!toolCallsRaw.length) {
+            const text = String(message.content || '').trim()
+            // 先保留模型最终文本；自主回合是否发言必须由显式发送工具决定。
+            if (text) history.push({ role: 'assistant', content: text })
+            if (closing || actor.kind === 'autonomous') {
+              if (text) logger.info(`[仿真] 群 ${groupId} 自主回合最终文本仅保留内部历史（${text.length} 字），结束回合`)
+              break
+            }
+            // 兜底：写了像"要说的话"的文本但本回合一条都没发过 → 提醒一次（模型惯性问题，实测高发）。
+            // 沉默声明（「旁听，结束回合。」「无需发送，结束回合。」）除外：那是模型在宣布不说话，
+            // 提醒/直发都会把元话术漏进群里——按其意愿安静结束。
+            if (!decision && text.length >= 6 && sends === 0 && !/^\[(?:不发了|SILENT|沉默)\]$/.test(text) && !isSilentDeclaration(text)) {
+              if (!nudgedForUnsent) {
+                nudgedForUnsent = true
+                logger.info(`[仿真] 群 ${groupId} 检测到未外发文本（${text.length} 字，本回合 0 发送），已提醒模型用 simSendMessage 发出`)
+                history.push({ role: 'user', content: '【系统提醒】你刚才写的这段话群友看不到——本模式下只有 simSendMessage 发出的内容才会出现在群里，群里刚才只能看到你发的表情/动作。如果那段话就是你想说的，现在用 simSendMessage 原样（或更口语化、可拆几条）发出去；如果改变主意不想说了，从此不要再输出任何文字——「无需发送」「结束回合」「已静默结束」「不是对我说的」「(已经决定不说话)」这类说明不要写，括号里的状态标注也一样不行，直接停下即可。' })
+                continue
+              }
+              // 提醒过一次还是把话写在文本里(实测高发:连续多轮 6 字文本 0 发送,群里看着就是已读不回)——
+              // 直接替它发出去。内容照原样,不走模型再加工,避免又一轮哑火。
+              // 最后防线：提醒后还输出含元话术的文本，按沉默处理不直发——漏发可以下轮补，误发进群里收不回。
+              // ①词表拦截（子串级）；②形状拦截（2026-11-09 实拍「(已经决定不说话，直接停。)」漏网后新增）：
+              //   整条被括号/引号包裹的"状态标注"一律不直发——词表追不上模型造句，形状是稳定的；
+              //   真想发言写裸文本，括号动作（（笑））远短于 6 字门槛。
+              if (mentionsSilenceVocabulary(text) || isWrappedAnnotation(text)) {
+                logger.info(`[仿真] 群 ${groupId} 提醒后文本仍含元话术或为括号标注（${text.slice(0, 24)}），按沉默处理不直发`)
+              } else {
+                logger.info(`[仿真] 群 ${groupId} 提醒后仍未发送，兜底直发 ${text.length} 字`)
+                try {
+                  const sender = simulationTools.find(tool => tool.name === 'simSendMessage')!
+                  const result = await executeTool(sender, { continuation: 'chat', messages: [text.slice(0, cfg.turn.messageTextMaxChars)] })
+                  history.push({ role: 'user', content: classifyCharacterResult(result) === 'succeeded' ? '【系统】已替你把上面那段话发出去了。以后想说的话必须自己调 simSendMessage。' : `【系统】这段文本未确认发送：${result.slice(0, 1000)}` })
+                } catch (error) {
+                  logger.warn(`[仿真] 群 ${groupId} 兜底直发失败: ${error instanceof Error ? error.message : String(error)}`)
+                }
+              }
+            } else if (text.length >= 6 && sends === 0) {
+              logger.info(`[仿真] 群 ${groupId} 模型以沉默声明收尾（${text.slice(0, 24)}），按其意愿安静结束回合`)
+            }
+            break
+          }
+          history.push({ role: 'assistant', content: String(message.content || ''), tool_calls: toolCallsRaw })
+          for (const call of toolCallsRaw) {
+            toolCalls += 1
+            const callRecord = record(call)
+            const fn = record(callRecord.function)
+            const name = String(fn.name || '')
+            const tool = tools.find(t => t.name === name)
+            let resultText: string
+            if (turnClosed) {
+              resultText = 'error: 回合已结束，未执行'
+            } else if (rejectedToolCalls.has(call)) {
+              resultText = 'error: 工具参数包含宿主禁止外发的内容，未执行'
+            } else if (closing && name !== finishTool.name) {
+              resultText = 'error: 当前仅允许 simFinishTurn 收尾，未执行'
+            } else if (!tool) {
+              resultText = `error: 未知工具 ${name}`
+            } else {
+              let args: Record<string, unknown>
+              try { args = record(JSON.parse(String(fn.arguments || '{}'))) } catch { args = {} }
+              const textOutsideTool = typeof message.content === 'string' && message.content.trim()
+              const missingChatMessage = tool === finishTool && args.choice === 'chat' && actor.kind === 'user' &&
+                isDirectAddressKind(reason.kind) && sends === 0 && toolCallsRaw.length === 1 &&
+                (!Array.isArray(args.messages) || args.messages.length === 0) &&
+                textOutsideTool && !isSilentDeclaration(textOutsideTool)
+              if (missingChatMessage && !nudgedForUnsent && rounds < cfg.turn.maxToolRounds) {
+                nudgedForUnsent = true
+                resultText = 'error: 回复正文写在工具参数外，群友看不到，且本次没有提交。请把想发送的正文写进 simFinishTurn 的 messages 再提交；选择安静收尾时无需发送。'
+              } else if (name === 'sendLocalEmojiTool') {
+                // 仿真回合表情冷却：跨回合短冷却防刷屏（与主链路 postSendCooldownMs 同参）
+                const cooldownMs = safeNumber(() => ports.getEmojiCooldownMs?.()) || 90_000
+                const lastAt = emojiLastSentAt.get(groupId) || 0
+                if (now() - lastAt < cooldownMs) {
+                  const waitSec = Math.ceil((cooldownMs - (now() - lastAt)) / 1000)
+                  resultText = `error: 表情包冷却中（还要 ${waitSec} 秒）。请直接用文字回应，本回合不要再发表情。`
+                } else {
+                  resultText = await executeTool(tool, args)
+                  if (!(typeof resultText === 'string' && resultText.startsWith('error:'))) emojiLastSentAt.set(groupId, now())
+                }
               } else {
                 resultText = await executeTool(tool, args)
-                if (!(typeof resultText === 'string' && resultText.startsWith('error:'))) emojiLastSentAt.set(groupId, now())
               }
-            } else {
-              resultText = await executeTool(tool, args)
             }
-          }
-          // simGetMessageImages 的结果带回图片：主模型多为纯文本(实测 glm-5.3 收 image_url 直接 400，
-          // 且带图历史会持久化毒化后续每个回合)。图片改经视觉侧模型转成文字描述注入，主模型保持纯文本请求。
-          if (((name === 'simGetMessageImages' && !readImages) || name === 'simGetForward') && !resultText.startsWith('error:')) {
-            const images = parseSimImages(resultText, name === 'simGetForward' ? 3 : 2)
-            if (images.length) {
-              let label = '【转发里的图片】（对应转发记录里的 [图片#N] 编号）'
-              if (name === 'simGetMessageImages') {
-                let seqLabel = ''
-                try { seqLabel = String(record(JSON.parse(resultText)).seq ?? '') } catch { /* 忽略 */ }
-                label = `【消息 ${seqLabel} 的图片】`
-              }
-              let described = ''
-              try {
-                await ensureExecution()
-                if (describeImages && canCallModel()) {
-                  const description = await describeImages(images, { groupId, label, isCurrent: canCallModel,
-                    ...(memoryTurn ? { signal: memoryTurn.signal } : {}) })
-                  await ensureExecution()
-                  if (canCallModel() && description) {
-                    described = description
-                    usedImageDescription = true
-                  }
+            // simGetMessageImages 的结果带回图片：主模型多为纯文本(实测 glm-5.3 收 image_url 直接 400，
+            // 且带图历史会持久化毒化后续每个回合)。图片改经视觉侧模型转成文字描述注入，主模型保持纯文本请求。
+            if (((name === 'simGetMessageImages' && !readImages) || name === 'simGetForward') && !resultText.startsWith('error:')) {
+              const images = parseSimImages(resultText, name === 'simGetForward' ? 3 : 2)
+              if (images.length) {
+                let label = '【转发里的图片】（对应转发记录里的 [图片#N] 编号）'
+                if (name === 'simGetMessageImages') {
+                  let seqLabel = ''
+                  try { seqLabel = String(record(JSON.parse(resultText)).seq ?? '') } catch { /* 忽略 */ }
+                  label = `【消息 ${seqLabel} 的图片】`
                 }
-              } catch { /* A revoked or unavailable image description never enters history. */ }
-              appendToolReply(String(callRecord.id || ''), name, `已获取 ${images.length} 张图片，视觉侧模型的描述见下一条消息。`)
-              history.push({ role: 'user', content: `${label}\n【视觉模型描述】${described || '（图片描述暂不可用，可请群友用文字说明图片内容）'}` })
-              continue
+                let described = ''
+                try {
+                  await ensureExecution()
+                  if (describeImages && canCallModel()) {
+                    const description = await describeImages(images, { groupId, label, isCurrent: canCallModel,
+                      ...(memoryTurn ? { signal: memoryTurn.signal } : {}) })
+                    await ensureExecution()
+                    if (canCallModel() && description) {
+                      described = description
+                      usedImageDescription = true
+                    }
+                  }
+                } catch {
+                  diagnose({ stage: 'model', operation: 'simulation_image_description', outcome: 'failed', code: 'image_description_unavailable' })
+                }
+                appendToolReply(String(callRecord.id || ''), name, `已获取 ${images.length} 张图片，视觉侧模型的描述见下一条消息。`)
+                history.push({ role: 'user', content: `${label}\n【视觉模型描述】${described || '（图片描述暂不可用，可请群友用文字说明图片内容）'}` })
+                continue
+              }
+            }
+            appendToolReply(String(callRecord.id || ''), name, resultText.slice(0, ephemeralRead ? 32_000 : 4000))
+            if (managementTerminal || qqActionTerminal) { turnClosed = true; decision = 'silent'; break }
+            if (resultText.startsWith('error:')) {
+              executionError = '回合包含未完成的工具操作'; failureStage = 'tool'
+              diagnose({ stage: 'tool', operation: /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(name) ? name : 'simulation_tool', outcome: 'failed', code: 'tool_reply_failed' })
             }
           }
-          appendToolReply(String(callRecord.id || ''), name, resultText.slice(0, ephemeralRead ? 32_000 : 4000))
-          if (resultText.startsWith('error:')) executionError = '回合包含未完成的工具操作'
+          if (turnClosed) break
         }
-        if (turnClosed) break
-      }
 
-      recordWakeTokens(state, tokens)
-      const latestCharacter = await characters.load(characterScope)
-      const attachmentRevoked = attachmentSourceIds.size > 0 &&
-        (await Promise.all([...attachmentSourceIds].map(id => ports.isMessageRecalled?.(target, id)))).some(Boolean)
-      const semanticRevoked = semanticProjection?.text && !await semanticProjection.isCurrent()
-      const historyRevoked = !(await Promise.all(historyProjections.map(projection => projection.isCurrent()))).every(Boolean)
-      const filesRevoked = !(await Promise.all(fileProjections.map(projection => projection.isCurrent()))).every(Boolean)
-      const removedSource = attachmentRevoked || semanticRevoked || historyRevoked || filesRevoked || memoryTurn?.isCurrent() === false ||
-        (await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt || revisedSources || [...sourceMemoryIds].some(id => !activeCharacterMemories(latestCharacter).some(memory => memory.id === id)) || await store.loadActivityVersion(groupId) !== activityVersion || await shared.fingerprint() !== sharedFingerprint || !isBindingCurrent()
-      // Intermediate model output may echo ephemeral image or initial prompt material.
-      const thisTurn = (semanticRecall || ephemeralRead ? [retainedWakeMessage] : usedImageDescription || usedInitialPrompt || groupMemoryContext ? [wakeMessage] : history.slice(firstCurrentMessage)).map(message => {
-        const retained = readForward && message.role === 'tool' && message.name === 'simGetForward'
-          ? { ...message, content: '本轮请求查看合并转发，正文需按原消息重新读取' } : message
-        return conversationUserId ? { ...retained, conversationUserId } : retained
-      })
-      state.agentHistory = removedSource ? [] : trimAgentHistory([...priorHistory, ...thisTurn], cfg.turn.historyMaxMessages, cfg.turn.historyMaxChars)
-      if (removedSource) delete state.lastConfirmedChat
-      if (groupMemoryContext || semanticRecall || ephemeralRead) delete state.lastConfirmedChat
-      if (sends > 0 && !removedSource && !groupMemoryContext && !semanticRecall && !ephemeralRead && actor.kind === 'user' && actor.userId && memoryBox.sentTexts.length) {
-        state.lastConfirmedChat = { at: now(), userId: actor.userId, text: memoryBox.sentTexts.slice(-2).join('\n').slice(-500) }
-      }
-      if (sends > 0 && isBindingCurrent()) state.nextReplyCheckAt = now() + cfg.wake.replyCheckMs
-      // 仿真群不走主链路，情节记忆在这里补记：让"这两天做过什么"持续有料
-      if (sends > 0 && !removedSource && !semanticRecall && !ephemeralRead) try { await ports.recordGroupReply?.(target, canCallModel) } catch { /* confirmed sends remain authoritative */ }
-      if (sends > 0 && !removedSource && !groupMemoryContext && !semanticRecall && !ephemeralRead) {
-        try {
-          const trigger = actor.kind === 'user' ? state.recent.find(message => message.seq === reason.seq) : undefined
-          const replyText = memoryBox.sentTexts.slice(0, 2).join(' / ').slice(0, 200)
-          if (replyText) {
-            await ports.recordEpisode?.({
-              groupId,
-              ...(trigger?.userId ? { userId: trigger.userId, userName: trigger.name } : {}),
-              summary: trigger ? `${trigger.name}说：${trigger.text}`.slice(0, 120) : `${actor.kind === 'commitment' ? '履行托付' : '主动行动'}（${reason.kind}${focusedGoalId ? `，目标 ${focusedGoalId}` : ''}）`,
-              reply: replyText,
-              source: {botId: persona.botId, personaId: persona.personaId, personaVersion: persona.personaVersion, personaName: persona.personaName},
-              ...(resolvedPersona.binding ? { binding: resolvedPersona.binding } : {}), at: now(),
-              messageIds: [...new Set(state.recent.flatMap(message => message.messageId !== null ? [String(message.messageId)] : []))],
-              replyIds: (state.confirmedMessageIds ?? []).filter(id => !episodeConfirmedBefore.has(id)),
-              isCurrent: canCallModel,
-            })
+        if (!turnClosed && rounds >= cfg.turn.maxToolRounds) {
+          failureStage ??= 'runtime'
+          if (!executionError) executionError = '回合执行轮次已用尽，尚未完成收尾'
+          diagnose({ stage: 'runtime', operation: 'simulation_turn', outcome: 'failed', code: 'tool_budget_exhausted' })
+        }
+        if (failureStage && !turnClosed) {
+          const failureCurrent = async () => {
+            if (actor.kind !== 'user' || !actor.userId || !triggerMessage?.messageId || triggerMessage.userId !== actor.userId ||
+                sends > 0 || confirmedActions > 0 || uncertainAction || memoryBox.deliveryUnknown || decision === 'silent' || decision === 'deferred' ||
+                ephemeralRead || historyRead || semanticRecall || usedImageDescription || usedInitialPrompt || attachmentSourceIds.size > 0 || turnClosed || requiresClosing) return false
+            try { await ensureExecution(); return canCallModel() } catch { return false }
           }
-        } catch { /* 情节补记失败不影响回合 */ }
+          if (await failureCurrent()) {
+            failureNoticeTurn = true
+            const notice = await generateAgentFailureNotice({
+              model: async request => {
+                if (!await failureCurrent()) throw new Error('失败说明权限已失效')
+                const response = await ports.YTapi(request, executionConfig, turnSignal, canCallModel, ensureModelCurrent)
+                tokens += Number(record(response.usage).total_tokens) || 0
+                try { ports.recordTokens?.({ scope: groupId, stage: 'sim-failure-notice', model: String(response.model || ''), usage: record(response.usage), ms: 0 }) } catch { /* aggregate still counts usage */ }
+                return response
+              },
+              isCurrent: failureCurrent,
+              allowsText: text => ports.allowsToolInput?.(text) !== false,
+              ...(ports.diagnostics ? { diagnostics: ports.diagnostics } : {}), stage: failureStage, outcome: 'failed',
+              detail: failureStage === 'model' ? '本轮模型没有取得可用回复，请求尚未完成' : failureStage === 'tool' ? '本轮工具未完成请求，没有确认成功结果' : '本轮执行额度已用尽，请求尚未完成',
+              personaSystem: `${systemPrompt}\n本次说明只写一条简短群消息，最多200字。`,
+              ...(ports.failureNoticeFallback ? { fallbackText: ports.failureNoticeFallback } : {}),
+            })
+            if (notice && notice.length <= 500 && await failureCurrent()) {
+              // Use the ordinary persisted closing tool: review, source checks,
+              // dedupe, quotas and the existing send receipt fence still own delivery.
+              const result = await executeTool(finishTool, { choice: 'chat', reason: '本轮请求未能完成', messages: [notice] })
+              diagnose({ stage: 'runtime', operation: 'simulation_failure_notice', outcome: classifyCharacterResult(result), code: 'finished_notice' })
+            }
+          } else diagnose({ stage: 'runtime', operation: 'simulation_failure_notice', outcome: 'cancelled', code: 'notice_not_authorized' })
+        }
+
+        recordWakeTokens(state, tokens)
+        const latestCharacter = await characters.load(characterScope)
+        const attachmentRevoked = attachmentSourceIds.size > 0 &&
+          (await Promise.all([...attachmentSourceIds].map(id => ports.isMessageRecalled?.(target, id)))).some(Boolean)
+        const semanticRevoked = semanticProjection?.text && !await semanticProjection.isCurrent()
+        const historyRevoked = !(await Promise.all(historyProjections.map(projection => projection.isCurrent()))).every(Boolean)
+        const filesRevoked = !(await Promise.all(fileProjections.map(projection => projection.isCurrent()))).every(Boolean)
+        const removedSource = attachmentRevoked || semanticRevoked || historyRevoked || filesRevoked || memoryTurn?.isCurrent() === false ||
+          (await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt || revisedSources || [...sourceMemoryIds].some(id => !activeCharacterMemories(latestCharacter).some(memory => memory.id === id)) || await store.loadActivityVersion(groupId) !== activityVersion || await shared.fingerprint() !== sharedFingerprint || !isBindingCurrent()
+        // Intermediate model output may echo ephemeral image or initial prompt material.
+        const thisTurn = (semanticRecall || ephemeralRead ? [retainedWakeMessage] : usedImageDescription || usedInitialPrompt || groupMemoryContext ? [wakeMessage] : history.slice(firstCurrentMessage)).map(message => {
+          const retained = readForward && message.role === 'tool' && message.name === 'simGetForward'
+            ? { ...message, content: '本轮请求查看合并转发，正文需按原消息重新读取' } : message
+          return conversationUserId ? { ...retained, conversationUserId } : retained
+        })
+        state.agentHistory = removedSource ? [] : failureNoticeTurn ? priorHistory : trimAgentHistory([...priorHistory, ...thisTurn], cfg.turn.historyMaxMessages, cfg.turn.historyMaxChars)
+        if (removedSource) delete state.lastConfirmedChat
+        if (groupMemoryContext || semanticRecall || ephemeralRead) delete state.lastConfirmedChat
+        if (sends > 0 && !failureNoticeTurn && !removedSource && !groupMemoryContext && !semanticRecall && !ephemeralRead && actor.kind === 'user' && actor.userId && memoryBox.sentTexts.length) {
+          state.lastConfirmedChat = { at: now(), userId: actor.userId, text: memoryBox.sentTexts.slice(-2).join('\n').slice(-500) }
+        }
+        if (sends > qqActionSends && isBindingCurrent()) state.nextReplyCheckAt = now() + cfg.wake.replyCheckMs
+        // 仿真群不走主链路，情节记忆在这里补记：让"这两天做过什么"持续有料
+        if (sends > qqActionSends && !failureNoticeTurn && !removedSource && !semanticRecall && !ephemeralRead) try { await ports.recordGroupReply?.(target, canCallModel) } catch {
+          diagnose({ stage: 'memory', operation: 'simulation_group_reply_record', outcome: 'failed', code: 'group_reply_not_recorded' })
+        }
+        if (sends > qqActionSends && !failureNoticeTurn && !removedSource && !groupMemoryContext && !semanticRecall && !ephemeralRead) {
+          try {
+            const trigger = actor.kind === 'user' ? state.recent.find(message => message.seq === reason.seq) : undefined
+            const replyText = memoryBox.sentTexts.slice(0, 2).join(' / ').slice(0, 200)
+            if (replyText) {
+              await ports.recordEpisode?.({
+                groupId,
+                ...(trigger?.userId ? { userId: trigger.userId, userName: trigger.name } : {}),
+                summary: trigger ? `${trigger.name}说：${trigger.text}`.slice(0, 120) : `${actor.kind === 'commitment' ? '履行托付' : '主动行动'}（${reason.kind}${focusedGoalId ? `，目标 ${focusedGoalId}` : ''}）`,
+                reply: replyText,
+                source: {botId: persona.botId, personaId: persona.personaId, personaVersion: persona.personaVersion, personaName: persona.personaName},
+                ...(resolvedPersona.binding ? { binding: resolvedPersona.binding } : {}), at: now(),
+                messageIds: [...new Set(state.recent.flatMap(message => message.messageId !== null ? [String(message.messageId)] : []))],
+                replyIds: (state.confirmedMessageIds ?? []).filter(id => !episodeConfirmedBefore.has(id)),
+                isCurrent: canCallModel,
+              })
+            }
+          } catch {
+            diagnose({ stage: 'memory', operation: 'simulation_episode_record', outcome: 'failed', code: 'episode_not_recorded' })
+          }
+        }
+        // 已在本回合展示的普通触发可消费。其他人的点名仍需独立回应，即使用户查过那条消息。
+        const replay = (isBindingCurrent() ? state.pendingWakeReasons : []).filter(pending =>
+          pending.seq !== reason.seq || pending.kind !== reason.kind).filter(pending =>
+          (isDirectAddressKind(pending.kind) && state!.recent.some(message => message.seq === pending.seq)) ||
+          messageReasonStillPending(pending, state!.unread))
+        const [next, ...remaining] = replay
+        state.pendingWakeReasons = remaining
+        nextWake = next
+        if (ports.durableIngress && (next || state.queuedIngressWake)) {
+          if (next) nextWake = queueWake(state, next)
+          else nextWake = state.queuedIngressWake
+        }
+        if (!needsSession || commitment?.started) await store.save(groupId, state)
+        logger.info(`[仿真] 群 ${groupId} 回合完成 wake=${reason.kind} rounds=${rounds} toolCalls=${toolCalls} sends=${sends} tokens=${tokens} ms=${now() - startedAt}`)
+        if (memoryBox.deliveryUnknown) uncertainAction = true
       }
-      // 已在本回合展示的普通触发可消费。其他人的点名仍需独立回应，即使用户查过那条消息。
-      const replay = (isBindingCurrent() ? state.pendingWakeReasons : []).filter(pending =>
-        pending.seq !== reason.seq || pending.kind !== reason.kind).filter(pending =>
-        (isDirectAddressKind(pending.kind) && state!.recent.some(message => message.seq === pending.seq)) ||
-        messageReasonStillPending(pending, state!.unread))
-      const [next, ...remaining] = replay
-      state.pendingWakeReasons = remaining
-      nextWake = next
-      if (ports.durableIngress && (next || state.queuedIngressWake)) {
-        if (next) nextWake = queueWake(state, next)
-        else nextWake = state.queuedIngressWake
-      }
-      if (!needsSession || commitment?.started) await store.save(groupId, state)
-      logger.info(`[仿真] 群 ${groupId} 回合完成 wake=${reason.kind} rounds=${rounds} toolCalls=${toolCalls} sends=${sends} tokens=${tokens} ms=${now() - startedAt}`)
-      if (memoryBox.deliveryUnknown) uncertainAction = true
+      if (ports.withDiagnosticScope) {
+        const diagnosticScope: AgentDiagnosticScope = resolvedPersona.binding
+          ? { kind: 'conversation', binding: resolvedPersona.binding, ...(triggerMessage?.messageId ? { messageId: String(triggerMessage.messageId) } : {}) }
+          : { kind: 'account', account: target.account }
+        await ports.withDiagnosticScope(diagnosticScope, 'simulation_turn', () => runResolvedTurn(state!))
+      } else await runResolvedTurn(state)
     } catch (error) {
       executionError = error instanceof Error ? error.message : '承诺回合异常'
       logger.error(`[仿真] 群 ${groupId} 回合异常`, error)
     } finally {
       fileTurnController.abort()
       fileTurnControllers.delete(fileTurnController)
+      if (turnsByGroup.get(groupId) === fileTurnController) turnsByGroup.delete(groupId)
+      activityTurn?.release()
       memoryTurn?.release()
       if (commitment) {
         const effects = sends + confirmedActions
@@ -2882,18 +3366,20 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       running.delete(groupId)
       liveStates.delete(groupId)
       notifyWaiters(groupId)
-      void store.clearBusy(groupId).catch(() => logger.warn(`[仿真] 群 ${groupId} 清理忙碌标记失败`))
+      void store.clearBusy(groupId).catch(error => diagnose({ stage: 'runtime', operation: 'simulation_busy_clear', outcome: 'failed', code: 'busy_marker_not_cleared', error }))
     }
     if (nextWake && !stopped) await scheduleWake(groupId, nextWake, state?.bindingToken)
   }
 
   async function sendNativeMessage(target: ConversationAddress, segments: unknown[], options?: SimSendOptions): Promise<SimTransportReceipt> {
+    if (!allowsConversationAI(target) || options?.isCurrent?.() === false) return { ok: false, error: '本会话 AI 活动已暂停' }
     if (!isQqSimulationAddress(target) || !ports.sendGroupMessage) return { ok: false, error: '当前会话不支持 QQ 原生消息' }
     return await ports.sendGroupMessage(target.id, segments, target.account.id, options)
   }
 
   async function sendTextMessage(groupId: string, botId: string, text: string, options?: SimSendOptions, mentions: readonly string[] = [], replyTo?: string): Promise<SimTransportReceipt> {
     const target = targetFor(groupId, botId)
+    if (!allowsConversationAI(target) || options?.isCurrent?.() === false) return { ok: false, error: '本会话 AI 活动已暂停' }
     if (ports.messageActions) {
       const parts: OutgoingPart[] = mentions.map(id => ({kind:'mention', user:{platform:target.account.platform, namespace:target.account.namespace, id}}))
       parts.push({kind:'text', text})
@@ -2915,7 +3401,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     state.confirmedMessageIds = [...(state.confirmedMessageIds ?? []).filter(item => item !== id), id].slice(-60)
   }
 
-  function buildToolContext(groupId: string, state: SimSessionState, cfg: SimRuntimeConfig, addSends: (delta: number) => void, memoryBox: { list: SimMemoryEntry[]; sentTexts: string[]; deliveryUnknown?: boolean }, affinityBox: { map: SimAffinityMap }, selfMemoryBox: { list: SimMemoryEntry[] }, moodBox: { current: SimMoodState | null } = { current: null }, moodAnchor: Record<MoodAxis, number> | null = null, scope = scopeFor(groupId, state.botId), beforeSend?: () => Promise<void>, totalSends?: () => number, reviewSend?: (messages: string[]) => Promise<void>, directAddress = false, visibleMessages: () => SimMessage[] = () => [], sendOptions?: SimSendOptions): SimToolContext {
+  function buildToolContext(groupId: string, state: SimSessionState, cfg: SimRuntimeConfig, addSends: (delta: number) => void, memoryBox: { list: SimMemoryEntry[]; sentTexts: string[]; deliveryUnknown?: boolean }, affinityBox: { map: SimAffinityMap }, selfMemoryBox: { list: SimMemoryEntry[] }, moodBox: { current: SimMoodState | null } = { current: null }, moodAnchor: Record<MoodAxis, number> | null = null, scope = scopeFor(groupId, state.botId), beforeSend?: () => Promise<void>, totalSends?: () => number, reviewSend?: (messages: string[]) => Promise<void>, directAddress = false, visibleMessages: () => SimMessage[] = () => [], sendOptions?: SimSendOptions, retainReplyMemory: () => boolean = () => true, scopedPoke?: (userId: string) => Promise<{ ok: boolean; error?: string }>): SimToolContext {
     const store = scopedStore(scope, sendOptions?.binding)
     const target = targetFor(groupId, state.botId || ports.getSelf().id)
     const qq = isQqSimulationAddress(target)
@@ -2971,7 +3457,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             addSends(1)
             memoryBox.sentTexts.push(text)
             markConversationEngaged(state, state.conversation.lastTriggerUserId || '', cfg.wake.continuationWindowMs)
-            const memeBumped = bumpMemeUsage(memoryBox.list, text, now()).length > 0
+            const memeBumped = retainReplyMemory() && bumpMemeUsage(memoryBox.list, text, now()).length > 0
             recordSend(state, now(), 1)
             state.lastAiSendAt = now()
             invalidatePreSleepWaitByParticipation(state)
@@ -3107,14 +3593,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         await beforeSend?.()
         return ports.qzoneInteract!(input, target, sendOptions)
       } } : {}),
-      ...(qq && typeof ports.pokeMember === 'function' ? { pokeMember: async (userId: string) => {
+      ...(scopedPoke || qq && typeof ports.pokeMember === 'function' ? { pokeMember: async (userId: string) => {
         if (memoryBox.deliveryUnknown) return { ok: false, error: '上次发送结果未知，本回合不再发送，请核对回执' }
-        if (!qq || typeof ports.pokeMember !== 'function') return { ok: false, error: '戳一戳不可用' }
-        if (!/^\d{1,12}$/.test(userId)) return { ok: false, error: 'userId 必须是 QQ 号' }
+        if (!scopedPoke && (!qq || typeof ports.pokeMember !== 'function')) return { ok: false, error: '戳一戳不可用' }
+        if (scopedPoke ? !isPlatformIdentifier(userId) : !/^\d{1,12}$/.test(userId)) return { ok: false, error: 'userId 必须是当前群的有效成员 ID' }
         const window = (pokeTimes.get(groupId) || []).filter(t => now() - t < 3600_000)
         if (window.length >= 6) return { ok: false, error: '本小时戳人次数已达上限（6），别把人戳烦了' }
         await beforeSend?.()
-        const receipt = await ports.pokeMember(target.id, userId, target.account.id)
+        const receipt = scopedPoke ? await scopedPoke(userId) : await ports.pokeMember!(target.id, userId, target.account.id)
         if (receipt.ok) { window.push(now()); pokeTimes.set(groupId, window) }
         return receipt
       } } : {}),
@@ -3266,8 +3752,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       try { state = await store.load(groupId) } catch (error) { logger.error(`[仿真] 群 ${groupId} sweep 读取失败`, error); continue }
       if (!state.botId && decodeSimulationAddressKey(groupId)) continue
       const target = targetFor(groupId, state.botId || ports.getSelf().id)
-      if (!handlesTarget(target) || ports.allowsSimulation?.(target) === false || (state.botId && state.botId !== target.account.id)) continue
+      if (!handlesTarget(target) || !allowsConversationAI(target) || (state.botId && state.botId !== target.account.id)) continue
       if (ports.isAccountReady?.(target.account) === false) continue
+      const sweepActivity = activity.capture(target)
+      try {
       const cfg = runtimeConfig(groupId)
       let binding: AgentBindingSnapshot | undefined
       try { binding = personaFor(target).binding } catch {
@@ -3281,7 +3769,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const isCurrent = () => {
         try {
           const live = personaFor(target).binding
-          return !stopped && ports.isAccountReady?.(target.account) !== false && (live ? agentBindingToken(live) : undefined) === bindingToken
+          return !stopped && sweepActivity.isCurrent() && allowsConversationAI(target) && ports.isAccountReady?.(target.account) !== false && (live ? agentBindingToken(live) : undefined) === bindingToken
         } catch { return false }
       }
       if (bindingChanged) {
@@ -3362,19 +3850,20 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       }
       if (hasWake || scheduleChanged || previousBinding !== state.bindingToken) await store.save(groupId, state)
       if (best) await scheduleWake(groupId, best, state.bindingToken, cfg)
-      if (!hasWake && !running.has(groupId) && !background.has(groupId) && !atOnly && !sleepingNow &&
+      if (!hasWake && isCurrent() && !running.has(groupId) && !background.has(groupId) && !atOnly && !sleepingNow &&
           ports.isMemoryInputAvailable?.(target.account) !== false) await runCharacterBackground(groupId, state, cfg, binding)
       // 本群专属梗自动提取（独立于唤醒：不产生回合，只沉淀记忆）
-      if (!hasWake && !running.has(groupId)) await maybeExtractMemes(groupId, state, cfg)
-      if (!hasWake && !running.has(groupId)) await maybeExtractPersonProfiles(groupId, state, cfg)
+      if (!hasWake && isCurrent() && !running.has(groupId)) await maybeExtractMemes(groupId, state, cfg)
+      if (!hasWake && isCurrent() && !running.has(groupId)) await maybeExtractPersonProfiles(groupId, state, cfg)
       // 按人挖口头禅（风格个性化）：冷却默认 6h，读归档 → 纯函数挖掘 → Redis
-      if (!hasWake && !running.has(groupId)) await maybeMineUserStyle(groupId, cfg)
+      if (!hasWake && isCurrent() && !running.has(groupId)) await maybeMineUserStyle(groupId, cfg)
       if (!hasWake && !running.has(groupId) && isCurrent()) await maybeSyncLifeThreads(cfg, scopedStore(scopeFor(groupId, state.botId)), isCurrent)
       // 健康哨兵：全局每小时跑一次（挂在第一个群的 sweep 里）
       if (now() - healthSentinelLastRun > 3600_000) {
         healthSentinelLastRun = now()
         void runHealthSentinel()
       }
+      } finally { sweepActivity.release() }
     }
   }
 
@@ -3382,6 +3871,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   async function runCharacterBackground(groupId: string, state: SimSessionState, cfg: SimRuntimeConfig, binding?: AgentBindingSnapshot): Promise<void> {
     const scope = scopeFor(groupId, state.botId)
     const target = targetFor(groupId, state.botId || ports.getSelf().id)
+    if (!allowsConversationAI(target)) return
     const scene = { kind: 'group' as const, id: scope.groupId }
     const bindingToken = state.bindingToken
     let bindingCurrent = true
@@ -3398,7 +3888,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     backgroundByGroup.set(groupId, controller)
     const canCallModel = () => {
       if (stopped || controller.signal.aborted || memoryTurn?.isCurrent() === false ||
-          ports.isAccountReady?.(target.account) === false || !handlesTarget(target) || ports.allowsSimulation?.(target) === false) return false
+          ports.isAccountReady?.(target.account) === false || !handlesTarget(target) || !allowsConversationAI(target)) return false
       const live = personaFor(target)
       bindingCurrent = bindingCurrent && (live.personaId || 'default') === scope.personaId &&
         (live.binding ? agentBindingToken(live.binding) : undefined) === bindingToken
@@ -3537,6 +4027,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (!cfg.meme.enabled || typeof ports.memeExtract !== 'function' || !state.botId) return
     const at = now()
     const target = targetFor(groupId, state.botId)
+    if (!allowsConversationAI(target)) return
     const resolved = personaFor(target)
     const scope = characterScopeFor(target, resolved.personaId || 'default')
     const scene = { kind: 'group' as const, id: scope.groupId }
@@ -3549,12 +4040,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (cursor && at - cursor.at < cfg.meme.extractCooldownMs) return
     const fresh = (await redactSceneMessages(scope, state.recent)).filter(m => m.at > privacy.invalidatedAt && m.seq > (cursor?.seq ?? Math.max(0, state.seq - 40)))
     if (fresh.length < cfg.meme.extractMinMessages) return
+    const extraction = activity.capture(target)
     try {
+      if (!allowsConversationAI(target) || !extraction.isCurrent()) return
       const extractStartedAt = now()
       const raw = await ports.memeExtract(fresh.slice(-40).map(m => ({ name: m.name, text: m.text })))
       try { ports.recordTokens?.({ scope: groupId, stage: 'meme-extract', ms: now() - extractStartedAt }) } catch { /* 账本不可用 */ }
       const candidates = parseMemeCandidates(raw)
-      if (stopped || await store.loadActivityVersion(groupId) !== activityVersion ||
+      if (stopped || !allowsConversationAI(target) || !extraction.isCurrent() || await store.loadActivityVersion(groupId) !== activityVersion ||
         (await personMemory.getSceneRedactions({ identity: scope, scene })).invalidatedAt !== privacy.invalidatedAt) return
       if (!candidates.length) return
       // 回合可能刚改过记忆库：重新加载合并，避免双写者互覆
@@ -3562,14 +4055,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const { memories, newCount } = mergeMemeCandidates(current, candidates, at)
       await memoryStore.saveMemories(groupId, memories, () => {
         const live = personaFor(target)
-        return !stopped && (live.personaId || 'default') === scope.personaId &&
+        return !stopped && allowsConversationAI(target) && extraction.isCurrent() && (live.personaId || 'default') === scope.personaId &&
           (live.binding ? agentBindingToken(live.binding) : undefined) === token
       })
       await saveExtractionCursor(groupId, token, 'memeCursor', fresh.at(-1)!.seq, at)
       if (newCount > 0) logger.info(`[仿真] 群 ${groupId} 梗库新增 ${newCount} 条（提取自 ${fresh.length} 条消息）`)
     } catch (error) {
       logger.warn(`[仿真] 群 ${groupId} 梗提取失败：${error instanceof Error ? error.message : String(error)}`)
-    }
+    } finally { extraction.release() }
   }
 
   async function saveExtractionCursor(groupId: string, bindingToken: string | undefined, cursor: 'memeCursor' | 'personProfileCursor', seq: number, at: number) {
@@ -3593,6 +4086,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const at = now()
     const address = targetFor(groupId, state.botId)
     const target = Object.freeze({ ...address, account: Object.freeze({ ...address.account }) })
+    if (!allowsConversationAI(target)) return
     const resolved = personaFor(target)
     const binding = resolved.binding ? Object.freeze({ ...resolved.binding, target }) : undefined
     const scope = characterScopeFor(target, resolved.personaId || 'default')
@@ -3615,7 +4109,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       try {
         if (!active || stopped || controller.signal.aborted || memoryTurn?.isCurrent() === false ||
             ports.isMemoryInputAvailable?.(target.account) === false || ports.isAccountReady?.(target.account) === false ||
-            !handlesTarget(target) || ports.allowsSimulation?.(target) === false || !groupActive(runtimeConfig(), groupId) ||
+            !handlesTarget(target) || !allowsConversationAI(target) || !groupActive(runtimeConfig(), groupId) ||
             !runtimeConfig(groupId).personProfile.enabled) return false
         const live = personaFor(target)
         bindingCurrent = bindingCurrent && state.botId === target.account.id && state.bindingToken === token &&
@@ -3803,8 +4297,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
 
   async function maybeMineUserStyle(groupId: string, cfg: SimRuntimeConfig): Promise<void> {
     if (!cfg.userStyle.enabled || typeof ports.readArchiveMessages !== 'function') return
+    let extraction: AgentConversationActivityCapture | undefined
     try {
       const session = await store.load(groupId), scope = boundScopeFor(groupId, session.botId)
+      const target = targetFor(groupId, session.botId || ports.getSelf().id)
+      if (!allowsConversationAI(target)) return
+      extraction = activity.capture(target)
       if (!scope || (await personMemory.getSceneRedactions({ identity: scope, scene: { kind: 'group', id: scope.groupId } })).invalidatedAt > 0) return
       const current = await store.loadUserStyle(groupId)
       if (now() - current.updatedAt < cfg.userStyle.cooldownMs) return
@@ -3815,11 +4313,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const catchphrases = mineUserCatchphrases(messages)
       const users: Record<string, string[]> = {}
       for (const item of catchphrases) users[item.userId] = item.words
+      if (!allowsConversationAI(target) || !extraction.isCurrent()) return
       await store.saveUserStyle(groupId, users)
       if (Object.keys(users).length) logger.info(`[仿真] 群 ${groupId} 口头禅库更新：${Object.keys(users).length} 人`)
     } catch (error) {
       logger.warn(`[仿真] 群 ${groupId} 口头禅挖掘失败：${error instanceof Error ? error.message : String(error)}`)
-    }
+    } finally { extraction?.release() }
   }
 
   async function start() {
@@ -3837,9 +4336,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       }
       if (known.length) logger.info(`[仿真] 启动清理：${known.length} 个群的旧回合租约已释放`)
     } catch { /* 清理失败不阻塞启动 */ }
-    sweeper = setInterval(() => {
+    sweeper = administration.background(() => setInterval(() => {
       void sweepOnce().catch(error => logger.error('[仿真] 调度检查失败', error))
-    }, boundedTimerDelay(SIM_SWEEP_INTERVAL_MS, 3_600_000, 5_000))
+    }, boundedTimerDelay(SIM_SWEEP_INTERVAL_MS, 3_600_000, 5_000)))
     sweeper.unref?.()
     const cfg = runtimeConfig()
     const scope = !cfg.enabled ? '总开关关闭，全部群走普通模式'
@@ -3904,6 +4403,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const overrides = nextOverrides({ disabled: (overridesCache?.disabled || []).filter(g => g !== groupId) })
     if ((!cfg.allGroups || decodeSimulationAddressKey(groupId)) && !overrides.explicitEnabled.includes(groupId)) overrides.explicitEnabled.push(groupId)
     await store.saveOverrides(overrides)
+    administration.ensureCurrent()
     overridesCache = overrides
     return cfg.allGroups && !overrides.disabled.includes(groupId)
       ? `会话 ${displayConversation(groupId)} 确认处于仿真模式（当前默认全群开启，未单独退出过）`
@@ -3911,11 +4411,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   }
 
   async function disableGroup(groupId: string): Promise<string> {
+    administration.ensureCurrent()
     backgroundByGroup.get(groupId)?.abort()
     await refreshGroupState(true)
     const overrides = nextOverrides({ explicitEnabled: (overridesCache?.explicitEnabled || []).filter(g => g !== groupId) })
     if (!overrides.disabled.includes(groupId)) overrides.disabled.push(groupId)
     await store.saveOverrides(overrides)
+    administration.ensureCurrent()
     overridesCache = overrides
     const pending = pendingWakes.get(groupId)
     if (pending) { clearTimeout(pending.timer); pendingWakes.delete(groupId) }
@@ -3950,6 +4452,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       playAlongUntil,
     })
     await store.saveOverrides(overrides)
+    administration.ensureCurrent()
     overridesCache = overrides
     if (mode === 'atOnly') {
       backgroundByGroup.get(groupId)?.abort()
@@ -3993,6 +4496,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
 
   async function resetGroup(groupId: string): Promise<string> {
     return await queueIngress(groupId, async () => {
+      administration.ensureCurrent()
       if (background.has(groupId)) return '后台角色活动进行中，请暂停自主行动并稍后重试重置'
       if (running.has(groupId)) return '该群有仿真回合正在进行，请稍后再重置'
       const cfg = runtimeConfig()
@@ -4085,17 +4589,22 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
 
   async function ingestNudge(event: PlatformNudgeEvent, options?: NudgeIngressOptions): Promise<boolean> {
     const { target, sender } = event
-    if (!handlesTarget(target) || ports.getSection().enabled === false || !isSimulationUserId(sender.id) || !Number.isSafeInteger(event.occurredAt) || event.occurredAt <= 0
+    if (!allowsConversationAI(target) || !handlesTarget(target) || ports.getSection().enabled === false || !isSimulationUserId(sender.id) || !Number.isSafeInteger(event.occurredAt) || event.occurredAt <= 0
       || sender.platform !== target.account.platform || sender.namespace !== target.account.namespace) return false
+    const ingressActivity = activity.capture(target)
+    try {
     const groupId = await conversationKey(target)
     if (!groupId) {
       await refreshGroupState()
       return isQqSimulationAddress(target) && isSimulationGroup(target.id)
     }
-    return queueIngress(groupId, () => ingestNudgeInGroup(groupId, event, options))
+    return await queueIngress(groupId, () => ingestNudgeInGroup(groupId, event, { ...options,
+      isCurrent: () => ingressActivity.isCurrent() && allowsConversationAI(target) && options?.isCurrent?.() !== false }))
+    } finally { ingressActivity.release() }
   }
 
   async function ingestNudgeInGroup(groupId: string, { target, sender, senderName, occurredAt }: PlatformNudgeEvent, options?: NudgeIngressOptions): Promise<boolean> {
+    if (!allowsConversationAI(target)) return true
     await refreshGroupState()
     const self = selfFor(target)
     if (self.id !== target.account.id || sender.id === (self.userId ?? self.id)) return false
@@ -4112,7 +4621,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const bindingCurrent = () => {
       try {
         const live = personaFor(target).binding
-        return options?.isCurrent?.() !== false && (live ? agentBindingToken(live) : undefined) === bindingToken
+        return allowsConversationAI(target) && options?.isCurrent?.() !== false && (live ? agentBindingToken(live) : undefined) === bindingToken
       } catch { return false }
     }
     const state = await sessionForIncoming(groupId, self.id, bindingToken, bindingCurrent)
@@ -4152,10 +4661,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return true
   }
 
-  async function overview(): Promise<Record<string, unknown>> {
+  async function overview(groupIds?: readonly string[]): Promise<Record<string, unknown>> {
     await refreshGroupState(true)
     const cfg = runtimeConfig()
-    const known = knownGroupsCache.filter(groupId => {
+    const known = (groupIds ?? knownGroupsCache).filter(groupId => {
       const target = decodeSimulationAddressKey(groupId)
       return !target || handlesTarget(target)
     })
@@ -4236,6 +4745,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const state = await store.load(groupId)
     const scope = boundScopeFor(groupId, state.botId)
     if (!scope) throw new Error('本群尚未绑定机器人，请等待机器人收到本群消息后再管理角色')
+    administration.ensureCurrent()
     if (action === 'pause' || action === 'delete-memory') backgroundByGroup.get(groupId)?.abort()
     if (action === 'delete-memory') await store.invalidateActivity(groupId)
     await characters.update(scope, current => {
@@ -4247,6 +4757,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (action === 'delete-memory') {
       const live = liveStates.get(groupId)
       if (live) {
+        administration.ensureCurrent()
         live.agentHistory = []
         await store.save(groupId, live)
       }
@@ -4271,7 +4782,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       // between the source update and the shared cancellation becoming visible.
       await store.invalidateActivity(groupId)
       const live = liveStates.get(groupId)
-      if (live) live.agentHistory = []
+      if (live) { administration.ensureCurrent(); live.agentHistory = [] }
     }
     if (action === 'work-archive') await workspace.archive(id!, true)
     else if (action === 'work-delete') await workspace.remove(id!)
@@ -4320,17 +4831,20 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (value === -1) {
       overrides.budgetCaps[groupId] = -1
       await store.saveOverrides(overrides)
+      administration.ensureCurrent()
       overridesCache = overrides
       return `群 ${groupId} 每日消耗上限已设为不限`
     }
     if (Number.isFinite(value) && value > 0) {
       overrides.budgetCaps[groupId] = Math.min(10_000, value)
       await store.saveOverrides(overrides)
+      administration.ensureCurrent()
       overridesCache = overrides
       return `群 ${groupId} 每日消耗上限已设为 ${overrides.budgetCaps[groupId]} 元`
     }
     delete overrides.budgetCaps[groupId]
     await store.saveOverrides(overrides)
+    administration.ensureCurrent()
     overridesCache = overrides
     return `群 ${groupId} 已清除按群上限，回落到默认配置`
   }
@@ -4345,17 +4859,20 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (value === -1) {
       overrides.turnCaps[groupId] = -1
       await store.saveOverrides(overrides)
+      administration.ensureCurrent()
       overridesCache = overrides
       return `群 ${groupId} 每日回合上限已设为不限`
     }
     if (Number.isFinite(value) && value > 0) {
       overrides.turnCaps[groupId] = Math.min(10_000, value)
       await store.saveOverrides(overrides)
+      administration.ensureCurrent()
       overridesCache = overrides
       return `群 ${groupId} 每日回合上限已设为 ${overrides.turnCaps[groupId]}`
     }
     delete overrides.turnCaps[groupId]
     await store.saveOverrides(overrides)
+    administration.ensureCurrent()
     overridesCache = overrides
     return `群 ${groupId} 已清除按群回合上限，回落到默认配置`
   }
@@ -4368,11 +4885,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (Number.isFinite(value) && value > 0) {
       overrides.budgetDefaultCny = Math.min(10_000, value)
       await store.saveOverrides(overrides)
+      administration.ensureCurrent()
       overridesCache = overrides
       return `默认每日消耗上限已设为 ${overrides.budgetDefaultCny} 元`
     }
     delete overrides.budgetDefaultCny
     await store.saveOverrides(overrides)
+    administration.ensureCurrent()
     overridesCache = overrides
     return '已恢复使用配置文件的默认每日消耗上限'
   }
@@ -4411,13 +4930,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return `【群友好感 · 前8】\n${top}${mineLine}`
   }
 
-  return { ingest, ingestNudge, start, stop, drain, sweepOnce, enableGroup, disableGroup, setGroupReplyMode, groupStatus, resetGroup, listMemories, listAffinity, ingestPoke, handleRecall, overview, describeGroup, controlCharacter, controlActivity, getInitialPrompt, setInitialPrompt, setGroupBudget, setGroupTurnsCap, setDefaultBudget, conversationKey, isGroupActive: isSimulationGroup, isConversationActive, groupTextBudget, wakeForCommitment, listPersonProfiles: () => store.listPersonProfiles(), deletePersonProfile: (userId: string) => store.deletePersonProfile(userId), deletePersonProfileField: (userId: string, field: string, value?: string) => store.deletePersonProfileField(userId, field, value),
-  lifeOverview: async () => {
+  return { runAdministration: administration.run, ingest, ingestNudge, start, stop, drain, sweepOnce, invalidateConversation, enableGroup, disableGroup, setGroupReplyMode, groupStatus, resetGroup, listMemories, listAffinity, ingestPoke, handleRecall, overview, describeGroup, controlCharacter, controlActivity, getInitialPrompt, setInitialPrompt, setGroupBudget, setGroupTurnsCap, setDefaultBudget, conversationKey, isGroupActive: isSimulationGroup, isConversationActive, groupTextBudget, wakeForCommitment, listPersonProfiles: () => store.listPersonProfiles(), deletePersonProfile: (userId: string) => store.deletePersonProfile(userId), deletePersonProfileField: (userId: string, field: string, value?: string) => store.deletePersonProfileField(userId, field, value),
+  lifeOverview: async (groupIds?: readonly string[]) => {
     const cfg = runtimeConfig()
     const stored = await store.loadRhythm().catch(() => null)
     const rhythm = stored?.setBy === 'admin' ? { sleepFrom: stored.sleepFrom, sleepTo: stored.sleepTo, setBy: 'admin' } : { sleepFrom: cfg.rhythm.sleepFrom, sleepTo: cfg.rhythm.sleepTo }
     await refreshGroupState(true)
-    const threads = (await Promise.all(knownGroupsCache.map(async groupId => {
+    const threads = (await Promise.all((groupIds ?? knownGroupsCache).map(async groupId => {
       const state = await store.load(groupId)
       const scope = boundScopeFor(groupId, state.botId)
       if (!scope) return []
@@ -4432,15 +4951,16 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         return raw ? JSON.parse(raw) : { alerts: [], checkedAt: 0 }
       } catch { return { alerts: [], checkedAt: 0 } }
     },
-    setLifeRhythm: async (from: number, to: number) => {
+    setLifeRhythm: async (from: number, to: number, groupIds?: readonly string[]) => {
     await store.saveRhythm({ sleepFrom: from, sleepTo: to, setBy: 'admin' })
     await refreshGroupState(true)
-    for (const groupId of knownGroupsCache) {
+    for (const groupId of groupIds ?? knownGroupsCache) {
       const state = await store.load(groupId)
       const scope = boundScopeFor(groupId, state.botId)
       if (!scope) continue
       await scopedStore(scope).saveRhythm({ sleepFrom: from, sleepTo: to, setBy: 'admin' })
     }
+    administration.ensureCurrent()
     rhythmCache = null
     return `已设定作息 ${from}:00 - ${to}:00（页面设定）`
   } }

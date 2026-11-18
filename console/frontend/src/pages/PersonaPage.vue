@@ -33,6 +33,8 @@ import {
   type SchemaFieldDefinition
 } from '../lib/schemaState'
 import { useSchemaSaveShortcut } from '../lib/schemaKeyboard'
+import StandalonePersonaConfig from '../components/StandalonePersonaConfig.vue'
+import type { StandaloneLibraryView } from '../lib/standaloneConfig'
 
 interface Persona {
   id: string
@@ -47,6 +49,7 @@ interface LibraryState {
   privateBinding: string
 }
 interface LibraryView {
+  mode?: 'standalone'
   personas: Record<string, any>[]
   groupBindings: Record<string, string>
   accountBindings: Record<string, string>
@@ -289,22 +292,23 @@ async function load(preserve = false) {
   request = new AbortController()
   loading.value = true
   error.value = ''
-  const results = await Promise.allSettled([
-    api<LibraryView>('/api/persona/library', { signal: request.signal }),
-    api<{ accounts: Account[] }>('/api/persona/accounts', { signal: request.signal })
-  ])
-  if (seq !== generation) return
-  if (results[0].status === 'fulfilled') {
-    applyView(results[0].value, preserve)
+  try {
+    const next = await api<LibraryView>('/api/persona/library', { signal: request.signal })
+    if (seq !== generation) return
+    if (next.mode === 'standalone') { view.value = next; return }
+    applyView(next, preserve)
     conflict.value = false
-  } else if (results[0].reason?.name !== 'AbortError')
-    error.value = results[0].reason.message || '人设库加载失败'
-  if (results[1].status === 'fulfilled') {
-    accounts.value = results[1].value.accounts || []
-    accountError.value = ''
-  } else if (results[1].reason?.name !== 'AbortError')
-    accountError.value = '账号列表暂时无法加载，可以手动添加账号绑定。'
-  loading.value = false
+    try {
+      const nextAccounts = await api<{ accounts: Account[] }>('/api/persona/accounts', { signal: request.signal })
+      if (seq !== generation) return
+      accounts.value = nextAccounts.accounts || []
+      accountError.value = ''
+    } catch (cause: any) {
+      if (cause.name !== 'AbortError') accountError.value = '账号列表暂时无法加载，可以手动添加账号绑定。'
+    }
+  } catch (cause: any) {
+    if (cause.name !== 'AbortError' && seq === generation) error.value = cause.message || '人设库加载失败'
+  } finally { if (seq === generation) loading.value = false }
 }
 function refresh() {
   if (!dirty.value) {
@@ -443,16 +447,17 @@ onBeforeUnmount(() => {
   <div ref="root" class="page-stack persona-page">
     <PageHeader
       title="人设"
-      description="维护角色身份，按机器人账号、群聊与私聊建立绑定。"
+      :description="view?.mode === 'standalone' ? '维护人设模板，为现有 agent 分配人设，保存后重启服务生效。' : '维护角色身份，按机器人账号、群聊与私聊建立绑定。'"
       eyebrow="机器人能力"
       ><template #actions
-        ><NButton secondary :disabled="loading || saving" @click="refresh">刷新人设库</NButton
-        ><NButton type="primary" @click="addPersona"
+        ><NButton v-if="view?.mode !== 'standalone'" secondary :disabled="loading || saving" @click="refresh">刷新人设库</NButton
+        ><NButton v-if="view?.mode !== 'standalone'" type="primary" @click="addPersona"
           ><template #icon><Plus :size="16" /></template>新建人设</NButton
         ></template
       ></PageHeader
     >
-    <PageState :loading="loading && !view" :error="!view ? error : ''" @retry="load()">
+    <StandalonePersonaConfig v-if="view?.mode === 'standalone'" :initial="view as unknown as StandaloneLibraryView" />
+    <PageState v-else :loading="loading && !view" :error="!view ? error : ''" @retry="load()">
       <template v-if="view">
         <div class="panel persona-summary">
           <div>

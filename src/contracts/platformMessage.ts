@@ -6,6 +6,11 @@ import type { SendMusicAction } from './agentMusic.js'
 import type { SendAudioFileAction } from './agentMusicExtraction.js'
 import type { SendMediaRelayAction } from './agentMediaRelay.js'
 import type { SendRequesterArchiveAction } from './agentTorrent.js'
+import type { SendGroupLogAction } from './agentGroupLog.js'
+import type { SendRequesterBilibiliAuthAction } from './agentBilibiliAuth.js'
+import type { SendVideoCardAction } from './agentVideoCard.js'
+import type { SendInteractionAction, InteractionReceipt } from './agentInteraction.js'
+import type { AgentDicePrivateRelayRequest, AgentDiceRelayGuard } from './agentDice.js'
 
 export type MessageResource =
   | { readonly kind: 'url'; readonly value: string }
@@ -75,12 +80,21 @@ export interface SendMessageBundleAction {
 }
 
 export interface MessageActionOptions {
+  /** Await immediately before dispatch after any platform queue or resource staging. */
+  ensureCurrent?(): Promise<void>
   /** Recheck synchronously immediately before transport, including after any adapter queue. */
   readonly isCurrent?: () => boolean
 }
 
 export interface MessageActionPort {
   send(action: SendMessageAction, options?: MessageActionOptions): Promise<DeliveryReceipt>
+  /** Explicit private dice delivery retains and revalidates its original group and human source. */
+  sendDicePrivate?(request: AgentDicePrivateRelayRequest, guard: AgentDiceRelayGuard): Promise<DeliveryReceipt>
+  /** One fixed-conversation platform interaction, using its own non-message confirmation. */
+  interact?(action: SendInteractionAction, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<InteractionReceipt>
+  /** Deterministic Bilibili authorization notices to the proven original sender only. */
+  sendRequesterBilibiliAuth?(action: SendRequesterBilibiliAuthAction, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<DeliveryReceipt>
+  sendVideoCard?(action: SendVideoCardAction, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<DeliveryReceipt>
   sendBundle?(action: SendMessageBundleAction, options?: MessageActionOptions): Promise<DeliveryReceipt>
   /** Upload owned bytes to this action's fixed conversation, retaining file evidence separately. */
   sendFile?(action: SendFileAction, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<FileDeliveryReceipt>
@@ -94,4 +108,6 @@ export interface MessageActionPort {
   sendMediaRelay?(action: SendMediaRelayAction, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<DeliveryReceipt>
   /** Private upload only to the sender proven by this action's original bound group source. */
   sendRequesterArchive?(action: SendRequesterArchiveAction, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<FileDeliveryReceipt>
+  /** Complete transcript upload to the group fixed by its verified human command. */
+  sendGroupLog?(action: SendGroupLogAction, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<FileDeliveryReceipt>
 }

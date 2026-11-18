@@ -22,6 +22,9 @@ export interface AiProvider {
   [key: string]: any
 }
 export interface AiOverview {
+  mode?: 'standalone'
+  processEpoch?: string
+  configRevision?: string
   definitions: AiDefinition[]
   sections: Record<string, Record<string, any>[]>
   revisions?: Record<string, string>

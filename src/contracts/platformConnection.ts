@@ -3,11 +3,16 @@ import type { IncomingMessage, MessageActionOptions, MessageActionPort } from '.
 import type { AgentFileBytes, ConversationFileCatalog, ConversationFileEntry, ConversationFileReadOptions, FileReadGuard, MessageFileReadOptions } from './agentFiles.js'
 import type { AgentMusicShare } from './agentMusicExtraction.js'
 import type { AgentMediaShare, AgentMediaShareAccess } from './agentMediaRelayWorkflow.js'
+import type { AgentMessageVideo, MessageVideoReadOptions } from './agentVideo.js'
+import type { AgentGiftDeliveryPort } from './agentQqGift.js'
+import type { AgentQzoneProvider } from './agentQzone.js'
+import type { AgentRedPacketPort, AgentRedPacketSnapshot } from './agentQqRedPacket.js'
 
 export type PlatformConversationEvent =
   | { kind: 'message'; message: IncomingMessage }
   | { kind: 'recall'; target: ConversationAddress; messageId: string }
   | PlatformNudgeEvent
+  | { readonly kind: 'red-packet'; readonly target: ConversationAddress; readonly packet: AgentRedPacketSnapshot }
 
 /** An interaction directed to this account with no replyable message. */
 export interface PlatformNudgeEvent {
@@ -36,6 +41,14 @@ export interface ForwardContent {
 export interface MessageImage {
   readonly mime: string
   readonly base64: string
+}
+
+/** Fresh ownership evidence contains no message body, resource or quoted content. */
+export interface OwnMessageSnapshot {
+  readonly conversation: ConversationAddress
+  readonly messageId: string
+  readonly author: PlatformUserRef
+  readonly occurredAt: number
 }
 
 export interface MessageImageReadOptions extends MessageActionOptions {
@@ -100,15 +113,25 @@ export interface PlatformConnectionAdapter extends PlatformConnection {
   readonly botUserId: string
   readonly botName: string
   readonly actions: MessageActionPort
+  /** Explicitly declared platform extensions; omission keeps each capability unavailable. */
+  readonly gift?: AgentGiftDeliveryPort
+  readonly qzone?: AgentQzoneProvider
+  readonly redPackets?: AgentRedPacketPort & { revoke(target: ConversationAddress, messageId?: string): void }
+  /** Clear ephemeral wallet credentials and in-flight reads without erasing durable effect receipts. */
+  invalidateRedPacketSources?(): void
   /** Synchronously resolve the verified and stable one-to-one peer for this account's private conversation.
    * Return undefined when unverified. Omission declares that private conversation IDs are the verified participant IDs. */
   resolvePrivatePeer?(target: ConversationAddress): PlatformUserRef | undefined
   /** Optional read of one already referenced message. The adapter must verify its full conversation address. */
-  readMessage?(target: ConversationAddress, messageId: string, options?: MessageActionOptions): Promise<IncomingMessage | undefined>
+  readMessage?(target: ConversationAddress, messageId: string, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<IncomingMessage | undefined>
+  /** Verify an already referenced self-authored message in this exact conversation. */
+  readOwnMessage?(target: ConversationAddress, messageId: string, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<OwnMessageSnapshot | undefined>
   /** Read a forwarded bundle attached to a verified message in this conversation. */
   readForward?(target: ConversationAddress, source: ForwardReference, options?: MessageActionOptions): Promise<ForwardContent | undefined>
   /** Materialize image parts of one message after verifying its conversation and source. */
   readMessageImages?(target: ConversationAddress, messageId: string, options: MessageImageReadOptions): Promise<readonly MessageImage[] | undefined>
+  /** First video from the verified current/reply/forward chain; inspect never retrieves video bytes. */
+  readMessageVideo?(target: ConversationAddress, messageId: string, options: MessageVideoReadOptions): Promise<AgentMessageVideo | undefined>
   /** Read a bounded official music reference from one verified group or friend-private message. */
   readMusicShare?(target: ConversationAddress, messageId: string, options: MusicShareReadOptions): Promise<{ readonly message: IncomingMessage; readonly share: AgentMusicShare } | undefined>
   readMediaShare?(target: ConversationAddress, messageId: string, options: MediaShareReadOptions): Promise<{ readonly message: IncomingMessage; readonly share: AgentMediaShare; readonly access?: AgentMediaShareAccess } | undefined>

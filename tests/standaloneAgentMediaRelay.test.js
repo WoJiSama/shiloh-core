@@ -6,10 +6,9 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
 
-const repo = fileURLToPath(new URL('../', import.meta.url)), release = path.resolve(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo)
-const { openStandaloneMediaRelay, readStandaloneMediaRelayConfig } = await import(pathToFileURL(path.join(release, 'dist/backend/bootstrap/standaloneMediaRelay.js')).href)
+const { openStandaloneMediaRelay, readStandaloneMediaRelayConfig } = await importBilibiliHost('bootstrap/standaloneMediaRelay.js')
 const account = { platform: 'qq', namespace: 'global', id: '123456001' }
 const rootFor = (directory, instance) => path.join(directory, `.agent-media-relay-${createHash('sha256').update(instance).digest('hex').slice(0, 32)}`)
 async function port() {
@@ -45,6 +44,75 @@ test('one leased host shares one artifact store/provider and opens an independen
   const closing = host.close(); assert.equal(host.close(), closing); await closing
   assert.deepEqual(await readdir(f.root), ['.owner.json'])
   for (const selected of f.ports) await assert.rejects(fetch(`http://127.0.0.1:${selected}/missing`))
+})
+
+test('Pixiv tools own a separate preparation provider and bridge while all automatic providers remain disabled', async t => {
+  const f = await fixture(t), host = await openStandaloneMediaRelay({ ...f.options,
+    config: { ...f.config, enabled: false, pixiv: { enabled: true, allowRestricted: true }, douyin: { enabled: true } },
+    pixivTools: { enabled: true, allowRestricted: false },
+  })
+  t.after(() => host.close())
+  assert.equal(typeof host.pixivToolProvider?.prepare, 'function')
+  assert.ok(host.bridgeFor('main')); assert.ok(host.bridgeFor('alt'))
+  const context = { signal: new AbortController().signal, isCurrent: () => true }
+  for (const share of [{ provider: 'bilibili', reference: { kind: 'bv', id: 'BV1H7Gq6zEiC' } },
+    { provider: 'pixiv', reference: { kind: 'artwork', id: '123456789' } },
+    { provider: 'douyin', reference: { kind: 'video', id: '7482233445566778899' } }]) {
+    await assert.rejects(host.provider.prepare(share, context))
+  }
+  const run = (await readdir(f.root)).find(name => name.startsWith('run-')), children = await readdir(path.join(f.root, run))
+  assert.ok(children.includes('pixiv-tools-provider'))
+  assert.equal(children.includes('pixiv-provider'), false); assert.equal(children.includes('douyin-provider'), false)
+  const cancel = new AbortController(); cancel.abort()
+  await assert.rejects(host.pixivToolProvider.prepare({ provider: 'pixiv', reference: { kind: 'artwork', id: '123456789' } },
+    { ...context, signal: cancel.signal }))
+  await host.close(); assert.deepEqual(await readdir(f.root), ['.owner.json'])
+  for (const selected of f.ports) await assert.rejects(fetch(`http://127.0.0.1:${selected}/missing`))
+})
+
+test('video search attachments alone open an anonymous provider and shared bridges without enabling automatic or HQ providers', async t => {
+  const f = await fixture(t), events = [], host = await openStandaloneMediaRelay({ ...f.options, videoSearchAttachments: true,
+    config: { ...f.config, enabled: false, bilibili: { authCookie: 'UNUSED_AUTOMATIC_COOKIE', autoAuthorizedRetry: true } },
+    diagnostics: { emit: event => events.push(event) },
+  })
+  t.after(() => host.close())
+  assert.equal(typeof host.videoSearchAttachmentProvider?.prepare, 'function'); assert.equal(host.pixivToolProvider, undefined)
+  assert.equal(host.qualityProviderFor({}), undefined); assert.ok(host.bridgeFor('main')); assert.ok(host.bridgeFor('alt'))
+  const cancel = new AbortController(); cancel.abort()
+  const share = { provider: 'bilibili', reference: { kind: 'video', id: 'BV1H7Gq6zEiC' } }
+  await assert.rejects(host.provider.prepare(share, { signal: cancel.signal, isCurrent: () => true }))
+  await assert.rejects(host.videoSearchAttachmentProvider.prepare(share, { signal: cancel.signal, isCurrent: () => true }))
+  const run = (await readdir(f.root)).find(name => name.startsWith('run-')), children = await readdir(path.join(f.root, run))
+  assert.ok(children.includes('video-search-attachment-provider')); assert.equal(children.includes('bilibili-quality-provider'), false)
+  await host.close(); assert.deepEqual(await readdir(f.root), ['.owner.json'])
+  for (const selected of f.ports) await assert.rejects(fetch(`http://127.0.0.1:${selected}/missing`))
+})
+
+test('HQ-only host opens shared artifacts and bridges while resolving each request from its owned binding and live authorization', async t => {
+  const f = await fixture(t), credentials = [], authService = { async credential(binding, context) {
+    assert.equal(context.isCurrent(), true); credentials.push(binding); return undefined
+  } }
+  let current = true
+  const host = await openStandaloneMediaRelay({ ...f.options, config: { ...f.config, enabled: false, bilibili: { authCookie: 'AUTOMATIC_COOKIE_MUST_NOT_BE_USED', autoAuthorizedRetry: true } },
+    bilibiliQuality: { enabled: true, authService }, isLeaseCurrent: () => current })
+  t.after(() => { current = true; return host.close() })
+  assert.ok(host.bridgeFor('main')); assert.ok(host.bridgeFor('alt')); assert.equal(host.pixivToolProvider, undefined)
+  const snapshot = { source: 'configured', id: 'one', revision: 'revision-one', agentId: 'daily', personaId: 'default', connectionId: 'main', target: { account: { ...account }, kind: 'group', id: '90001' } }
+  const first = host.qualityProviderFor(snapshot), second = host.qualityProviderFor({ ...snapshot, agentId: 'another' })
+  snapshot.target.account.id = 'changed'; snapshot.agentId = 'changed'
+  const context = { signal: new AbortController().signal, isCurrent: () => true }, share = { provider: 'bilibili', reference: { kind: 'video', id: 'BV1H7Gq6zEiC' } }
+  await assert.rejects(first.prepare({ quality: 80, share }, context)); await assert.rejects(second.prepare({ quality: 64, share }, context))
+  assert.deepEqual(credentials.map(binding => [binding.target.account.id, binding.agentId]), [[account.id, 'daily'], [account.id, 'another']])
+  assert.notEqual(credentials[0], snapshot); await assert.rejects(host.provider.prepare(share, context))
+  const run = (await readdir(f.root)).find(name => name.startsWith('run-')), children = await readdir(path.join(f.root, run))
+  assert.ok(children.includes('bilibili-quality-provider')); assert.equal(children.filter(name => name.startsWith('agent-media-')).length, 1)
+  current = false; assert.throws(() => host.qualityProviderFor(snapshot)); await assert.rejects(first.prepare({ quality: 80, share }, context)); assert.equal(credentials.length, 2)
+  current = true; await host.close(); assert.throws(() => host.qualityProviderFor(snapshot)); assert.deepEqual(await readdir(f.root), ['.owner.json'])
+})
+
+test('an automatic host exposes no HQ provider unless explicitly enabled', async t => {
+  const f = await fixture(t), host = await openStandaloneMediaRelay(f.options); t.after(() => host.close())
+  assert.equal(host.qualityProviderFor({}), undefined)
 })
 
 for (const provider of ['douyin', 'xiaohongshu']) test(`host dispatch refuses disabled ${provider} and creates its isolated preparation directory only when opted in`, async t => {

@@ -9,14 +9,17 @@ import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
-import { createAgentBindingDirectory, createAgentRuntime } from '../dist/backend/core/index.js'
-import { personMemoryCommandText as commands } from '../dist/backend/modules/memory/domain/personMemoryCommands.js'
-import { personMemoryAddress } from '../dist/backend/modules/memory/infrastructure/personMemoryContext.js'
-import { createPersonMemoryStore } from '../dist/backend/modules/memory/infrastructure/personMemoryStore.js'
-import { agentBindingToken, agentPersonaScopeId } from '../dist/backend/modules/runtime/domain/agentBindings.js'
-import { createAgentInbox } from '../dist/backend/modules/runtime/infrastructure/agentInbox.js'
-import { openAgentRedis } from '../dist/backend/modules/runtime/infrastructure/agentRedis.js'
+import { agentHostModuleUrl, importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
+
+const [{ createAgentBindingDirectory, createAgentRuntime, createAgentDiagnostics }, { personMemoryCommandText: commands },
+  { personMemoryAddress }, { createPersonMemoryStore }, { agentBindingToken, agentPersonaScopeId },
+  { createAgentInbox }, { openAgentRedis }, { isPersonMemoryRedacted }] = await Promise.all([
+  load('core/index.js'), load('modules/memory/domain/personMemoryCommands.js'),
+  load('modules/memory/infrastructure/personMemoryContext.js'), load('modules/memory/infrastructure/personMemoryStore.js'),
+  load('modules/runtime/domain/agentBindings.js'), load('modules/runtime/infrastructure/agentInbox.js'),
+  load('modules/runtime/infrastructure/agentRedis.js'), load('modules/memory/domain/personMemory.js'),
+])
 
 const redisTest = { skip: !redisAvailable, timeout: 20_000 }
 const logger = { info() {}, warn() {}, error() {} }
@@ -75,7 +78,7 @@ async function texts(store, target, actor = author) {
   return (await store.query({ ...memoryAt(target, actor), localOnly: true })).items.map(item => item.text)
 }
 
-function createHost({ storage, isCurrent, direct = true, resolveDirectory, send, model, peer = () => author, warn }) {
+function createHost({ storage, isCurrent, direct = true, resolveDirectory, send, model, peer = () => author, warn, diagnostics }) {
   const accept = []
   const adapters = [account, secondAccount].map((bot, index) => ({
     id: `qq-${index}`, account: bot, botUserId: bot.id, botName: '验收角色', resolvePrivatePeer: peer,
@@ -86,6 +89,7 @@ function createHost({ storage, isCurrent, direct = true, resolveDirectory, send,
   }))
   const runtime = createAgentRuntime({
     storage, adapters, logger: { ...logger, ...(warn ? { warn } : {}) }, isExecutionCurrent: isCurrent,
+    ...(diagnostics ? { diagnostics } : {}),
     privateChatEnabled: direct, useTextGroup: target => target.id === textGroup.id,
     getSection: () => ({ rhythm: { enabled: false }, reflection: { enabled: false },
       wake: { probability: 0, proactiveProbability: 0, batchWindowMs: 1000 }, turn: { minSendGapMs: 0 } }),
@@ -221,7 +225,8 @@ test('privacy effects and receipt are atomic if a process loses the Redis commit
   const deliveries = []
   let confirmation
   let mode = 'lose-result'
-  let warnings = 0
+  const diagnosticEvents = []
+  const diagnostics = createAgentDiagnostics({ logger, sink: { async append(event) { diagnosticEvents.push(event); return true } } })
   const wrappedStorage = { ...storage, async eval(script, options) {
     const commandCommit = options.arguments[1]?.startsWith('privacy:pending:') && options.arguments.includes('keepttl')
     if (!commandCommit || mode === 'regular') return storage.eval(script, options)
@@ -245,7 +250,7 @@ test('privacy effects and receipt are atomic if a process loses the Redis commit
       if (!guard.isCurrent()) return { state: 'failed', code: 'binding_changed' }
       deliveries.push(action)
       return { state: 'sent', messageId: String(92000 + deliveries.length) }
-    }, model: () => assert.fail('privacy commands must not use the model'), warn: () => { warnings++ }, ...options,
+    }, model: () => assert.fail('privacy commands must not use the model'), diagnostics, ...options,
   })
   await seed(store, friend, '重启之前的受保护资料')
   const first = create()
@@ -305,7 +310,8 @@ test('privacy effects and receipt are atomic if a process loses the Redis commit
     assert.equal((await store.getRedactions(memoryAt(friend))).disabled, true)
     await resumed.emit(acknowledged)
     assert.equal(deliveries.length, 2)
-    assert.equal(warnings, 1)
+    await diagnostics.flush()
+    assert.equal(diagnosticEvents.filter(event => event.operation === 'consume_privacy' && event.code === 'inbox_retry_pending' && event.outcome === 'failed').length, 1)
   } finally {
     releaseCommit.resolve()
     recalledCommit?.release.resolve()
@@ -396,12 +402,12 @@ test('a pending intake fences new same-account models while another account stay
 })
 
 test('a standalone QQ process keeps commands out of model requests and aborts a revoked provider retry', redisTest, async t => {
-  const { url } = await createAgentRedisFixture(t, 'privacy-process-fixture')
+  const { url, reader } = await createAgentRedisFixture(t, 'privacy-process-fixture')
   const directory = await mkdtemp(join(tmpdir(), 'agent-memory-commands-'))
   const socketServer = new WebSocketServer({ noServer: true })
   const deliveries = []
-  const modelRequests = []
-  let responseToAbort, providerAborted = false
+  const modelRequests = [], apiCalls = [], sources = new Map()
+  let responseToAbort, providerAborted = false, beforeProviderRedactions
   let websocket, child, childExit, ownerStorage, log = ''
   const server = createServer(async (request, response) => {
     let payload = ''
@@ -421,12 +427,14 @@ test('a standalone QQ process keeps commands out of model requests and aborts a 
     websocket = client
     client.on('message', message => {
       const { action, params, echo } = JSON.parse(String(message))
+      apiCalls.push({ action, params })
       if (action !== 'get_login_info') deliveries.push({ action, params })
       client.send(JSON.stringify({ status: 'ok', retcode: 0, echo, data: action === 'get_login_info'
         ? { user_id: Number(account.id), nickname: '人物记忆验收' } : { message_id: 93000 + deliveries.length } }))
     })
   })
   t.after(async () => {
+    if (t.error) t.diagnostic(JSON.stringify({ log, apiCalls, sources: [...sources.values()], modelRequests, deliveries, beforeProviderRedactions, childExitCode: child?.exitCode }))
     if (child?.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
     await childExit
     await ownerStorage?.close()
@@ -456,9 +464,11 @@ test('a standalone QQ process keeps commands out of model requests and aborts a 
   await seed(stored, friend, '进程验收私聊资料')
   await ownerStorage.close()
   ownerStorage = undefined
-  const compiled = fileURLToPath(new URL('../dist/backend/bootstrap/standaloneAgent.js', import.meta.url))
+  const compiled = fileURLToPath(agentHostModuleUrl('bootstrap/standaloneAgent.js'))
   const release = process.env.BL_CHAT_AGENT_RELEASE_DIR
   const args = release ? [join(release, 'scripts/start-agent.mjs'), '--config', configFile] : [
+    ...(process.env.BL_CHAT_AGENT_SOURCE_TEST === '1'
+      ? ['--import', fileURLToPath(new URL('./helpers/bilibiliQualitySource.mjs', import.meta.url))] : []),
     '--input-type=module', '-e', `import { main } from ${JSON.stringify(compiled)}; await main(['--config', process.argv[1]])`, configFile,
   ]
   child = spawn(process.execPath, args, { env: { ...process.env, BL_AGENT_REDIS_URL: url, FIXTURE_PRIVACY_MODEL_KEY: 'fake' } })
@@ -468,12 +478,14 @@ test('a standalone QQ process keeps commands out of model requests and aborts a 
   assert.match(log, /已启动/u)
 
   function send(target, id, text, overrides = {}) {
-    websocket.send(JSON.stringify({
+    const frame = {
       post_type: 'message', message_type: target.kind, sub_type: target.kind === 'private' ? 'friend' : 'normal',
       self_id: Number(account.id), user_id: Number(author.id), message_id: id,
       ...(target.kind === 'group' ? { group_id: Number(target.id) } : {}), time: Math.floor(Date.now() / 1000),
       message: [{ type: 'text', data: { text } }], ...overrides,
-    }))
+    }
+    sources.set(String(id), frame)
+    websocket.send(JSON.stringify(frame))
   }
   const bad = [{ type: 'reply', data: {} }, { type: 'text', data: { text: commands.disable } }]
   send(simulationGroup, 710001, commands.disable, { message: bad })
@@ -490,9 +502,25 @@ test('a standalone QQ process keeps commands out of model requests and aborts a 
   await waitFor(() => deliveries.length >= 4 || child.exitCode !== null, 'one response per accepted new command')
   assert.equal(modelRequests.length, 0)
 
+  const redactionInspector = createPersonMemoryStore({ redis: { get: key => reader.get('bl-agent:privacy-process:' + key) } })
+  beforeProviderRedactions = await redactionInspector.getRedactions(memoryAt(textGroup))
+  const cutoff = Math.max(beforeProviderRedactions.forgottenBefore,
+    ...beforeProviderRedactions.scenes.filter(rule => rule.scene.kind === 'group' && rule.scene.id === textGroup.id).map(rule => rule.forgottenBefore))
+  const erasedSource = sources.get('710008'), scene = personMemoryAddress(textGroup).scene
+  assert.ok(erasedSource.time * 1000 <= cutoff)
+  assert.equal(isPersonMemoryRedacted({ scene, messageId: String(erasedSource.message_id), authorId: author.id,
+    at: erasedSource.time * 1000, excerpt: commands.forget }, commands.forget, beforeProviderRedactions), true)
+  // OneBot timestamps have second precision. A new post-command request must
+  // actually be newer than the durable millisecond privacy cutoff.
+  await waitFor(() => Math.floor(Date.now() / 1000) * 1000 > cutoff, 'a genuine source timestamp after the privacy cutoff')
+
   send(textGroup, 710011, '本轮请求处于等待状态', { message: [
     { type: 'at', data: { qq: account.id } }, { type: 'text', data: { text: '本轮请求处于等待状态' } },
   ] })
+  const providerSource = sources.get('710011')
+  assert.ok(providerSource.time * 1000 > cutoff)
+  assert.equal(isPersonMemoryRedacted({ scene, messageId: String(providerSource.message_id), authorId: author.id,
+    at: providerSource.time * 1000, excerpt: '本轮请求处于等待状态' }, '本轮请求处于等待状态', beforeProviderRedactions), false)
   await waitFor(() => responseToAbort, 'first provider call with an unfinished retryable body')
   assert.equal(typeof JSON.parse(modelRequests[0]).max_tokens, 'number')
   send(friend, 710012, commands.forget)

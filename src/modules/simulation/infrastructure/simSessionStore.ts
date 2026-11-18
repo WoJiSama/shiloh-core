@@ -12,6 +12,7 @@ import { isPersonMemoryRedacted, validPersonMemorySource } from '../../memory/do
 import { decodeSimulationAddressKey, simulationAddressKey } from './simulationAddress.js'
 import { SIM_INITIAL_PROMPT_MAX_CHARS, simulationInitialPromptKey } from './simInitialPrompt.js'
 import { normalizeSimulationMessageFiles } from './simulationAgentFiles.js'
+import { normalizeSimulationMessageVideo } from './simulationAgentVideo.js'
 
 /** Redis 形状约束：TRSS 包装层支持 get/set/del/eval，Set 用 JSON 数组模拟（避免依赖 sadd 族）。 */
 export interface SimRedisLike {
@@ -645,8 +646,8 @@ function normalizeSession(parsed: Partial<SimSessionState>, now: number): SimSes
   const state: SimSessionState = {
     ...base,
     ...parsed,
-    unread: Array.isArray(parsed.unread) ? parsed.unread.map(normalizeSimulationMessageFiles) : [],
-    recent: Array.isArray(parsed.recent) ? parsed.recent.map(normalizeSimulationMessageFiles) : [],
+    unread: Array.isArray(parsed.unread) ? parsed.unread.map(message => normalizeSimulationMessageVideo(normalizeSimulationMessageFiles(message))) : [],
+    recent: Array.isArray(parsed.recent) ? parsed.recent.map(message => normalizeSimulationMessageVideo(normalizeSimulationMessageFiles(message))) : [],
     modelSeenSeqs: Array.isArray(parsed.modelSeenSeqs) ? parsed.modelSeenSeqs : [],
     pendingWakeReasons: Array.isArray(parsed.pendingWakeReasons) ? parsed.pendingWakeReasons : [],
     wakeTimes: Array.isArray(parsed.wakeTimes) ? parsed.wakeTimes : [],

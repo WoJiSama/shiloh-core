@@ -93,6 +93,12 @@ export function createQqMessageActionPort(options: {
         return rejected('preparation_failed')
       }
       try {
+        if (guard?.ensureCurrent) await guard.ensureCurrent()
+        if (guard?.isCurrent?.() === false) return rejected('binding_changed')
+      } catch {
+        return rejected('binding_changed')
+      }
+      try {
         return normalizeQqDeliveryReceipt(await withDeliveryGuard(guard?.isCurrent, send))
       } catch {
         return { state: 'unknown' }
@@ -135,6 +141,12 @@ export function createQqMessageActionPort(options: {
         if (guard?.isCurrent?.() === false) return rejected('binding_changed')
       } catch {
         return rejected('invalid_bundle')
+      }
+      try {
+        if (guard?.ensureCurrent) await guard.ensureCurrent()
+        if (guard?.isCurrent?.() === false) return rejected('binding_changed')
+      } catch {
+        return rejected('binding_changed')
       }
       try {
         return normalizeQqDeliveryReceipt(await withDeliveryGuard(guard?.isCurrent, send))

@@ -3,7 +3,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { readStandaloneAgentConfig } from '../dist/backend/bootstrap/standaloneAgentConfig.js'
+import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
+
+const defaultTools = {
+  qqActions: {
+    qzone: { enabled: false }, gift: { enabled: false },
+    redPackets: { enabled: false, allowExplicit: false, allowRecentSearch: false, allowReferenceFallback: false,
+      allowPasswordSend: false, recentLimit: 100, automatic: { enabled: false, toolConfigured: false, allowPasswordSend: false } },
+  },
+  deferredActions: { enabled: false, rules: [], migrationApprovals: [] },
+}
+
+const { readStandaloneAgentConfig } = await importBilibiliHost('bootstrap/standaloneAgentConfig.js')
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-rendering-config-'))
@@ -21,9 +32,9 @@ function fixture(t) {
 }
 test('rendering defaults off, local text needs no model and mind map resolves its own explicit key', t => {
   const { read, mindMap } = fixture(t)
-  assert.deepEqual(read().tools, {})
-  assert.deepEqual(read({}).tools, {})
-  assert.deepEqual(read({ textImage: { enabled: false } }).tools, {})
+  assert.deepEqual(read().tools, defaultTools)
+  assert.deepEqual(read({}).tools, defaultTools)
+  assert.deepEqual(read({ textImage: { enabled: false } }).tools, defaultTools)
   assert.deepEqual(read({ textImage: { enabled: true } }, { TEST_MAIN_KEY: 'main-key' }).tools.rendering, { textImage: { enabled: true } })
   assert.deepEqual(read({ mindMap }).tools.rendering, { mindMap: { baseUrl: mindMap.baseUrl, name: mindMap.name, apiKey: 'map-key' } })
   assert.throws(() => read({ mindMap }, { TEST_MAIN_KEY: 'main-key' }), /TEST_MAP_KEY/u)

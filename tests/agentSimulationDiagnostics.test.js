@@ -1,0 +1,378 @@
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { createCharacterSharedSelf } from '../dist/backend/modules/simulation/infrastructure/characterSharedSelf.js'
+import { createCharacterWorkspace } from '../dist/backend/modules/simulation/infrastructure/characterWorkspace.js'
+import test from 'node:test'
+import { createAgentDiagnostics } from '../dist/backend/modules/runtime/infrastructure/agentDiagnostics.js'
+import { createSimulationRuntime } from '../dist/backend/modules/simulation/infrastructure/simulationRuntime.js'
+import { createDefaultSimSession } from '../dist/backend/modules/simulation/domain/simConfig.js'
+import { CHARACTER_MIN_WAKE_MS, addCharacterMemory, beginCharacterGoalAttempt, characterKey, createCharacterGoal, createEmptyCharacterState, deleteCharacterMemory } from '../dist/backend/modules/simulation/domain/characterState.js'
+import { simulationAddressKey } from '../dist/backend/modules/simulation/infrastructure/simulationAddress.js'
+import { SIMULATION_KNOWN_GROUPS_KEY } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
+import { agentBindingToken, agentConversationKey, createAgentBindingDirectory } from '../dist/backend/modules/runtime/domain/agentBindings.js'
+import { decodeQqIncomingMessage } from '../dist/backend/adapters/qqMessage.js'
+
+const BOT = '3094088525'
+const GROUP = '80186'
+const OTHER_GROUP = '10087'
+const BASE_AT = 1_790_000_000_000
+const sessionKey = groupId => `shiloh:sim:g:${groupId}`
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+let callSequence = 0
+let incomingMessageId = 0
+const toolCall = (name, args) => ({ id: `test-call-${++callSequence}`, type: 'function', function: { name, arguments: JSON.stringify(name === 'simSendMessage' ? { continuation: 'chat', ...args } : args) } })
+const tools = (...calls) => ({ role: 'assistant', content: '', tool_calls: calls })
+const quiet = () => ({ role: 'assistant', content: '' })
+const finalText = content => ({ role: 'assistant', content })
+
+async function waitFor(check, description, timeoutMs = 6000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await check()) return
+    await sleep(25)
+  }
+  assert.fail(`等待超时：${description}`)
+}
+
+function seedSession(kv, groupId, botId, clock) {
+  const state = createDefaultSimSession(clock.value)
+  state.bootstrapSent = true
+  state.botId = botId
+  state.wakeConfig.triggers.probability = 0
+  state.nextProactiveCheckAt = 0
+  kv.set(sessionKey(groupId), JSON.stringify(state))
+}
+
+/** No model, network or QQ adapters: only the compiled production runtime is exercised. */
+function fixture({
+  kv = new Map(), clock = { value: BASE_AT }, botId = BOT,
+  identity = { id: 'shiloh', name: '希洛', systemContent: '喜欢独立游戏' },
+  groups = [GROUP], script = () => quiet(), execute, writeFault, onSave, send, review, recordTokens,
+  proactiveProbability = 0, seed = true, maxToolRounds = 8, maxSendsPerTurn, consistencyEnabled,
+  runCharacterWorker, recordToolResult, judgeSocialPermission, getPersona, loadDelegatedMemories,
+  getStyleDigest, readSemanticMemory, getSemanticRecall, readConversationMemory, readGroupMemory, wakeGateJudge,
+  recordGroupReply, recordEpisode,
+  getSelf, handlesTarget, messageActions, getTodaySpendCny, durableIngress, isAccountReady, readFault,
+  describeImages, fetchImageBase64, getForwardContent, diagnostics, rawModel, failureNoticeFallback, ephemeralTools = false, withDiagnosticScope,
+} = {}) {
+  if (seed) for (const groupId of groups) if (!kv.has(sessionKey(groupId))) seedSession(kv, groupId, botId, clock)
+  const calls = []
+  const events = []
+  const sent = []
+  const errors = []
+  const writes = []
+  const groupReplyRecords = [], episodeRecords = []
+  const toolDefinitions = ['searchInformationTool', 'ownerAdminTool', 'simDangerTool'].map(name => ({
+    name, description: `测试隔离工具 ${name}`, ...(ephemeralTools ? { agentDataPolicy: 'ephemeral' } : {}),
+    parameters: { type: 'object', properties: {}, required: [] },
+    async execute(args, event) {
+      events.push({ name, args, event })
+      return execute ? await execute(name, args, event) : { ok: true, result: '公开搜索结果' }
+    },
+  }))
+  const redis = {
+    async get(key) { if (readFault) await readFault(key); return kv.has(key) ? kv.get(key) : null },
+    async set(key, value) {
+      if (writeFault) await writeFault(key, value)
+      writes.push({ key, value })
+      kv.set(key, value)
+      if (onSave) await onSave(key, value)
+      return 'OK'
+    },
+    async del(...keys) { let count = 0; for (const key of keys) if (kv.delete(key)) count += 1; return count },
+  }
+  const runtime = createSimulationRuntime({
+    redis, now: () => clock.value, random: () => 0.99,
+    ...(diagnostics ? { diagnostics } : {}), ...(failureNoticeFallback ? { failureNoticeFallback } : {}), ...(withDiagnosticScope ? { withDiagnosticScope } : {}),
+    logger: { info() {}, warn(...args) { errors.push(args.join(' ')) }, error(...args) { errors.push(args.map(String).join(' ')) } },
+    getSelf: getSelf ?? (() => ({ id: botId, name: identity.name })),
+    getPersona: getPersona ?? (() => ({ personaId: identity.id, persona: { name: identity.name }, systemContent: identity.systemContent })),
+    getSection: () => ({
+      enabled: true, allGroups: false, groups,
+      ...(consistencyEnabled === undefined ? {} : { consistency: { enabled: typeof consistencyEnabled === 'function' ? consistencyEnabled() : consistencyEnabled } }),
+      extraTools: toolDefinitions.map(tool => tool.name), toolPolicy: { mode: 'legacy' },
+      wake: { probability: 0, batchWindowMs: 1000, maxWakePerMinute: 100, maxWakePerHour: 100, proactiveProbability, proactiveIdleMs: 60_000 },
+      turn: { maxToolRounds, minSendGapMs: 0, maxTurnsPerDay: 100, ...(maxSendsPerTurn === undefined ? {} : { maxSendsPerTurn }) },
+      rhythm: { enabled: false }, mood: { enabled: false }, wakeGate: { enabled: Boolean(wakeGateJudge) }, userStyle: { enabled: false },
+    }),
+    getExecutionConfig: () => ({ useTools: true }),
+    async recordGroupReply(...args) { groupReplyRecords.push(args); await recordGroupReply?.(...args) },
+    async recordEpisode(input) { episodeRecords.push(input); await recordEpisode?.(input) },
+    ...(durableIngress ? { durableIngress } : {}),
+    ...(isAccountReady ? { isAccountReady } : {}),
+    ...(review ? { reviewCharacter: review } : {}),
+    ...(recordTokens ? { recordTokens } : {}),
+    ...(getTodaySpendCny ? { getTodaySpendCny } : {}),
+    ...(handlesTarget ? { handlesTarget } : {}),
+    ...(messageActions ? { messageActions } : {}),
+    ...(runCharacterWorker ? { runCharacterWorker } : {}),
+    ...(recordToolResult ? { recordToolResult } : {}),
+    ...(judgeSocialPermission ? { judgeSocialPermission } : {}),
+    ...(loadDelegatedMemories ? { loadDelegatedMemories } : {}),
+    ...(getStyleDigest ? { getStyleDigest } : {}),
+    ...(readSemanticMemory ? { readSemanticMemory } : {}),
+    ...(getSemanticRecall ? { getSemanticRecall } : {}),
+    ...(readConversationMemory ? { readConversationMemory } : {}),
+    ...(readGroupMemory ? { readGroupMemory } : {}),
+    ...(wakeGateJudge ? { wakeGateJudge } : {}),
+    ...(describeImages ? { describeImages } : {}),
+    ...(fetchImageBase64 ? { fetchImageBase64 } : {}),
+    ...(getForwardContent ? { getForwardContent } : {}),
+    getExtraTools: names => toolDefinitions.filter(tool => names.includes(tool.name)),
+    async YTapi(request) {
+      calls.push(structuredClone(request))
+      if (rawModel) return await rawModel(request, calls.length - 1)
+      const message = await script(request, calls.length - 1)
+      return { choices: [{ message, finish_reason: message.tool_calls?.length ? 'tool_calls' : 'stop' }], usage: { total_tokens: 10 }, model: 'offline-test' }
+    },
+    async sendGroupMessage(groupId, segments) {
+      const receipt = send ? await send(groupId, segments) : { ok: true, messageId: `sent-${sent.length + 1}` }
+      if (receipt.ok) sent.push({ groupId, segments })
+      return receipt
+    },
+  })
+  return {
+    runtime, kv, clock, identity, botId, calls, events, sent, errors, writes, groupReplyRecords, episodeRecords,
+    scope: (groupId = GROUP) => ({ botId, personaId: identity.id, groupId }),
+    async ingest(text = '看看这个游戏', userId = '40000', { at = true, groupId = GROUP, source } = {}) {
+      const incoming = decodeQqIncomingMessage({ group_id: groupId, self_id: botId, user_id: userId, message_id: `test-${groupId}-${++incomingMessageId}`, message_type: 'group', msg: text,
+        atBot: at, message: at ? [{ type: 'at', data: { qq: botId } }, { type: 'text', data: { text } }] : [], sender: { nickname: `群友${userId}` }, ...(source ? { source } : {}) }, {now: clock.value})
+      assert.ok(incoming)
+      return runtime.ingest(incoming)
+    },
+  }
+}
+
+const notice = '这次没能取得结果，当前请求还没有完成。'
+const failedResponse = { error: { message: 'sk-private-should-never-leave' } }
+const reply = content => ({ choices: [{ message: { role: 'assistant', content } }], usage: { total_tokens: 7 } })
+const spy = () => { const events = []; return { events, emit(event) { const { error, ...safe } = event; events.push({ ...safe, ...(error ? { errorKind: error instanceof Error ? 'Error' : 'Unknown' } : {}) }) }, traceId: () => 'fixture-trace' } }
+async function settled(h, minCalls = 1) {
+  await waitFor(async () => h.calls.length >= minCalls && !(await h.runtime.describeGroup(GROUP)).running,
+    `simulation settles: ${h.errors.join(' | ')}`)
+}
+
+test('human model throw, returned error, empty and malformed replies each receive one tool-free explanation through persisted finish', async t => {
+  for (const mode of ['throw', 'returned', 'empty', 'malformed']) {
+    const diagnostics = spy(), h = fixture({ diagnostics, rawModel(request, index) {
+      if (index === 0) {
+        if (mode === 'throw') throw Error('https://secret.invalid/private?key=sk-private')
+        return mode === 'returned' ? failedResponse : mode === 'empty' ? reply('') : { choices: [{ message: { content: '正文不能掩盖坏工具', tool_calls: [{ function: { arguments: '{}' } }] } }] }
+      }
+      assert.deepEqual(request.tools, []); assert.equal(request.tool_choice, 'none')
+      assert.doesNotMatch(JSON.stringify(request), /sk-private|secret.invalid|request body text/)
+      return reply(notice)
+    } })
+    t.after(() => h.runtime.stop()); await h.ingest('request body text'); await settled(h, 2)
+    assert.equal(h.calls.length, 2, mode); assert.equal(h.sent.length, 1, mode)
+    assert.ok(JSON.stringify(h.sent[0]).includes(notice))
+    const session = JSON.parse(h.kv.get(sessionKey(GROUP)))
+    assert.deepEqual(session.agentHistory, []); assert.equal(session.lastConfirmedChat, undefined)
+    assert.equal(h.groupReplyRecords.length, 0); assert.equal(h.episodeRecords.length, 0)
+    const character = JSON.parse(h.kv.get(characterKey(h.scope())))
+    assert.ok(character.receipts.some(row => row.toolName === 'simFinishTurn' && row.status === 'succeeded'))
+    assert.ok(diagnostics.events.some(row => row.stage === 'model' && row.outcome === 'failed'))
+    assert.ok(diagnostics.events.some(row => row.operation === 'simulation_failure_notice'))
+    assert.doesNotMatch(JSON.stringify(diagnostics.events), /sk-private|secret.invalid|request body text|正文不能/)
+  }
+})
+
+test('unavailable explanation stays silent unless a trusted fallback was configured, and does not retry main tools', async t => {
+  for (const fallback of [undefined, '这次服务暂不可用，请稍后再试。']) {
+    const diagnostics = spy(), h = fixture({ diagnostics, failureNoticeFallback: fallback, rawModel: () => failedResponse })
+    t.after(() => h.runtime.stop()); await h.ingest(); await settled(h, 2)
+    assert.equal(h.calls.length, 2); assert.equal(h.sent.length, fallback ? 1 : 0)
+    if (fallback) assert.ok(JSON.stringify(h.sent).includes(fallback))
+    const session = JSON.parse(h.kv.get(sessionKey(GROUP)))
+    assert.deepEqual(session.agentHistory, []); assert.equal(session.lastConfirmedChat, undefined)
+    assert.equal(h.groupReplyRecords.length, 0); assert.equal(h.episodeRecords.length, 0)
+    assert.equal(h.events.length, 0)
+  }
+})
+
+test('automatic proactive failure is logged without requesting or sending an explanation', async t => {
+  const diagnostics = spy(), h = fixture({ diagnostics, proactiveProbability: 1, rawModel: () => failedResponse })
+  t.after(() => h.runtime.stop()); await h.ingest('普通群聊背景', '40000', { at: false })
+  h.clock.value += 2 * 60 * 60_000; await h.runtime.sweepOnce(); await settled(h)
+  assert.equal((await h.runtime.describeGroup(GROUP)).lastWakeReason, 'proactiveCheck')
+  assert.equal(h.calls.length, 1); assert.equal(h.sent.length, 0)
+  assert.ok(diagnostics.events.some(row => row.stage === 'model' && row.outcome === 'failed'))
+})
+
+test('optional wake and memory read failures preserve one normal turn with fixed diagnostics and empty fallbacks', async t => {
+  for (const semanticReader of ['current', 'legacy']) {
+    const diagnostics = spy(), reads = []
+    const unavailable = name => async () => { reads.push(name); throw Error(`private-read-body-${name}`) }
+    const h = fixture({ diagnostics, proactiveProbability: 1,
+      wakeGateJudge: unavailable('wake'), loadDelegatedMemories: unavailable('delegated'), getStyleDigest: unavailable('style'),
+      ...(semanticReader === 'current' ? { readSemanticMemory: unavailable('semantic') } : { getSemanticRecall: unavailable('semantic') }),
+      readConversationMemory: unavailable('narrative'), readGroupMemory: unavailable('group'),
+      script: () => tools(toolCall('simFinishTurn', { choice: 'silent', reason: '本轮无需发言' })),
+    })
+    t.after(() => h.runtime.stop()); await h.ingest('普通群聊背景', '40000', { at: false })
+    h.clock.value += 2 * 60 * 60_000; await h.runtime.sweepOnce(); await settled(h)
+    assert.equal(h.calls.length, 1, semanticReader); assert.equal(h.sent.length, 0, semanticReader)
+    assert.deepEqual(reads.slice().sort(), ['wake', 'delegated', 'style', 'semantic', 'narrative', 'group'].sort())
+    for (const [operation, code] of [
+      ['simulation_wake_gate', 'wake_gate_unavailable'],
+      ['simulation_delegated_memory_read', 'delegated_memory_unavailable'],
+      ['simulation_style_digest_read', 'style_digest_unavailable'],
+      ['simulation_semantic_memory_read', 'semantic_recall_unavailable'],
+      ['simulation_narrative_memory_read', 'narrative_memory_unavailable'],
+      ['simulation_group_memory_read', 'group_memory_unavailable'],
+    ]) assert.equal(diagnostics.events.filter(row => row.operation === operation && row.code === code && row.outcome === 'failed').length, 1)
+    assert.equal(diagnostics.events.some(row => row.operation === 'simulation_failure_notice'), false)
+    assert.doesNotMatch(JSON.stringify(diagnostics.events), /private-read-body/)
+    assert.doesNotMatch(JSON.stringify(h.calls), /private-read-body/)
+    const character = JSON.parse(h.kv.get(characterKey(h.scope())))
+    assert.equal(character.decision.kind, 'silent')
+    assert.equal(character.decision.reason, '本轮无需发言')
+  }
+})
+
+test('reply and episode record failures keep confirmed delivery without another model or send', async t => {
+  const diagnostics = spy(), h = fixture({ diagnostics,
+    recordGroupReply: async () => { throw Error('private-group-reply-body') },
+    recordEpisode: async () => { throw Error('private-episode-body') },
+    script: () => tools(toolCall('simFinishTurn', { choice: 'chat', reason: '普通聊天', messages: ['已确认发送的正常回复'] })),
+  })
+  t.after(() => h.runtime.stop()); await h.ingest(); await settled(h)
+  assert.equal(h.calls.length, 1); assert.equal(h.sent.length, 1)
+  assert.equal(h.groupReplyRecords.length, 1); assert.equal(h.episodeRecords.length, 1)
+  assert.equal(diagnostics.events.filter(row => row.operation === 'simulation_group_reply_record' && row.code === 'group_reply_not_recorded' && row.outcome === 'failed').length, 1)
+  assert.equal(diagnostics.events.filter(row => row.operation === 'simulation_episode_record' && row.code === 'episode_not_recorded' && row.outcome === 'failed').length, 1)
+  assert.equal(diagnostics.events.some(row => row.operation === 'simulation_failure_notice'), false)
+  assert.doesNotMatch(JSON.stringify(diagnostics.events), /private-group-reply-body|private-episode-body/)
+  const session = JSON.parse(h.kv.get(sessionKey(GROUP)))
+  assert.equal(session.lastConfirmedChat.text, '已确认发送的正常回复')
+  const character = JSON.parse(h.kv.get(characterKey(h.scope())))
+  assert.ok(character.receipts.some(row => row.toolName === 'simFinishTurn' && row.status === 'succeeded'))
+})
+
+test('binding loss between main failure and explanation suppresses all later model and send work', async t => {
+  const base = { platform: 'qq', namespace: 'global', id: BOT }, address = { account: base, kind: 'group', id: GROUP }
+  let revision = 'one'
+  const binding = () => createAgentBindingDirectory({ version: 1, agents: [{ id: 'role', personaId: 'default' }],
+    connections: [{ id: 'connection', platform: 'qq', namespace: 'global', accountId: BOT }],
+    bindings: [{ connectionId: 'connection', kind: 'group', conversationId: GROUP, agentId: 'role' }] }, revision).resolve(address)
+  const diagnostics = spy(), h = fixture({ diagnostics, getPersona: () => ({ personaId: 'agent:role', persona: { name: '希洛' }, systemContent: '', binding: binding() }),
+    rawModel() { revision = 'two'; return failedResponse } })
+  t.after(() => h.runtime.stop()); await h.ingest(); await settled(h)
+  assert.equal(h.calls.length, 1); assert.equal(h.sent.length, 0)
+})
+
+test('unknown delivery followed by a model failure stays frozen without an explanatory model or duplicate send', async t => {
+  let attempts = 0
+  const diagnostics = spy(), h = fixture({ diagnostics, rawModel(_request, index) {
+    return index === 0 ? { choices: [{ message: tools(toolCall('simSendMessage', { messages: ['一次发送'] })) }] } : failedResponse
+  }, send() { attempts++; return { ok: false, unknown: true } } })
+  t.after(() => h.runtime.stop()); await h.ingest(); await settled(h, 2)
+  assert.equal(h.calls.length, 2); assert.equal(attempts, 1); assert.equal(h.sent.length, 0)
+  assert.ok(diagnostics.events.some(row => row.stage === 'model' && row.outcome === 'failed'))
+})
+
+test('failed host tools remain one execution and return to the main model before its final failure notice', async t => {
+  let executions = 0
+  const diagnostics = spy(), h = fixture({ diagnostics, execute() { executions++; return { kind: 'tool_outcome', status: 'error', content: 'not-completed-private-tool-body' } },
+    rawModel(request, index) {
+      if (index === 0) return { choices: [{ message: tools(toolCall('searchInformationTool', {})) }] }
+      if (index === 1) { assert.ok(request.messages.some(row => row.role === 'tool')); return failedResponse }
+      assert.deepEqual(request.tools, []); return reply(notice)
+    } })
+  t.after(() => h.runtime.stop()); await h.ingest(); await settled(h, 3)
+  assert.equal(executions, 1); assert.equal(h.calls.length, 3); assert.equal(h.sent.length, 1)
+  assert.ok(diagnostics.events.some(row => row.operation === 'searchInformationTool' && row.outcome === 'failed'))
+  assert.doesNotMatch(JSON.stringify(diagnostics.events), /not-completed-private-tool-body/)
+})
+
+
+test('failed closing validation or review cannot be bypassed by a later failure explanation', async t => {
+  for (const mode of ['parameters', 'review']) {
+    const diagnostics = spy(), h = fixture({ diagnostics, consistencyEnabled: mode === 'review',
+      review: async () => { throw Error('private-review-provider-body') },
+      rawModel(_request, index) {
+        return index === 0 ? { choices: [{ message: tools(toolCall('simFinishTurn', {
+          choice: 'chat', reason: mode === 'parameters' ? '' : '普通回复', messages: ['原始待审核回复'],
+        })) }] } : failedResponse
+      } })
+    t.after(() => h.runtime.stop()); await h.ingest(); await settled(h, 2)
+    assert.equal(h.calls.length, 2, mode); assert.equal(h.sent.length, 0, mode)
+    assert.ok(diagnostics.events.some(row => row.operation === 'simulation_failure_notice' && row.code === 'notice_not_authorized'))
+  }
+})
+
+test('ephemeral tool reads stay inside the original model chain without an additional failure explanation', async t => {
+  const diagnostics = spy(), h = fixture({ diagnostics, ephemeralTools: true,
+    execute: () => ({ ok: true, result: 'private-ephemeral-body' }),
+    rawModel(_request, index) {
+      return index === 0 ? { choices: [{ message: tools(toolCall('searchInformationTool', {})) }] } : failedResponse
+    } })
+  t.after(() => h.runtime.stop()); await h.ingest(); await settled(h, 2)
+  assert.equal(h.calls.length, 2); assert.equal(h.events.length, 1); assert.equal(h.sent.length, 0)
+  assert.ok(diagnostics.events.some(row => row.code === 'notice_not_authorized'))
+  assert.doesNotMatch(JSON.stringify(diagnostics.events), /private-ephemeral-body/)
+})
+
+test('tool round exhaustion records a terminal diagnostic and attempts one tool-free persisted explanation', async t => {
+  const diagnostics = spy(), h = fixture({ diagnostics, maxToolRounds: 4,
+    rawModel(request, index) {
+      if (index < 4) return { choices: [{ message: tools(toolCall('missingTool', {})) }] }
+      assert.deepEqual(request.tools, []); assert.equal(request.tool_choice, 'none'); return reply(notice)
+    } })
+  t.after(() => h.runtime.stop()); await h.ingest(); await settled(h, 5)
+  assert.equal(h.calls.length, 5); assert.equal(h.events.length, 0); assert.equal(h.sent.length, 1)
+  assert.ok(diagnostics.events.some(row => row.operation === 'simulation_turn' && row.code === 'tool_budget_exhausted' && row.outcome === 'failed'))
+})
+
+
+test('model explanations and unavailable-model fallbacks preserve earlier chat and do not reinforce long-term meme memory', async t => {
+  for (const fallbackOnly of [false, true]) {
+    const explanatoryText = '回声提示：这次没能取得结果。'
+    const memoryKey = `${sessionKey(GROUP)}:memories`
+    const clock = { value: BASE_AT }, kv = new Map(), diagnostics = spy()
+    const originalMeme = [{ id: 'meme-existing', kind: 'meme', content: '回声提示', count: 4, done: false,
+      createdAt: BASE_AT - 1000, updatedAt: BASE_AT - 1000, source: 'admin' }]
+    kv.set(memoryKey, JSON.stringify(originalMeme))
+    const h = fixture({ kv, clock, diagnostics, ...(fallbackOnly ? { failureNoticeFallback: explanatoryText } : {}),
+      rawModel(_request, index) {
+        if (index === 0) return { choices: [{ message: tools(toolCall('simFinishTurn', {
+          choice: 'chat', reason: '普通聊天', messages: ['前一轮确认过的正常回复'],
+        })) }] }
+        return index === 1 || fallbackOnly ? failedResponse : reply(explanatoryText)
+      } })
+    t.after(() => h.runtime.stop()); await h.ingest('第一轮正常聊天'); await settled(h)
+    const before = JSON.parse(h.kv.get(sessionKey(GROUP)))
+    assert.equal(h.sent.length, 1); assert.equal(h.groupReplyRecords.length, 1); assert.equal(h.episodeRecords.length, 1)
+    const firstWrite = h.writes.length
+    h.clock.value += CHARACTER_MIN_WAKE_MS + 1000
+    await h.ingest('第二轮失败请求'); await settled(h, 3)
+    assert.equal(h.calls.length, 3); assert.equal(h.sent.length, 2)
+    assert.ok(JSON.stringify(h.sent[1]).includes(explanatoryText))
+    const after = JSON.parse(h.kv.get(sessionKey(GROUP)))
+    assert.deepEqual(after.agentHistory, before.agentHistory)
+    assert.deepEqual(after.lastConfirmedChat, before.lastConfirmedChat)
+    assert.equal(h.groupReplyRecords.length, 1); assert.equal(h.episodeRecords.length, 1)
+    assert.deepEqual(JSON.parse(h.kv.get(memoryKey)), originalMeme)
+    assert.equal(h.writes.slice(firstWrite).some(row => row.key === memoryKey), false)
+    assert.doesNotMatch(JSON.stringify(after.agentHistory), /回声提示|第二轮失败请求/)
+  }
+})
+
+test('a scheduled simulation turn establishes diagnostics from its resolved binding and actual trigger message', async t => {
+  const account = { platform: 'qq', namespace: 'global', id: BOT }, target = { account, kind: 'group', id: GROUP }
+  const binding = createAgentBindingDirectory({ version: 1, agents: [{ id: 'role', personaId: 'default' }],
+    connections: [{ id: 'connection', platform: 'qq', namespace: 'global', accountId: BOT }],
+    bindings: [{ connectionId: 'connection', kind: 'group', conversationId: GROUP, agentId: 'role' }] }, 'one').resolve(target)
+  const rows = [], diagnostics = createAgentDiagnostics({ sink: { async append(row) { rows.push(row); return true } } })
+  const scopes = [], h = fixture({ diagnostics,
+    getPersona: () => ({ personaId: 'agent:role', persona: { name: '希洛' }, systemContent: '', binding }),
+    withDiagnosticScope(scope, operation, run) { scopes.push(scope); return diagnostics.run(scope, operation, run) },
+    rawModel(_request, index) { return index === 0 ? failedResponse : reply(notice) } })
+  t.after(() => h.runtime.stop()); await h.ingest(); await settled(h, 2); await diagnostics.flush()
+  assert.equal(scopes.length, 1); assert.equal(scopes[0].kind, 'conversation')
+  assert.equal(scopes[0].binding.id, binding.id); assert.match(scopes[0].messageId, /^test-/)
+  const operations = rows.filter(row => row.stage === 'model' || row.stage === 'tool')
+  assert.ok(operations.length > 0)
+  assert.ok(operations.every(row => row.scope.kind === 'conversation' && row.scope.binding.id === binding.id && row.scope.messageId === scopes[0].messageId))
+  assert.equal(new Set(operations.map(row => row.traceId)).size, 1)
+})

@@ -73,13 +73,15 @@ export interface SimMessage {
   quoteAuthor?: string
   quoteText?: string
   /** Source ID and privacy watermark for a quote verified in this conversation. */
-  quoteSource?: { messageId: string; invalidatedAt: number; image?: { count: number; authorId: string; occurredAt: number }; file?: { files: SimFileMetadata[]; authorId: string; occurredAt: number } }
+  quoteSource?: { messageId: string; invalidatedAt: number; image?: { count: number; authorId: string; occurredAt: number }; file?: { files: SimFileMetadata[]; authorId: string; occurredAt: number }; video?: { count: number; authorId: string; occurredAt: number; hasForward?: boolean } }
   /** 引用回复的目标 QQ（e.source 缺失时从 CQ 串解析的兜底，QQ 引用回复自动 @被回复人；名字可能已并入 quoteAuthor） */
   replyToUserId?: string
   /** 合并转发 id（有则可用 simGetForward 查看内容） */
   forwardId?: string
   /** 媒体摘要标记：图片/表情数量等 */
   imageCount: number
+  /** Bounded display metadata only. Video bytes, URLs and native references are never retained. */
+  videoCount?: number
   /** Bounded names in the original file-part order; only a fresh source read authorizes bytes. */
   files?: SimFileMetadata[]
   /** 图片 URL（≤2 条，供 simGetMessageImages 取图进多模态回合） */

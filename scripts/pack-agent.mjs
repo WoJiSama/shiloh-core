@@ -10,8 +10,10 @@ const exports = {
   '.': 'core/index.js',
   './qq': 'adapters/oneBotConnection.js',
   './redis': 'modules/runtime/infrastructure/agentRedis.js',
+  './logging': 'modules/runtime/infrastructure/agentOperationJournal.js',
   './web': 'modules/tools/infrastructure/agentWebTools.js',
   './memory': 'modules/memory/infrastructure/agentMemoryModels.js',
+  './interactions': 'modules/tools/infrastructure/agentInteractions.js',
   './images': 'modules/tools/infrastructure/agentImageTools.js',
   './mcp': 'modules/tools/infrastructure/agentMcpTools.js',
   './semantic': 'modules/memory/infrastructure/agentSemanticBackend.js',
@@ -24,6 +26,17 @@ const exports = {
   './music': 'modules/media/infrastructure/agentMusicTool.js',
   './music-extraction': 'modules/media/infrastructure/agentMusicExtractionProvider.js',
   './media-relay': 'modules/media/infrastructure/agentMediaRelay.js',
+  './pixiv': 'modules/media/infrastructure/agentPixiv.js',
+  './video-search': 'modules/media/infrastructure/agentVideoSearch.js',
+  './bilibili-quality': 'modules/media/infrastructure/agentBilibiliQuality.js',
+  './console': 'bootstrap/standaloneAgentConsole.js',
+  './console-auth': 'bootstrap/standaloneAgentConsoleAuth.js',
+  './console-services': 'bootstrap/standaloneAgentConsoleServices.js',
+  './console-runtime': 'bootstrap/standaloneAgentConsoleRuntime.js',
+  './console-management': 'bootstrap/standaloneAgentConsoleManagement.js',
+  './console-workspace': 'bootstrap/standaloneAgentWorkspace.js',
+  './video-analysis': 'modules/media/infrastructure/agentVideoAnalysis.js',
+  './group-logs': 'modules/dice/infrastructure/agentGroupLog.js',
   './torrent': 'modules/media/infrastructure/agentTorrent.js',
   './rendering': 'modules/tools/infrastructure/agentRenderingTools.js',
   './text-images': 'modules/media/infrastructure/agentTextImageRenderer.js',
@@ -85,7 +98,7 @@ const [project, projectLock] = await Promise.all(['package.json', 'package-lock.
 const packageJson = {
   name: 'bl-chat-agent', version: project.version, private: true, type: 'module', license: project.license, engines: project.engines,
   scripts: { start: 'node scripts/start-agent.mjs' },
-  files: ['dist/backend', 'scripts/start-agent.mjs', 'utils/backendArtifactGuard.js', 'release-manifest.json', 'npm-shrinkwrap.json'],
+  files: ['dist/backend', 'console/frontend/dist', 'scripts/start-agent.mjs', 'utils/backendArtifactGuard.js', 'release-manifest.json', 'npm-shrinkwrap.json'],
   exports: Object.fromEntries(Object.entries(exports).map(([key, name]) => [key, {
     types: `./dist/backend/${name.replace(/\.js$/, '.d.ts')}`, import: `./dist/backend/${name}`,
   }])),
@@ -109,6 +122,19 @@ async function copy(source, relative) {
 const writeJson = (relative, data) => fs.writeFile(path.join(output, relative), JSON.stringify(data, null, 2) + '\n')
 
 try {
+  const frontend = path.join(root, 'console/frontend'), frontendOutput = path.join(frontend, 'dist')
+  const frontendManifest = JSON.parse(await fs.readFile(path.join(frontendOutput, 'build-manifest.json'), 'utf8'))
+  const frontendSources = await digestFiles(frontend, [
+    ...await filesUnder(path.join(frontend, 'src')),
+    ...['index.html', 'package.json', 'package-lock.json', 'vite.config.ts', 'tsconfig.json'].map(name => path.join(frontend, name)),
+  ])
+  const frontendFiles = await filesUnder(frontendOutput)
+  const frontendHashes = await digestFiles(frontendOutput, frontendFiles.filter(file => path.basename(file) !== 'build-manifest.json'))
+  if (frontendManifest.schema !== 1 || JSON.stringify(frontendManifest.sources) !== JSON.stringify(frontendSources) ||
+      JSON.stringify(frontendManifest.files) !== JSON.stringify(frontendHashes) || !frontendHashes['index.html']) {
+    throw new Error('Console output differs from sources or manifest; run npm run console:build')
+  }
+  for (const name of frontendFiles) await copy(name, path.posix.join('console/frontend/dist', path.relative(frontendOutput, name)))
   const files = Object.fromEntries([...new Set([...runtimeFiles, ...declarations])].sort().map(file => [file, manifest.files[file]]))
   for (const name of Object.keys(files)) await copy(path.join(backend, name), `dist/backend/${name}`)
   for (const name of ['scripts/start-agent.mjs', 'utils/backendArtifactGuard.js', 'LICENSE']) await copy(path.join(root, name), name)

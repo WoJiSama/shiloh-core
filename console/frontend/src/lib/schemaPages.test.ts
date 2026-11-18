@@ -108,12 +108,12 @@ describe('configuration draft lifecycle', () => {
       '默认人设与画像'
     ])
     vi.mocked(api)
-      .mockResolvedValueOnce({ key: 'reasoning', title: '思考程度', revision: 'r1', groups: [] })
       .mockResolvedValueOnce({
         definitions: [{ configKey: 'chatAiConfig', title: '聊天 chatAiConfig' }],
         sections: { chatAiConfig: [] },
         revisions: { chatAiConfig: 'r1' }
       })
+      .mockResolvedValueOnce({ key: 'reasoning', title: '思考程度', revision: 'r1', groups: [] })
     const ai = mount(AiPage, { attachTo: document.body })
     mounted.push(ai)
     await flushPromises()

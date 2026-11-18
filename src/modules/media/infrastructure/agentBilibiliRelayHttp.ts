@@ -16,7 +16,16 @@ export interface AgentBilibiliResponse {
 }
 export type AgentBilibiliRequest = (url: URL, address: LookupAddress, signal: AbortSignal, policy: AgentBilibiliRequestPolicy) => Promise<AgentBilibiliResponse>
 export type AgentBilibiliLookup = (hostname: string) => Promise<readonly LookupAddress[]>
-export function bilibiliGuard(context: AgentMediaResourceContext, timeoutMs: number) {
+export type BilibiliCleanupFailureCode = 'response_close_failed' | 'iterator_return_failed' | 'late_cleanup_failed' |
+  'thumbnail_reader_close_failed' | 'thumbnail_file_close_failed' | 'thumbnail_directory_remove_failed' | 'thumbnail_artifact_release_failed'
+export type BilibiliCleanupObserver = (code: BilibiliCleanupFailureCode) => unknown
+/** Cleanup observers receive fixed metadata only and cannot interrupt remaining cleanup. */
+export function reportBilibiliCleanupFailure(code: BilibiliCleanupFailureCode, observer?: BilibiliCleanupObserver): void {
+  const terminal = () => { try { console.error(`[Agent] runtime/bilibili_provider_release failed ${code}`) } catch { /* No remaining writable observer. */ } }
+  try { if (observer) { void Promise.resolve(observer(code)).catch(terminal); return } } catch { /* Fall back without exposing the observer's error. */ }
+  terminal()
+}
+export function bilibiliGuard(context: AgentMediaResourceContext, timeoutMs: number, onCleanupFailure?: BilibiliCleanupObserver) {
   const cancel = new AbortController()
   let signal: AbortSignal
   try { if (!(context.signal instanceof AbortSignal) || typeof context.isCurrent !== 'function' || context.ensureCurrent !== undefined && typeof context.ensureCurrent !== 'function') throw bilibiliFailure(); signal = AbortSignal.any([context.signal, cancel.signal]) }
@@ -39,7 +48,7 @@ export function bilibiliGuard(context: AgentMediaResourceContext, timeoutMs: num
     operation.then(value => {
       signal.removeEventListener('abort', abort)
       try { if (settled) throw bilibiliFailure(); check(); settled = true; resolve(value) }
-      catch { if (late) void Promise.resolve().then(() => late(value)).catch(() => {}); reject(bilibiliFailure()) }
+      catch { if (late) void Promise.resolve().then(() => late(value)).catch(() => reportBilibiliCleanupFailure('late_cleanup_failed', onCleanupFailure)); reject(bilibiliFailure()) }
     }, () => { settled = true; signal.removeEventListener('abort', abort); reject(bilibiliFailure()) })
     if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true })
   })
@@ -56,10 +65,16 @@ export function bilibiliOfficialUrl(input: string, kind: BilibiliRequestKind): U
   const url = new URL(raw), host = url.hostname.toLowerCase()
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.port || url.hash || isIP(host) || !host.split('.').every(part => label.test(part))) throw bilibiliFailure()
   const media = host.endsWith('.bilivideo.com') || host.endsWith('.bilivideo.cn') || host.endsWith('.hdslb.com') || host === 'upos-hz-mirrorakam.akamaized.net'
-  const allowed = kind === 'metadata' ? host === 'api.bilibili.com' && /^\/(?:x\/frontend\/finger\/spi|x\/web-interface\/view|x\/player\/playurl|pgc\/view\/web\/season|pgc\/player\/web\/playurl)$/u.test(url.pathname)
+  const allowed = kind === 'metadata' ? host === 'api.bilibili.com' && /^\/(?:x\/frontend\/finger\/spi|x\/web-interface\/view|x\/web-interface\/search\/type|x\/player\/playurl|pgc\/view\/web\/season|pgc\/player\/web\/playurl)$/u.test(url.pathname)
     : kind === 'share' ? host === 'b23.tv' && /^\/[A-Za-z0-9_-]{1,128}\/?$/u.test(url.pathname) || ['bilibili.com', 'www.bilibili.com', 'm.bilibili.com'].includes(host) && /^\/(?:video\/BV[0-9A-Za-z]{8,16}|bangumi\/play\/ep[1-9]\d{0,19})\/?$/iu.test(url.pathname)
       : kind === 'video' ? media : host.endsWith('.hdslb.com')
   if (!allowed) throw bilibiliFailure()
+  if (kind === 'metadata' && url.pathname === '/x/web-interface/search/type') {
+    const keys = [...url.searchParams.keys()], keyword = url.searchParams.get('keyword')
+    if (keys.length !== 4 || new Set(keys).size !== 4 || keys.some(key => !['keyword', 'search_type', 'order', 'page'].includes(key)) ||
+      keyword === null || !keyword.trim() || Array.from(keyword).length > 200 || /[\u0000-\u001f\u007f]/u.test(keyword) ||
+      url.searchParams.get('search_type') !== 'video' || url.searchParams.get('order') !== 'totalrank' || url.searchParams.get('page') !== '1') throw bilibiliFailure()
+  }
   url.protocol = 'https:'
   return url
 }
@@ -74,7 +89,8 @@ export const nativeAgentBilibiliRequest: AgentBilibiliRequest = (url, address, s
   })
   request.once('error', () => reject(bilibiliFailure())); request.end()
 })
-export function createBilibiliHttp(options: { lookup?: AgentBilibiliLookup; request?: AgentBilibiliRequest; allows(value: string): boolean }) {
+export function createBilibiliHttp(options: { lookup?: AgentBilibiliLookup; request?: AgentBilibiliRequest; allows(value: string): boolean; onCleanupFailure?: BilibiliCleanupObserver }) {
+  const closeResponse = async (response: AgentBilibiliResponse) => { try { await response.close?.() } catch { reportBilibiliCleanupFailure('response_close_failed', options.onCleanupFailure) } }
   return async (input: string, kind: BilibiliRequestKind, guard: ReturnType<typeof bilibiliGuard>, maxBytes: number, cookie = '') => {
     let url = bilibiliOfficialUrl(input, kind)
     for (let hop = 0; hop <= 4; hop++) {
@@ -85,9 +101,9 @@ export function createBilibiliHttp(options: { lookup?: AgentBilibiliLookup; requ
       await guard.ensure()
       const headers = { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.bilibili.com/', Accept: kind === 'metadata' ? 'application/json' : kind === 'image' ? 'image/*' : '*/*',
         ...(cookie && (kind === 'metadata' || kind === 'video') ? { Cookie: cookie } : {}) }
-      const response = await guard.wait((options.request ?? nativeAgentBilibiliRequest)(url, addresses[0]!, guard.signal, { maxBytes, headers }), late => late.close?.())
+      const response = await guard.wait((options.request ?? nativeAgentBilibiliRequest)(url, addresses[0]!, guard.signal, { maxBytes, headers }), closeResponse)
       let closed = false
-      const close = async () => { if (closed) return; closed = true; try { await response.close?.() } catch {} }
+      const close = async () => { if (closed) return; closed = true; await closeResponse(response) }
       try {
         await guard.ensure()
         if (!Number.isInteger(response.status)) throw bilibiliFailure()
@@ -128,7 +144,11 @@ export function createBilibiliHttp(options: { lookup?: AgentBilibiliLookup; requ
               }
               if (!size || length !== undefined && Number(length) !== size) throw bilibiliFailure()
               await guard.ensure()
-            } finally { try { const returned = iterator.return?.(); if (returned) void Promise.resolve(returned).catch(() => {}) } catch {}; await close() }
+            } finally {
+              try { const returned = iterator.return?.(); if (returned) void Promise.resolve(returned).catch(() => reportBilibiliCleanupFailure('iterator_return_failed', options.onCleanupFailure)) }
+              catch { reportBilibiliCleanupFailure('iterator_return_failed', options.onCleanupFailure) }
+              await close()
+            }
           })() }
       } catch { await close(); throw bilibiliFailure() }
     }

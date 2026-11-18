@@ -79,7 +79,7 @@ export function daysUntilExpiry(c:CommitmentData,now:number):number {
 }
 
 export function shouldAskRenewal(c:CommitmentData,now:number):boolean {
-  if(c.importedReminder)return false
+  if(c.importedReminder||c.deferredAction)return false
   if(c.status!=='active'||c.expiry_at<=0)return false
   if(now<c.expiry_at-RENEWAL_LEAD_MS)return false
   if(now>=c.expiry_at)return false

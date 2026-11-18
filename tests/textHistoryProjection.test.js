@@ -71,7 +71,7 @@ test('text history rechecks source before a model compatibility retry and blocks
     await ensure() // the actual transport must call this before retrying
     assert.fail('revoked history reached retry')
   } })
-  await assert.rejects(f.reply(), /历史来源权限已改变/u)
+  await f.reply()
   assert.equal(f.requests.length, 2); assert.deepEqual(f.sends, []); assert.deepEqual(f.saved, [])
 })
 

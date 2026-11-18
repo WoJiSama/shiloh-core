@@ -4,7 +4,9 @@ import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { agentRedisPrefix, connectAgentRedis, openAgentRedis } from '../../dist/backend/modules/runtime/infrastructure/agentRedis.js'
+import { importBilibiliHost as load } from './bilibiliQualitySource.mjs'
+
+const { agentRedisPrefix, connectAgentRedis, openAgentRedis } = await load('modules/runtime/infrastructure/agentRedis.js')
 
 export const redisAvailable = spawnSync('redis-server', ['--version'], { stdio: 'ignore' }).status === 0
 

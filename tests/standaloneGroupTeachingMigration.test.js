@@ -34,6 +34,7 @@ const connectionId = 'qq-main'
 const teachingKeys = ['knowledge', 'workflows', 'alias', 'meta'].map(category => KEY[category](target.id))
 const skipped = changes => ({ disabled: 0, source: 0, authorization: 0, unsupported: 0, privacy: 0, revoked: 0, ...changes })
 const report = (imported = 0, retained = 0, alreadyImported = 0, reasons = {}) => ({ imported, retained, alreadyImported, skipped: skipped(reasons) })
+const fileReference = (id, name) => `qq:file:${Buffer.from(JSON.stringify({ id, name })).toString('base64url')}`
 
 function archive(id = 'source-definition', text = '记住绘图组是小吴。', changes = {}) {
   return { version: 1, message_type: 'group', group_id: target.id, user_id: creator,
@@ -118,7 +119,7 @@ test('group teaching handover is opt-in, previews without writes, copies all sup
     flow = archive('source-workflow', '有人询问排练时请找小吴。', { sender: { user_id: creator, nickname: '真实管理员', role: 'admin' } }),
     nickname = archive('source-alias', '记住小吴也叫画师。')
   await f.seed({ knowledge: [knowledge(definition), knowledge(set, { kind: 'member_set', subject: '排练组', targetUserIds: [member, otherMember] }),
-    knowledge(file, { kind: 'group_file', subject: '排练表', targetUserIds: [], ownerQQ: member, resource: { fileName: '排练表.pdf', fileId: 'opaque-file-1' } })],
+    knowledge(file, { kind: 'group_file', subject: '排练表', targetUserIds: [], ownerQQ: member, resource: { fileName: '排练表.pdf', fileId: fileReference('opaque-file-1', '排练表.pdf') } })],
   workflows: [workflow(flow)], alias: { 画师: alias(nickname) } }, [definition, set, file, flow, nickname])
   const source = await f.sourceSnapshot(), before = await f.destinationSnapshot()
   assert.equal((await f.migrate(true, { moveGroupTeaching: false })).groupTeaching, undefined)
@@ -144,7 +145,7 @@ test('group teaching handover is opt-in, previews without writes, copies all sup
     assert.equal(Object.hasOwn(entry.persona, 'personaVersion'), false)
     assert.equal(Object.hasOwn(entry.persona, 'personaName'), false)
   }
-  assert.deepEqual(saved.entries.find(entry => entry.kind === 'group_file').file, { name: '排练表.pdf', reference: 'opaque-file-1' })
+  assert.deepEqual(saved.entries.find(entry => entry.kind === 'group_file').file, { name: '排练表.pdf', reference: fileReference('opaque-file-1', '排练表.pdf') })
   assert.deepEqual(await f.sourceSnapshot(), source)
   assert.deepEqual((await f.migrate(true)).groupTeaching, report(0, 0, 5))
   assert.deepEqual(await f.load(), saved)
@@ -407,7 +408,7 @@ test('migrated text spacing and file references match native QQ capture so repla
     assert.ok(native)
     assert.deepEqual(state.entries[0].source, native)
     assert.equal(native.text, text)
-    assert.deepEqual(native.files, [{ name: '排练表.pdf', reference: 'opaque-native-file' }])
+    assert.deepEqual(native.files, [{ name: '排练表.pdf', reference: fileReference('opaque-native-file', '排练表.pdf') }])
     assert.deepEqual(state.entries[0].file, native.files[0])
     assert.equal(modelCalls, 0)
   } finally { await groupMemory.stop() }

@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
-import { createAgentBindingDirectory, createAgentRuntime } from '../dist/backend/core/index.js'
-import { personMemoryCommandText as commands } from '../dist/backend/modules/memory/domain/personMemoryCommands.js'
-import { personMemoryAddress } from '../dist/backend/modules/memory/infrastructure/personMemoryContext.js'
-import { createPersonMemoryStore } from '../dist/backend/modules/memory/infrastructure/personMemoryStore.js'
-import { createTextPersonMemoryStore } from '../dist/backend/modules/memory/infrastructure/textPersonMemoryStore.js'
-import { agentBindingToken, agentPersonaScopeId, conversationAddressKey, platformAccountKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
-import { simulationAddressKey } from '../dist/backend/modules/simulation/infrastructure/simulationAddress.js'
+import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
+
+const [{ createAgentBindingDirectory, createAgentRuntime }, { personMemoryCommandText: commands },
+  { personMemoryAddress }, { createPersonMemoryStore }, { createTextPersonMemoryStore },
+  { agentBindingToken, agentPersonaScopeId, conversationAddressKey, platformAccountKey }, { simulationAddressKey },
+  { createAgentInbox }] = await Promise.all([
+  load('core/index.js'), load('modules/memory/domain/personMemoryCommands.js'),
+  load('modules/memory/infrastructure/personMemoryContext.js'), load('modules/memory/infrastructure/personMemoryStore.js'),
+  load('modules/memory/infrastructure/textPersonMemoryStore.js'), load('modules/runtime/domain/agentBindings.js'),
+  load('modules/simulation/infrastructure/simulationAddress.js'), load('modules/runtime/infrastructure/agentInbox.js'),
+])
 
 const redisTest = { skip: !redisAvailable, timeout: 20_000 }
 const accounts = ['bot-a', 'bot-b'].map(id => ({ platform: 'fixture', namespace: 'tenant-a', id }))
@@ -62,16 +66,20 @@ async function withFixture(t, options, run) {
   const redis = await createAgentRedisFixture(t, options.name ?? 'agent-text-person-memory')
   const storage = options.wrapStorage?.(redis.storage) ?? redis.storage
   const clock = { at: Date.now() }
-  const requests = [], deliveries = [], attempts = [], extractions = [], tokens = [], warnings = [], hosts = []
+  const requests = [], deliveries = [], attempts = [], extractions = [], tokens = [], warnings = [], errors = [], hosts = []
   const peers = new Map(targets.filter(target => target.kind === 'private').map(target => [conversationAddressKey(target), actor]))
   let bindings = directory()
   let current
   const store = createPersonMemoryStore({ redis: storage, now: () => clock.at })
   const pending = createTextPersonMemoryStore(storage)
+  const inbox = createAgentInbox(storage)
   const memorySystem = Object.hasOwn(options, 'memorySystem') ? options.memorySystem
     : { enabled: true, userExtractDebounceSeconds: 0, userExtractMaxBatchMessages: 1 }
   const fixture = {
-    ...redis, storage, clock, store, requests, deliveries, attempts, extractions, tokens, warnings,
+    ...redis, storage, clock, store, requests, deliveries, attempts, extractions, tokens, warnings, errors,
+    inbox: target => redis.reader.lRange(redis.prefix + `agent:inbox:${target.kind === 'group' ? 'group-text' : target.kind}:${platformAccountKey(target.account)}`, 0, -1),
+    replyConfirmed: (target, id) => inbox.isTextReplyConfirmed(target, id),
+    history: target => inbox.loadTextHistory(target),
     pending: () => pending.list(),
     binding: target => bindings.resolve(target),
     rebind(revision, replacements) { bindings = directory(revision, replacements) },
@@ -126,7 +134,7 @@ async function withFixture(t, options, run) {
       })
       const runtime = createAgentRuntime({
         storage, adapters, now: () => clock.at, isExecutionCurrent: redis.isCurrent,
-        logger: { info() {}, warn: message => warnings.push(message), error() {} },
+        logger: { info() {}, warn: message => warnings.push(message), error: message => errors.push(message) },
         privateChatEnabled: true, useTextGroup: target => target.kind === 'group',
         memorySystem,
         resolvePersona(target) {
@@ -343,11 +351,11 @@ test('pending original sources survive a host restart and duplicate confirmed in
   })
 })
 
-test('a confirmed reply recovers failed durable admission after restart without repeating the model or send', redisTest, async t => {
+for (const target of [privateRoom, group]) test(`${target.kind}: a confirmed reply recovers failed durable admission after restart without repeating the model or send`, redisTest, async t => {
   let failAdmission = true
   let failures = 0
   await withFixture(t, {
-    name: 'text-learning-admission-restart',
+    name: `text-learning-admission-restart-${target.kind}`,
     wrapStorage: storage => ({ ...storage, async eval(script, input) {
       if (failAdmission && input.keys.some(key => key.includes('agent:person-memory:text:v1:batch:')) && script.includes("redis.call('SET', KEYS[1], ARGV[5])")) {
         failures++
@@ -356,19 +364,69 @@ test('a confirmed reply recovers failed durable admission after restart without 
       return storage.eval(script, input)
     } }),
   }, async f => {
-    await f.emit(f.event(privateRoom, 'confirmed-before-admission', '我一直喜欢骑行'))
-    await waitFor(() => failures > 0 && f.warnings.length > 0, 'confirmed reply admission fails durably')
+    await f.emit(f.event(target, 'confirmed-before-admission', '我一直喜欢骑行'))
+    await waitFor(() => failures > 0 && f.errors.length > 0, 'confirmed reply admission fails durably')
+    await waitFor(async () => f.errors.some(line => line.includes('inbox_retry_pending')) || (await f.inbox(target)).length === 0, 'first inbox attempt settles')
     assert.equal(f.deliveries.length, 1)
     assert.equal(f.extractions.length, 0)
+    assert.equal(await f.replyConfirmed(target, 'confirmed-before-admission'), true)
+    const retained = await f.inbox(target)
+    assert.equal(retained.length, 1, 'failed admission retains the original inbox source')
+    assert.equal(JSON.parse(retained[0]).event.message.messageId, 'confirmed-before-admission')
+    assert.deepEqual((await f.history(target)).turns.map(({ user, reply }) => ({ user, reply })), [
+      { user: '我一直喜欢骑行', reply: '收到你的回复。' },
+    ], 'admission failure preserves the sent conversation history')
+    assert.deepEqual(await f.pending(), [])
     await f.stop()
+    assert.deepEqual(await f.inbox(target), retained, 'shutdown preserves the same raw source')
     failAdmission = false
     await f.start()
-    await waitFor(async () => (await f.items(privateRoom)).length === 1, 'confirmed inbox source re-admitted on restart')
+    await waitFor(async () => (await f.items(target)).length === 1, 'confirmed inbox source re-admitted on restart')
+    await f.drained(target)
     await f.completed()
     assert.equal(f.requests.length, 1)
     assert.equal(f.deliveries.length, 1)
     assert.equal(f.extractions.length, 1)
-    assert.equal((await f.items(privateRoom))[0].source.messageId, 'confirmed-before-admission')
+    assert.equal((await f.items(target))[0].source.messageId, 'confirmed-before-admission')
+  })
+})
+
+for (const mode of ['privacy', 'recall', 'rebind', 'peer-change']) test(`a retained confirmed source cannot resume learning after ${mode}`, redisTest, async t => {
+  let failAdmission = true
+  await withFixture(t, {
+    name: `text-learning-admission-revoked-${mode}`,
+    wrapStorage: storage => ({ ...storage, async eval(script, input) {
+      if (failAdmission && input.keys.some(key => key.includes('agent:person-memory:text:v1:batch:')) && script.includes("redis.call('SET', KEYS[1], ARGV[5])")) {
+        throw new Error('test lost the admission commit')
+      }
+      return storage.eval(script, input)
+    } }),
+  }, async f => {
+    const messageId = `confirmed-before-${mode}`
+    await f.emit(f.event(privateRoom, messageId, '我一直喜欢骑行'))
+    await waitFor(() => f.errors.some(line => line.includes('inbox_retry_pending')), 'failed admission retains its inbox source')
+    assert.equal((await f.inbox(privateRoom)).length, 1)
+    assert.equal(await f.replyConfirmed(privateRoom, messageId), true)
+    if (mode === 'privacy') {
+      f.clock.at++
+      await f.emit(f.event(privateRoom, 'disable-retained-learning', commands.disable, { directedToAccount: false }))
+      await f.drained(privateRoom, 'privacy')
+    }
+    if (mode === 'recall') await f.emit({ kind: 'recall', target: privateRoom, messageId })
+    if (mode === 'rebind') f.rebind('text-learning-revoked')
+    if (mode === 'peer-change') f.setPeer(privateRoom, otherActor)
+    await f.stop()
+    const requests = f.requests.length, deliveries = f.deliveries.length
+    failAdmission = false
+    await f.start()
+    await f.drained(privateRoom)
+    await f.tick()
+    await f.completed()
+    assert.deepEqual(await f.pending(), [])
+    assert.deepEqual(await f.items(privateRoom), [])
+    assert.equal(f.extractions.length, 0)
+    assert.equal(f.requests.length, requests)
+    assert.equal(f.deliveries.length, deliveries)
   })
 })
 

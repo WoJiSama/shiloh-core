@@ -1,11 +1,12 @@
 import test from 'node:test'
+import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import {DiceManager} from '../dist/backend/modules/dice/infrastructure/DiceManager.js'
-import {decodeDiceState,numericDiceTotal} from '../dist/backend/modules/dice/infrastructure/diceDecoders.js'
-import {loadJsRuleSource,resolveDiceRuleImportSource} from '../dist/backend/modules/dice/infrastructure/DiceRuleImport.js'
+const {DiceManager} = await importBilibiliHost('modules/dice/infrastructure/DiceManager.js')
+const {decodeDiceState,numericDiceTotal} = await importBilibiliHost('modules/dice/infrastructure/diceDecoders.js')
+const {loadJsRuleSource,resolveDiceRuleImportSource} = await importBilibiliHost('modules/dice/infrastructure/DiceRuleImport.js')
 
 test('compiled dice state rejects malformed top-level and card records without replacing valid state',()=>{
  for(const data of [null,[],{users:[]},{groups:'bad'},{users:{u:null}},{users:{u:{cards:{bad:null}}}}])assert.throws(()=>decodeDiceState(data),/损坏|根节点/)

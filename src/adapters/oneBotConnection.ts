@@ -1,9 +1,19 @@
+import { createQqInteractionDeliveryPort, QQ_INTERACTION_TIMEOUT_MS } from './qqInteractionDelivery.js'
+import { captureQqOwnMessageTarget, isQqOwnMessageId, proveQqFriend, proveQqOwnMessage } from './qqOwnMessageProof.js'
+export { createQqInteractionDeliveryPort, QQ_INTERACTION_TIMEOUT_MS } from './qqInteractionDelivery.js'
+export type { QqInteractionApiAction, QqInteractionApiOptions } from './qqInteractionDelivery.js'
 import { randomUUID } from 'node:crypto'
+import { types } from 'node:util'
 import WebSocket from 'ws'
 import type { ConversationAddress, PlatformConnection, PlatformUserRef } from '../contracts/agentBinding.js'
 import type { ConversationMember, ConversationMemberProfile, ConversationMemberReadOptions, ForwardContent, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
 import type { MessageActionOptions } from '../contracts/platformMessage.js'
 import type { FileReadGuard, ConversationFileEntry } from '../contracts/agentFiles.js'
+import type { AgentQzoneGuard, AgentQzoneLedger } from '../contracts/agentQzone.js'
+import { createQqGiftDeliveryPort } from './qqGiftDelivery.js'
+import { createQqQzoneProvider } from './qqQzoneProvider.js'
+import { createQqRedPacketPort } from './qqRedPacket.js'
+import type { QqRedPacketPort } from './qqRedPacket.js'
 import { extractForwardIdFromSegment } from '../modules/conversation/domain/messageSegments.js'
 import { conversationAddressKey, platformAccountKey } from '../modules/runtime/domain/agentBindings.js'
 import { safeTruncateUnicode } from '../modules/models/domain/unicodeText.js'
@@ -12,12 +22,16 @@ import { qqId, resolveQqConversationAddress } from './qqIdentity.js'
 import { decodeQqIncomingMessage, decodeQqNudge, opaqueMessageId } from './qqMessage.js'
 import { parseQqCqMessage as parseCqMessage } from './qqCqMessage.js'
 import { readQqMessageImage } from './qqMessageImage.js'
+import { createQqMessageVideoReader, QQ_VIDEO_API_TIMEOUT_MS } from './qqMessageVideo.js'
 import { authorizeQqFile, downloadQqFile, ensureQqFileCurrent, parseQqFileResource, withQqFileRead } from './qqMessageFile.js'
 import { createQqConversationFiles, qqFileResponseData } from './qqConversationFiles.js'
 import { createQqMessageActionPort } from './qqMessageDelivery.js'
 import { createQqFileDeliveryPort } from './qqFileDelivery.js'
 import { createQqMediaDeliveryPort, QQ_MEDIA_SEND_TIMEOUT_MS } from './qqMediaDelivery.js'
 import { createQqMusicDeliveryPort, QQ_MUSIC_SEND_TIMEOUT_MS } from './qqMusicDelivery.js'
+import { createQqBilibiliAuthDeliveryPort, QQ_BILIBILI_AUTH_TIMEOUT_MS } from './qqBilibiliAuthDelivery.js'
+import { createQqDicePrivateDeliveryPort } from './qqDicePrivateDelivery.js'
+import { createQqVideoCardDeliveryPort, QQ_VIDEO_CARD_SEND_TIMEOUT_MS } from './qqVideoCardDelivery.js'
 import { createQqAudioFileDeliveryPort, QQ_AUDIO_FILE_SEND_TIMEOUT_MS } from './qqAudioFileDelivery.js'
 import { createQqMusicShareReader } from './qqMusicShare.js'
 import { createQqMediaShareReader, QQ_MEDIA_SHARE_GET_MESSAGE_TIMEOUT_MS } from './qqMediaShare.js'
@@ -25,6 +39,8 @@ import { createQqMediaRelayDeliveryPort } from './qqMediaRelayDelivery.js'
 import type { QqMediaRelayBridge } from './qqMediaRelayBridge.js'
 import { createQqRequesterArchiveDeliveryPort } from './qqRequesterArchiveDelivery.js'
 import type { QqRequesterArchiveBridge } from './qqRequesterArchiveBridge.js'
+import { createQqGroupLogDeliveryPort } from './qqGroupLogDelivery.js'
+import type { QqGroupLogBridge } from './qqGroupLogBridge.js'
 import { listenOneBotReverseSocket } from './oneBotReverseSocket.js'
 import { ONEBOT_MAX_PAYLOAD_BYTES } from './oneBotLimits.js'
 
@@ -35,6 +51,18 @@ export type { QqMediaRelayBridge, QqMediaRelayBridgeOptions, QqMediaRelayResourc
 export { createQqRequesterArchiveDeliveryPort } from './qqRequesterArchiveDelivery.js'
 export { openQqRequesterArchiveBridge, QQ_REQUESTER_ARCHIVE_TIMEOUT_MS } from './qqRequesterArchiveBridge.js'
 export type { QqRequesterArchiveBridge, QqRequesterArchiveBridgeOptions, QqRequesterArchiveLease } from './qqRequesterArchiveBridge.js'
+export { openQqGroupLogBridge, QQ_GROUP_LOG_TIMEOUT_MS } from './qqGroupLogBridge.js'
+export type { QqGroupLogBridge, QqGroupLogBridgeOptions, QqGroupLogLease } from './qqGroupLogBridge.js'
+export { createQqGroupLogDeliveryPort } from './qqGroupLogDelivery.js'
+export { createQqBilibiliAuthDeliveryPort, QQ_BILIBILI_AUTH_TIMEOUT_MS } from './qqBilibiliAuthDelivery.js'
+export { createQqDicePrivateDeliveryPort, QQ_DICE_PRIVATE_TIMEOUT_MS } from './qqDicePrivateDelivery.js'
+export type { QqDicePrivateApiOptions } from './qqDicePrivateDelivery.js'
+export { createQqGiftDeliveryPort } from './qqGiftDelivery.js'
+export type { QqGiftApiAction, QqGiftApiOptions, QqGiftDeliveryOptions } from './qqGiftDelivery.js'
+export { createQqQzoneProvider, QQ_QZONE_TIMEOUT_MS, QQ_QZONE_HTTP_TIMEOUT_MS, QQ_QZONE_MAX_RESPONSE_BYTES } from './qqQzoneProvider.js'
+export type { QqQzoneApiAction, QqQzoneApiOptions, QqQzoneProviderOptions } from './qqQzoneProvider.js'
+export { createQqRedPacketPort, QQ_RED_PACKET_TIMEOUT_MS } from './qqRedPacket.js'
+export type { QqRedPacketApiAction, QqRedPacketApiOptions, QqRedPacketOptions, QqRedPacketPort } from './qqRedPacket.js'
 
 interface PendingRequest {
   finish(value?: unknown): void
@@ -158,6 +186,39 @@ function decodeGroupMessage(response: unknown, target: ConversationAddress, mess
   return message ?? undefined
 }
 
+/** A private re-read proves a friend source, never a TEMP/group conversation. */
+function decodePrivateMessage(response: unknown, target: ConversationAddress, messageId: string) {
+  const result = record(response), data = record(result.data), sender = record(data.sender)
+  const authorId = canonicalQqId(sender.user_id)
+  if (result.status !== 'ok' || result.retcode !== 0 || data.message_type !== 'private' || data.sub_type !== undefined && data.sub_type !== 'friend' ||
+      data.group_id != null || data.temp_source != null || data.isGroup === true || sender.group_id != null ||
+      !authorId || authorId !== target.id || authorId === target.account.id ||
+      (result.self_id !== undefined && canonicalQqId(result.self_id) !== target.account.id) ||
+      (data.self_id !== undefined && canonicalQqId(data.self_id) !== target.account.id) ||
+      (data.user_id !== undefined && canonicalQqId(data.user_id) !== authorId) ||
+      opaqueMessageId(data.message_id) !== messageId || typeof data.message_id !== 'number' && data.message_id !== messageId ||
+      typeof data.message !== 'string' && !Array.isArray(data.message)) return undefined
+  // Use the ingress decoder so quote markers and CQ/array parts have identical
+  // authority. A reply's embedded author/text is never promoted to evidence.
+  const event = decodeEvent({ post_type: 'message', message_type: 'private', sub_type: 'friend', self_id: target.account.id,
+    user_id: authorId, sender, message_id: data.message_id, time: data.time, message: data.message }, target.account.id)
+  return event?.kind === 'message' && event.message.text.length <= 4_000 ? event.message : undefined
+}
+
+function privateFriendProof(response: unknown, target: ConversationAddress): boolean {
+  const result = record(response), values = result.data
+  if (result.status !== 'ok' || result.retcode !== 0 || !Array.isArray(values) || values.length > 10_000 ||
+      result.complete === false || result.truncated === true || result.has_more === true ||
+      result.self_id !== undefined && canonicalQqId(result.self_id) !== target.account.id) return false
+  const peers = new Set<string>()
+  for (const value of values) {
+    const row = record(value), id = canonicalQqId(row.user_id)
+    if (!id || peers.has(id) || row.self_id !== undefined && canonicalQqId(row.self_id) !== target.account.id) return false
+    peers.add(id)
+  }
+  return peers.has(target.id)
+}
+
 function forwardIdOf(value: unknown): string | undefined {
   const id = opaqueMessageId(value)
   return id && id.length <= 256 && !/\s|[\u0000-\u001f\u007f]|:\/\//u.test(id) ? id : undefined
@@ -250,6 +311,13 @@ interface OneBotEndpoint {
   mediaRelay?: { readonly bridge: QqMediaRelayBridge; readonly allowsText?: (text: string) => boolean }
   /** Explicit requester-only ZIP transport; group source is verified before private upload. */
   requesterArchive?: { readonly bridge: QqRequesterArchiveBridge; readonly allowsText?: (text: string) => boolean }
+  /** Explicit complete group-log transport; never opened or configured implicitly. */
+  bilibiliAuth?: { readonly allowsText: (text: string) => boolean }
+  /** Explicit group-authorized private dice transport; recipient is proven as a friend before send. */
+  dicePrivate?: { readonly allowsText: (text: string) => boolean }
+  groupLog?: { readonly bridge: QqGroupLogBridge; readonly allowsText?: (text: string) => boolean }
+  qqActions?: { readonly driver: 'napcat'; readonly giftDisplay?: boolean; readonly redPackets?: boolean; readonly qzone?: boolean }
+  qzoneOwnPost?: AgentQzoneLedger['readOwnPost']
 }
 
 interface OneBotConnectionOptions extends OneBotEndpoint {
@@ -279,8 +347,56 @@ function createOneBotSession(options: OneBotConnectionOptions) {
   let receiveQueue = Promise.resolve()
   let queued = 0
   const pending = new Map<string, PendingRequest>()
+  const qqActions = options.qqActions?.driver === 'napcat' ? options.qqActions : undefined
+  let redPacketPort: QqRedPacketPort | undefined
+  const recalledWalletSources = new Set<string>()
+  const walletSourceKey = (target: ConversationAddress, messageId: string) => JSON.stringify([conversationAddressKey(target), messageId])
 
-  async function call(client: WebSocket, action: string, params: Record<string, unknown>, guard?: () => boolean, timeoutMs = 10_000, signal?: AbortSignal): Promise<unknown> {
+  function qqActionGuard(input: AgentQzoneGuard, extraKeys: string[] = []): AgentQzoneGuard | undefined {
+    try {
+      if (!input || typeof input !== 'object' || types.isProxy(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
+          Reflect.ownKeys(input).some(key => typeof key !== 'string' || !['signal', 'isCurrent', 'ensureCurrent', ...extraKeys].includes(key) ||
+            !Object.hasOwn(Object.getOwnPropertyDescriptor(input, key)!, 'value'))) return undefined
+      const signal = Object.getOwnPropertyDescriptor(input, 'signal')?.value, check = Object.getOwnPropertyDescriptor(input, 'isCurrent')?.value,
+        ensure = Object.getOwnPropertyDescriptor(input, 'ensureCurrent')?.value, client = socket, admitted = queuedDeliveryAllowed()
+      if (types.isProxy(signal) || !(signal instanceof AbortSignal) || typeof check !== 'function' || types.isProxy(check) ||
+          typeof ensure !== 'function' || types.isProxy(ensure) || !client) return undefined
+      const isCurrent = () => {
+        try { return admitted && !signal.aborted && !stopped && verified && socket === client && client.readyState === WebSocket.OPEN &&
+          Reflect.apply(check, input, []) === true } catch { return false }
+      }
+      return { signal, isCurrent, async ensureCurrent() {
+        if (!isCurrent()) throw new Error('OneBot QQ 操作来源已失效')
+        await Reflect.apply(ensure, input, [])
+        if (!isCurrent()) throw new Error('OneBot QQ 操作来源已失效')
+      } }
+    } catch { return undefined }
+  }
+
+  async function qqActionApi(action: string, params: Readonly<Record<string, unknown>>, guard: AgentQzoneGuard & { readonly timeoutMs: number }): Promise<unknown> {
+    const client = socket
+    const current = () => {
+      try { return !!client && !stopped && verified && socket === client && client.readyState === WebSocket.OPEN &&
+        !guard.signal.aborted && guard.isCurrent() && queuedDeliveryAllowed() } catch { return false }
+    }
+    if (!client || !current()) return { state: 'failed', code: 'qq_action_cancelled' }
+    try { await guard.ensureCurrent() } catch { return { state: 'failed', code: 'qq_action_cancelled' } }
+    if (!current()) return { state: 'failed', code: 'qq_action_cancelled' }
+    let dispatched = false
+    const result = await call(client, action, params, current, guard.timeoutMs, guard.signal, () => { dispatched = true })
+    // Native peers cannot forge the transport's pre-dispatch rejection marker.
+    return dispatched && Object.hasOwn(record(result), 'state') ? { state: 'unknown' } : result
+  }
+
+  function openRedPackets(client: WebSocket): void {
+    redPacketPort?.close()
+    recalledWalletSources.clear()
+    redPacketPort = qqActions?.redPackets === true ? createQqRedPacketPort({ account: connection.account, connectionId: connection.id,
+      driver: 'napcat', supportsRedPacket: true, isReady: () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN,
+      callApi: qqActionApi }) : undefined
+  }
+
+  async function call(client: WebSocket, action: string, params: Record<string, unknown>, guard?: () => boolean, timeoutMs = 10_000, signal?: AbortSignal, onDispatch?: () => void): Promise<unknown> {
     if (socket !== client || client.readyState !== WebSocket.OPEN) return { state: 'failed', code: 'onebot_disconnected' }
     if (signal?.aborted) return { state: 'unknown' }
     if (guard?.() === false) return { state: 'failed', code: 'binding_changed' }
@@ -303,6 +419,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       try {
         if (signal?.aborted) { finish(); return }
         if (guard?.() === false) { finish({ state: 'failed', code: 'binding_changed' }); return }
+        onDispatch?.()
         client.send(JSON.stringify({ action, params, echo }), error => { if (error) finish() })
       }
       catch { finish() }
@@ -335,6 +452,9 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         if (socket !== client) return
         socket = undefined
         verified = false
+        redPacketPort?.close()
+        redPacketPort = undefined
+        recalledWalletSources.clear()
         if (heartbeat) { clearInterval(heartbeat); heartbeat = undefined }
         for (const request of pending.values()) request.finish()
       }
@@ -354,10 +474,32 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         if (!authenticated || !accept) return
         const event = decodeEvent(payload, connection.account.id)
         if (!event) return
+        if (event.kind === 'recall') {
+          redPacketPort?.revoke(event.target, event.messageId)
+          if (redPacketPort) {
+            recalledWalletSources.add(walletSourceKey(event.target, event.messageId))
+            if (recalledWalletSources.size > 4096) recalledWalletSources.delete(recalledWalletSources.values().next().value!)
+          }
+        }
         if (queued >= 256) { options.onEventError(); return }
         const handle = accept
         queued++
-        receiveQueue = receiveQueue.then(() => handle(event)).catch(options.onEventError).finally(() => { queued-- })
+        const packetPort = redPacketPort
+        const wallet = payload.post_type === 'message' && payload.message_type === 'group' &&
+          Array.isArray(payload.message) && payload.message.some(value => record(value).type === 'wallet')
+        receiveQueue = receiveQueue.then(async () => {
+          if (wallet && packetPort && event.kind === 'message') {
+            const current = () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN && redPacketPort === packetPort &&
+              !recalledWalletSources.has(walletSourceKey(event.message.conversation, event.message.messageId!))
+            const packet = await packetPort.readIncoming(event.message.conversation, payload, {
+              signal: new AbortController().signal, isCurrent: current,
+              async ensureCurrent() { if (!current()) throw new Error('OneBot 红包来源已失效') },
+            })
+            if (packet && current()) await handle({ kind: 'red-packet', target: packet.target, packet })
+            return
+          }
+          await handle(event)
+        }).catch(options.onEventError).finally(() => { queued-- })
       })
       const authenticate = () => {
         void (async () => {
@@ -371,6 +513,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
           }
           authenticated = true
           verified = true
+          openRedPackets(client)
           botName = typeof identity.nickname === 'string' ? identity.nickname.slice(0, 128) || botName : botName
           heartbeat = setInterval(() => {
             if (!alive || client.readyState !== WebSocket.OPEN) { client.terminate(); return }
@@ -422,6 +565,9 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     stopped = true
     accept = undefined
     verified = false
+    redPacketPort?.close()
+    redPacketPort = undefined
+    recalledWalletSources.clear()
     cancelFirstPeer?.()
     if (retry) { clearTimeout(retry); retry = undefined }
     if (heartbeat) { clearInterval(heartbeat); heartbeat = undefined }
@@ -437,6 +583,22 @@ function createOneBotSession(options: OneBotConnectionOptions) {
   const outbound = createQqMessageActionPort({
     sendApi: (action, params) => verified && socket ? call(socket, action, params, queuedDeliveryAllowed) : Promise.resolve({ state: 'failed', code: 'onebot_disconnected' }),
   })
+  const nativeGift = qqActions?.giftDisplay === true ? createQqGiftDeliveryPort({ account: connection.account, connectionId: connection.id,
+    supportsGiftPacket: true, isReady: () => !stopped && verified && socket?.readyState === WebSocket.OPEN, callApi: qqActionApi }) : undefined
+  const nativeQzone = qqActions?.qzone === true ? createQqQzoneProvider({ account: connection.account, connectionId: connection.id,
+    isReady: () => !stopped && verified && socket?.readyState === WebSocket.OPEN, callApi: qqActionApi,
+    ...(options.qzoneOwnPost ? { readOwnPost: options.qzoneOwnPost } : {}) }) : undefined
+  const redPackets = qqActions?.redPackets === true ? Object.freeze<NonNullable<PlatformConnectionAdapter['redPackets']>>({
+    read(target, id, input) { const guard = qqActionGuard(input), port = redPacketPort; return guard && port ? port.read(target, id, guard) : Promise.resolve(undefined) },
+    recent(target, input) {
+      const guard = qqActionGuard(input, ['limit']), port = redPacketPort
+      return guard && port ? port.recent(target, { ...guard, limit: Object.getOwnPropertyDescriptor(input, 'limit')?.value }) : Promise.resolve([])
+    },
+    revalidate(packet, input) { const guard = qqActionGuard(input), port = redPacketPort; return guard && port ? port.revalidate(packet, guard) : Promise.resolve(false) },
+    sendPassword(packet, input) { const guard = qqActionGuard(input), port = redPacketPort; return guard && port ? port.sendPassword(packet, guard) : Promise.resolve({ state: 'failed', code: 'qq_action_cancelled' }) },
+    grab(packet, input) { const guard = qqActionGuard(input), port = redPacketPort; return guard && port ? port.grab(packet, guard) : Promise.resolve({ state: 'failed', code: 'qq_action_cancelled' }) },
+    revoke(target, id) { redPacketPort?.revoke(target, id) },
+  }) : undefined
   const sendFile = createQqFileDeliveryPort({
     account: connection.account, connectionId: connection.id,
     sendApi: async (action, params, guard) => {
@@ -470,6 +632,62 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       return isCurrent() ? response : { state: 'unknown' }
     },
   })
+  const sendDicePrivate = createQqDicePrivateDeliveryPort({
+    account: connection.account, connectionId: connection.id,
+    ...(options.dicePrivate ? { allowsText: options.dicePrivate.allowsText } : {}),
+    readApi: async (action, params, guard) => {
+      const result = await qqActionApi(action, params, guard), response = record(result)
+      // A native handler/transport failure does not prove that its source is invalid.
+      if (response.state === 'failed' || response.status === 'ok' && response.retcode === 0 ||
+          response.retcode === 400 || response.retcode === 1400) return result
+      throw new Error('OneBot 骰子私密投递来源读取结果未知')
+    },
+    sendApi: qqActionApi,
+  })
+  const sendRequesterBilibiliAuth = createQqBilibiliAuthDeliveryPort({
+    account: connection.account, connectionId: connection.id,
+    ...(options.bilibiliAuth ? { allowsText: options.bilibiliAuth.allowsText } : {}),
+    readApi: async (action, params, guard) => {
+      const client = socket
+      const current = () => !!client && !stopped && verified && socket === client && client.readyState === WebSocket.OPEN &&
+        !guard.signal.aborted && guard.isCurrent()
+      if (!client || !current()) return undefined
+      return call(client, action, params, current, 1_500, guard.signal)
+    },
+    sendApi: async (action, params, guard) => {
+      const client = socket
+      const current = () => !!client && !stopped && verified && socket === client && client.readyState === WebSocket.OPEN &&
+        !guard.signal.aborted && guard.isCurrent() && queuedDeliveryAllowed()
+      if (!client || !current()) return { state: 'failed', code: 'onebot_disconnected' }
+      const result = await call(client, action, params, current, QQ_BILIBILI_AUTH_TIMEOUT_MS, guard.signal)
+      return current() ? result : { state: 'unknown' }
+    },
+  })
+  const interact = createQqInteractionDeliveryPort({
+    account: connection.account, connectionId: connection.id,
+    isReady: () => !!socket && !stopped && verified && socket.readyState === WebSocket.OPEN,
+    async callApi(action, params, guard) {
+      const client = socket
+      const current = () => !!client && !stopped && verified && socket === client && client.readyState === WebSocket.OPEN &&
+        !guard.signal.aborted && guard.isCurrent() && queuedDeliveryAllowed()
+      if (!client || !current()) return { state: 'failed', code: 'onebot_disconnected' }
+      await guard.ensureCurrent()
+      if (!current()) return { state: 'failed', code: 'interaction_cancelled' }
+      const result = await call(client, action, params, current, guard.timeoutMs, guard.signal)
+      return current() ? result : { state: 'unknown' }
+    },
+  })
+  const sendVideoCard = createQqVideoCardDeliveryPort({
+    account: connection.account, connectionId: connection.id,
+    sendApi: async (action, params, guard) => {
+      const client = socket
+      if (!client || !verified || stopped || client.readyState !== WebSocket.OPEN) return { state: 'failed', code: 'onebot_disconnected' }
+      const isCurrent = () => !guard.signal.aborted && !stopped && verified && socket === client &&
+        client.readyState === WebSocket.OPEN && guard.isCurrent() && queuedDeliveryAllowed()
+      const response = await call(client, action, params, isCurrent, QQ_VIDEO_CARD_SEND_TIMEOUT_MS, guard.signal)
+      return isCurrent() ? response : { state: 'unknown' }
+    },
+  })
   const sendAudioFile = createQqAudioFileDeliveryPort({
     account: connection.account, connectionId: connection.id,
     sendApi: async (action, params, guard) => {
@@ -498,6 +716,26 @@ function createOneBotSession(options: OneBotConnectionOptions) {
   const sendRequesterArchive = options.requesterArchive && createQqRequesterArchiveDeliveryPort({
     account: connection.account, connectionId: connection.id, bridge: options.requesterArchive.bridge,
     ...(options.requesterArchive.allowsText ? { allowsText: options.requesterArchive.allowsText } : {}),
+    readApi: async (action, params, guard) => {
+      const client = socket
+      const isCurrent = () => !!client && !stopped && verified && socket === client && client.readyState === WebSocket.OPEN &&
+        !guard.signal.aborted && guard.isCurrent() && queuedDeliveryAllowed()
+      if (!client || !isCurrent()) return undefined
+      const result = await call(client, action, params, isCurrent, guard.timeoutMs, guard.signal)
+      return isCurrent() ? result : undefined
+    },
+    sendApi: async (action, params, guard) => {
+      const client = socket
+      const isCurrent = () => !!client && !stopped && verified && socket === client && client.readyState === WebSocket.OPEN &&
+        !guard.signal.aborted && guard.isCurrent() && queuedDeliveryAllowed()
+      if (!client || !isCurrent()) return { state: 'failed', code: 'onebot_disconnected' }
+      const result = await call(client, action, params, isCurrent, guard.timeoutMs, guard.signal)
+      return isCurrent() ? result : { state: 'unknown' }
+    },
+  })
+  const sendGroupLog = options.groupLog && createQqGroupLogDeliveryPort({
+    account: connection.account, connectionId: connection.id, bridge: options.groupLog.bridge,
+    ...(options.groupLog.allowsText ? { allowsText: options.groupLog.allowsText } : {}),
     readApi: async (action, params, guard) => {
       const client = socket
       const isCurrent = () => !!client && !stopped && verified && socket === client && client.readyState === WebSocket.OPEN &&
@@ -573,6 +811,28 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     } catch { return undefined }
   }
   async function readMessage(target: ConversationAddress, messageId: string, guard?: MessageActionOptions & { signal?: AbortSignal }) {
+    if (target.kind === 'private') {
+      try {
+        const client = socket, id = Number(messageId), signal = guard?.signal
+        if (!verified || !client || !servesAccount(target) || target.account.platform !== 'qq' || target.account.namespace !== 'global' ||
+            canonicalQqId(target.account.id) !== target.account.id || canonicalQqId(target.id) !== target.id || target.id === connection.account.id ||
+            !/^-?[1-9][0-9]{0,9}$/u.test(messageId) || id < -2_147_483_648 || id > 2_147_483_647 ||
+            signal !== undefined && !(signal instanceof AbortSignal)) return undefined
+        const key = conversationAddressKey(target), captured = Object.freeze({ account: Object.freeze({ ...target.account }), kind: 'private' as const, id: target.id })
+        const isCurrent = () => {
+          try { return !stopped && verified && socket === client && client.readyState === WebSocket.OPEN && !signal?.aborted &&
+            platformAccountKey(connection.account) === accountKey && conversationAddressKey(target) === key &&
+            (guard?.isCurrent === undefined || guard.isCurrent() === true) } catch { return false }
+        }
+        if (!isCurrent()) return undefined
+        // Standard get_msg has no required friend subtype. Prove friendship on
+        // this exact authenticated socket for each read; never cache a TEMP peer.
+        const friends = await call(client, 'get_friend_list', {}, isCurrent, 5_000, signal)
+        if (!isCurrent() || !privateFriendProof(friends, captured)) return undefined
+        const response = await call(client, 'get_msg', { message_id: id }, isCurrent, 1_500, signal)
+        return isCurrent() ? decodePrivateMessage(response, captured, messageId) : undefined
+      } catch { return undefined }
+    }
     const client = socket
     // OneBot v11 get_msg accepts a signed 32-bit message ID.
     const id = Number(messageId)
@@ -581,6 +841,51 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     const response = await call(client, 'get_msg', { message_id: id }, guard?.isCurrent, 1_500, guard?.signal)
     if (guard?.signal?.aborted || socket !== client || !verified || guard?.isCurrent?.() === false) return undefined
     return decodeGroupMessage(response, target, messageId)
+  }
+  async function readOwnMessage(target: ConversationAddress, messageId: string, guard: MessageActionOptions & { signal?: AbortSignal } = {}) {
+    let cancel: AbortController | undefined, timer: ReturnType<typeof setTimeout> | undefined, watch: ReturnType<typeof setInterval> | undefined
+    try {
+      const captured = captureQqOwnMessageTarget(target), client = socket
+      if (!captured || !isQqOwnMessageId(messageId) || !servesAccount(captured) || !client || !verified || stopped ||
+          !guard || typeof guard !== 'object' || types.isProxy(guard) || ![Object.prototype, null].includes(Object.getPrototypeOf(guard)) ||
+          Reflect.ownKeys(guard).some(key => typeof key !== 'string' || !['isCurrent', 'signal', 'ensureCurrent'].includes(key) ||
+            !Object.hasOwn(Object.getOwnPropertyDescriptor(guard, key)!, 'value'))) return undefined
+      const check = Object.getOwnPropertyDescriptor(guard, 'isCurrent')?.value, parent = Object.getOwnPropertyDescriptor(guard, 'signal')?.value,
+        ensure = Object.getOwnPropertyDescriptor(guard, 'ensureCurrent')?.value
+      if (check !== undefined && (typeof check !== 'function' || types.isProxy(check)) ||
+          ensure !== undefined && (typeof ensure !== 'function' || types.isProxy(ensure)) ||
+          parent !== undefined && (typeof parent !== 'object' || !parent || types.isProxy(parent) || Object.getPrototypeOf(parent) !== AbortSignal.prototype ||
+            Reflect.ownKeys(parent).some(key => typeof key === 'string'))) return undefined
+      if (parent !== undefined) Object.getOwnPropertyDescriptor(AbortSignal.prototype, 'aborted')!.get!.call(parent)
+      cancel = new AbortController()
+      const signal = AbortSignal.any([cancel.signal, ...(parent ? [parent as AbortSignal] : [])]), key = conversationAddressKey(captured)
+      const current = () => {
+        try { const live = captureQqOwnMessageTarget(target); return !signal.aborted && !stopped && verified && socket === client &&
+          client.readyState === WebSocket.OPEN && platformAccountKey(connection.account) === accountKey && !!live &&
+          conversationAddressKey(live) === key && (check === undefined || check.call(guard) === true) } catch { return false }
+      }
+      if (!current()) return undefined
+      timer = setTimeout(() => cancel!.abort(), QQ_INTERACTION_TIMEOUT_MS)
+      watch = setInterval(() => { if (!current()) cancel!.abort() }, 25)
+      return await new Promise<ReturnType<typeof proveQqOwnMessage>>(resolve => {
+        const abort = () => resolve(undefined)
+        signal.addEventListener('abort', abort, { once: true })
+        const operation = async () => {
+          await ensure?.call(guard)
+          if (!current()) return undefined
+          if (captured.kind === 'private') {
+            const friends = await call(client, 'get_friend_list', {}, current, 5000, signal)
+            if (!current() || !proveQqFriend(friends, captured)) return undefined
+          }
+          await ensure?.call(guard)
+          if (!current()) return undefined
+          const response = await call(client, 'get_msg', { message_id: Number(messageId) }, current, 1500, signal)
+          return current() ? proveQqOwnMessage(response, captured, messageId) : undefined
+        }
+        void operation().then(resolve, () => resolve(undefined)).finally(() => signal.removeEventListener('abort', abort))
+      })
+    } catch { return undefined }
+    finally { if (timer) clearTimeout(timer); if (watch) clearInterval(watch); cancel?.abort() }
   }
   async function readFileOperation<T>(target: ConversationAddress, options: FileReadGuard,
     read: (target: ConversationAddress, guard: FileReadGuard, invoke: (action: string, params: Record<string, unknown>) => Promise<unknown>) => Promise<T>) {
@@ -616,6 +921,23 @@ function createOneBotSession(options: OneBotConnectionOptions) {
 
   const adapter: PlatformConnectionAdapter = {
     ...connection,
+    ...(nativeGift ? { gift: (action: Parameters<NonNullable<PlatformConnectionAdapter['gift']>>[0], input: AgentQzoneGuard) => {
+      const guard = qqActionGuard(input)
+      return guard ? nativeGift(action, guard) : Promise.resolve({ state: 'failed' as const, code: 'qq_action_cancelled' })
+    } } : {}),
+    ...(nativeQzone ? { qzone: Object.freeze({ execute(action: Parameters<typeof nativeQzone.execute>[0], input: AgentQzoneGuard) {
+      const guard = qqActionGuard(input)
+      return guard ? nativeQzone.execute(action, guard) : Promise.resolve({ state: 'failed' as const, code: 'qq_action_cancelled' })
+    } }) } : {}),
+    ...(redPackets ? { redPackets, invalidateRedPacketSources() {
+      const client = socket
+      if (client && !stopped && verified && client.readyState === WebSocket.OPEN) openRedPackets(client)
+      else {
+        redPacketPort?.close()
+        redPacketPort = undefined
+        recalledWalletSources.clear()
+      }
+    } } : {}),
     botUserId: connection.account.id,
     get botName() { return botName },
     resolvePrivatePeer(target) {
@@ -623,6 +945,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       return { ...connection.account, id: target.id }
     },
     readMessage,
+    readOwnMessage,
     readMusicShare(target, messageId, guard) {
       const client = socket, check = guard?.isCurrent
       if (!client || !verified || stopped || client.readyState !== WebSocket.OPEN) return Promise.resolve(undefined)
@@ -650,6 +973,28 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         } })
         return await read(target, messageId, { signal, expectedSource, isCurrent: current,
           allowsSource: source => allowsSource.call(guard, source) })
+      } catch { return undefined }
+    },
+    async readMessageVideo(target, messageId, guard) {
+      try {
+        const client = socket
+        if (!client || !verified || stopped || client.readyState !== WebSocket.OPEN || !guard ||
+            ![Object.prototype, null].includes(Object.getPrototypeOf(guard)) || Reflect.ownKeys(guard).some(key =>
+              typeof key !== 'string' || !Object.hasOwn(Object.getOwnPropertyDescriptor(guard, key)!, 'value'))) return undefined
+        const { signal, isCurrent: check, ensureCurrent, allowsSource, allowsForwardSource, inspectOnly } = guard
+        const current = () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN &&
+          platformAccountKey(connection.account) === accountKey && guard.signal === signal && guard.isCurrent === check &&
+          guard.ensureCurrent === ensureCurrent && guard.allowsSource === allowsSource && guard.allowsForwardSource === allowsForwardSource &&
+          guard.inspectOnly === inspectOnly && check.call(guard)
+        const read = createQqMessageVideoReader({ account: connection.account, readApi: async (action, params, scope) => {
+          const isCurrent = () => current() && !scope.signal.aborted && scope.isCurrent()
+          if (!isCurrent()) return undefined
+          const response = await call(client, action, params, isCurrent, QQ_VIDEO_API_TIMEOUT_MS, scope.signal)
+          return isCurrent() ? response : undefined
+        } })
+        return await read(target, messageId, { signal, isCurrent: current, ...(ensureCurrent ? { ensureCurrent: () => ensureCurrent.call(guard) } : {}),
+          ...(inspectOnly === undefined ? {} : { inspectOnly }), allowsSource: source => allowsSource.call(guard, source),
+          allowsForwardSource: source => allowsForwardSource.call(guard, source) })
       } catch { return undefined }
     },
     async readMessageFile(target, messageId, fileIndex, options) {
@@ -750,12 +1095,38 @@ function createOneBotSession(options: OneBotConnectionOptions) {
           })
         } catch { return Promise.resolve({ state: 'failed' as const, code: 'invalid_requester_archive_guard' }) }
       }) satisfies NonNullable<PlatformConnectionAdapter['actions']['sendRequesterArchive']> } : {}),
+      ...(sendGroupLog ? { sendGroupLog: ((action, guard) => {
+        try {
+          const input = guard ?? {}
+          if (!input || typeof input !== 'object' || types.isProxy(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
+              Reflect.ownKeys(input).some(key => typeof key !== 'string' || !['isCurrent', 'signal'].includes(key) ||
+                !Object.hasOwn(Object.getOwnPropertyDescriptor(input, key)!, 'value'))) return Promise.resolve({ state: 'failed' as const, code: 'invalid_group_log_guard' })
+          const client = socket, check = Object.getOwnPropertyDescriptor(input, 'isCurrent')?.value,
+            signal = Object.getOwnPropertyDescriptor(input, 'signal')?.value
+          if (check !== undefined && (typeof check !== 'function' || types.isProxy(check)) ||
+              signal !== undefined && (types.isProxy(signal) || !(signal instanceof AbortSignal))) return Promise.resolve({ state: 'failed' as const, code: 'invalid_group_log_guard' })
+          if (!client || !verified || stopped || client.readyState !== WebSocket.OPEN) return Promise.resolve({ state: 'failed' as const, code: 'onebot_disconnected' })
+          return sendGroupLog(action, { ...(signal ? { signal } : {}),
+            isCurrent: () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN && (!check || check() === true),
+          })
+        } catch { return Promise.resolve({ state: 'failed' as const, code: 'invalid_group_log_guard' }) }
+      }) satisfies NonNullable<PlatformConnectionAdapter['actions']['sendGroupLog']> } : {}),
       ...(sendMediaRelay ? { sendMediaRelay: ((action, guard) => {
-        const client = socket, check = guard?.isCurrent
-        if (!client || !verified || stopped || client.readyState !== WebSocket.OPEN) return Promise.resolve({ state: 'failed' as const, code: 'onebot_disconnected' })
-        return sendMediaRelay(action, { ...(guard?.signal ? { signal: guard.signal } : {}),
-          isCurrent: () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN && check?.() !== false,
-        })
+        try {
+          const input = guard === undefined ? {} : guard
+          if (!input || typeof input !== 'object' || types.isProxy(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
+              Reflect.ownKeys(input).some(key => typeof key !== 'string' || !['isCurrent', 'signal', 'ensureCurrent'].includes(key) ||
+                !Object.hasOwn(Object.getOwnPropertyDescriptor(input, key)!, 'value'))) return Promise.resolve({ state: 'failed' as const, code: 'invalid_media_relay_guard' })
+          const client = socket, check = Object.getOwnPropertyDescriptor(input, 'isCurrent')?.value,
+            signal = Object.getOwnPropertyDescriptor(input, 'signal')?.value, ensure = Object.getOwnPropertyDescriptor(input, 'ensureCurrent')?.value
+          if (check !== undefined && (typeof check !== 'function' || types.isProxy(check)) ||
+              signal !== undefined && (types.isProxy(signal) || !(signal instanceof AbortSignal)) ||
+              ensure !== undefined && (typeof ensure !== 'function' || types.isProxy(ensure))) return Promise.resolve({ state: 'failed' as const, code: 'invalid_media_relay_guard' })
+          if (!client || !verified || stopped || client.readyState !== WebSocket.OPEN) return Promise.resolve({ state: 'failed' as const, code: 'onebot_disconnected' })
+          return sendMediaRelay(action, { ...(signal ? { signal } : {}), ...(ensure ? { ensureCurrent: () => Reflect.apply(ensure, input, []) } : {}),
+            isCurrent: () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN && (!check || check() === true),
+          })
+        } catch { return Promise.resolve({ state: 'failed' as const, code: 'invalid_media_relay_guard' }) }
       }) satisfies NonNullable<PlatformConnectionAdapter['actions']['sendMediaRelay']> } : {}),
       sendAudioFile(action, guard) {
         const client = socket, check = guard?.isCurrent
@@ -763,6 +1134,59 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         return sendAudioFile(action, { ...(guard?.signal ? { signal: guard.signal } : {}),
           isCurrent: () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN && check?.() !== false,
         })
+      },
+      sendDicePrivate(action, input) {
+        const guard = qqActionGuard(input)
+        return guard ? sendDicePrivate(action, guard) : Promise.resolve({ state: 'failed', code: 'qq_action_cancelled' })
+      },
+      sendRequesterBilibiliAuth(action, guard) {
+        try {
+          const input = guard ?? {}
+          if (!input || typeof input !== 'object' || types.isProxy(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
+              Reflect.ownKeys(input).some(key => typeof key !== 'string' || !['isCurrent', 'signal'].includes(key) ||
+                !Object.hasOwn(Object.getOwnPropertyDescriptor(input, key)!, 'value'))) return Promise.resolve({ state: 'failed', code: 'invalid_bilibili_auth_guard' })
+          const client = socket, check = Object.getOwnPropertyDescriptor(input, 'isCurrent')?.value,
+            signal = Object.getOwnPropertyDescriptor(input, 'signal')?.value
+          if (typeof check !== 'function' || types.isProxy(check) || !(signal instanceof AbortSignal) || types.isProxy(signal)) return Promise.resolve({ state: 'failed', code: 'invalid_bilibili_auth_guard' })
+          if (!client || !verified || stopped || client.readyState !== WebSocket.OPEN) return Promise.resolve({ state: 'failed', code: 'onebot_disconnected' })
+          return sendRequesterBilibiliAuth(action, { signal,
+            isCurrent: () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN && check() === true,
+          })
+        } catch { return Promise.resolve({ state: 'failed', code: 'invalid_bilibili_auth_guard' }) }
+      },
+      interact(action, guard) {
+        try {
+          const input = guard === undefined ? {} : guard
+          if (!input || typeof input !== 'object' || types.isProxy(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
+              Reflect.ownKeys(input).some(key => typeof key !== 'string' || !['isCurrent', 'signal', 'ensureCurrent'].includes(key) ||
+                !Object.hasOwn(Object.getOwnPropertyDescriptor(input, key)!, 'value'))) return Promise.resolve({ state: 'failed', code: 'invalid_interaction_guard' })
+          const client = socket, check = Object.getOwnPropertyDescriptor(input, 'isCurrent')?.value,
+            signal = Object.getOwnPropertyDescriptor(input, 'signal')?.value, ensure = Object.getOwnPropertyDescriptor(input, 'ensureCurrent')?.value
+          if (check !== undefined && (typeof check !== 'function' || types.isProxy(check)) ||
+              signal !== undefined && (types.isProxy(signal) || !(signal instanceof AbortSignal)) ||
+              ensure !== undefined && (typeof ensure !== 'function' || types.isProxy(ensure))) return Promise.resolve({ state: 'failed', code: 'invalid_interaction_guard' })
+          if (!client || !verified || stopped || client.readyState !== WebSocket.OPEN) return Promise.resolve({ state: 'failed', code: 'onebot_disconnected' })
+          return interact(action, { ...(signal ? { signal } : {}), ...(ensure ? { ensureCurrent: () => Reflect.apply(ensure, input, []) } : {}),
+            isCurrent: () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN && (!check || check() === true),
+          })
+        } catch { return Promise.resolve({ state: 'failed', code: 'invalid_interaction_guard' }) }
+      },
+      sendVideoCard(action, guard) {
+        try {
+          const input = guard === undefined ? {} : guard
+          if (!input || typeof input !== 'object' || types.isProxy(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
+              Reflect.ownKeys(input).some(key => typeof key !== 'string' || !['isCurrent', 'signal', 'ensureCurrent'].includes(key) ||
+                !Object.hasOwn(Object.getOwnPropertyDescriptor(input, key)!, 'value'))) return Promise.resolve({ state: 'failed', code: 'invalid_video_card_guard' })
+          const client = socket, check = Object.getOwnPropertyDescriptor(input, 'isCurrent')?.value,
+            signal = Object.getOwnPropertyDescriptor(input, 'signal')?.value, ensure = Object.getOwnPropertyDescriptor(input, 'ensureCurrent')?.value
+          if (check !== undefined && (typeof check !== 'function' || types.isProxy(check)) ||
+              signal !== undefined && (types.isProxy(signal) || !(signal instanceof AbortSignal)) ||
+              ensure !== undefined && (typeof ensure !== 'function' || types.isProxy(ensure))) return Promise.resolve({ state: 'failed', code: 'invalid_video_card_guard' })
+          if (!client || !verified || stopped || client.readyState !== WebSocket.OPEN) return Promise.resolve({ state: 'failed', code: 'onebot_disconnected' })
+          return sendVideoCard(action, { ...(signal ? { signal } : {}), ...(ensure ? { ensureCurrent: () => Reflect.apply(ensure, input, []) } : {}),
+            isCurrent: () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN && (!check || check() === true),
+          })
+        } catch { return Promise.resolve({ state: 'failed', code: 'invalid_video_card_guard' }) }
       },
       sendMusic(action, guard) {
         const client = socket, check = guard?.isCurrent

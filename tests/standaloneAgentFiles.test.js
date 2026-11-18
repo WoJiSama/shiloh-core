@@ -268,5 +268,5 @@ test('actual CLI rejects model-generated text containing its configured model an
   assert.equal(run.actions.some(row => row.action === 'send_group_msg'), false)
   assert.equal(run.actions.some(row => row.action === 'get_group_file_url'), false)
   assert.equal(run.downloaded.length, 0)
-  assert.match(String(run.requests[1].messages.findLast(row => row.role === 'tool' && row.tool_call_id === 'send')?.content), /failed|失败|未确认/u)
+  assert.match(String(run.requests[1].messages.findLast(row => row.role === 'tool' && row.tool_call_id === 'send')?.content), /^error: 工具参数包含宿主禁止外发的内容，未执行$/u)
 })

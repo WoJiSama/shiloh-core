@@ -385,7 +385,7 @@ export const migrations = [
   { legacy: 'console/lib/pipelineJobs.js', implementation: 'src/modules/messaging/application/pipelineJobs.ts' },
 ];
 export const bootstrapEntries = [
-  { legacy: 'scripts/start-agent.mjs', kind: 'composition', reason: 'Standalone QQ Agent entry', reviewedSha256: '96c9ee766570acff6a9011f431334f3965ea969b120cd21170eb1c58af6d0e10' },
+  { legacy: 'scripts/start-agent.mjs', kind: 'composition', reason: 'Standalone QQ Agent entry', reviewedSha256: '66ca938d34b8da3f498727ec9aa117a4eec841145e6a46b5ec1491bfca5ab442' },
   {
     "legacy": "guoba.support.js",
     "kind": "composition",

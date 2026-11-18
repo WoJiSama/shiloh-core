@@ -270,7 +270,7 @@ oneapi_tools:
 
 ## Web 控制台
 
-控制台是独立 Koa + Vue 3 服务，安装、构建和环境变量详见 [console/README.md](console/README.md)：
+控制台采用 Vue 3；插件使用独立 Koa 服务，独立 Agent 使用宿主内置的认证 HTTP 服务。安装、构建和环境变量详见 [console/README.md](console/README.md)：
 
 ```bash
 npm --prefix console/frontend ci
@@ -278,7 +278,7 @@ npm --prefix console/frontend run build
 npm run console:start    # 默认 0.0.0.0:8787
 ```
 
-首次访问创建管理员账号（scrypt 密码哈希 + HttpOnly 会话）。页面分四组：日常运营（机器人 / 群聊 / 群管理）、机器人能力（对话 / 人设 / AI 模型 / 命令骰子 / 语义记忆）、消息与运行（管道 / 风控 / 观测）、创作工具（生图工作台）。
+首次访问创建管理员账号（scrypt 密码哈希 + HttpOnly 会话）。独立 Agent 的工作区分为总览、机器人、连接、资源库、运行中心、系统；机器人详情按主页、会话、自我与记忆、行动、能力与边界组织。本人和人设模板分开，所有场景操作保留账号、连接和绑定版本；未接入的能力显示真实状态。插件模式继续使用原控制台入口。当前实施范围及待验收项见 [架构进度](docs/architecture/agent-bindings.md)。
 
 ## 独立功能插件
 

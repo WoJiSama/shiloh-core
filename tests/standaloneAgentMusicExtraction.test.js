@@ -211,6 +211,11 @@ async function fixture(t, mode) {
         'music.126.net', '/song/media/outer/url', base64, 'base64://', mainKey, oneBotToken]) {
         assert.equal(content.includes(forbidden), false, `${surface} excludes download references, audio bytes and host secrets`)
       }
+      if (mode === 'private-not-friend') {
+        const notice = deliveries[0]?.params.message[0]?.data.text
+        assert.equal(typeof notice, 'string')
+        for (const surface of ['log', 'redis', 'files']) assert.equal(surfaces[surface].includes(notice), false, `${surface} excludes the derived failure notice body`)
+      }
       for (const request of downloads) {
         const outgoing = JSON.stringify(request.headers)
         for (const value of [mainKey, oneBotToken, '提取验收员', String(userId), String(groupId)]) assert.equal(outgoing.includes(value), false, 'provider gets no conversation context or host credentials')
@@ -254,11 +259,16 @@ for (const mode of ['group-quote', 'private-quote']) test(`actual CLI operator $
 
 test('actual CLI refuses private quote extraction when get_friend_list does not prove the peer is a friend', { timeout: 45_000 }, async t => {
   const run = await fixture(t, 'private-not-friend'); await run.start()
-  await waitFor(() => run.terminal('failed'), 'unproven private source is refused'); await run.stop()
-  assert.equal(run.downloads.length, 0); assert.equal(run.requests.length, 0)
+  await waitFor(() => run.terminal('failed'), 'unproven private source is refused')
+  run.replay(); await delay(150); await run.stop()
+  assert.equal(run.downloads.length, 0); assert.equal(run.requests.length, 1, 'only one failure explanation request is allowed, including duplicate ingress')
+  const explanation = run.requests[0]
+  assert.ok(!explanation.tools?.length, 'failure explanation cannot execute or retry a tool')
+  assert.ok(explanation.messages.some(row => row.role === 'system' && String(row.content).includes('你只负责为当前真人请求写一条')))
   assert.equal(run.actions.filter(row => row.action === 'get_friend_list').length, 1)
   assert.equal(run.deliveries.length, 1); assert.equal(run.deliveries[0].action, 'send_private_msg')
-  assert.match(run.deliveries[0].params.message[0].data.text, /无法确认来源/u)
+  assert.match(run.deliveries[0].params.message[0].data.text, /^这次服务暂时异常，暂时无法确认结果。请先核实操作状态。 查询编号：[a-f0-9-]{36}$/u,
+    'invalid model explanation falls back to one brief service notice with its query reference')
   await run.assertClean()
 })
 

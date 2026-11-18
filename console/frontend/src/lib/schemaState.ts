@@ -21,6 +21,9 @@ export interface SchemaView {
   title: string
   groups: SchemaGroup[]
   revision?: string
+  mode?: 'standalone'
+  processEpoch?: string
+  configRevision?: string
 }
 export interface SecretDraft {
   action: 'keep' | 'replace' | 'clear'

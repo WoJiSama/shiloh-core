@@ -1,0 +1,258 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { NAlert, NButton, NInput, NPagination, NTag } from 'naive-ui'
+import { workspace, capability } from '../lib/workspace'
+import {
+  accountLabel,
+  conversationLabel,
+  connectionStateLabel,
+  robotLabel,
+  robotLocation,
+  selectConversation,
+  statusLabel,
+  type WorkspaceConversation
+} from '../lib/workspaceModel'
+import PageHeader from '../components/PageHeader.vue'
+import CapabilityGate from '../components/CapabilityGate.vue'
+import RobotScene from '../components/RobotScene.vue'
+import PersonProfilesPage from './PersonProfilesPage.vue'
+import TrusteeshipPage from './TrusteeshipPage.vue'
+const route = useRoute(),
+  router = useRouter(),
+  data = workspace.data
+const tabs = [
+  { id: 'home', label: '主页' },
+  { id: 'conversations', label: '会话' },
+  { id: 'self', label: '自我与记忆' },
+  { id: 'actions', label: '行动' },
+  { id: 'boundaries', label: '能力与边界' }
+]
+const agent = computed(() => data.value?.agents.find((item) => item.id === route.params.id))
+const tab = computed(() =>
+  tabs.some((item) => item.id === route.params.tab) ? String(route.params.tab) : 'home'
+)
+const selection = computed(() => {
+  try {
+    return {
+      selected: agent.value ? selectConversation(agent.value, route.query) : undefined,
+      error: ''
+    }
+  } catch (cause) {
+    return { selected: undefined, error: (cause as Error).message }
+  }
+})
+const query = ref(''),
+  page = ref(1),
+  more = ref(false)
+const rows = computed(
+  () =>
+    agent.value?.conversations
+      .filter(
+        (row) => !route.query.connection || row.binding.connectionId === route.query.connection
+      )
+      .filter((row) =>
+        `${conversationLabel(row)} ${row.binding.connectionId} ${accountLabel(row.binding.target.account)}`
+          .toLowerCase()
+          .includes(query.value.toLowerCase())
+      ) ?? []
+)
+const visible = computed(() =>
+  selection.value.selected
+    ? [selection.value.selected]
+    : rows.value.slice((page.value - 1) * 6, page.value * 6)
+)
+const connections = computed(
+  () =>
+    data.value?.connections.filter((item) =>
+      agent.value?.conversations.some((row) => row.binding.connectionId === item.id)
+    ) ?? []
+)
+function open(row: WorkspaceConversation) {
+  if (agent.value) void router.push(robotLocation(agent.value, tab.value, row))
+}
+watch(
+  () => [tab.value, query.value, route.query.connection, route.query.scopeKey],
+  () => {
+    page.value = 1
+    more.value = false
+  }
+)
+</script>
+<template>
+  <div class="page-stack">
+    <RouterLink to="/robots">← 全部机器人</RouterLink
+    ><template v-if="agent"
+      ><PageHeader
+        :title="robotLabel(agent, data?.agents ?? [])"
+        :description="`人设 · ${agent.personaName}。${agent.conversations.length} 个绑定会话。`"
+        ><template #actions
+          ><span class="robot-avatar large">{{ agent.name.slice(0, 1) }}</span></template
+        ></PageHeader
+      >
+      <nav class="robot-tabs" aria-label="机器人详情">
+        <RouterLink
+          v-for="item in tabs"
+          :key="item.id"
+          :to="{ path: robotLocation(agent, item.id).path, query: route.query }"
+          :class="{ active: tab === item.id }"
+          :aria-current="tab === item.id ? 'page' : undefined"
+          >{{ item.label }}</RouterLink
+        >
+      </nav>
+      <NAlert v-if="selection.error" type="error" title="会话链接已失效"
+        >{{ selection.error }}
+        <div>
+          <NButton size="small" @click="router.push(robotLocation(agent, tab))"
+            >返回本人的会话</NButton
+          >
+        </div></NAlert
+      >
+      <template v-else-if="tab === 'home'"
+        ><div class="workspace-columns">
+          <section class="panel">
+            <span class="eyebrow">本人</span>
+            <h2>{{ robotLabel(agent, data?.agents ?? []) }}</h2>
+            <p class="field-help">
+              当前使用人设「{{ agent.personaName }}」。经历与行动按这个本人的会话归属展示。
+            </p>
+            <details class="technical-details">
+              <summary>技术详情</summary>
+              <dl>
+                <dt>agentId</dt>
+                <dd>{{ agent.id }}</dd>
+                <dt>personaId</dt>
+                <dd>{{ agent.personaId }}</dd>
+              </dl>
+            </details>
+            <RouterLink to="/persona" class="text-link">查看人设资源 →</RouterLink>
+          </section>
+          <section class="panel">
+            <h2>接入连接</h2>
+            <div v-for="connection in connections" :key="connection.id" class="workspace-list-row">
+              <RouterLink :to="`/connections/${encodeURIComponent(connection.id)}`">{{
+                connection.id
+              }}</RouterLink
+              ><NTag
+                size="small"
+                :type="connection.state === 'connected' ? 'success' : 'default'"
+                >{{ connectionStateLabel(connection.state) }}</NTag
+              >
+            </div>
+            <p v-if="!connections.length" class="empty-note">当前没有绑定连接。</p>
+          </section>
+        </div>
+        <section class="panel">
+          <div class="panel-heading">
+            <h2>本人的会话</h2>
+            <RouterLink :to="robotLocation(agent, 'conversations')">查看全部</RouterLink>
+          </div>
+          <div
+            v-for="row in agent.conversations.slice(0, 6)"
+            :key="row.scopeKey"
+            class="workspace-list-row"
+          >
+            <span class="row-main"
+              ><strong>{{ conversationLabel(row) }}</strong
+              ><small
+                >{{ row.binding.connectionId }} ·
+                {{ accountLabel(row.binding.target.account) }}</small
+              ></span
+            ><RouterLink :to="robotLocation(agent, 'conversations', row)">进入会话 →</RouterLink>
+          </div>
+          <p v-if="!agent.conversations.length" class="empty-note">本人尚未绑定会话。</p>
+        </section>
+        <section class="panel cognition-note">
+          <NTag size="small">设计中</NTag>
+          <div>
+            <h3>连续自我与统一认知</h3>
+            <p class="muted">
+              当前仍是按会话保存的自我记录。这里不会把各群自我合并成已实现的统一认知。
+            </p>
+          </div>
+        </section></template
+      >
+      <template v-else-if="['conversations', 'self', 'actions'].includes(tab)"
+        ><p class="context-note">
+          {{
+            tab === 'self'
+              ? '以下自我与记忆按来源会话分开展示，不将局部记录合并为统一结论。'
+              : tab === 'actions'
+                ? '目标、承诺与实际回执分别展示，待确认和未知结果不计作成功。'
+                : '每个会话保留所属连接与完整平台地址。选择后再操作。'
+          }}
+        </p>
+        <div class="toolbar workspace-filter">
+          <NInput
+            v-model:value="query"
+            placeholder="搜索本人的连接或会话"
+            aria-label="搜索本人的会话"
+            clearable
+          /><RouterLink v-if="selection.selected" :to="robotLocation(agent, tab)"
+            >查看全部会话</RouterLink
+          ><NButton v-if="tab === 'self' || tab === 'actions'" size="small" @click="more = !more">{{
+            more ? '收起' : tab === 'self' ? '人物记忆' : '托付与承诺'
+          }}</NButton>
+        </div>
+        <template v-if="more"
+          ><CapabilityGate v-if="tab === 'self'" operation="profiles.read"
+            ><PersonProfilesPage
+              :conversation-scopes="selection.selected ? [selection.selected] : rows"
+              embedded /></CapabilityGate
+          ><CapabilityGate v-else operation="trusteeship.read"
+            ><TrusteeshipPage
+              :conversation-scopes="selection.selected ? [selection.selected] : rows"
+              embedded /></CapabilityGate></template
+        ><template v-else
+          ><div v-if="!selection.selected" class="scene-selector">
+            <button v-for="row in visible" :key="row.scopeKey" @click="open(row)">
+              <strong>{{ conversationLabel(row) }}</strong
+              ><small
+                >{{ row.binding.connectionId }} ·
+                {{ accountLabel(row.binding.target.account) }}</small
+              >
+            </button>
+          </div>
+          <RobotScene
+            v-for="row in visible"
+            :key="row.scopeKey + row.bindingToken"
+            :conversation="row"
+            :section="tab as 'conversations' | 'self' | 'actions'" />
+          <p v-if="!rows.length" class="panel empty-note">没有匹配的会话。</p>
+          <NPagination
+            v-if="!selection.selected && rows.length > 6"
+            v-model:page="page"
+            :item-count="rows.length"
+            :page-size="6" /></template
+      ></template>
+      <template v-else
+        ><section class="panel">
+          <h2>人设与参与边界</h2>
+          <p class="field-help">
+            人设是表达与身份约束的配置资源。参与、预算和实际授权按每个会话独立核验；不同连接不会自动共享访问权限。
+          </p>
+          <div class="toolbar">
+            <RouterLink to="/persona">人设模板与分配 →</RouterLink
+            ><RouterLink :to="robotLocation(agent, 'conversations')">各会话参与边界 →</RouterLink>
+          </div>
+        </section>
+        <section class="panel">
+          <h2>当前管理能力</h2>
+          <div v-for="item in data?.capabilities" :key="item.operation" class="capability-row">
+            <span class="row-main"
+              ><code>{{ item.operation }}</code
+              ><small
+                >{{ item.scope === 'conversation' ? '按会话核验' : '实例管理'
+                }}<template v-if="item.reason">
+                  · {{ capability(item.operation).reason }}</template
+                ></small
+              ></span
+            ><NTag size="small">{{ statusLabel(capability(item.operation).status) }}</NTag>
+          </div>
+        </section></template
+      > </template
+    ><NAlert v-else type="info" title="未找到机器人"
+      >此本人不在当前可见工作区内，请从机器人列表重新选择。</NAlert
+    >
+  </div>
+</template>

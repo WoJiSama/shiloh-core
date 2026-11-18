@@ -3,10 +3,15 @@ import { isIP } from 'node:net'
 import path from 'node:path'
 import { chmod, lstat, mkdir, open, readdir, realpath, rm, type FileHandle } from 'node:fs/promises'
 import { constants, type Stats } from 'node:fs'
-import type { PlatformConnection } from '../contracts/agentBinding.js'
+import type { AgentBindingSnapshot, PlatformConnection } from '../contracts/agentBinding.js'
+import type { AgentBilibiliAuthService } from '../contracts/agentBilibiliAuth.js'
+import type { AgentBilibiliQualityProvider } from '../contracts/agentBilibiliQuality.js'
+import type { AgentDiagnostics } from '../modules/runtime/infrastructure/agentDiagnostics.js'
 import { openQqMediaRelayBridge, type QqMediaRelayBridge } from '../adapters/qqMediaRelayBridge.js'
 import { createAgentMediaArtifactStore } from '../modules/media/infrastructure/agentMediaArtifactStore.js'
 import { createAgentBilibiliRelayProvider } from '../modules/media/infrastructure/agentBilibiliRelayProvider.js'
+import { createAgentBilibiliQualityProvider, createAgentBilibiliSearchAttachmentProvider } from '../modules/media/infrastructure/agentBilibiliQualityProvider.js'
+import { ownBilibiliQualityData } from '../modules/media/infrastructure/agentBilibiliQualityPolicy.js'
 import { createAgentDouyinRelayProvider } from '../modules/media/infrastructure/agentDouyinRelayProvider.js'
 import { createAgentXiaohongshuRelayProvider } from '../modules/media/infrastructure/agentXiaohongshuRelayProvider.js'
 import { createAgentYoutubeRelayProvider } from '../modules/media/infrastructure/agentYoutubeRelayProvider.js'
@@ -14,6 +19,7 @@ import { createAgentPixivRelayProvider } from '../modules/media/infrastructure/a
 import { normalizePixivCookie } from '../modules/media/infrastructure/agentPixivRelayHttp.js'
 import { validateYoutubeProxyUrl } from '../modules/media/infrastructure/agentYoutubeRelayHttp.js'
 import { validateAgentMediaShare } from '../modules/media/infrastructure/agentMediaRelayReference.js'
+import type { StandalonePixivToolsConfig } from './standalonePixiv.js'
 import type { AgentMediaRelayPrepareContext, AgentMediaRelayProvider, AgentMediaShare } from '../contracts/agentMediaRelayWorkflow.js'
 
 export interface StandaloneMediaRelayBridgeConfig {
@@ -192,18 +198,27 @@ export function standaloneMediaRelaySecrets(config: StandaloneMediaRelayConfig):
 /** A lease holder owns only marked runs under its exact instance-specific private directory. */
 export async function openStandaloneMediaRelay(options: {
   readonly config: StandaloneMediaRelayConfig
+  readonly pixivTools?: StandalonePixivToolsConfig
+  readonly videoSearchAttachments?: boolean
+  readonly bilibiliQuality?: { readonly enabled: boolean; readonly authService: AgentBilibiliAuthService }
   readonly dataDir: string
   readonly instance: string
   readonly secrets: readonly string[]
+  readonly diagnostics?: Pick<AgentDiagnostics, 'emit'>
   isLeaseCurrent(): boolean
   allowsText(text: string): boolean
 }) {
-  if (!options.config.enabled) throw failure()
+  if (!options.config.enabled && !options.pixivTools?.enabled && !options.bilibiliQuality?.enabled && !options.videoSearchAttachments) throw failure()
   let root = ''
   let rootStat: Stats | undefined, run = '', runStat: Stats | undefined
   let artifacts: Awaited<ReturnType<typeof createAgentMediaArtifactStore>> | undefined
   const bridges = new Map<string, QqMediaRelayBridge>()
   let closing: Promise<void> | undefined
+  const diagnoseCleanup = (code: string) => {
+    const event = { stage: 'host' as const, operation: 'media_relay_cleanup', outcome: 'failed' as const, code }
+    try { if (options.diagnostics) { options.diagnostics.emit(event); return } } catch { /* Observer failure does not change resource ownership. */ }
+    try { console.error(`[Agent] host/media_relay_cleanup failed ${code}`) } catch { /* No remaining writable observer. */ }
+  }
   const current = () => { if (!options.isLeaseCurrent()) throw failure() }
   const same = (left: Stats, right: Stats) => left.dev === right.dev && left.ino === right.ino && right.isDirectory() && !right.isSymbolicLink()
   const ownedRoot = async () => {
@@ -224,13 +239,14 @@ export async function openStandaloneMediaRelay(options: {
     try { await handle.writeFile(value); await handle.sync() } finally { await handle.close() }
   }
   const close = (): Promise<void> => closing ??= (async () => {
-    await Promise.allSettled([...bridges.values()].map(bridge => bridge.close()))
-    await artifacts?.close().catch(() => {})
+    const closed = await Promise.allSettled([...bridges.values()].map(bridge => bridge.close()))
+    for (const result of closed) if (result.status === 'rejected') diagnoseCleanup('bridge_close_failed')
+    await artifacts?.close().catch(() => diagnoseCleanup('artifact_close_failed'))
     if (run && runStat) {
       try {
         await ownedRoot()
         if (same(runStat, await lstat(run)) && await realpath(run) === run && await readMarker(run, marker(path.basename(run)))) await rm(run, { recursive: true, force: true })
-      } catch { /* A new lease holder may already have reclaimed this old run. */ }
+      } catch { diagnoseCleanup('owned_run_cleanup_unavailable') }
     }
   })()
   try {
@@ -257,22 +273,23 @@ export async function openStandaloneMediaRelay(options: {
     await writeMarker(run, marker(path.basename(run)))
     const providerDirectory = path.join(run, 'provider'); await mkdir(providerDirectory, { mode: 0o700 })
     artifacts = await createAgentMediaArtifactStore({ directory: run })
-    const bilibili = createAgentBilibiliRelayProvider({ directory: providerDirectory, artifacts,
+    const bilibili = options.config.enabled ? createAgentBilibiliRelayProvider({ directory: providerDirectory, artifacts,
       ...(options.config.bilibili.authCookie ? { authCookie: options.config.bilibili.authCookie } : {}),
-      autoAuthorizedRetry: options.config.bilibili.autoAuthorizedRetry, secrets: options.secrets, allowsText: options.allowsText })
+      autoAuthorizedRetry: options.config.bilibili.autoAuthorizedRetry, secrets: options.secrets, allowsText: options.allowsText,
+      ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}) }) : undefined
     let douyin: AgentMediaRelayProvider | undefined
-    if (options.config.douyin?.enabled) {
+    if (options.config.enabled && options.config.douyin?.enabled) {
       const directory = path.join(run, 'douyin-provider'); await mkdir(directory, { mode: 0o700 })
       douyin = createAgentDouyinRelayProvider({ directory, artifacts, secrets: options.secrets, allowsText: options.allowsText })
     }
     let xiaohongshu: AgentMediaRelayProvider | undefined
-    if (options.config.xiaohongshu?.enabled) {
+    if (options.config.enabled && options.config.xiaohongshu?.enabled) {
       const directory = path.join(run, 'xiaohongshu-provider'); await mkdir(directory, { mode: 0o700 })
       xiaohongshu = createAgentXiaohongshuRelayProvider({ directory, artifacts, secrets: options.secrets, allowsText: options.allowsText,
         ...(options.config.xiaohongshu.authCookie ? { authCookie: options.config.xiaohongshu.authCookie } : {}) })
     }
     let youtube: AgentMediaRelayProvider | undefined
-    if (options.config.youtube?.enabled) {
+    if (options.config.enabled && options.config.youtube?.enabled) {
       const directory = path.join(run, 'youtube-provider'); await mkdir(directory, { mode: 0o700 })
       youtube = createAgentYoutubeRelayProvider({ directory, artifacts, secrets: options.secrets, allowsText: options.allowsText,
         ...(options.config.youtube.authCookie ? { authCookie: options.config.youtube.authCookie } : {}),
@@ -280,7 +297,7 @@ export async function openStandaloneMediaRelay(options: {
         ...(options.config.youtube.proxyUrl ? { proxyUrl: options.config.youtube.proxyUrl } : {}) })
     }
     let pixiv: AgentMediaRelayProvider | undefined
-    if (options.config.pixiv?.enabled) {
+    if (options.config.enabled && options.config.pixiv?.enabled) {
       const directory = path.join(run, 'pixiv-provider'); await mkdir(directory, { mode: 0o700 })
       pixiv = createAgentPixivRelayProvider({ directory, artifacts, secrets: options.secrets, allowsText: options.allowsText,
         allowRestricted: options.config.pixiv.allowRestricted,
@@ -290,13 +307,48 @@ export async function openStandaloneMediaRelay(options: {
     const provider: AgentMediaRelayProvider = Object.freeze({ async prepare(share: AgentMediaShare, context: AgentMediaRelayPrepareContext) {
       current()
       const owned = validateAgentMediaShare(share)
-      if (owned.provider === 'bilibili') return bilibili.prepare(owned, context)
+      if (owned.provider === 'bilibili' && bilibili) return bilibili.prepare(owned, context)
       if (owned.provider === 'douyin' && douyin) return douyin.prepare(owned, context)
       if (owned.provider === 'xiaohongshu' && xiaohongshu) return xiaohongshu.prepare(owned, context)
       if (owned.provider === 'youtube' && youtube) return youtube.prepare(owned, context)
       if (owned.provider === 'pixiv' && pixiv) return pixiv.prepare(owned, context)
       throw failure()
     } })
+    let pixivToolProvider: AgentMediaRelayProvider | undefined
+    if (options.pixivTools?.enabled) {
+      const directory = path.join(run, 'pixiv-tools-provider'); await mkdir(directory, { mode: 0o700 })
+      pixivToolProvider = createAgentPixivRelayProvider({ directory, artifacts, secrets: options.secrets, allowsText: options.allowsText,
+        allowRestricted: options.pixivTools.allowRestricted,
+        ...(options.pixivTools.authCookie ? { authCookie: options.pixivTools.authCookie } : {}),
+        ...(options.pixivTools.proxyUrl ? { proxyUrl: options.pixivTools.proxyUrl } : {}) })
+    }
+    let qualityDirectory: string | undefined
+    let videoSearchAttachmentProvider: AgentMediaRelayProvider | undefined
+    if (options.videoSearchAttachments) {
+      const directory = path.join(run, 'video-search-attachment-provider'); await mkdir(directory, { mode: 0o700 })
+      videoSearchAttachmentProvider = createAgentBilibiliSearchAttachmentProvider({ directory, artifacts, secrets: options.secrets, allowsText: options.allowsText,
+        ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}) })
+    }
+    if (options.bilibiliQuality?.enabled) {
+      qualityDirectory = path.join(run, 'bilibili-quality-provider')
+      await mkdir(qualityDirectory, { mode: 0o700 })
+    }
+    const qualityProviderFor = (binding: AgentBindingSnapshot): AgentBilibiliQualityProvider | undefined => {
+      if (!qualityDirectory || !options.bilibiliQuality?.enabled) return undefined
+      current()
+      if (closing) throw failure()
+      const owned = ownBilibiliQualityData(binding)
+      return createAgentBilibiliQualityProvider({ directory: qualityDirectory, artifacts: artifacts!, secrets: options.secrets, allowsText: options.allowsText,
+        ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
+        credential: async context => {
+          current()
+          if (closing) throw failure()
+          const cookie = await options.bilibiliQuality!.authService.credential(owned, context)
+          current()
+          if (closing || !cookie) throw failure()
+          return cookie
+        } })
+    }
     for (const config of options.config.bridges) {
       await ownedRoot()
       const directory = path.join(run, `bridge-${digest(config.connectionId)}`)
@@ -306,6 +358,7 @@ export async function openStandaloneMediaRelay(options: {
       bridges.set(config.connectionId, bridge)
     }
     await ownedRoot()
-    return Object.freeze({ provider, bridgeFor: (connectionId: string) => bridges.get(connectionId), close })
+    return Object.freeze({ provider, ...(pixivToolProvider ? { pixivToolProvider } : {}), ...(videoSearchAttachmentProvider ? { videoSearchAttachmentProvider } : {}),
+      qualityProviderFor, bridgeFor: (connectionId: string) => bridges.get(connectionId), close })
   } catch { await close(); throw failure() }
 }

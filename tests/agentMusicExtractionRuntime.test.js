@@ -116,8 +116,12 @@ async function fixture(t, options = {}) {
     async record(trigger = 'music-source', captured = directory.resolve(target)) { return ledger.inspect(captured, trigger) },
     async restart(restore) { await host.stop(); await restore?.(); host = makeHost(); await host.start() },
     rebind() { directory = createAgentBindingDirectory({ ...config, bindings: config.bindings.map(row => row.connectionId === 'connection-0' && row.kind === target.kind ? { ...row, agentId: 'replacement' } : row) }, 'extraction-rebound') },
-    async assertPrivate() {
-      assert.equal(requests.length, 0, 'deterministic extraction consumes the message before any model prompt')
+    async assertPrivate(expectedExplanations = 0) {
+      assert.equal(requests.length, expectedExplanations, 'only an authorized failure may request one explanation; successful extraction bypasses conversation models')
+      for (const request of requests) {
+        assert.deepEqual(request.tools, []); assert.equal(request.tool_choice, 'none')
+        for (const value of [privateUrl, base64, 'PRIVATE_AUDIO_SOURCE_TOKEN', '合成音频标题', '合成完整音频.mp3']) assert.ok(!JSON.stringify(request).includes(value), 'explanation prompts contain no source, audio bytes or prepared metadata')
+      }
       const rows = []
       for (const key of await reader.keys(prefix + '*')) {
         const type = await reader.type(key)
@@ -202,7 +206,7 @@ test('an unknown receipt at any stage freezes the workflow with no retry, altern
     await f.restart(async () => { await f.reader.rPush(f.prefix + `agent:inbox:simulation:${platformAccountKey(f.accounts[0])}`, replay) })
     await f.emit(f.message()); await f.drain()
     assert.deepEqual(f.calls.map(row => row.stage), expected, 'duplicate reports and restart must not repeat unknown effects')
-    assert.equal(f.contexts.length, 1); await f.assertPrivate()
+    assert.equal(f.contexts.length, 1); await f.assertPrivate(stage === 'failureText' ? 1 : 0)
   })
 })
 
@@ -210,8 +214,9 @@ test('a definite file failure sends one playable preview and explicit failure te
   const f = await fixture(t, { receipts: { file: { state: 'failed', code: 'explicit_upload_failure' } } })
   await f.emit(f.message()); await f.drain()
   assert.deepEqual(f.calls.map(row => row.stage), ['file', 'preview', 'failureText'])
-  assert.match(f.calls[2].action.parts[0].text, /可下载文件发送失败/u)
-  assert.equal((await f.record()).state, 'failed'); await f.assertPrivate()
+  assert.match(f.calls[2].action.parts[0].text, /查询编号：[a-f0-9-]{36}/u)
+  assert.doesNotMatch(f.calls[2].action.parts[0].text, /已经完成|上传成功/u)
+  assert.equal((await f.record()).state, 'failed'); assert.equal(f.contexts.length, 1); await f.assertPrivate(1)
 })
 
 test('a definite bundle failure falls back to text once and then sends the preview', redisTest, async t => {
@@ -278,13 +283,14 @@ test('commands require the configured full operator identity and an explicit quo
   const f = await fixture(t, { mode: 'private' })
   const noQuote = f.message({ messageId: 'command-without-quote', text: '.音乐提取', parts: [{ kind: 'text', text: '.音乐提取' }] })
   await f.emit(noQuote, null); await f.drain()
-  assert.deepEqual(f.calls.map(row => row.stage), ['failureText']); assert.match(f.calls[0].action.parts[0].text, /请引用/u)
+  assert.deepEqual(f.calls.map(row => row.stage), ['failureText']); assert.match(f.calls[0].action.parts[0].text, /查询编号：[a-f0-9-]{36}/u)
+  assert.equal(f.requests.length, 1); assert.match(f.requests[0].messages.at(-1).content, /没有引用音乐分享/u)
   const source = f.store(f.message({ messageId: 'operator-source' }))
   // A group member sharing an operator ID in another namespace is not that operator.
   const wrongAccount = f.message({ conversation: f.targets[1], sender: { ...f.accounts[1], id: f.sender.id }, messageId: 'wrong-operator',
     text: '.音乐提取', parts: [{ kind: 'text', text: '.音乐提取' }], quote: { messageId: source.messageId, parts: [] } })
   await f.emit(wrongAccount, null); await f.drain()
-  assert.equal(f.calls.length, 1); assert.equal(f.contexts.length, 0); await f.assertPrivate()
+  assert.equal(f.calls.length, 1); assert.equal(f.contexts.length, 0); await f.assertPrivate(1)
 })
 
 for (const invalidation of ['source-recall', 'command-recall', 'rebind', 'privacy']) test(`Core ${invalidation} during preparation aborts the provider and prevents all late music actions`, redisTest, async t => {

@@ -489,8 +489,12 @@ test('a genuine Core request executes a taught workflow once with verified menti
         { kind: 'text', text: '明天九点开会' },
       ])
       const receipt = f.deliveries.find(action => action.replyTo === 'execute-workflow' && action.parts.every(part => part.kind === 'text'))
-      assert.ok(receipt)
-      assert.match(receipt.parts[0].text, receiptState === 'sent' ? /已按本条请求通知/ : /结果未确认.*不要重复执行/)
+      if (receiptState === 'sent') {
+        assert.ok(receipt)
+        assert.match(receipt.parts[0].text, /已按本条请求通知/)
+      } else {
+        assert.equal(receipt, undefined, 'unknown native delivery prevents an additional explanatory send')
+      }
       assert.equal(notifyModels, 1)
       const attemptsBeforeReplay = f.attempts.length
       await f.emit(event); await f.drained(group); await f.tick()
@@ -546,7 +550,8 @@ test('Core knowledge management enforces creator permissions and administrator c
     assert.match(reply('other-actor-clear-confirmation'), /清空须群管理员/)
     assert.equal((await f.state(group)).entries.length, 1)
     const confirmed = await f.send(group, 'admin-clear-confirmation', confirmedText)
-    assert.match(reply('admin-clear-confirmation'), /已清空本群资料，共1条/)
+    assert.equal(reply('admin-clear-confirmation'), undefined, 'clearing retires the group projection loaded by this turn')
+    assert.ok(!f.attempts.some(action => action.replyTo === 'admin-clear-confirmation'))
     const state = await f.state(group), owner = await f.owner(group)
     assert.deepEqual(state.entries, [])
     assert.ok(state.teachingClearedAt >= delayed.message.occurredAt)

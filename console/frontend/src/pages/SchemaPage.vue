@@ -13,6 +13,7 @@ import {
   useMessage
 } from 'naive-ui'
 import { api } from '../lib/api'
+import { consoleRestart, type ConfigSaveResult } from '../lib/consoleRestart'
 import { useUnsavedGuard } from '../composables/useUnsavedGuard'
 import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
@@ -32,6 +33,7 @@ import {
 import { useSchemaSaveShortcut } from '../lib/schemaKeyboard'
 import { groupAdminModules, isGroupEnabled } from '../lib/groupAdminState'
 import { policyAdvanced, policyHelp, policySections, type PolicyKind } from '../lib/policySections'
+const restartBlocked = consoleRestart.blocked
 
 const props = defineProps<{
   kind:
@@ -121,6 +123,7 @@ useSchemaSaveShortcut(
 
 const sections = computed(() => {
   const groups = view.value?.groups || []
+  if (view.value?.mode === 'standalone') return groups.map((group, index) => ({ id: `standalone-${index}`, label: group.label, groups: [group] }))
   if (['dice', 'tracking', 'memory'].includes(props.kind))
     return policySections(props.kind as PolicyKind, groups)
   if (props.kind === 'groupAdmin')
@@ -305,7 +308,7 @@ async function load(preserve = false) {
   }
 }
 async function save() {
-  if (!dirty.value || saving.value || !view.value || loading.value || conflict.value) return
+  if (!dirty.value || saving.value || !view.value || loading.value || conflict.value || consoleRestart.blocked.value) return
   if (validation.value.length) {
     message.error(validation.value[0])
     return
@@ -327,7 +330,7 @@ async function save() {
   const controller = new AbortController()
   saveRequest = controller
   try {
-    const result = await api<{ changed: number; applyHint?: string; revision?: string }>(
+    const result = await api<{ changed: number; applyHint?: string; revision?: string } & Partial<ConfigSaveResult<SchemaView>>>(
       `/api/config/${kind}`,
       {
         method: 'PUT',
@@ -337,16 +340,19 @@ async function save() {
     )
     if (seq !== generation || controller.signal.aborted) return
     // Compare with the submitted snapshot so edits made while the request was running stay in the draft.
-    const next = await api<SchemaView>(`/api/config/${kind}`, { signal: controller.signal })
+    const next = view.value.mode === 'standalone'
+      ? result.view
+      : await api<SchemaView>(`/api/config/${kind}`, { signal: controller.signal })
+    if (!next) throw new Error('保存响应无法核对，草稿已保留')
     if (seq !== generation || controller.signal.aborted) return
     applyView(next, true, snapshot)
-    saved.value = result.applyHint || `已保存 ${result.changed} 项配置`
+    saved.value = result.requiresRestart ? '已保存，重启服务后生效' : result.applyHint || `已保存 ${result.changed} 项配置`
     conflict.value = false
     message.success(dirty.value ? '已保存本次提交，之后的编辑仍保留在草稿中' : '配置已保存')
   } catch (cause: any) {
     if (cause?.name === 'AbortError' || seq !== generation || controller.signal.aborted) return
     conflict.value = cause.status === 409
-    error.value = cause.message || '保存失败，草稿已保留'
+    error.value = consoleRestart.state.phase === 'uncertain' ? '保存结果待核对，请勿重复保存；草稿已保留' : cause.message || '保存失败，草稿已保留'
   } finally {
     if (seq === generation) saving.value = false
   }
@@ -387,6 +393,7 @@ watch(
   },
   { immediate: true }
 )
+watch(() => consoleRestart.state.reloadGeneration, () => void load(true))
 onBeforeUnmount(() => {
   generation++
   request?.abort()
@@ -396,11 +403,11 @@ defineExpose({ dirty, reload, saving, loading })
 </script>
 
 <template>
-  <div ref="root" class="page-stack schema-page" :class="{ embedded }">
+  <div ref="root" class="page-stack schema-page" :class="{ embedded }" :inert="restartBlocked">
     <PageHeader
       v-if="!embedded"
-      :title="titles[kind]"
-      :description="descriptions[kind]"
+      :title="view?.mode === 'standalone' ? view.title : titles[kind]"
+      :description="view?.mode === 'standalone' ? (kind === 'dice' ? '设置掷骰开关与计算上限，保存后重启服务生效。' : '配置默认人设与表达守卫，保存后重启服务生效。') : descriptions[kind]"
       eyebrow="配置中心"
       ><template #actions
         ><NButton secondary :disabled="saving || loading" @click="reload"
@@ -433,7 +440,7 @@ defineExpose({ dirty, reload, saving, loading })
             <span class="summary-label">配置状态</span
             ><strong>{{ dirty ? `${dirty} 项待保存` : '与服务器一致' }}</strong>
           </div>
-          <p>保存自动备份。每个字段的生效方式会显示在说明中。</p>
+          <p>{{ view.mode === 'standalone' ? '保存后需重启服务，未保存草稿会保留。' : '保存自动备份。每个字段的生效方式会显示在说明中。' }}</p>
           <NTag :type="dirty ? 'warning' : 'success'" size="small" :bordered="false">{{
             dirty ? '草稿' : '已同步'
           }}</NTag>
@@ -507,7 +514,7 @@ defineExpose({ dirty, reload, saving, loading })
                   :key="field.field"
                   :field="field"
                   v-model="draft[field.field]"
-                  :apply-hint="describeApply(field, kind)"
+                  :apply-hint="view.mode === 'standalone' ? '保存后重启服务生效' : describeApply(field, kind)"
                 />
               </div>
               <NCollapse v-if="advancedFields(visibleGroup).length" class="advanced-settings"
@@ -518,7 +525,7 @@ defineExpose({ dirty, reload, saving, loading })
                       :key="field.field"
                       :field="field"
                       v-model="draft[field.field]"
-                      :apply-hint="describeApply(field, kind)"
+                      :apply-hint="view.mode === 'standalone' ? '保存后重启服务生效' : describeApply(field, kind)"
                     /></div></NCollapseItem
               ></NCollapse>
             </section>
@@ -540,7 +547,7 @@ defineExpose({ dirty, reload, saving, loading })
               :key="field.field"
               :field="field"
               v-model="draft[field.field]"
-              :apply-hint="describeApply(field, kind)"
+              :apply-hint="view.mode === 'standalone' ? '保存后重启服务生效' : describeApply(field, kind)"
             />
           </div>
           <NCollapse v-if="advancedFields(group).length" class="advanced-settings"
@@ -551,7 +558,7 @@ defineExpose({ dirty, reload, saving, loading })
                   :key="field.field"
                   :field="field"
                   v-model="draft[field.field]"
-                  :apply-hint="describeApply(field, kind)"
+                  :apply-hint="view.mode === 'standalone' ? '保存后重启服务生效' : describeApply(field, kind)"
                 /></div></NCollapseItem
           ></NCollapse>
         </section>
@@ -562,7 +569,7 @@ defineExpose({ dirty, reload, saving, loading })
         <SaveBar
           :dirty="dirty"
           :saving="saving"
-          :disabled="!dirty || validation.length > 0 || loading || conflict"
+          :disabled="!dirty || validation.length > 0 || loading || conflict || restartBlocked"
           :saved="saved"
           @save="save"
           @discard="discard"

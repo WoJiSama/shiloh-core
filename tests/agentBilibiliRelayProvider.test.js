@@ -13,7 +13,16 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repo = fileURLToPath(new URL('../', import.meta.url)), release = path.resolve(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo)
-const { createAgentBilibiliRelayProvider } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentBilibiliRelayProvider.js')).href)
+let providerUrl = pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentBilibiliRelayProvider.js')).href
+if (process.env.BL_CHAT_AGENT_SOURCE_TEST === '1') {
+  const ts = (await import('typescript')).default
+  const code = ts.transpileModule(await readFile(path.join(repo, 'src/modules/media/infrastructure/agentBilibiliRelayProvider.ts'), 'utf8'),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
+    .replace(/(\bfrom\s+)(['"])(\.[^'"]+)\2/gu, (_all, from, quote, specifier) =>
+      `${from}${quote}${new URL(specifier, providerUrl).href}${quote}`)
+  providerUrl = `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
+}
+const { createAgentBilibiliRelayProvider } = await import(providerUrl)
 const { parseAgentBilibiliReference, validateAgentMediaShare } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentBilibiliRelayReference.js')).href)
 const { nativeAgentBilibiliRequest } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentBilibiliRelayHttp.js')).href)
 const { createAgentMediaArtifactStore } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentMediaArtifactStore.js')).href)
@@ -43,9 +52,10 @@ async function rejected(operation) { await bounded(assert.rejects(operation, err
 async function fixture(t, settings = {}) {
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'bilibili-provider-test-')))
   const artifacts = await createAgentMediaArtifactStore({ directory, ...settings.store })
-  const requests = [], lookups = [], prepared = [], thumbs = []
+  const requests = [], lookups = [], prepared = [], thumbs = [], events = []
   let responder = settings.respond, metadata = view(settings.view), playback = play(settings.play), closed = 0
   const provider = createAgentBilibiliRelayProvider({ directory, artifacts,
+    diagnostics: { emit: event => events.push(event) },
     lookup: async hostname => { lookups.push(hostname); return settings.addresses ?? [{ address: '8.8.8.8', family: 4 }] },
     request: async (url, address, signal, policy) => {
       requests.push({ url: url.href, address, signal, policy })
@@ -66,7 +76,7 @@ async function fixture(t, settings = {}) {
       await writeFile(output, JPEG)
     }, ...settings.options })
   t.after(async () => { await Promise.allSettled(prepared.map(value => value.release())); await artifacts.close(); assert.deepEqual(await readdir(directory), []); await rm(directory, { recursive: true, force: true }) })
-  return { directory, artifacts, requests, lookups, thumbs, closed: () => closed,
+  return { directory, artifacts, requests, lookups, thumbs, events, closed: () => closed,
     setResponder(value) { responder = value }, setMetadata(value) { metadata = value }, setPlayback(value) { playback = value },
     async prepare(input = share(), scope = context()) { const value = await provider.prepare(input, scope); prepared.push(value); return value },
     async read(artifact) { const reader = await artifacts.open(artifact, context()), chunks = []; for await (const bytes of reader.chunks) chunks.push(bytes); return Buffer.concat(chunks) },

@@ -81,7 +81,7 @@ export function createAgentPixivTools(config: AgentPixivToolsConfig, options: Ag
     return { result, data }
   }
   return { builtIn: [{
-    name: 'pixivSearchTool', dataPolicy: 'ephemeral', timeoutMs: 90_000,
+    name: 'pixivSearchTool', timeoutMs: 90_000,
     description: '搜索 Pixiv 插画或画师作品，发送前8项缩略图列表，保存5分钟供「下载 序号」选择。newest=最新、oldest=最早、popular=人气；画师查询用artist。',
     parameters: { type: 'object', additionalProperties: false, required: ['keyword'], properties: {
       keyword: { type: 'string', minLength: 1, maxLength: 200 }, searchType: { type: 'string', enum: ['artworks', 'artist'] },
@@ -130,11 +130,12 @@ export function createAgentPixivTools(config: AgentPixivToolsConfig, options: Ag
       } finally { guard.close() }
     },
   }, {
-    name: 'pixivDownloadTool', dataPolicy: 'ephemeral', timeoutMs: 240_000,
+    name: 'pixivDownloadTool', timeoutMs: 240_000,
     description: '将 Pixiv 作品的完整前5张可用图片一次合并发送到当前群。target是最近5分钟列表的序号1..8，或5..12位作品ID；受限作品默认不搬运。',
     parameters: { type: 'object', additionalProperties: false, required: ['target'], properties: { target: { type: 'string', minLength: 1, maxLength: 32 } } },
     async execute(input, context) {
-      let attempt: AgentPixivAttempt | undefined, prepared: AgentPreparedMediaRelay | undefined, sendStarted = false, selected: AgentPixivSession | undefined
+      let attempt: AgentPixivAttempt | undefined, prepared: AgentPreparedMediaRelay | undefined, sendStarted = false,
+        selected: AgentPixivSession | undefined, renewal: AgentPixivSession | undefined
       const guard = pixivGuard({ signal: context.signal, isCurrent: () => context.isCurrent(), async ensureCurrent() {
         await context.ensureCurrent?.(); if (selected) await available(context, selected)
       } }, 240_000)
@@ -143,7 +144,12 @@ export function createAgentPixivTools(config: AgentPixivToolsConfig, options: Ag
         if (!context.sendMediaRelay) throw failure()
         const raw = object(input, ['target']), target = string(raw.target, 32)
         let id: string
-        if (/^[1-9]\d{4,11}$/u.test(target)) id = target
+        if (/^[1-9]\d{4,11}$/u.test(target)) {
+          id = target
+          // A direct ID is independent of a prior search. Its optional renewal
+          // snapshot never participates in the download's source authorization.
+          if (context.isSourceAvailable) renewal = await guard.wait(store.load(context.binding)).catch(() => undefined)
+        }
         else {
           const index = /^(?:#|No\.?|第)?([1-9]\d?)$/iu.exec(target)?.[1]
           if (!index || Number(index) > 8) throw failure()
@@ -154,6 +160,7 @@ export function createAgentPixivTools(config: AgentPixivToolsConfig, options: Ag
           if (!item) throw failure()
           if (item.xRestrict && config.allowRestricted !== true) return { status: 'failed', content: '该 Pixiv 作品为受限内容，当前配置不搬运。' }
           id = item.id
+          renewal = selected
         }
         await guard.ensure()
         const claim = await guard.wait(store.claimAttempt(context.binding, context.request!.messageId, 'download'))
@@ -174,7 +181,13 @@ export function createAgentPixivTools(config: AgentPixivToolsConfig, options: Ag
         if (state === 'unknown') return unknown()
         await guard.ensure()
         if (state === 'failed') return { status: 'failed', content: 'Pixiv 作品合并消息投递明确失败，本轮不会重发。' }
-        if (selected && images.length) await store.touch(selected).catch(() => false)
+        if (renewal && images.length) {
+          const snapshot = renewal
+          try {
+            await guard.wait(available(context, snapshot)); await guard.ensure()
+            await guard.wait(store.touch(snapshot), late => late && store.discard(snapshot))
+          } catch { /* Optional renewal cannot undo a confirmed direct delivery. */ }
+        }
         return { status: 'succeeded', content: `Pixiv 作品 ${id} 的${images.length ? `${images.length}张图片及说明` : '说明（未附带图片）'}已确认送达，请不要重复发送。` }
       } catch {
         if (attempt) await store.finishAttempt(attempt, sendStarted ? 'unknown' : 'failed').catch(() => {})

@@ -205,15 +205,17 @@ async function fixture(t, transport) {
 }
 
 for (const transport of ['forward-websocket', 'reverse-websocket']) {
-  test(`${transport} reads group and proven friend music through real authenticated sockets without widening readMessage`, { timeout: 8000 }, async t => {
+  test(`${transport} reads music and revalidates the private readMessage friend through real authenticated sockets`, { timeout: 8000 }, async t => {
     const f = await fixture(t, transport)
     assert.equal((await f.adapter.readMusicShare(group, '71', options())).share.reference.kind, 'audio')
     f.setHandler(request => request.action === 'get_friend_list' ? ok([{ user_id: peer.id }]) : message(peer, { message: native }))
     assert.deepEqual((await f.adapter.readMusicShare(peer, '71', options())).share, song)
     const before = f.requests.length
-    assert.equal(await f.adapter.readMessage(peer, '71'), undefined); assert.equal(f.requests.length, before)
+    const source = await f.adapter.readMessage(peer, '71')
+    assert.deepEqual(source.conversation, peer); assert.equal(source.sender.id, peer.id); assert.equal(source.messageId, '71')
+    assert.deepEqual(f.requests.slice(before).map(row => [row.action, row.params]), [['get_friend_list', {}], ['get_msg', { message_id: 71 }]])
     assert.deepEqual(f.requests.filter(row => row.action !== 'get_login_info').map(row => [row.action, row.params]),
-      [['get_msg', { message_id: 71 }], ['get_msg', { message_id: 71 }], ['get_friend_list', {}]])
+      [['get_msg', { message_id: 71 }], ['get_msg', { message_id: 71 }], ['get_friend_list', {}], ['get_friend_list', {}], ['get_msg', { message_id: 71 }]])
   })
   for (const mode of ['abort', 'stop', 'disconnect', 'rebind']) {
     test(`${transport} ${mode} drops a pending source without a retry`, { timeout: 8000 }, async t => {

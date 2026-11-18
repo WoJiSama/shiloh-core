@@ -18,7 +18,7 @@ const finish = messages => call('simFinishTurn', { choice: 'chat', reason: '回�
 const send = messages => call('simSendMessage', { continuation: 'chat', messages })
 
 test('production host sender respects platform rejection and missing receipts', async () => {
-  for (const [receipt, expected] of [[false, 'failed'], [undefined, 'unknown'], [{ status: 'failed', retcode: 100 }, 'failed'], [{ status: 'ok', retcode: 0, data: { message_id: 7 } }, 'sent']]) {
+  for (const [receipt, expected] of [[false, 'failed'], [undefined, 'unknown'], [{ status: 'failed', retcode: 400 }, 'failed'], [{ status: 'failed', retcode: 100 }, 'unknown'], [{ status: 'ok', retcode: 0, data: { message_id: 7 } }, 'sent']]) {
     const sender = hostSimulationSender({ bot: () => ({ pickGroup: () => ({ sendMsg: async () => receipt }) }) })
     const result = await sender(GROUP, [{ type: 'text', data: { text: '正文' } }], BOT)
     assert.equal(result.ok ? 'sent' : result.unknown ? 'unknown' : 'failed', expected)

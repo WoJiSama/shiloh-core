@@ -322,7 +322,8 @@ test('standalone QQ recovers bound simulation, group text and private turns', { 
   const duplicate = launch()
   const [duplicateCode] = await once(duplicate.child, 'exit')
   assert.equal(duplicateCode, 1)
-  assert.match(duplicate.log, /Redis 执行租约/)
+  assert.match(duplicate.log, /host\/host_run failed host_exception/)
+  assert.match(duplicate.log, /独立宿主启动或检查失败/)
   assert.equal(upgrades, 1)
 
   emit(groupMessage(9991, '未授权群', { group_id: GROUP + 1 }))
@@ -353,7 +354,7 @@ test('standalone QQ recovers bound simulation, group text and private turns', { 
   await waitUntil(async () => !await redis.get(prefix + 'shiloh:sim:busy:' + key.slice((prefix + 'shiloh:sim:g:').length)), 'first restored turn finished')
 
   websocket.terminate()
-  await waitUntil(() => second.log.includes('已恢复'), 'OneBot reconnect verifies account again')
+  await waitUntil(() => second.log.includes('host/onebot_recovery succeeded'), 'OneBot reconnect verifies account again')
   const literalMention = `[CQ:at,qq=${BOT}]`
   repliedToModelTurn = false
   emit(groupMessage(SECOND, '', {

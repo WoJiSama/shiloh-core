@@ -1,0 +1,33 @@
+import type { AgentBindingSnapshot, PlatformAccountRef } from './agentBinding.js'
+
+export type AgentDiagnosticScope =
+  | { readonly kind: 'host' }
+  | { readonly kind: 'conversation'; readonly binding: AgentBindingSnapshot; readonly messageId?: string }
+  | { readonly kind: 'account'; readonly account: PlatformAccountRef }
+
+/** Structured operational metadata only; no prompts, response bodies, errors, URLs or arbitrary details. */
+export interface AgentDiagnosticEvent {
+  readonly version: 1
+  readonly id: string
+  readonly traceId: string
+  readonly at: number
+  readonly scope: AgentDiagnosticScope
+  readonly stage: 'host' | 'inbox' | 'model' | 'tool' | 'delivery' | 'memory' | 'runtime' | 'notification'
+  readonly operation: string
+  readonly outcome: 'started' | 'succeeded' | 'failed' | 'unknown' | 'cancelled'
+  readonly code?: string
+  readonly durationMs?: number
+  readonly errorKind?: 'Error' | 'TypeError' | 'RangeError' | 'SyntaxError' | 'AbortError' | 'TimeoutError' | 'Unknown'
+  readonly httpStatus?: number
+}
+
+export interface AgentDiagnosticSink {
+  /** True confirms that this event, or its safe redacted replacement, was committed. */
+  append(event: AgentDiagnosticEvent): Promise<boolean>
+}
+
+export interface AgentOperationJournal extends AgentDiagnosticSink {
+  flush(): Promise<boolean>
+  close(): Promise<boolean>
+  health(): { readonly degraded: boolean; readonly written: number; readonly failed: number; readonly lastWrittenAt?: number }
+}

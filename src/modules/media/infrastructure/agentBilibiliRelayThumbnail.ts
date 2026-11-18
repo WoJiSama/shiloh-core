@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process'
 import path from 'node:path'
 import type { AgentMediaArtifact, AgentMediaArtifactLease } from '../../../contracts/agentMediaRelay.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
-import { bilibiliFailure, bilibiliGuard } from './agentBilibiliRelayHttp.js'
+import { bilibiliFailure, bilibiliGuard, reportBilibiliCleanupFailure, type BilibiliCleanupFailureCode, type BilibiliCleanupObserver } from './agentBilibiliRelayHttp.js'
 
 /** Trusted runtime hook: both paths are provider-created inside a private directory. */
 export type AgentBilibiliThumbnail = (inputFile: string, outputFile: string, signal: AbortSignal) => Promise<void>
@@ -17,26 +17,34 @@ const nativeThumbnail: AgentBilibiliThumbnail = (input, output, signal) => new P
 })
 
 export async function prepareBilibiliThumbnail(artifact: AgentMediaArtifact, options: {
-  directory: string; artifacts: AgentMediaArtifactStore; guard: ReturnType<typeof bilibiliGuard>; thumbnail?: AgentBilibiliThumbnail
+  directory: string; artifacts: AgentMediaArtifactStore; guard: ReturnType<typeof bilibiliGuard>; thumbnail?: AgentBilibiliThumbnail; onCleanupFailure?: BilibiliCleanupObserver
 }): Promise<AgentMediaArtifactLease> {
   let directory = '', reader: Awaited<ReturnType<AgentMediaArtifactStore['open']>> | undefined
-  const guard = bilibiliGuard(options.guard.context, 30_000)
+  const guard = bilibiliGuard(options.guard.context, 30_000, options.onCleanupFailure)
+  const cleanup = async (code: BilibiliCleanupFailureCode, operation: () => unknown) => {
+    try { await operation(); return true } catch { reportBilibiliCleanupFailure(code, options.onCleanupFailure); return false }
+  }
   try {
     await guard.ensure()
     const parent = await guard.wait(realpath(options.directory)), parentStat = await guard.wait(lstat(parent))
     if (!parentStat.isDirectory()) throw bilibiliFailure()
-    directory = await guard.wait(mkdtemp(path.join(parent, 'bilibili-thumb-')), late => rm(late, { recursive: true, force: true }))
+    directory = await guard.wait(mkdtemp(path.join(parent, 'bilibili-thumb-')), late => cleanup('thumbnail_directory_remove_failed', () => rm(late, { recursive: true, force: true })))
     await chmod(directory, 0o700)
     const input = path.join(directory, `input${artifact.mime === 'video/x-flv' ? '.flv' : artifact.mime === 'video/webm' ? '.webm' : '.mp4'}`), output = path.join(directory, 'cover.jpg')
-    const file = await guard.wait(open(input, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600), late => late.close())
+    const file = await guard.wait(open(input, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600), late => cleanup('thumbnail_file_close_failed', () => late.close()))
     try {
-      reader = await guard.wait(options.artifacts.open(artifact, guard.context), late => late.close())
+      reader = await guard.wait(options.artifacts.open(artifact, guard.context), late => cleanup('thumbnail_reader_close_failed', () => late.close()))
       for await (const bytes of reader.chunks) {
         await guard.ensure(); let at = 0
         while (at < bytes.length) { const written = await guard.wait(file.write(bytes, at, bytes.length - at)); if (written.bytesWritten < 1) throw bilibiliFailure(); at += written.bytesWritten }
       }
       await guard.ensure()
-    } finally { await file.close(); await reader?.close(); reader = undefined }
+    } finally {
+      const fileClosed = await cleanup('thumbnail_file_close_failed', () => file.close()), selected = reader
+      reader = undefined
+      const readerClosed = !selected || await cleanup('thumbnail_reader_close_failed', () => selected.close())
+      if (!fileClosed || !readerClosed) throw bilibiliFailure()
+    }
     await chmod(input, 0o400)
     await guard.ensure()
     await guard.wait((options.thumbnail ?? nativeThumbnail)(input, output, guard.signal))
@@ -55,9 +63,13 @@ export async function prepareBilibiliThumbnail(artifact: AgentMediaArtifact, opt
           const read = await guard.wait(handle.read(bytes, 0, bytes.length, at))
           if (read.bytesRead < 1) throw bilibiliFailure(); at += read.bytesRead; yield bytes.subarray(0, read.bytesRead)
         }
-      } finally { await handle.close() }
-    })() }, guard.context), late => late.release())
-    try { await guard.ensure(); return lease } catch { await lease.release(); throw bilibiliFailure() }
+      } finally { if (!await cleanup('thumbnail_file_close_failed', () => handle.close())) throw bilibiliFailure() }
+    })() }, guard.context), late => cleanup('thumbnail_artifact_release_failed', () => late.release()))
+    try { await guard.ensure(); return lease } catch { await cleanup('thumbnail_artifact_release_failed', () => lease.release()); throw bilibiliFailure() }
   } catch { throw bilibiliFailure() }
-  finally { guard.close(); await reader?.close().catch(() => {}); if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {}) }
+  finally {
+    guard.close()
+    if (reader) await cleanup('thumbnail_reader_close_failed', () => reader!.close())
+    if (directory) await cleanup('thumbnail_directory_remove_failed', () => rm(directory, { recursive: true, force: true }))
+  }
 }

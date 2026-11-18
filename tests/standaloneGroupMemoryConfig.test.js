@@ -69,7 +69,7 @@ test('standalone group memory configuration accepts explicit group knowledge too
   assert.deepEqual(configured.groupTextTools(target), ['groupKnowledgeTool'])
   assert.deepEqual(configured.groupTextTools({ ...target, id: '90002' }), [])
   assert.throws(() => read({ textGroups: [{ connectionId: 'main', conversationId: '90001', tools: ['groupKnowledgeTool', 'groupKnowledgeTool'] }] }),
-    /commitmentTool、delegateMemoryTool 或 groupKnowledgeTool/u)
+    /textGroups\.tools 只接受.*groupKnowledgeTool.*工具名不能重复/u)
   assert.throws(() => read({ textGroups: [{ connectionId: 'main', conversationId: '90001', tools: ['groupKnowledgeOtherTool'] }] }), /工具名不能重复/u)
 })
 
@@ -160,7 +160,7 @@ test('standalone group memory --check validates the declared key and makes no mo
   const credentials = { ...process.env, BL_AGENT_REDIS_URL: redisUrl, TEST_GROUP_MAIN_KEY: 'main-key', TEST_GROUP_ONEBOT_TOKEN: 'group-onebot-token' }
   delete credentials.TEST_GROUP_MEMORY_KEY
   await assert.rejects(runNode(process.execPath, [entry, '--config', file, '--check'], { cwd: directory, env: credentials, timeout: 8000 }),
-    error => /TEST_GROUP_MEMORY_KEY 缺少模型 API Key/u.test(error.stderr))
+    error => error.code === 1 && /独立宿主启动或检查失败/u.test(error.stderr) && !/group-onebot-token|main-key|group-key/u.test(error.stderr))
   assert.deepEqual(apiCalls, [])
   const checked = await runNode(process.execPath, [entry, '--config', file, '--check'], {
     cwd: directory, env: { ...credentials, TEST_GROUP_MEMORY_KEY: 'group-key' }, timeout: 8000,

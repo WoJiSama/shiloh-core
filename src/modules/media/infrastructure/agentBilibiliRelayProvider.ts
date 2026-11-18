@@ -1,9 +1,12 @@
+import { types } from 'node:util'
 import type { AgentMediaArtifact, AgentMediaArtifactLease, AgentMediaRelayItem, AgentMediaResourceContext } from '../../../contracts/agentMediaRelay.js'
 import type { AgentMediaRelayProvider, AgentMediaShare, AgentPreparedMediaRelay } from '../../../contracts/agentMediaRelayWorkflow.js'
+import type { AgentPreparedBilibiliQuality } from '../../../contracts/agentBilibiliQuality.js'
+import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agentSecretText.js'
 import { validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
-import { bilibiliFailure, bilibiliGuard, bilibiliOfficialUrl, createBilibiliHttp } from './agentBilibiliRelayHttp.js'
+import { bilibiliFailure, bilibiliGuard, bilibiliOfficialUrl, createBilibiliHttp, nativeAgentBilibiliRequest } from './agentBilibiliRelayHttp.js'
 import type { AgentBilibiliLookup, AgentBilibiliRequest } from './agentBilibiliRelayHttp.js'
 import { parseAgentBilibiliReference, validateAgentMediaShare } from './agentBilibiliRelayReference.js'
 import { prepareBilibiliThumbnail } from './agentBilibiliRelayThumbnail.js'
@@ -21,6 +24,8 @@ export interface AgentBilibiliRelayProviderOptions {
   readonly lookup?: AgentBilibiliLookup
   readonly request?: AgentBilibiliRequest
   readonly thumbnail?: AgentBilibiliThumbnail
+  /** Metadata only: upstream errors, URLs, credentials and local paths are never emitted. */
+  readonly diagnostics?: Pick<AgentDiagnostics, 'emit'>
   /** May shorten each API stage's 10s and download candidate's 10min deadlines. */
   readonly timeoutMs?: number
 }
@@ -45,10 +50,54 @@ function display(value: unknown, maximum: number, fallback = ''): string {
 const durationText = (duration: number) => { const total = Math.round(duration); return total >= 3600 ? `${Math.floor(total / 3600)}:${String(Math.floor(total % 3600 / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}` : `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}` }
 interface Part { page: number; cid: number; title: string; duration: number }
 interface Metadata { id: string; episode: boolean; pageUrl: string; title: string; description: string; owner: string; duration: number; partCount: number; parts: Part[]; cover: string; published: number; stats: Record<string, number> }
-interface Playback { resources: { url: string; backups: string[]; size: number; part: Part; index: number; quality: number; preview: boolean }[]; preview: boolean; login: boolean; restricted: boolean; overCapacity: boolean; notices: string[]; formats: string[] }
+interface Playback { resources: { url: string; backups: string[]; size: number; part: Part; index: number; quality: number; preview: boolean }[]; preview: boolean; login: boolean; restricted: boolean; overCapacity: boolean; notices: string[]; formats: string[]; qualities: { quality: number; label: string }[] }
+export interface AgentBilibiliRelayProfile { readonly mode: 'automatic' | 'quality' | 'attachment'; readonly quality: number }
+export interface AgentBilibiliProfileProvider {
+  prepare(input: AgentMediaShare, context: AgentMediaResourceContext): Promise<AgentPreparedBilibiliQuality>
+}
+
+/** Internal shared engine; public factories select one closed, fixed policy. */
+export function createAgentBilibiliRelayProviderWithProfile(options: AgentBilibiliRelayProviderOptions, input: AgentBilibiliRelayProfile): AgentBilibiliProfileProvider {
+  let profile: Readonly<AgentBilibiliRelayProfile>
+  try {
+    if (!input || typeof input !== 'object' || types.isProxy(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
+        Reflect.ownKeys(input).length !== 2 || Reflect.ownKeys(input).some(key => typeof key !== 'string' || !['mode', 'quality'].includes(key) ||
+          !Object.hasOwn(Object.getOwnPropertyDescriptor(input, key)!, 'value'))) throw bilibiliFailure()
+    const mode: unknown = Object.getOwnPropertyDescriptor(input, 'mode')?.value, quality: unknown = Object.getOwnPropertyDescriptor(input, 'quality')?.value
+    if (!['automatic', 'quality', 'attachment'].includes(mode as string) || typeof quality !== 'number' || !Number.isSafeInteger(quality) || quality < 1 || quality > 127 ||
+        mode === 'automatic' && quality !== 6 || mode === 'attachment' && quality !== 16) throw bilibiliFailure()
+    profile = Object.freeze({ mode: mode as AgentBilibiliRelayProfile['mode'], quality })
+  } catch { throw bilibiliFailure() }
+  return createProfileProvider(options, profile)
+}
 
 /** Official Bilibili protocol; URLs, credentials and private files stay inside this provider. */
 export function createAgentBilibiliRelayProvider(options: AgentBilibiliRelayProviderOptions): AgentMediaRelayProvider {
+  const engine = createAgentBilibiliRelayProviderWithProfile(options, { mode: 'automatic', quality: 6 })
+  return Object.freeze({ async prepare(input: AgentMediaShare, context: AgentMediaResourceContext) {
+    const result = await engine.prepare(input, context)
+    return Object.freeze({ status: result.status, pageUrl: result.pageUrl, infoText: result.infoText, plan: result.plan, release: result.release })
+  } })
+}
+
+function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profile: Readonly<AgentBilibiliRelayProfile>): AgentBilibiliProfileProvider {
+  const strict = profile.mode !== 'automatic', requiredAuth = profile.mode === 'quality'
+  const videoLimit = profile.mode === 'attachment' ? 30 * 1024 * 1024 : VIDEO_BYTES
+  const videoCapacity = profile.mode === 'attachment' ? 2 : MAX_VIDEOS
+  const diagnose = (operation: string, code: string, context?: AgentMediaResourceContext) => {
+    let outcome: 'failed' | 'cancelled' = 'failed'
+    if (context) { try { if (context.signal.aborted || !context.isCurrent()) outcome = 'cancelled' } catch { outcome = 'cancelled' } }
+    const event = { stage: 'runtime' as const, operation, outcome, code }
+    try { if (options.diagnostics) { options.diagnostics.emit(event); return } } catch { /* Fixed terminal metadata remains available if an observer fails. */ }
+    try { console.error(`[Agent] runtime/${operation} ${outcome} ${code}`) } catch { /* No remaining writable observer. */ }
+  }
+  const releaseLeases = async (leases: readonly AgentMediaArtifactLease[]) => {
+    const results = await Promise.allSettled(leases.map(lease => Promise.resolve().then(() => lease.release())))
+    for (const result of results) if (result.status === 'rejected') diagnose('bilibili_provider_release', 'artifact_release_failed')
+  }
+  const closeResponse = async (response: { close(): Promise<void> | void } | undefined) => {
+    try { await response?.close() } catch { diagnose('bilibili_provider_release', 'response_close_failed'); throw bilibiliFailure() }
+  }
   let cookie = '', timeout = 600_000
   const secrets = new Set<string>(options.secrets ?? [])
   try {
@@ -64,6 +113,7 @@ export function createAgentBilibiliRelayProvider(options: AgentBilibiliRelayProv
         secrets.add(value)
       }
     }
+    if (requiredAuth && !cookie || profile.mode === 'attachment' && cookie) throw bilibiliFailure()
     if (options.timeoutMs !== undefined) { if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 600_000) throw bilibiliFailure(); timeout = options.timeoutMs }
   } catch { throw bilibiliFailure() }
   // SPI is the fixed credential-reception endpoint for anonymous device tokens.
@@ -83,13 +133,20 @@ export function createAgentBilibiliRelayProvider(options: AgentBilibiliRelayProv
       else if (next.value && typeof next.value === 'object') for (const [key, value] of Object.entries(next.value)) { if (key.length > 256 || !check(key)) throw bilibiliFailure(); pending.push({ value, depth: next.depth + 1 }) }
     }
   }
-  const read = createBilibiliHttp({ ...(options.lookup ? { lookup: options.lookup } : {}), ...(options.request ? { request: options.request } : {}), allows: allowed })
+  const read = createBilibiliHttp({ ...(options.lookup ? { lookup: options.lookup } : {}), ...(options.request ? { request: options.request } : {}), allows: allowed,
+    onCleanupFailure: code => diagnose('bilibili_provider_release', code) })
   let fingerprintCache = { value: '', expiresAt: 0 }
-  async function json(url: string, context: AgentMediaResourceContext, auth = ''): Promise<Record<string, unknown>> {
+  async function json(url: string, context: AgentMediaResourceContext, auth = '', exact = false): Promise<Record<string, unknown>> {
     const guard = bilibiliGuard(context, Math.min(timeout, 10_000))
     let response: Awaited<ReturnType<typeof read>> | undefined
     try {
-      response = await read(url, 'metadata', guard, META_BYTES, auth)
+      const reader = exact ? createBilibiliHttp({ ...(options.lookup ? { lookup: options.lookup } : {}), allows: allowed,
+        onCleanupFailure: code => diagnose('bilibili_provider_release', code),
+        request: (current, address, signal, policy) => {
+          if (current.href !== url) throw bilibiliFailure()
+          return (options.request ?? nativeAgentBilibiliRequest)(current, address, signal, policy)
+        } }) : read
+      response = await reader(url, 'metadata', guard, META_BYTES, auth)
       if (response.mime !== 'application/json' && !response.mime.endsWith('+json')) throw bilibiliFailure()
       const chunks: Uint8Array[] = []; let size = 0
       for await (const bytes of response.chunks) { size += bytes.length; chunks.push(bytes) }
@@ -99,18 +156,19 @@ export function createAgentBilibiliRelayProvider(options: AgentBilibiliRelayProv
       const payload = JSON.parse(raw)
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw bilibiliFailure()
       inspect(payload, responseAllowed); await guard.ensure(); return payload as Record<string, unknown>
-    } catch { throw bilibiliFailure() } finally { await response?.close(); guard.close() }
+    } catch { diagnose('bilibili_provider_metadata', 'metadata_unavailable', context); throw bilibiliFailure() }
+    finally { try { await closeResponse(response) } finally { guard.close() } }
   }
   async function fingerprint(context: AgentMediaResourceContext): Promise<string> {
     if (Date.now() < fingerprintCache.expiresAt) return fingerprintCache.value
     try {
       const payload = await json('https://api.bilibili.com/x/frontend/finger/spi', context), data = row(payload.data)
-      if (payload.code !== 0 || typeof data.b_3 !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/u.test(data.b_3) || data.b_4 !== undefined && (typeof data.b_4 !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/u.test(data.b_4))) { fingerprintCache = { value: '', expiresAt: Date.now() + 60_000 }; return '' }
+      if (payload.code !== 0 || typeof data.b_3 !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/u.test(data.b_3) || data.b_4 !== undefined && (typeof data.b_4 !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/u.test(data.b_4))) { diagnose('bilibili_provider_fingerprint', 'fingerprint_invalid_fallback', context); fingerprintCache = { value: '', expiresAt: Date.now() + 60_000 }; return '' }
       for (const value of [data.b_3, data.b_4]) if (typeof value === 'string' && value) secrets.add(value)
       secretCheck = createAgentSecretTextCheck([...secrets])
       const value = `buvid3=${data.b_3}${data.b_4 ? `; buvid4=${data.b_4}` : ''}`
       fingerprintCache = { value, expiresAt: Date.now() + 24 * 60 * 60 * 1000 }; return value
-    } catch { const guard = bilibiliGuard(context, Math.min(timeout, 10_000)); try { await guard.ensure(); fingerprintCache = { value: '', expiresAt: Date.now() + 60_000 }; return '' } finally { guard.close() } }
+    } catch { diagnose('bilibili_provider_fingerprint', 'fingerprint_unavailable_fallback', context); const guard = bilibiliGuard(context, Math.min(timeout, 10_000)); try { await guard.ensure(); fingerprintCache = { value: '', expiresAt: Date.now() + 60_000 }; return '' } finally { guard.close() } }
   }
   async function identify(share: AgentMediaShare, context: AgentMediaResourceContext): Promise<AgentMediaShare> {
     if (share.reference.kind !== 'short') return share
@@ -120,20 +178,24 @@ export function createAgentBilibiliRelayProvider(options: AgentBilibiliRelayProv
       const parsed = parseAgentBilibiliReference(response.url.href)
       if (!parsed || parsed.reference.kind === 'short') throw bilibiliFailure()
       await guard.ensure(); return parsed
-    } finally { await response?.close(); guard.close() }
+    } catch { diagnose('bilibili_provider_identify', 'source_identification_failed', context); throw bilibiliFailure() }
+    finally { try { await closeResponse(response) } finally { guard.close() } }
   }
   async function metadata(share: AgentMediaShare, context: AgentMediaResourceContext, buvid: string): Promise<Metadata> {
     const episode = share.reference.kind === 'episode', id = share.reference.id
     const url = episode ? `https://api.bilibili.com/pgc/view/web/season?ep_id=${id}` : `https://api.bilibili.com/x/web-interface/view?bvid=${id}`
     const payload = await json(url, context, buvid)
     if (payload.code !== 0) throw bilibiliFailure()
-    const data = episode ? list(row(payload.result).episodes).find(item => String(item.id) === id) : row(payload.data)
+    const episodes = episode ? list(row(payload.result).episodes).filter(item => String(item.id) === id) : []
+    if (strict && episode && episodes.length !== 1) throw bilibiliFailure()
+    const data = episode ? episodes[0] : row(payload.data)
     if (!data || !Object.keys(data).length || !episode && (typeof data.bvid !== 'string' || !/^BV[0-9A-Za-z]{8,16}$/iu.test(data.bvid) || `BV${data.bvid.slice(2)}` !== id)) throw bilibiliFailure()
     const rawParts = episode ? [{ page: 1, cid: data.cid, part: data.long_title ?? data.share_copy, duration: nonnegative(data.duration ?? 0) / 1000 }] : Array.isArray(data.pages) && data.pages.length ? list(data.pages) : [{ page: 1, cid: data.cid, part: data.title, duration: data.duration }]
     const partCount = episode ? 1 : positive(data.videos ?? rawParts.length)
     if (partCount !== rawParts.length) throw bilibiliFailure()
     const parts = rawParts.map(part => ({ page: positive(part.page), cid: positive(part.cid), title: display(part.part, 200, 'P1'), duration: nonnegative(part.duration ?? 0) }))
     if (new Set(parts.map(part => part.cid)).size !== parts.length) throw bilibiliFailure()
+    if (strict && parts.some((part, index) => part.page !== index + 1)) throw bilibiliFailure()
     const stats: Record<string, number> = {}
     for (const key of ['view', 'like', 'coin', 'share', 'reply', 'favorite', 'danmaku']) {
       const value = row(data.stat)[key]; if (value !== undefined) { const number = nonnegative(value); if (!Number.isSafeInteger(number)) throw bilibiliFailure(); stats[key] = number }
@@ -147,11 +209,11 @@ export function createAgentBilibiliRelayProvider(options: AgentBilibiliRelayProv
       duration: episode ? nonnegative(data.duration ?? 0) / 1000 : nonnegative(data.duration ?? 0), partCount, parts, cover, published, stats }
   }
   async function playback(meta: Metadata, context: AgentMediaResourceContext, auth: string, capacity: number): Promise<Playback> {
-    const result: Playback = { resources: [], preview: false, login: false, restricted: false, overCapacity: false, notices: [], formats: [] }
+    const result: Playback = { resources: [], preview: false, login: false, restricted: false, overCapacity: false, notices: [], formats: [], qualities: [] }
     for (const part of meta.parts) {
-      const url = meta.episode ? `https://api.bilibili.com/pgc/player/web/playurl?ep_id=${meta.id}&cid=${part.cid}&qn=6&fnval=0&fourk=0`
-        : `https://api.bilibili.com/x/player/playurl?bvid=${meta.id}&cid=${part.cid}&qn=6&fnval=0&fourk=0`
-      const payload = await json(url, context, auth)
+      const url = meta.episode ? `https://api.bilibili.com/pgc/player/web/playurl?ep_id=${meta.id}&cid=${part.cid}&qn=${profile.quality}&fnval=0&fourk=0`
+        : `https://api.bilibili.com/x/player/playurl?bvid=${meta.id}&cid=${part.cid}&qn=${profile.quality}&fnval=0&fourk=0`
+      const payload = await json(url, context, auth, strict)
       if (payload.code !== 0) {
         const message = display(payload.message ?? row(payload.result).message, 80)
         result.login ||= /登录|未登录/iu.test(message)
@@ -160,13 +222,26 @@ export function createAgentBilibiliRelayProvider(options: AgentBilibiliRelayProv
         continue
       }
       const data = row(meta.episode ? payload.result : payload.data), durls = list(data.durl)
-      const quality = data.quality === undefined ? 6 : positive(data.quality)
+      const quality = data.quality === undefined && !strict ? 6 : positive(data.quality)
       if (quality > 127) throw bilibiliFailure()
+      const privateResourceText = strict ? createAgentSecretTextCheck(durls.flatMap(item => {
+        const references = [item.url, ...Array.isArray(item.backup_url) ? item.backup_url : []]
+        return references.flatMap(reference => {
+          if (typeof reference !== 'string') throw bilibiliFailure()
+          const url = bilibiliOfficialUrl(reference, 'video')
+          return [reference, ...[...url.searchParams.values()].filter(value => value.length >= 8)]
+        })
+      })) : () => true
+      let actualLabel = `qn=${quality}`
       for (const format of list(data.support_formats)) {
         const qn = positive(format.quality); if (qn > 127) throw bilibiliFailure()
-        const label = display(format.new_description ?? format.display_desc ?? format.format, 40, `qn=${qn}`)
+        const rawLabel = format.new_description ?? format.display_desc ?? format.format
+        if (strict && typeof rawLabel === 'string' && !privateResourceText(rawLabel)) throw bilibiliFailure()
+        const label = display(rawLabel, 40, `qn=${qn}`)
         if (!result.formats.includes(label)) result.formats.push(label)
+        if (qn === quality) actualLabel = label
       }
+      if (!result.qualities.some(value => value.quality === quality)) result.qualities.push({ quality, label: safe(actualLabel) })
       if (!durls.length) { result.notices.push('B站播放接口未提供可下载资源'); continue }
       if (durls.length > capacity || result.resources.length + durls.length > capacity) {
         result.overCapacity = true; result.resources.length = 0
@@ -174,8 +249,20 @@ export function createAgentBilibiliRelayProvider(options: AgentBilibiliRelayProv
         return result
       }
       const preview = data.is_preview === true || data.is_preview === 1
+      if (strict && data.is_preview !== undefined && ![true, false, 0, 1].includes(data.is_preview as boolean | number)) throw bilibiliFailure()
       result.preview ||= preview
       if (preview) result.notices.push(`B站${meta.episode ? '番剧' : '视频'}仅提供约${durationText(durls.reduce((sum, item) => sum + nonnegative(item.length ?? 0), 0) / 1000)}试看，本体为试看片段`)
+      if (strict && !preview) {
+        const complete = durls.every((item, index) => typeof item.length === 'number' && Number.isSafeInteger(item.length) && item.length > 0 &&
+          typeof item.size === 'number' && Number.isSafeInteger(item.size) && item.size > 0 && (item.order === undefined || item.order === index + 1))
+        const length = complete ? durls.reduce((sum, item) => sum + (item.length as number), 0) : 0
+        if (!complete || !Number.isSafeInteger(length) || length < part.duration * 1000 ||
+            data.timelength !== undefined && (typeof data.timelength !== 'number' || !Number.isSafeInteger(data.timelength) ||
+              data.timelength < part.duration * 1000 || length < data.timelength)) {
+          result.notices.push('B站未提供全部分段的完整时长与大小，未附带视频本体')
+          continue
+        }
+      }
       for (const [index, item] of durls.entries()) {
         if (typeof item.url !== 'string') throw bilibiliFailure()
         bilibiliOfficialUrl(item.url, 'video')
@@ -188,25 +275,26 @@ export function createAgentBilibiliRelayProvider(options: AgentBilibiliRelayProv
   }
   async function download(urls: string[], kind: 'video' | 'image', context: AgentMediaResourceContext, auth = '', expectedSize = 0): Promise<AgentMediaArtifactLease> {
     for (const url of urls) {
-      const guard = bilibiliGuard(context, timeout), maxBytes = kind === 'video' ? VIDEO_BYTES : IMAGE_BYTES
+      const guard = bilibiliGuard(context, timeout), maxBytes = kind === 'video' ? videoLimit : IMAGE_BYTES
       let response: Awaited<ReturnType<typeof read>> | undefined
       try {
         response = await read(url, kind, guard, maxBytes, auth)
         const mime = response.mime === 'video/x-flv' || response.mime === 'video/flv' ? 'video/x-flv' : response.mime === 'image/jpg' ? 'image/jpeg' : response.mime
         if (kind === 'video' && !['video/mp4', 'video/quicktime', 'video/webm', 'video/x-flv'].includes(mime) || kind === 'image' && !['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp'].includes(mime)) throw bilibiliFailure()
-        const lease = await guard.wait(options.artifacts.stage({ kind, mime, chunks: response.chunks }, guard.context), late => late.release())
+        const lease = await guard.wait(options.artifacts.stage({ kind, mime, chunks: response.chunks }, guard.context), late => releaseLeases([late]))
         try {
           await guard.ensure()
           if (expectedSize > 0 && lease.artifact.sizeBytes !== expectedSize) throw bilibiliFailure()
           return lease
-        } catch { await lease.release(); throw bilibiliFailure() }
+        } catch { try { await lease.release() } catch { diagnose('bilibili_provider_release', 'artifact_release_failed') }; throw bilibiliFailure() }
       } catch {
+        diagnose('bilibili_provider_download', kind === 'video' ? 'video_candidate_failed' : 'image_candidate_failed', context)
         const current = bilibiliGuard(context, Math.min(timeout, 10_000)); try { await current.ensure() } finally { current.close() }
-      } finally { await response?.close(); guard.close() }
+      } finally { try { await closeResponse(response) } finally { guard.close() } }
     }
     throw bilibiliFailure()
   }
-  return Object.freeze({ async prepare(input: AgentMediaShare, context: AgentMediaResourceContext): Promise<AgentPreparedMediaRelay> {
+  return Object.freeze({ async prepare(input: AgentMediaShare, context: AgentMediaResourceContext): Promise<AgentPreparedBilibiliQuality> {
     const owned = validateAgentMediaShare(input), leases: AgentMediaArtifactLease[] = []
     if (owned.provider !== 'bilibili') throw bilibiliFailure()
     const guard = bilibiliGuard(context, 90 * 60 * 1000)
@@ -223,24 +311,29 @@ export function createAgentBilibiliRelayProvider(options: AgentBilibiliRelayProv
       if (stats.length) lines.push(`数据：${stats.join(' ')}`)
       if (meta.description) lines.push(`简介：${meta.description}`)
       lines.push(`视频页面:${meta.pageUrl}`)
+      if (strict) lines.push(`请求清晰度:qn=${profile.quality}`)
       let status: AgentPreparedMediaRelay['status'] = 'metadata-only'
+      let actualQualities: readonly { readonly quality: number; readonly label: string }[] = Object.freeze([])
+      const outputReferences = meta.cover ? [meta.cover] : []
       const mediaItems: AgentMediaRelayItem[] = []
       let cover: AgentMediaArtifact | undefined
-      if (meta.cover) { try { const lease = await download([meta.cover], 'image', guard.context); leases.push(lease); cover = lease.artifact } catch { await guard.ensure(); lines.push('封面暂时获取失败') } }
-      if (meta.duration > MAX_SECONDS) lines.push('视频超过30分钟，未附带视频本体')
+      if (meta.cover) { try { const lease = await download([meta.cover], 'image', guard.context); leases.push(lease); cover = lease.artifact } catch { diagnose('bilibili_provider_cover', 'cover_unavailable', context); await guard.ensure(); lines.push('封面暂时获取失败') } }
+      const duration = strict ? Math.max(meta.duration, meta.parts.reduce((total, part) => total + part.duration, 0)) : meta.duration
+      if (duration > MAX_SECONDS) lines.push('视频超过30分钟，未附带视频本体')
       else if (meta.partCount > MAX_PARTS) lines.push(`视频共有${meta.partCount}个分P，超过20个分P上限，未附带视频本体`)
-      else if (meta.duration <= 0) lines.push('视频时长未知，未附带视频本体')
+      else if (meta.duration <= 0 || strict && meta.parts.some(part => part.duration <= 0)) lines.push('视频时长未知，未附带视频本体')
       else {
-        const capacity = cover ? MAX_VIDEOS - 1 : MAX_VIDEOS
-        let play = await playback(meta, guard.context, buvid, capacity), authorized = false
-        if (!play.overCapacity && cookie && options.autoAuthorizedRetry === true && (play.preview || play.login)) {
+        const capacity = profile.mode === 'attachment' ? videoCapacity : cover ? videoCapacity - 1 : videoCapacity
+        let play = await playback(meta, guard.context, requiredAuth ? [cookie, buvid].filter(Boolean).join('; ') : buvid, capacity), authorized = requiredAuth
+        if (!strict && !play.overCapacity && cookie && options.autoAuthorizedRetry === true && (play.preview || play.login)) {
           play = await playback(meta, guard.context, [cookie, buvid].filter(Boolean).join('; '), capacity); authorized = true
         }
+        if (strict) for (const resource of play.resources) outputReferences.push(resource.url, ...resource.backups)
         lines.push(...new Set(play.notices))
-        if (authorized && play.preview) { status = 'restricted'; lines.push('已使用授权账号复试，但B站仍只提供试看资源，未附带视频本体') }
-        else if (!play.resources.length || play.notices.some(notice => !notice.includes('试看')) || play.resources.some(resource => resource.size > VIDEO_BYTES)) {
+        if ((authorized || strict) && play.preview) { status = 'restricted'; lines.push(authorized ? strict ? '已使用授权账号，但B站仍只提供试看资源，未附带视频本体' : '已使用授权账号复试，但B站仍只提供试看资源，未附带视频本体' : 'B站仅提供试看资源，未附带视频本体') }
+        else if (!play.resources.length || play.notices.some(notice => !notice.includes('试看')) || play.resources.some(resource => resource.size > videoLimit)) {
           status = play.restricted || play.login ? 'restricted' : 'metadata-only'
-          if (play.resources.some(resource => resource.size > VIDEO_BYTES)) lines.push('单个视频超过512 MiB上限，未附带视频本体')
+          if (play.resources.some(resource => resource.size > videoLimit)) lines.push(`单个视频超过${videoLimit / 1024 / 1024} MiB上限，未附带视频本体`)
           else lines.push('B站未提供全部分P的可下载资源，已保留视频页面')
         } else {
           const videoLeases: AgentMediaArtifactLease[] = []
@@ -250,27 +343,33 @@ export function createAgentBilibiliRelayProvider(options: AgentBilibiliRelayProv
               const video = await download([resource.url, ...resource.backups], 'video', guard.context, authorized ? cookie : '', resource.size)
               leases.push(video); videoLeases.push(video)
               let thumbnail: AgentMediaArtifactLease | undefined
-              try { thumbnail = await prepareBilibiliThumbnail(video.artifact, { directory: options.directory, artifacts: options.artifacts, guard, ...(options.thumbnail ? { thumbnail: options.thumbnail } : {}) }) }
-              catch { await guard.ensure(); if (!lines.includes('视频预览图暂不可用')) lines.push('视频预览图暂不可用') }
+              try { thumbnail = await prepareBilibiliThumbnail(video.artifact, { directory: options.directory, artifacts: options.artifacts, guard,
+                onCleanupFailure: code => diagnose('bilibili_provider_release', code), ...(options.thumbnail ? { thumbnail: options.thumbnail } : {}) }) }
+              catch { diagnose('bilibili_provider_thumbnail', 'thumbnail_unavailable', context); await guard.ensure(); if (!lines.includes('视频预览图暂不可用')) lines.push('视频预览图暂不可用') }
               if (thumbnail) { leases.push(thumbnail); videoLeases.push(thumbnail) }
               mediaItems.push({ parts: [{ kind: 'video', artifact: video.artifact, ...(thumbnail ? { thumbnail: thumbnail.artifact } : {}) }] })
             }
             status = play.preview ? 'preview' : 'ready'
+            if (strict) actualQualities = Object.freeze(play.qualities.map(value => Object.freeze({ ...value })))
             if (play.formats.length) lines.push(`可选清晰度：${play.formats.join('、')}`)
             const qualities = [...new Set(play.resources.map(resource => resource.quality))]
-            lines.push(`请求清晰度:qn=6；实际清晰度:${qualities.map(value => `qn=${value}`).join('、')}`)
-          } catch { await guard.ensure(); mediaItems.length = 0; await Promise.allSettled(videoLeases.map(lease => lease.release())); lines.push('视频本体未完整获取，已保留视频页面') }
+            lines.push(`请求清晰度:qn=${profile.quality}；实际清晰度:${qualities.map(value => `qn=${value}`).join('、')}`)
+          } catch { diagnose('bilibili_provider_download', 'video_plan_incomplete', context); await guard.ensure(); mediaItems.length = 0; await releaseLeases(videoLeases); lines.push('视频本体未完整获取，已保留视频页面') }
         }
       }
+      const outputCheck = strict ? createAgentSecretTextCheck(outputReferences.flatMap(reference =>
+        [reference, ...[...new URL(reference).searchParams.values()].filter(value => value.length >= 8)])) : () => true
+      const outputAllowed = (value: string) => allowed(value) && outputCheck(value)
       const infoText = safe(lines.join('\n')), pageUrl = safe(meta.pageUrl)
-      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover } as const] : [])] }, ...mediaItems] }, { allowsText: allowed })
+      if (!outputAllowed(infoText) || !outputAllowed(pageUrl) || actualQualities.some(value => !outputAllowed(value.label))) throw bilibiliFailure()
+      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover } as const] : [])] }, ...mediaItems] }, { allowsText: outputAllowed })
       await guard.ensure()
       let released: Promise<void> | undefined
-      const result = Object.freeze({ status, pageUrl, infoText, plan, release() {
-        return released ??= Promise.allSettled(leases.map(lease => lease.release())).then(() => {})
+      const result = Object.freeze({ status, pageUrl, infoText, plan, requestedQuality: profile.quality, actualQualities, release() {
+        return released ??= releaseLeases(leases)
       } })
       transferred = true; return result
-    } catch { throw bilibiliFailure() }
-    finally { guard.close(); if (!transferred) await Promise.allSettled(leases.map(lease => lease.release())) }
+    } catch { diagnose('bilibili_provider_prepare', 'prepare_unavailable', context); throw bilibiliFailure() }
+    finally { guard.close(); if (!transferred) await releaseLeases(leases) }
   } })
 }

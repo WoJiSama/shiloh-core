@@ -1,3 +1,5 @@
+import type { AgentDiagnosticScope } from '../../../contracts/agentDiagnostics.js'
+import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { createHash } from 'node:crypto'
 import type { AgentBindingSnapshot, ConversationAddress, PlatformUserRef } from '../../../contracts/agentBinding.js'
 import type { AgentMediaResourceContext } from '../../../contracts/agentMediaRelay.js'
@@ -31,6 +33,7 @@ interface Entry {
   textSha256?: string
   context?: AgentTorrentWorkflowContext
   cleanup?: Promise<void>
+  explained?: boolean
 }
 const failure = () => new Error('磁链来源、选择或投递已失效')
 const source = (message: IncomingMessage): AgentTorrentSource => {
@@ -45,6 +48,9 @@ const same = (message: IncomingMessage | undefined, target: ConversationAddress,
 
 /** Complete Core-owned workflow, outside model deadlines and without model-selected receivers. */
 export function createAgentTorrentWorkflow(options: {
+  readonly diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'>
+  withDiagnosticScope?<T>(scope: AgentDiagnosticScope, operation: string, run: () => Promise<T>): Promise<T>
+  explainFailure?(input: { detail: string; isCurrent: () => Promise<boolean> | boolean; signal?: AbortSignal }): Promise<string | undefined>
   readonly config?: AgentTorrentConfig
   readonly storage: AgentInboxRedis
   readonly actions: MessageActionPort
@@ -58,6 +64,15 @@ export function createAgentTorrentWorkflow(options: {
   /** Optional neutral card renderer. A rendering failure before delivery falls back to complete text. */
   renderListing?(text: string, context: AgentMediaResourceContext): Promise<{ readonly mime: string; readonly base64: string }>
 }) {
+  const diagnose = (input: Parameters<AgentDiagnostics['emit']>[0]) => { try { options.diagnostics?.emit(input) } catch { /* Diagnostics cannot change effects. */ } }
+  const inScope = <T>(entry: Entry, operation: string, run: () => Promise<T>) => {
+    const observed = async () => {
+      diagnose({ stage: 'runtime', operation, outcome: 'started' })
+      try { const result = await run(); const state = entry.session.record.state; diagnose({ stage: 'runtime', operation, outcome: state === 'failed' || state === 'unknown' || state === 'cancelled' ? state : 'succeeded', code: 'workflow_settled' }); return result }
+      catch (error) { diagnose({ stage: 'runtime', operation, outcome: 'failed', code: 'workflow_threw', error }); throw error }
+    }
+    return options.withDiagnosticScope ? options.withDiagnosticScope({ kind: 'conversation', binding: entry.session.record.binding, messageId: entry.session.record.source.messageId }, operation, observed) : observed()
+  }
   const config = validateAgentTorrentConfig(options.config), now = options.now ?? Date.now
   if (config.enabled && typeof options.provider?.prepare !== 'function') throw failure()
   const ledger = createAgentTorrentLedger(options.storage, { now })
@@ -75,10 +90,10 @@ export function createAgentTorrentWorkflow(options: {
   })
   const cleanup = (entry: Entry) => entry.cleanup ??= (async () => {
     entry.cancel.abort()
-    try { entry.context?.release() } catch { /* Host cleanup cannot retain this queue entry. */ }
+    try { entry.context?.release() } catch (error) { diagnose({ stage: 'runtime', operation: 'torrent_cleanup', outcome: 'failed', code: 'context_release_failed', error }) }
     try { entry.session.abandon() } finally { if (entries.get(entry.session.record.id) === entry) entries.delete(entry.session.record.id) }
   })()
-  const track = (task: Promise<void>) => { tasks.add(task); void task.then(() => tasks.delete(task), () => tasks.delete(task)) }
+  const track = (task: Promise<void>) => { tasks.add(task); void task.then(() => tasks.delete(task), error => { tasks.delete(task); diagnose({ stage: 'runtime', operation: 'torrent_task', outcome: 'failed', code: 'background_task_failed', error }) }) }
   async function refresh(entry: Entry): Promise<{ trigger: IncomingMessage; original: IncomingMessage; magnet: string }> {
     if (!current(entry)) throw failure()
     await wait(Promise.resolve().then(() => entry.context!.ensureCurrent?.()), entry.cancel.signal)
@@ -95,13 +110,16 @@ export function createAgentTorrentWorkflow(options: {
     return { original: original!, trigger: trigger!, magnet }
   }
   async function effect(entry: Entry, stage: 'notice' | 'listing' | 'archive' | 'confirmation' | 'failure', send: () => Promise<DeliveryReceipt | FileDeliveryReceipt>) {
-    await refresh(entry); await entry.session.begin(stage)
+    await refresh(entry)
+    try { await entry.session.begin(stage) } catch (error) { diagnose({ stage: 'delivery', operation: `torrent_${stage}`, outcome: 'unknown', code: 'effect_begin_failed', error }); throw error }
+    diagnose({ stage: 'delivery', operation: `torrent_${stage}`, outcome: 'started' })
     let receipt: DeliveryReceipt | FileDeliveryReceipt
     try { if (!current(entry)) throw failure(); const result = await send(); receipt = stage === 'archive' ? normalizeFileDeliveryReceipt(result) : normalizeDeliveryReceipt(result) }
-    catch { receipt = { state: 'unknown' } }
+    catch (error) { diagnose({ stage: 'delivery', operation: `torrent_${stage}`, outcome: 'unknown', code: 'effect_threw', error }); receipt = { state: 'unknown' } }
     const ids = receipt.state === 'sent' ? [receipt.messageId] : receipt.state === 'uploaded' ? [receipt.fileId, receipt.messageId] : []
     if (ids.some(id => id !== undefined && !safe(id))) receipt = { state: 'unknown' }
-    await entry.session.finish(stage, receipt)
+    try { await entry.session.finish(stage, receipt) } catch (error) { diagnose({ stage: 'delivery', operation: `torrent_${stage}`, outcome: 'unknown', code: 'effect_ledger_failed', error }); throw error }
+    diagnose({ stage: 'delivery', operation: `torrent_${stage}`, outcome: receipt.state === 'sent' || receipt.state === 'uploaded' ? 'succeeded' : receipt.state, code: receipt.state === 'unknown' ? 'effect_unknown' : receipt.state === 'failed' ? 'effect_rejected' : 'effect_confirmed' })
     if (receipt.state === 'unknown') throw failure()
     if (!current(entry)) throw failure()
     return receipt
@@ -148,7 +166,7 @@ export function createAgentTorrentWorkflow(options: {
     let items: readonly MessageBundleItem[] | undefined
     if (value.length <= 32_000 && options.renderListing && options.actions.sendBundle) {
       try { const image = await wait(options.renderListing(value, entry.context!), entry.cancel.signal); items = validateMessageBundle([{ parts: [{ kind: 'image', ...image }] }]) }
-      catch { if (!current(entry)) throw failure() }
+      catch (error) { diagnose({ stage: 'runtime', operation: 'torrent_render_listing', outcome: 'failed', code: 'listing_render_failed', error }); if (!current(entry)) throw failure() }
     }
     if (!items && options.actions.sendBundle) {
       const parts: MessageBundleItem[] = []
@@ -158,83 +176,105 @@ export function createAgentTorrentWorkflow(options: {
     if (!items) return text(entry, 'listing', value)
     return effect(entry, 'listing', () => options.actions.sendBundle!({ version: 1, kind: 'message.bundle.send', binding, target: binding.target, items: items! }, { isCurrent: () => current(entry) }))
   }
-  async function run(entry: Entry) {
-    let deferred = false
-    try {
-      const record = entry.session.record
-      const context = await wait(options.openContext(record, entry.cancel.signal), entry.cancel.signal, late => { if (late && late !== 'wait') late.release() })
-      if (context === 'wait') { deferred = true; return }
-      if (!context) { await entry.session.close('cancelled'); return }
-      entry.context = context
-      const signal = AbortSignal.any([context.signal, entry.cancel.signal])
-      const cancel = () => entry.cancel.abort(); signal.addEventListener('abort', cancel, { once: true })
-      try {
-        signal.throwIfAborted()
-        await entry.session.preparing()
-        const fresh = await refresh(entry), pending = entry.reservation?.selection
-        // A malformed selection may report one failure, but can never become a whole-torrent request.
-        if (record.trigger.messageId !== record.source.messageId && !pending) throw failure()
-        const indexes = pending ? parseAgentTorrentSelection(fresh.trigger.text, pending.metadata) : undefined
-        if (pending && (!indexes || fresh.magnet !== pending.magnet || indexes.some(index => !pending.selectableIndexes.includes(index)))) throw failure()
-        if (!pending) {
-          const notice = await text(entry, 'notice', '正在识别磁链；符合限制后会将 ZIP 私发给原发起人。')
-          if (notice.state !== 'sent') { await entry.session.close('failed'); return }
-        }
-        const produced = validateAgentPreparedTorrent(await wait(options.provider!.prepare(fresh.magnet, pending ? { indexes: indexes!, expectedFingerprint: pending.metadata.fingerprint } : undefined,
-          { signal, isCurrent: () => current(entry), ensureCurrent: () => entry.context!.ensureCurrent?.() ?? Promise.resolve() }), entry.cancel.signal)
-        )
-        await refresh(entry)
-        const metadata = produced.metadata
-        if (![metadata.name, ...metadata.files.flatMap(file => file.relativePath)].every(safe)) throw failure()
-        if (metadata.infoHash !== parseMagnetUri(fresh.magnet).infoHash) throw failure()
-        if (pending && (metadata.fingerprint !== pending.metadata.fingerprint || metadata.infoHash !== pending.metadata.infoHash ||
-          metadata.name !== pending.metadata.name || metadata.totalBytes !== pending.metadata.totalBytes ||
-          metadata.files.length !== pending.metadata.files.length || metadata.files.some((file, index) => {
-            const before = pending.metadata.files[index]!
-            return file.index !== before.index || file.size !== before.size || file.relativePath.length !== before.relativePath.length ||
-              file.relativePath.some((part, offset) => part !== before.relativePath[offset])
-          }))) throw failure()
-        if (produced.status === 'selection-required') {
-          if (pending || !Array.isArray(produced.selectableIndexes) || !produced.selectableIndexes.length ||
-            produced.selectableIndexes.some(index => !Number.isSafeInteger(index) || !metadata.files.some(file => file.index === index)) ||
-            new Set(produced.selectableIndexes).size !== produced.selectableIndexes.length) throw failure()
-          const pages = listingPages(listing(metadata, produced.selectableIndexes))
-          await entry.session.saveSelection({ magnet: fresh.magnet, metadata, selectableIndexes: [...produced.selectableIndexes], ttlSeconds: config.selectionTtlSeconds, listingParts: pages.length })
-          for (const page of pages) {
-            const delivered = await sendListing(entry, page)
-            if (delivered.state !== 'sent') { await entry.session.close('failed'); return }
-          }
-          await entry.session.close('awaiting-selection')
-          return
-        }
-        const archive = produced.archive
-        if (!safe(archive.name)) throw failure()
-        const delivered = await effect(entry, 'archive', () => options.actions.sendRequesterArchive ? options.actions.sendRequesterArchive({
-          version: 1, kind: 'requester-archive.upload', target: record.binding.target, binding: record.binding,
-          source: { ...record.source, textSha256: entry.textSha256! }, archive,
-        }, { signal, isCurrent: () => current(entry) }) : Promise.resolve({ state: 'failed', code: 'requester_archive_unavailable' }))
-        if (delivered.state === 'uploaded') {
-          await entry.reservation?.commit()
-          const confirmed = await text(entry, 'confirmation', `磁链内容已私发给发起人：${archive.name}。`)
-          await entry.session.close(confirmed.state === 'sent' ? 'completed' : 'failed')
-        } else {
-          await text(entry, 'failure', 'ZIP 私发被平台明确拒绝，已停止；没有改发到群内。')
-          await entry.session.close('failed')
-        }
-      } finally { signal.removeEventListener('abort', cancel) }
-    } catch {
-      if (!stopped) {
-        const record = entry.session.record
-        const uncertain = record.stages.some(stage => stage.state === 'pending' || stage.state === 'unknown')
-        if (!uncertain && current(entry)) {
-          try { await text(entry, 'failure', '磁链处理未完成：来源、文件清单、资源限制或下载环境未通过验证。'); await entry.session.close('failed') } catch { /* Retain native evidence. */ }
-        } else await entry.session.close(uncertain ? 'unknown' : 'cancelled').catch(() => {})
-      }
-    } finally {
-      await entry.reservation?.release().catch(() => {})
-      await cleanup(entry); running = false
-      if (!stopped && !deferred) void tick().catch(() => {})
+  async function sendFailure(entry: Entry, detail: string, legacy: string) {
+    diagnose({ stage: 'notification', operation: 'torrent_failure_notice', outcome: 'failed', code: 'request_unfulfilled' })
+    if (!options.explainFailure) return text(entry, 'failure', legacy)
+    const authorized = async () => {
+      if (entry.session.record.stages.some(stage => stage.state === 'pending' || stage.state === 'unknown')) return false
+      try { await refresh(entry); return current(entry) } catch { return false }
     }
+    if (entry.explained || !await authorized()) return undefined
+    entry.explained = true
+    const signal = AbortSignal.any([entry.cancel.signal, entry.context!.signal, AbortSignal.timeout(15_000)])
+    try {
+      const value = await wait(options.explainFailure({ detail, isCurrent: authorized, signal }), signal)
+      if (typeof value === 'string' && value.trim() && value.length <= 1200 && safe(value) && await authorized()) return text(entry, 'failure', value)
+      diagnose({ stage: 'notification', operation: 'torrent_failure_notice', outcome: 'failed', code: 'explanation_unavailable' })
+    } catch (error) { diagnose({ stage: 'notification', operation: 'torrent_failure_notice', outcome: 'failed', code: 'explanation_failed', error }) }
+    return undefined
+  }
+  async function run(entry: Entry) {
+    return inScope(entry, 'torrent_run', async () => {
+      let deferred = false
+      try {
+        const record = entry.session.record
+        const context = await wait(options.openContext(record, entry.cancel.signal), entry.cancel.signal, late => { if (late && late !== 'wait') late.release() })
+        if (context === 'wait') { deferred = true; return }
+        if (!context) { await entry.session.close('cancelled'); return }
+        entry.context = context
+        const signal = AbortSignal.any([context.signal, entry.cancel.signal])
+        const cancel = () => entry.cancel.abort(); signal.addEventListener('abort', cancel, { once: true })
+        try {
+          signal.throwIfAborted()
+          await entry.session.preparing()
+          const fresh = await refresh(entry), pending = entry.reservation?.selection
+          // A malformed selection may report one failure, but can never become a whole-torrent request.
+          if (record.trigger.messageId !== record.source.messageId && !pending) throw failure()
+          const indexes = pending ? parseAgentTorrentSelection(fresh.trigger.text, pending.metadata) : undefined
+          if (pending && (!indexes || fresh.magnet !== pending.magnet || indexes.some(index => !pending.selectableIndexes.includes(index)))) throw failure()
+          if (!pending) {
+            const notice = await text(entry, 'notice', '正在识别磁链；符合限制后会将 ZIP 私发给原发起人。')
+            if (notice.state !== 'sent') { await entry.session.close('failed'); return }
+          }
+          diagnose({ stage: 'runtime', operation: 'torrent_provider_prepare', outcome: 'started' })
+          const produced = validateAgentPreparedTorrent(await wait(options.provider!.prepare(fresh.magnet, pending ? { indexes: indexes!, expectedFingerprint: pending.metadata.fingerprint } : undefined,
+            { signal, isCurrent: () => current(entry), ensureCurrent: () => entry.context!.ensureCurrent?.() ?? Promise.resolve() }).catch(error => { diagnose({ stage: 'runtime', operation: 'torrent_provider_prepare', outcome: 'failed', code: 'provider_threw', error }); throw error }), entry.cancel.signal)
+          )
+          diagnose({ stage: 'runtime', operation: 'torrent_provider_prepare', outcome: 'succeeded', code: 'provider_returned' })
+          await refresh(entry)
+          const metadata = produced.metadata
+          if (![metadata.name, ...metadata.files.flatMap(file => file.relativePath)].every(safe)) throw failure()
+          if (metadata.infoHash !== parseMagnetUri(fresh.magnet).infoHash) throw failure()
+          if (pending && (metadata.fingerprint !== pending.metadata.fingerprint || metadata.infoHash !== pending.metadata.infoHash ||
+            metadata.name !== pending.metadata.name || metadata.totalBytes !== pending.metadata.totalBytes ||
+            metadata.files.length !== pending.metadata.files.length || metadata.files.some((file, index) => {
+              const before = pending.metadata.files[index]!
+              return file.index !== before.index || file.size !== before.size || file.relativePath.length !== before.relativePath.length ||
+                file.relativePath.some((part, offset) => part !== before.relativePath[offset])
+            }))) throw failure()
+          if (produced.status === 'selection-required') {
+            if (pending || !Array.isArray(produced.selectableIndexes) || !produced.selectableIndexes.length ||
+              produced.selectableIndexes.some(index => !Number.isSafeInteger(index) || !metadata.files.some(file => file.index === index)) ||
+              new Set(produced.selectableIndexes).size !== produced.selectableIndexes.length) throw failure()
+            const pages = listingPages(listing(metadata, produced.selectableIndexes))
+            await entry.session.saveSelection({ magnet: fresh.magnet, metadata, selectableIndexes: [...produced.selectableIndexes], ttlSeconds: config.selectionTtlSeconds, listingParts: pages.length })
+            for (const page of pages) {
+              const delivered = await sendListing(entry, page)
+              if (delivered.state !== 'sent') { await entry.session.close('failed'); return }
+            }
+            await entry.session.close('awaiting-selection')
+            return
+          }
+          const archive = produced.archive
+          if (!safe(archive.name)) throw failure()
+          const delivered = await effect(entry, 'archive', () => options.actions.sendRequesterArchive ? options.actions.sendRequesterArchive({
+            version: 1, kind: 'requester-archive.upload', target: record.binding.target, binding: record.binding,
+            source: { ...record.source, textSha256: entry.textSha256! }, archive,
+          }, { signal, isCurrent: () => current(entry) }) : Promise.resolve({ state: 'failed', code: 'requester_archive_unavailable' }))
+          if (delivered.state === 'uploaded') {
+            await entry.reservation?.commit()
+            const confirmed = await text(entry, 'confirmation', `磁链内容已私发给发起人：${archive.name}。`)
+            await entry.session.close(confirmed.state === 'sent' ? 'completed' : 'failed')
+          } else {
+            await sendFailure(entry, 'ZIP私发被平台明确拒绝，未确认交付，没有改发到群内，当前请求未完成', 'ZIP 私发被平台明确拒绝，已停止；没有改发到群内。')
+            await entry.session.close('failed')
+          }
+        } finally { signal.removeEventListener('abort', cancel) }
+      } catch (error) {
+        diagnose({ stage: 'runtime', operation: 'torrent_run', outcome: entry.session.record.stages.some(stage => stage.state === 'pending' || stage.state === 'unknown') ? 'unknown' : 'failed', code: 'workflow_failed', error })
+        if (!stopped) {
+          const record = entry.session.record
+          const uncertain = record.stages.some(stage => stage.state === 'pending' || stage.state === 'unknown')
+          if (!uncertain && current(entry)) {
+            try { await sendFailure(entry, '磁链处理未完成，来源、文件清单、资源限制或下载环境未通过验证，尚无成功交付结果', '磁链处理未完成：来源、文件清单、资源限制或下载环境未通过验证。'); await entry.session.close('failed') } catch (error) { diagnose({ stage: 'runtime', operation: 'torrent_cleanup', outcome: 'unknown', code: 'failure_close_failed', error }) }
+          } else await entry.session.close(uncertain ? 'unknown' : 'cancelled').catch(error => diagnose({ stage: 'runtime', operation: 'torrent_cleanup', outcome: 'unknown', code: 'close_ledger_failed', error }))
+        }
+      } finally {
+        await entry.reservation?.release().catch(error => diagnose({ stage: 'runtime', operation: 'torrent_cleanup', outcome: 'failed', code: 'reservation_release_failed', error }))
+        await cleanup(entry); running = false
+        if (!stopped && !deferred) void tick().catch(() => {})
+      }
+    })
   }
   const isCandidate = (message: IncomingMessage) => live() && message.conversation.kind === 'group' && !!message.messageId &&
     (config.autoDetect && !!parseAgentTorrentMagnet(message.text) || selectionHint(message.text))
@@ -275,7 +315,8 @@ export function createAgentTorrentWorkflow(options: {
       }
       void tick().catch(() => {})
       return true
-    } finally { try { context.release() } catch { /* Admission has already been persisted. */ } }
+    } catch (error) { diagnose({ stage: 'runtime', operation: 'torrent_admission', outcome: 'failed', code: 'admission_failed', error }); throw error }
+    finally { try { context.release() } catch (error) { diagnose({ stage: 'runtime', operation: 'torrent_cleanup', outcome: 'failed', code: 'admission_release_failed', error }) } }
   }
   async function tick(): Promise<void> {
     if (!started || !live() || scanning) return
@@ -291,7 +332,7 @@ export function createAgentTorrentWorkflow(options: {
         const cancel = new AbortController()
         const probe = await options.openContext(record, cancel.signal)
         if (probe === 'wait') continue
-        if (probe) { try { probe.release() } catch { /* A host release cannot lock durable recovery. */ } }
+        if (probe) { try { probe.release() } catch (error) { diagnose({ stage: 'runtime', operation: 'torrent_cleanup', outcome: 'failed', code: 'probe_release_failed', error }) } }
         const reservation = record.trigger.messageId === record.source.messageId ? undefined : await ledger.reserveSelection(record.binding, record.trigger)
         const session = reservation?.session ?? await ledger.claim(record.binding, record.trigger, record.source)
         if (!session) continue
@@ -299,7 +340,8 @@ export function createAgentTorrentWorkflow(options: {
         const entry: Entry = { session, cancel, ...(reservation ? { reservation, magnet: reservation.selection.magnet } : {}) }
         entries.set(record.id, entry); running = true; track(run(entry)); break
       }
-    } finally { scanning = false }
+    } catch (error) { diagnose({ stage: 'runtime', operation: 'torrent_tick', outcome: 'failed', code: 'tick_failed', error }); throw error }
+    finally { scanning = false }
   }
   return {
     ledger, isCandidate, handle, tick,
@@ -307,7 +349,7 @@ export function createAgentTorrentWorkflow(options: {
     async cancelSource(target: ConversationAddress, messageId: string) {
       for (const entry of entries.values()) if (scope(entry.session.record.binding.target) === scope(target) &&
         [entry.session.record.source.messageId, entry.session.record.trigger.messageId].includes(messageId)) entry.cancel.abort()
-      await ledger.cancelSource(target, messageId)
+      try { await ledger.cancelSource(target, messageId) } catch (error) { diagnose({ stage: 'runtime', operation: 'torrent_cancel', outcome: 'unknown', code: 'cancel_ledger_failed', error }); throw error }
     },
     async stop() { stopped = true; for (const entry of entries.values()) entry.cancel.abort(); await Promise.allSettled([...tasks]); for (const entry of entries.values()) await cleanup(entry) },
   }

@@ -302,7 +302,8 @@ test('buildSimSystemPrompt：人设名与协议关键段', () => {
   const withExtras = buildSimSystemPrompt({ persona: {}, selfName: '小鲸', extraToolNames: ['sendLocalEmojiTool', 'searchVideoTool'] })
   assert.ok(withExtras.includes('本群额外能力'))
   assert.ok(withExtras.includes('searchVideoTool'))
-  assert.ok(withExtras.includes('搜B站视频并直接发到群里'))
+  assert.ok(withExtras.includes('按相关度搜索B站视频并返回列表，不自动发送'))
+  assert.equal(withExtras.includes('搜B站视频并直接发到群里'), false)
 })
 
 test('buildWakePrompt：包含快照/状态/唤醒原因', () => {

@@ -57,7 +57,9 @@ export function buildSimSystemPrompt(input: SimSystemPromptInput): string {
   const extraNames = [...new Set((input.extraToolNames || []).filter(name => name && (!available || available.has(name))))]
   if (extraNames.length) {
     const EXTRA_TOOL_NOTES: Record<string, string> = {
-      searchVideoTool: '搜B站视频并直接发到群里',
+      searchVideoTool: '按相关度搜索B站视频并返回列表，不自动发送',
+      videoShareTool: '仅在真人明确要求时向当前群分享选中的视频卡片，不下载视频',
+      videoDownloadTool: '仅在真人明确要求完整视频附件时使用，向当前群发送最多两段匿名低清视频，不重发未知回执',
       sendLocalEmojiTool: '发表情包（有冷却，适合接梗或轻量反应）',
       searchInformationTool: '联网查资料',
       webParserTool: '联网查资料',

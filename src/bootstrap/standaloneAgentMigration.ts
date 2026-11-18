@@ -1,8 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { types } from 'node:util'
 import YAML from 'yaml'
 import type { CommitmentData } from '../contracts/commitments.js'
 import type { AgentBindingSnapshot, ConversationAddress } from '../contracts/agentBinding.js'
+import type { AgentDeferredActionGrant } from '../contracts/agentDeferredAction.js'
 import type { ReminderData, ReminderPending } from '../contracts/reminder.js'
 import type { SimulationSection, SimSessionState } from '../contracts/simulation.js'
 import { qqId, validateQqBindingAddress } from '../adapters/qqIdentity.js'
@@ -18,6 +20,7 @@ import { REMINDER_LOCK_KEY, REMINDER_PENDING_KEY, decodeReminder, decodeReminder
 import { agentBindingIdentity, agentBindingToken, agentConversationKey, agentPersonaScopeId, conversationAddressKey } from '../modules/runtime/domain/agentBindings.js'
 import { createAgentBindingConfig } from '../modules/runtime/infrastructure/agentBindingConfig.js'
 import { agentRedisPrefix, connectAgentRedis } from '../modules/runtime/infrastructure/agentRedis.js'
+import { stageLegacyDeferredReminders, type LegacyDeferredReminderSelection } from '../modules/runtime/infrastructure/agentDeferredActionMigration.js'
 import { activeCharacterMemories, characterKey, characterMemoryVisibility, createEmptyCharacterState, validateCharacterState } from '../modules/simulation/domain/characterState.js'
 import { projectCharacterTransfer } from '../modules/simulation/domain/characterTransfer.js'
 import { characterReflectionKey, validateReflectionState } from '../modules/simulation/infrastructure/characterReflection.js'
@@ -32,10 +35,91 @@ import { resolveSimulationGroupConfig, seedSimulationOverrides, simulationGroupO
 import type { readStandaloneAgentConfig } from './standaloneAgentConfig.js'
 import { stageInitialPromptTransfer } from './standaloneAgentPromptMigration.js'
 import { stageStandaloneGroupTeaching } from './standaloneGroupTeachingMigration.js'
+import { stageStandaloneAgentArchiveMigration } from './standaloneAgentArchiveMigration.js'
+import type { AgentHistoryConfig } from '../contracts/agentHistory.js'
+import { createForbiddenWordGuard } from '../modules/conversation/domain/forbiddenWordGuard.js'
 
 type Redis = Pick<Awaited<ReturnType<typeof connectAgentRedis>>, 'get' | 'mGet' | 'exists' | 'eval'>
 type Check = { key: string; value: string | null; write?: string | null }
 type Skipped = { unscoped: number; binding: number; inFlight: number; unsupported: number; unavailable: number }
+
+const deferredOptionsError = () => new Error('延期提醒迁移选择、工具映射或授权参数无效')
+function deferredOptionRecord(input: unknown, keys: readonly string[]): Record<string, unknown> {
+  if (!input || typeof input !== 'object' || types.isProxy(input) || Array.isArray(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input))) throw deferredOptionsError()
+  const row: Record<string, unknown> = Object.create(null)
+  for (const key of Reflect.ownKeys(input)) {
+    const field = Object.getOwnPropertyDescriptor(input, key)
+    if (typeof key !== 'string' || !keys.includes(key) || !field || !Object.hasOwn(field, 'value')) throw deferredOptionsError()
+    row[key] = field.value
+  }
+  return row
+}
+function deferredOptionToken(input: unknown, max = 256): string {
+  if (typeof input !== 'string' || !input || input.length > max || input.trim() !== input || /[\u0000-\u001f\u007f-\u009f\uD800-\uDFFF]/u.test(input)) throw deferredOptionsError()
+  return input
+}
+function deferredOptionTime(input: unknown): number {
+  if (typeof input !== 'number' || !validTimestamp(input)) throw deferredOptionsError()
+  return input
+}
+function deferredOptionHash(input: unknown): string {
+  if (typeof input !== 'string' || !/^[a-f0-9]{64}$/u.test(input)) throw deferredOptionsError()
+  return input
+}
+function deferredMigrationGrant(input: unknown): AgentDeferredActionGrant {
+  const row = deferredOptionRecord(input, ['version', 'id', 'ruleId', 'ruleRevision', 'bindingIdentity', 'scopeKey', 'creator', 'actionHash', 'dueAt', 'source', 'issuedAt', 'expiresAt'])
+  const creator = deferredOptionRecord(row.creator, ['platform', 'namespace', 'id'])
+  const source = deferredOptionRecord(row.source, ['kind', 'id', 'sourceHash', 'authorizedBy', 'at', 'messageId'])
+  if (row.version !== 1 || source.kind !== 'migration' && source.kind !== 'message' ||
+      Object.keys(row).length !== 12 || Object.keys(creator).length !== 3 ||
+      Object.keys(source).length !== (source.kind === 'migration' ? 5 : 3) ||
+      source.kind === 'migration' && Object.hasOwn(source, 'messageId') ||
+      source.kind === 'message' && ['id', 'sourceHash', 'authorizedBy'].some(key => Object.hasOwn(source, key))) throw deferredOptionsError()
+  return Object.freeze({ version: 1, id: deferredOptionToken(row.id), ruleId: deferredOptionToken(row.ruleId, 128), ruleRevision: deferredOptionToken(row.ruleRevision),
+    bindingIdentity: deferredOptionToken(row.bindingIdentity, 8192), scopeKey: deferredOptionToken(row.scopeKey, 8192),
+    creator: Object.freeze({ platform: deferredOptionToken(creator.platform, 128), namespace: deferredOptionToken(creator.namespace, 128), id: deferredOptionToken(creator.id) }),
+    actionHash: deferredOptionHash(row.actionHash), dueAt: deferredOptionTime(row.dueAt), issuedAt: deferredOptionTime(row.issuedAt), expiresAt: deferredOptionTime(row.expiresAt),
+    source: Object.freeze(source.kind === 'migration' ? { kind: source.kind, id: deferredOptionToken(source.id), sourceHash: deferredOptionHash(source.sourceHash),
+      authorizedBy: deferredOptionToken(source.authorizedBy), at: deferredOptionTime(source.at) } : { kind: source.kind, messageId: deferredOptionToken(source.messageId), at: deferredOptionTime(source.at) }),
+  })
+}
+function deferredReminderSelections(options: object): readonly LegacyDeferredReminderSelection[] | undefined {
+  if (!options || types.isProxy(options)) throw deferredOptionsError()
+  const field = Object.getOwnPropertyDescriptor(options, 'deferredReminders')
+  if (!field) return undefined
+  if (!Object.hasOwn(field, 'value')) throw deferredOptionsError()
+  const input: unknown = field.value
+  if (input === undefined) return undefined
+  if (!Array.isArray(input) || types.isProxy(input) || Object.getPrototypeOf(input) !== Array.prototype || input.length > 1000 || Reflect.ownKeys(input).length !== input.length + 1) throw deferredOptionsError()
+  const seen = new Set<string>()
+  return Object.freeze(Array.from({ length: input.length }, (_, index) => {
+    const entry = Object.getOwnPropertyDescriptor(input, String(index))
+    if (!entry || !Object.hasOwn(entry, 'value')) throw deferredOptionsError()
+    const row = deferredOptionRecord(entry.value, ['id', 'mapping', 'grant', 'freezeUncertain']), id = deferredOptionToken(row.id)
+    if (seen.has(id) || row.freezeUncertain !== undefined && typeof row.freezeUncertain !== 'boolean') throw deferredOptionsError()
+    seen.add(id)
+    let mapping: LegacyDeferredReminderSelection['mapping']
+    if (row.mapping !== undefined) {
+      const selected = deferredOptionRecord(row.mapping, ['from', 'to', 'definitionId', 'executor'])
+      if (Object.keys(selected).length !== 4 || selected.executor !== 'builtin' && selected.executor !== 'custom' && selected.executor !== 'mcp') throw deferredOptionsError()
+      mapping = Object.freeze({ from: deferredOptionToken(selected.from, 128), to: deferredOptionToken(selected.to, 128), definitionId: deferredOptionToken(selected.definitionId, 512), executor: selected.executor })
+    }
+    const normalized: LegacyDeferredReminderSelection = Object.freeze({ id, ...(mapping ? { mapping } : {}),
+      ...(row.grant === undefined ? {} : { grant: deferredMigrationGrant(row.grant) }), ...(row.freezeUncertain === undefined ? {} : { freezeUncertain: row.freezeUncertain }) })
+    if (JSON.stringify(normalized).length > 32_768) throw deferredOptionsError()
+    return normalized
+  }))
+}
+
+function validateMigrationOptions(input: unknown): void {
+  const row = deferredOptionRecord(input, ['sourceBindings', 'sourceConfig', 'sourceDataDir', 'moveAgentCommitments', 'moveCharacterState',
+    'moveGroupTeaching', 'moveMessageArchive', 'sourceArchiveDir', 'deferredReminders', 'connectionId', 'kind', 'conversationId', 'apply'])
+  if (typeof row.apply !== 'boolean' || row.kind !== 'group' && row.kind !== 'private') throw new Error('离线迁移参数无效')
+  for (const key of ['sourceBindings', 'connectionId', 'conversationId']) deferredOptionToken(row[key], 4096)
+  for (const key of ['sourceConfig', 'sourceDataDir', 'sourceArchiveDir']) if (row[key] !== undefined) deferredOptionToken(row[key], 4096)
+  for (const key of ['moveAgentCommitments', 'moveCharacterState', 'moveGroupTeaching', 'moveMessageArchive']) if (row[key] !== undefined && typeof row[key] !== 'boolean') throw new Error('离线迁移参数无效')
+  if (row.sourceArchiveDir !== undefined && row.moveMessageArchive !== true) throw new Error('显式归档目录须同时启用原文归档接续')
+}
 
 function registerScheduledGroup(key: string, value: string | null, address: string): Check {
   const groups = decodeSimulationKnownGroups(value)
@@ -57,13 +141,28 @@ function appendTransferChecks(merged: Map<string, Check>, checks: readonly Check
   }
 }
 
-function readSimulationConfig(file: string, optional: boolean): { raw: string | null; section: SimulationSection } {
-  let raw: string
-  try { raw = fs.readFileSync(file, 'utf8') }
+/** A later stage reads prior planned writes, while the final CAS still checks the original Redis bytes. */
+function appendSequentialTransferChecks(merged: Map<string, Check>, checks: readonly Check[]): void {
+  for (const check of checks) {
+    const previous = merged.get(check.key)
+    if (!previous) { merged.set(check.key, check); continue }
+    const planned = previous.write === undefined ? previous.value : previous.write
+    if (planned !== check.value) throw new Error(changeError)
+    if (check.write !== undefined) merged.set(check.key, { key: check.key, value: previous.value, write: check.write })
+  }
+}
+
+function readSourceConfigRaw(file: string, optional: boolean): string | null {
+  try { return fs.readFileSync(file, 'utf8') }
   catch (error) {
-    if (optional && (error as NodeJS.ErrnoException).code === 'ENOENT') return { raw: null, section: {} }
+    if (optional && (error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw new Error('无法读取源插件的 message.yaml')
   }
+}
+
+function readSimulationConfig(file: string, optional: boolean): { raw: string | null; section: SimulationSection } {
+  const raw = readSourceConfigRaw(file, optional)
+  if (raw === null) return { raw: null, section: {} }
   const document = YAML.parseDocument(raw)
   if (document.errors.length) throw new Error('源插件的 message.yaml 格式无效')
   const settings = document.toJS() as { pluginSettings?: { simulation?: unknown } } | null
@@ -534,6 +633,8 @@ async function migrateStandaloneQqState(options: {
   moveAgentCommitments: boolean
   moveCharacterState: boolean
   moveGroupTeaching?: boolean
+  archive?: { sourceArchiveDir: string; history: AgentHistoryConfig; allowsText(text: string): boolean }
+  deferredReminders?: readonly LegacyDeferredReminderSelection[]
   apply: boolean
 }) {
   const { redis, binding } = options
@@ -606,6 +707,7 @@ async function migrateStandaloneQqState(options: {
   try {
     pending = decodeCommitmentPendingList(sourceIndex)
     destinationPending = decodeCommitmentPendingList(destinationIndex)
+    if (options.deferredReminders !== undefined && destinationIndex !== null) destinationPending = JSON.parse(destinationIndex) as typeof pending
     reminders = decodeReminderPendingList(reminderIndex)
   } catch { throw new Error('来源或目标的提醒或承诺索引损坏') }
   if (new Set(pending.map(item => item.id)).size !== pending.length ||
@@ -657,8 +759,11 @@ async function migrateStandaloneQqState(options: {
   }
 
   const movedReminders = new Set<string>()
+  const deferredIds = new Set(options.deferredReminders?.map(item => item.id))
   const reminderValues = reminders.length ? await redis.mGet(reminders.map(item => reminderDetailKey(item.id))) : []
   for (const [index, item] of reminders.entries()) {
+    // Explicit extra-action selections cannot fall through into ordinary reminder conversion.
+    if (deferredIds.has(item.id)) continue
     const raw = reminderValues[index]
     if (!raw) { report.skipped.unavailable++; continue }
     const task = convertReminder(raw, item, binding, report.skipped)
@@ -669,7 +774,8 @@ async function migrateStandaloneQqState(options: {
   }
   report.reminders = movedReminders.size
   if (movedReminders.size > 0) {
-    checks.push({ key: REMINDER_PENDING_KEY, value: reminderIndex, write: JSON.stringify(reminders.filter(item => !movedReminders.has(item.id))) })
+    const original = options.deferredReminders !== undefined && reminderIndex !== null ? JSON.parse(reminderIndex) as ReminderPending[] : reminders
+    checks.push({ key: REMINDER_PENDING_KEY, value: reminderIndex, write: JSON.stringify(original.filter(item => !movedReminders.has(item.id))) })
   }
   if (moved.size || movedReminders.size) {
     destinationPending.sort((a, b) => a.next_run_at - b.next_run_at)
@@ -679,9 +785,24 @@ async function migrateStandaloneQqState(options: {
   if (!options.isCurrent()) throw new Error('来源或目标的迁移配置及角色绑定已改变')
   checks.push(...sourceRemovals)
   appendTransferChecks(staged, checks)
+  const deferred = options.deferredReminders === undefined ? undefined : await stageLegacyDeferredReminders({
+    async read(key) {
+      const previous = staged.get(key)
+      return previous ? previous.write === undefined ? previous.value : previous.write : redis.get(key)
+    }, sourceIndexKey: REMINDER_PENDING_KEY, destinationIndexKey: destinationPendingKey,
+    sourceDetailKey: reminderDetailKey, destinationDetailKey: id => prefix + commitmentDetailKey(id),
+    sourceBinding: options.sourceBinding, binding,
+    // Disabled or text/private destinations can archive terminal/frozen records, but cannot activate extra actions.
+    destinationMode: !group ? 'private' : options.targetUsesSimulation && options.allowsReminders && controls?.canMoveAgentCommitments === true ? 'simulation' : 'text',
+    selections: options.deferredReminders, idleKeys, now, isCurrent: options.isCurrent,
+  })
+  if (deferred) appendSequentialTransferChecks(staged, deferred.checks)
   const teaching = options.moveGroupTeaching ? await stageStandaloneGroupTeaching({ redis, prefix, binding,
     sourceDataDir: options.sourceDataDir, now, checks: staged }) : undefined
-  if (!options.isCurrent() || teaching?.isCurrent() === false) throw new Error('迁移期间来源配置或教学归档有变更，迁移未写入')
+  const archive = options.archive ? await stageStandaloneAgentArchiveMigration({ redis, prefix, binding, sourceBinding: options.sourceBinding,
+    sourceArchiveDir: options.archive.sourceArchiveDir, history: options.archive.history, now, checks: staged,
+    isCurrent: options.isCurrent, allowsText: options.archive.allowsText }) : undefined
+  if (!options.isCurrent() || teaching?.isCurrent() === false || archive?.isCurrent() === false) throw new Error('迁移期间来源配置或归档有变更，迁移未写入')
   const transferChecks = [...staged.values()]
   if (options.apply && transferChecks.some(check => check.write !== undefined)) {
     if (controls && dayKey(Date.now()) !== dayKey(now)) throw new Error('迁移期间跨过预算日期，请重新预览')
@@ -691,7 +812,8 @@ async function migrateStandaloneQqState(options: {
     if (result === -1) throw new Error('Redis 账号缺少迁移所需的账本写入权限')
     if (result !== 1) throw new Error(changeError)
   }
-  return { ...report, ...(teaching ? { groupTeaching: teaching.report } : {}) }
+  return { ...report, ...(teaching ? { groupTeaching: teaching.report } : {}), ...(deferred ? { deferredReminders: deferred.report } : {}),
+    ...(archive ? { messageArchive: archive.report } : {}) }
 }
 
 export async function runStandaloneQqMigration(config: ReturnType<typeof readStandaloneAgentConfig>, options: {
@@ -701,11 +823,18 @@ export async function runStandaloneQqMigration(config: ReturnType<typeof readSta
   moveAgentCommitments?: boolean
   moveCharacterState?: boolean
   moveGroupTeaching?: boolean
+  moveMessageArchive?: boolean
+  sourceArchiveDir?: string
+  /** Explicit per-record tool mapping and host-issued migration grant; omitted records remain in the old ledger. */
+  deferredReminders?: readonly LegacyDeferredReminderSelection[]
   connectionId: string
   kind: 'group' | 'private'
   conversationId: string
   apply: boolean
 }) {
+  validateMigrationOptions(options)
+  const deferredReminders = deferredReminderSelections(options)
+  const deferredSelectionSnapshot = JSON.stringify(deferredReminders)
   const { connectionId, kind, conversationId, apply } = options
   const connection = config.connections.find(({ connection }) => connection.id === connectionId)?.connection
   if (!connection || qqId(conversationId) !== conversationId) throw new Error('迁移需要当前宿主的连接 ID 和有效群号或好友 QQ 号')
@@ -715,6 +844,7 @@ export async function runStandaloneQqMigration(config: ReturnType<typeof readSta
   if (options.moveGroupTeaching && (kind !== 'group' || config.groupMemory.enabled !== true)) {
     throw new Error('群教学迁移只用于已启用 groupMemory 的群会话')
   }
+  if (options.moveMessageArchive && config.history.enabled !== true) throw new Error('旧原文归档接续需要目标 history.enabled=true')
   if (options.moveAgentCommitments && !targetUsesSimulation) {
     throw new Error('仿真承诺只能迁到使用仿真模式的群')
   }
@@ -731,7 +861,21 @@ export async function runStandaloneQqMigration(config: ReturnType<typeof readSta
   const destinationToken = agentBindingToken(binding)
   const sourceConfigPath = path.resolve(options.sourceConfig ?? path.join(path.dirname(options.sourceBindings), 'message.yaml'))
   const sourceSimulation = kind === 'group' ? readSimulationConfig(sourceConfigPath, options.sourceConfig === undefined) : { raw: null, section: {} }
+  const sourceArchiveConfigRaw = options.moveMessageArchive
+    ? kind === 'group' ? sourceSimulation.raw : readSourceConfigRaw(sourceConfigPath, options.sourceConfig === undefined) : undefined
   const sourceDataDir = path.resolve(options.sourceDataDir ?? path.join(path.dirname(sourceConfigPath), '..', 'data'))
+  let sourceArchiveDir: string | undefined
+  if (options.moveMessageArchive) {
+    const document: unknown = sourceArchiveConfigRaw == null ? {} : YAML.parse(sourceArchiveConfigRaw)
+    const settings = document && typeof document === 'object' && !Array.isArray(document) ? (document as Record<string, unknown>).pluginSettings : undefined
+    const archive = settings && typeof settings === 'object' && !Array.isArray(settings) ? (settings as Record<string, unknown>).messageArchive : undefined
+    if (archive !== undefined && (!archive || typeof archive !== 'object' || Array.isArray(archive))) throw new Error('旧原文归档配置无效')
+    const directory = archive === undefined ? undefined : (archive as Record<string, unknown>).baseDir
+    if (directory !== undefined && (typeof directory !== 'string' || !directory.trim() || /[\u0000-\u001f\u007f]/u.test(directory))) throw new Error('旧原文归档目录配置无效')
+    sourceArchiveDir = options.sourceArchiveDir === undefined ? path.resolve(path.dirname(sourceConfigPath), '..', directory as string ?? 'data/message_archive')
+      : path.resolve(options.sourceArchiveDir)
+  }
+  const words = createForbiddenWordGuard({ warn() {} })
   const redis = await connectAgentRedis(config.redisUrl)
   try {
     const report = await migrateStandaloneQqState({
@@ -740,11 +884,15 @@ export async function runStandaloneQqMigration(config: ReturnType<typeof readSta
       apply, targetUsesSimulation, allowsReminders: config.simulation.enabled !== false, moveAgentCommitments: options.moveAgentCommitments === true,
       moveCharacterState: options.moveCharacterState === true,
       moveGroupTeaching: options.moveGroupTeaching === true,
+      ...(sourceArchiveDir ? { archive: { sourceArchiveDir, history: config.history, allowsText: (text: string) => !words.findForbiddenWord(text, config.forbiddenWords) } } : {}),
+      ...(deferredReminders === undefined ? {} : { deferredReminders }),
       isCurrent() {
         const from = source()?.resolve(target)
         const to = config.resolvePersona(target)?.binding
         return config.isConfigCurrent() && !!from && !!to && agentBindingToken(from) === sourceToken && agentBindingToken(to) === destinationToken &&
-          (kind !== 'group' || readSimulationConfig(sourceConfigPath, options.sourceConfig === undefined).raw === sourceSimulation.raw)
+          JSON.stringify(deferredReminderSelections(options)) === deferredSelectionSnapshot &&
+          (kind === 'group' ? readSimulationConfig(sourceConfigPath, options.sourceConfig === undefined).raw === sourceSimulation.raw
+            : sourceArchiveConfigRaw === undefined || readSourceConfigRaw(sourceConfigPath, options.sourceConfig === undefined) === sourceArchiveConfigRaw)
       },
     })
     return { mode: apply ? 'applied' : 'preview', instance: config.instance, connectionId,

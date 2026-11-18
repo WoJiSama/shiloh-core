@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createQqMessageActionPort } from '../dist/backend/adapters/qqMessageDelivery.js'
-import { queuedDeliveryAllowed } from '../dist/backend/modules/messaging/infrastructure/deliveryScope.js'
-import { validateMessageBundle } from '../dist/backend/modules/messaging/infrastructure/messageBundle.js'
+import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
+
+const { createQqMessageActionPort } = await importBilibiliHost('adapters/qqMessageDelivery.js')
+const { queuedDeliveryAllowed } = await importBilibiliHost('modules/messaging/infrastructure/deliveryScope.js')
+const { validateMessageBundle } = await importBilibiliHost('modules/messaging/infrastructure/messageBundle.js')
 
 const account = { platform: 'qq', namespace: 'global', id: '123456789' }
 const target = { account, kind: 'group', id: '315320' }

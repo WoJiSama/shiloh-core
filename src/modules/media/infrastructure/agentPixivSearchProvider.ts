@@ -98,7 +98,7 @@ export function createAgentPixivSearchProvider(options: AgentPixivSearchProvider
         const raw = collection.data
         if (!Array.isArray(raw) || raw.length > 1000) throw pixivSearchFailure()
         let items = raw.map(normalizeItem).filter((value): value is AgentPixivSearchItem => value !== undefined)
-        const seen = new Set<string>(); items = items.filter(item => !seen.has(item.id) && Boolean(seen.add(item.id))).slice(0, 24)
+        const seen = new Set<string>(); items = items.filter(item => !seen.has(item.id) && Boolean(seen.add(item.id)))
         if (!items.length) throw pixivSearchFailure()
         let total = integer(collection.total, Number.MAX_SAFE_INTEGER) ?? items.length, orderSource: AgentPixivSearchResult['orderSource'] = 'native'
         if (wantedOrder === 'popular' && !cookie) {
@@ -161,7 +161,7 @@ export function createAgentPixivSearchProvider(options: AgentPixivSearchProvider
           }
         }
         await current.ensure()
-        return Object.freeze({ keyword, mode: 'artworks', order: wantedOrder, orderSource, total, items: Object.freeze(items) })
+        return Object.freeze({ keyword, mode: 'artworks', order: wantedOrder, orderSource, total, items: Object.freeze(items.slice(0, 24)) })
       } catch { throw pixivSearchFailure() }
       finally { guard?.close() }
     },

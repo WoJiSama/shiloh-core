@@ -3,7 +3,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { readStandaloneAgentConfig } from '../dist/backend/bootstrap/standaloneAgentConfig.js'
+import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
+
+const defaultTools = {
+  qqActions: {
+    qzone: { enabled: false }, gift: { enabled: false },
+    redPackets: { enabled: false, allowExplicit: false, allowRecentSearch: false, allowReferenceFallback: false,
+      allowPasswordSend: false, recentLimit: 100, automatic: { enabled: false, toolConfigured: false, allowPasswordSend: false } },
+  },
+  deferredActions: { enabled: false, rules: [], migrationApprovals: [] },
+}
+
+const { readStandaloneAgentConfig } = await importBilibiliHost('bootstrap/standaloneAgentConfig.js')
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-images-config-'))
@@ -30,10 +41,10 @@ function fixture(t) {
 
 test('standalone image tools default off and never borrow the main or vision model', t => {
   const { read } = fixture(t)
-  assert.deepEqual(read().tools, {})
+  assert.deepEqual(read().tools, defaultTools)
   assert.deepEqual(read(undefined, undefined, undefined, {
     vision: { baseUrl: 'https://vision.example/v1', name: 'vision-model', apiKeyEnv: 'TEST_MAIN_KEY' },
-  }).tools, {})
+  }).tools, defaultTools)
   const empty = read({}).tools.images
   assert.ok(empty === undefined || Object.keys(empty).length === 0)
 })

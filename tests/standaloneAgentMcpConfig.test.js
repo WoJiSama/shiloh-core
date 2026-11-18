@@ -3,7 +3,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { readStandaloneAgentConfig } from '../dist/backend/bootstrap/standaloneAgentConfig.js'
+import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
+
+const defaultTools = {
+  qqActions: {
+    qzone: { enabled: false }, gift: { enabled: false },
+    redPackets: { enabled: false, allowExplicit: false, allowRecentSearch: false, allowReferenceFallback: false,
+      allowPasswordSend: false, recentLimit: 100, automatic: { enabled: false, toolConfigured: false, allowPasswordSend: false } },
+  },
+  deferredActions: { enabled: false, rules: [], migrationApprovals: [] },
+}
+
+const { readStandaloneAgentConfig } = await importBilibiliHost('bootstrap/standaloneAgentConfig.js')
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-mcp-config-'))
@@ -37,10 +48,10 @@ function safeError(action) {
 test('MCP remains absent unless active servers are explicitly configured and never reads legacy MCP configuration', t => {
   const { directory, read, http, servers } = fixture(t)
   fs.writeFileSync(path.join(directory, 'mcp.yaml'), 'mcpServers:\n  legacy:\n    command: raw-private-command\n')
-  assert.deepEqual(read().tools, {})
-  assert.deepEqual(read({ servers: {} }).tools, {})
-  assert.deepEqual(read(servers({ ...http, enabled: false })).tools, {})
-  assert.deepEqual(read().tools, {})
+  assert.deepEqual(read().tools, defaultTools)
+  assert.deepEqual(read({ servers: {} }).tools, defaultTools)
+  assert.deepEqual(read(servers({ ...http, enabled: false })).tools, defaultTools)
+  assert.deepEqual(read().tools, defaultTools)
 })
 
 test('network MCP servers resolve only declared header environment references and preserve independent server options', t => {
@@ -81,7 +92,7 @@ test('disabled servers skip credential reads while migration preview tolerates m
     network: { ...http, enabled: false, headersFromEnv: { Authorization: 'MISSING_TOKEN' } },
     process: { ...stdio, enabled: false, envFrom: { SECRET: 'TEST_MCP_KEY' } },
   } }
-  assert.deepEqual(read(disabled, undefined, { TEST_MAIN_KEY: env.TEST_MAIN_KEY, TEST_MCP_KEY: '\0' }).tools, {})
+  assert.deepEqual(read(disabled, undefined, { TEST_MAIN_KEY: env.TEST_MAIN_KEY, TEST_MCP_KEY: '\0' }).tools, defaultTools)
   const required = { servers: {
     network: { ...http, headersFromEnv: { Authorization: 'MISSING_TOKEN' } },
     process: { ...stdio, envFrom: { SECRET: 'MISSING_KEY' } },

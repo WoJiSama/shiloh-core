@@ -5,9 +5,24 @@ import type { MessageBundleItem } from './platformMessage.js'
 import type { ConversationMemberSnapshot, ConversationMembersSnapshot } from './platformConnection.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest } from './agentFiles.js'
 import type { AgentAudioBytes, AgentVideoBytes } from './agentMedia.js'
+import type { AgentVideoInput } from './agentVideo.js'
+import type { AgentVideoCard } from './agentVideoCard.js'
 import type { AgentMusicCard } from './agentMusic.js'
 import type { AgentMediaRelayPlan } from './agentMediaRelay.js'
 import type { PersonaGuardConfig } from './persona.js'
+import type { AgentInteractionPlan, AgentInteractionResult } from './agentInteraction.js'
+import type { AgentGiftResult } from './agentQqGift.js'
+import type { AgentRedPacketResult } from './agentQqRedPacket.js'
+import type { AgentQzoneOperation, AgentQzoneResult } from './agentQzone.js'
+
+export interface AgentQqActionGuard {
+  readonly signal: AbortSignal
+  isCurrent(): boolean
+  ensureCurrent(): Promise<void>
+}
+export type AgentQqActionRunner = <T extends AgentGiftResult | AgentRedPacketResult | AgentQzoneResult>(
+  kind: 'gift' | 'red-packet' | 'qzone', operation: (guard: AgentQqActionGuard) => Promise<T>,
+) => Promise<T>
 
 export interface AgentToolMessage {
   readonly text: string
@@ -17,8 +32,11 @@ export interface AgentToolMessage {
 export interface AgentToolRequest {
   readonly messageId: string
   readonly text: string
+  /** Original verified message time; absent sources cannot create deferred actions. */
+  readonly occurredAt?: number
   readonly mentions: readonly PlatformUserRef[]
   readonly replyAuthor?: PlatformUserRef
+  readonly replyMessageId?: string
 }
 
 export interface AgentToolContext {
@@ -28,6 +46,8 @@ export interface AgentToolContext {
   /** Verified current user request, never a model-supplied identity or prior wake. */
   readonly request?: AgentToolRequest
   readonly botUserId?: string
+  /** Verified stable peer of this private conversation; never model-selected. */
+  readonly privatePeer?: PlatformUserRef
   /** Captured role presentation only; no system prompt, native event or mutable persona source. */
   readonly persona?: { readonly name: string; readonly version: string; readonly aliases?: readonly string[]; readonly guard?: Readonly<PersonaGuardConfig> }
   /** Recheck immediately before each external request or side effect. */
@@ -46,8 +66,17 @@ export interface AgentToolContext {
   sendVideo?(video: AgentVideoBytes): Promise<DeliveryReceipt>
   /** A provider-produced music card, sharing this turn's fixed group and send budget. */
   sendMusic?(music: AgentMusicCard): Promise<DeliveryReceipt>
+  sendVideoCard?(card: AgentVideoCard, guard?: { readonly signal: AbortSignal; isCurrent(): boolean; ensureCurrent?(): Promise<void> }): Promise<DeliveryReceipt>
   /** One validated forward in this human group turn's fixed conversation and send budget. */
-  sendMediaRelay?(plan: AgentMediaRelayPlan): Promise<DeliveryReceipt>
+  sendMediaRelay?(plan: AgentMediaRelayPlan, guard?: { readonly signal: AbortSignal; isCurrent(): boolean; ensureCurrent?(): Promise<void> }): Promise<DeliveryReceipt>
+  /** A bounded non-message interaction plan in this turn's fixed conversation; confirmed does not invent a message ID. */
+  interact?(plan: AgentInteractionPlan): Promise<AgentInteractionResult>
+  /** Host queue and budget for explicitly enabled QQ extension effects. */
+  readonly runQqAction?: AgentQqActionRunner
+  qzone?(operation: AgentQzoneOperation): Promise<AgentQzoneResult>
+  qzoneAffinity?(userId: string): number
+  qzoneCandidates?(): Promise<readonly string[]>
+  reviewQqText?(text: string): Promise<boolean>
   /** Reauthorize a known source in this binding without disclosing its current contents. */
   isSourceAvailable?(source: { readonly messageId: string; readonly author: PlatformUserRef }): Promise<boolean>
   /** Send one bounded bundle to this turn's fixed conversation, using its existing send budget. */
@@ -63,6 +92,8 @@ export interface AgentToolContext {
   readHistory?(input: Record<string, unknown>): Promise<string>
   /** Current/reply/recent human file, current repository entry or explicitly supplied public URL. */
   readFile?(input: AgentFileRequest): Promise<AgentFileBytes>
+  /** First video from this verified human trigger and its quoted/forwarded source, only for this turn. */
+  readVideo?(): Promise<AgentVideoInput>
   /** Only this binding's shared repository; names/paths are untrusted temporary data. */
   listFiles?(input: { readonly query?: string; readonly folderPath?: string }): Promise<AgentFileListing>
 }

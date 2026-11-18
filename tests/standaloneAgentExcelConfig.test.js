@@ -3,7 +3,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { readStandaloneAgentConfig } from '../dist/backend/bootstrap/standaloneAgentConfig.js'
+import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
+
+const defaultTools = {
+  qqActions: {
+    qzone: { enabled: false }, gift: { enabled: false },
+    redPackets: { enabled: false, allowExplicit: false, allowRecentSearch: false, allowReferenceFallback: false,
+      allowPasswordSend: false, recentLimit: 100, automatic: { enabled: false, toolConfigured: false, allowPasswordSend: false } },
+  },
+  deferredActions: { enabled: false, rules: [], migrationApprovals: [] },
+}
+
+const { readStandaloneAgentConfig } = await importBilibiliHost('bootstrap/standaloneAgentConfig.js')
 
 test('Excel is explicitly enabled with a closed boolean boundary and no additional model credentials', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-excel-config-'))
@@ -14,8 +25,8 @@ test('Excel is explicitly enabled with a closed boolean boundary and no addition
     fs.writeFileSync(file, JSON.stringify({ version: 1, instance: 'excel-config', model: { baseUrl: 'https://main.example/v1', name: 'main-model', apiKeyEnv: 'TEST_MAIN_KEY' }, connections: [{ id: 'main', url: 'ws://127.0.0.1:3001' }], ...(excel === undefined ? {} : { tools: { excel } }) }))
     return readStandaloneAgentConfig(file, { TEST_MAIN_KEY: 'main-key' })
   }
-  assert.deepEqual(read().tools, {})
-  assert.deepEqual(read({ enabled: false }).tools, {})
+  assert.deepEqual(read().tools, defaultTools)
+  assert.deepEqual(read({ enabled: false }).tools, defaultTools)
   assert.deepEqual(read({ enabled: true }).tools.excel, { enabled: true })
   for (const input of [null, false, [], {}, { enabled: 1 }, { enabled: true, url: 'https://arbitrary.example' }, { enabled: true, path: '/private' }]) assert.throws(() => read(input))
 })

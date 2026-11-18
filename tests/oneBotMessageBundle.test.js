@@ -4,7 +4,9 @@ import { createServer } from 'node:http'
 import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import WebSocket, { WebSocketServer } from 'ws'
-import { createOneBotConnection } from '../dist/backend/adapters/oneBotConnection.js'
+import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
+
+const { createOneBotConnection } = await importBilibiliHost('adapters/oneBotConnection.js')
 
 const account = { platform: 'qq', namespace: 'global', id: '123456789' }
 const target = { account, kind: 'group', id: '315320' }

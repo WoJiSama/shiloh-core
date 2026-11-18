@@ -234,7 +234,8 @@ test('both QQ hosts reject collisions with the configured role state identity', 
   assert.equal(selected.binding.personaId, 'shared')
 
   library.upsert({name:'冲突的历史人设'}, {preferId:'agent:daily'})
-  assert.throws(() => standalone.resolvePersona(target), /角色状态标识与现有人设 ID 冲突/)
+  assert.equal(standalone.resolvePersona(target), undefined)
+  assert.throws(() => readStandaloneAgentConfig(standaloneFile, {MODEL_KEY:'test-model-key'}), /角色状态标识与现有人设 ID 冲突/)
   assert.equal(await host.handleTool(event()), false)
   assert.match(warnings.at(-1), /角色状态标识与现有人设 ID 冲突/)
 })

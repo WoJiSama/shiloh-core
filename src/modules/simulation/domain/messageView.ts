@@ -18,18 +18,20 @@ export function agoText(at: number, now: number): string {
 /** 单条消息的紧凑视图：删空字段、epoch 换 at/ago（防沉睡后把旧消息当刚发的）。 */
 export function compactSimMessage(message: SimMessage, now: number): string {
   const media = message.imageCount > 0 ? ` [附图×${message.imageCount}]` : ''
+  const videos = message.videoCount ? ` [视频×${message.videoCount}]` : ''
   const files = message.files?.length ? ` [文件：${message.files.map((file, index) => `${index + 1}.${file.name}`).join('；')}]` : ''
   const forward = message.forwardId ? ' [合并转发，可用 simGetForward 查看]' : ''
   const quoteImages = message.quoteSource?.image?.count ?? message.quoteImageUrls?.length ?? 0
   const quoteFiles = message.quoteSource?.file?.files
-  const quoteMedia = (quoteImages ? `（附${quoteImages}张图）` : '') + (quoteFiles?.length ? `（引用文件：${quoteFiles.map((file, index) => `${index + 1}.${file.name}`).join('；')}${message.files?.length ? '；本条序号仅读直接文件' : ''}）` : '')
+  const quoteVideo = message.quoteSource?.video
+  const quoteMedia = (quoteImages ? `（附${quoteImages}张图）` : '') + (quoteVideo?.count ? `（视频×${quoteVideo.count}）` : '') + (quoteVideo?.hasForward ? '（合并转发）' : '') + (quoteFiles?.length ? `（引用文件：${quoteFiles.map((file, index) => `${index + 1}.${file.name}`).join('；')}${message.files?.length ? '；本条序号仅读直接文件' : ''}）` : '')
   // 引用标记：引用你的话 vs 引用别人的话（带被引用人+原文——判断"这句话对谁说"的关键信号，引用第三方时别抢话）
   const quoted = message.quoteToSelf
     ? `[引用你的话${message.quoteText ? `：${message.quoteText}` : ''}${quoteMedia}]`
     : message.quoteAuthor ? `[引用 ${message.quoteAuthor}${message.quoteText ? `：${message.quoteText}` : ''}${quoteMedia}]` : quoteMedia ? `[引用${quoteMedia}]` : ''
   const self = message.atSelf ? '[@你]' : ''
   const other = message.atOther ? '[@了其他群友]' : ''
-  return `#${message.seq} ${atClock(message.at)}(${agoText(message.at, now)}) ${message.name}${self}${other}: ${quoted}${message.text}${media}${files}${forward}`
+  return `#${message.seq} ${atClock(message.at)}(${agoText(message.at, now)}) ${message.name}${self}${other}: ${quoted}${message.text}${media}${videos}${files}${forward}`
 }
 
 export interface SimSnapshot {

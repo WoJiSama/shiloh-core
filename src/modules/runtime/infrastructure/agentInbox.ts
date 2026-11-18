@@ -2,7 +2,24 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { ConversationAddress, PlatformAccountRef } from '../../../contracts/agentBinding.js'
 import type { PlatformConversationEvent, PlatformNudgeEvent } from '../../../contracts/platformConnection.js'
 import type { PersonMemoryCommand } from '../../memory/domain/personMemoryCommands.js'
-import { conversationAddressKey, isConversationAddress, platformAccountKey } from '../domain/agentBindings.js'
+import { conversationAddressKey, isConversationAddress, isPlatformAccount, platformAccountKey } from '../domain/agentBindings.js'
+
+export interface AgentInboxGroupLog {
+  readonly agentId: string
+  readonly globalEpoch: string
+  readonly sceneEpoch: string
+  /** Present only when deterministic dice was authorized at admission. */
+  readonly dicePolicy?: string
+}
+
+export interface AgentInboxPrivacyOwner {
+  readonly agentId: string
+}
+
+export interface AgentInboxGroupLogIngress {
+  readonly kind: 'group-log'
+  readonly groupLog: AgentInboxGroupLog
+}
 
 export interface AgentInboxRedis {
   get(key: string): Promise<string | null>
@@ -10,9 +27,11 @@ export interface AgentInboxRedis {
 }
 
 export type AgentInboxEntry = {
-  event: Exclude<PlatformConversationEvent, PlatformNudgeEvent>
+  event: Exclude<PlatformConversationEvent, PlatformNudgeEvent | { readonly kind: 'red-packet' }>
   bindingToken?: string
   privacyCommand?: PersonMemoryCommand
+  groupLog?: AgentInboxGroupLog
+  privacyOwner?: AgentInboxPrivacyOwner
 } | {
   event: PlatformNudgeEvent
   bindingToken: string
@@ -24,7 +43,7 @@ export interface TextInbox {
   readonly kind: 'private' | 'group'
 }
 
-export type AgentInboxQueue = TextInbox | { readonly account: PlatformAccountRef; readonly kind: 'simulation' | 'privacy' }
+export type AgentInboxQueue = TextInbox | { readonly account: PlatformAccountRef; readonly kind: 'simulation' | 'privacy' | 'group-log' }
 
 function queueKey(queue: AgentInboxQueue): string {
   const kind = queue.kind === 'group' ? 'group-text' : queue.kind
@@ -51,6 +70,7 @@ export function inboxEventTarget(event: PlatformConversationEvent | undefined): 
   switch (event?.kind) {
     case 'message': return event.message?.conversation
     case 'recall':
+    case 'red-packet':
     case 'nudge': return event.target
   }
 }
@@ -75,6 +95,15 @@ const head = `return redis.call('LINDEX', KEYS[1], 0)`
 const length = `return redis.call('LLEN', KEYS[1])`
 const acknowledge = `
 if redis.call('LINDEX', KEYS[1], 0) ~= ARGV[1] then return -1 end
+redis.call('LPOP', KEYS[1])
+return redis.call('LLEN', KEYS[1])`
+const forward = `
+if redis.call('LINDEX', KEYS[1], 0) ~= ARGV[1] then return -1 end
+local destinationType = redis.call('TYPE', KEYS[2]).ok
+if destinationType ~= 'none' and destinationType ~= 'list' then return -2 end
+if redis.call('LLEN', KEYS[2]) >= tonumber(ARGV[3]) then return -3 end
+redis.call('RPUSH', KEYS[2], ARGV[2])
+if ARGV[4] ~= '' then redis.call('EXPIRE', KEYS[2], ARGV[4]) end
 redis.call('LPOP', KEYS[1])
 return redis.call('LLEN', KEYS[1])`
 const revokeTextSource = `
@@ -112,6 +141,34 @@ redis.call('SET', KEYS[1], 'attempted', 'KEEPTTL')
 return 1`
 const maxQueuedEvents = 10_000
 export const textConversationSeconds = 3_600
+
+const internalId = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u
+const epochToken = /^(?:0|[1-9][0-9]{0,15})$/u
+function metadata(value: unknown, keys: readonly string[]): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value)) ||
+      Reflect.ownKeys(value).some(key => typeof key !== 'string' || !keys.includes(key) || !Object.hasOwn(Object.getOwnPropertyDescriptor(value, key)!, 'value'))) {
+    throw new Error('平台收件归属元数据无效')
+  }
+  return value as Record<string, unknown>
+}
+function groupLogMetadata(value: unknown): AgentInboxGroupLog {
+  const row = metadata(value, ['agentId', 'globalEpoch', 'sceneEpoch', 'dicePolicy'])
+  if (typeof row.agentId !== 'string' || !internalId.test(row.agentId) ||
+      typeof row.globalEpoch !== 'string' || !epochToken.test(row.globalEpoch) ||
+      typeof row.sceneEpoch !== 'string' || !epochToken.test(row.sceneEpoch) ||
+      Object.hasOwn(row, 'dicePolicy') && (typeof row.dicePolicy !== 'string' || !/^[a-f0-9]{64}$/u.test(row.dicePolicy))) throw new Error('平台团录收件归属无效')
+  return { agentId: row.agentId, globalEpoch: row.globalEpoch, sceneEpoch: row.sceneEpoch,
+    ...(typeof row.dicePolicy === 'string' ? { dicePolicy: row.dicePolicy } : {}) }
+}
+function privacyOwnerMetadata(value: unknown): AgentInboxPrivacyOwner {
+  const row = metadata(value, ['agentId'])
+  if (typeof row.agentId !== 'string' || !internalId.test(row.agentId)) throw new Error('平台隐私收件归属无效')
+  return { agentId: row.agentId }
+}
+function validBindingToken(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 8192 && !/[\u0000-\u001f\u007f-\u009f]/u.test(value)
+}
 
 export interface TextHistoryTurn {
   user: string
@@ -180,9 +237,10 @@ export function createAgentInbox(client: AgentInboxRedis) {
       }))
       return accounts.filter((_account, index) => pending[index])
     },
-    async accept(entry: { event: PlatformConversationEvent; bindingToken?: string; privacyCommand?: PersonMemoryCommand }, text?: TextInbox,
-      setPrivacyPending?: (pending: boolean) => void): Promise<AgentInboxQueue> {
+    async accept(entry: { event: PlatformConversationEvent; bindingToken?: string; privacyCommand?: PersonMemoryCommand; privacyOwner?: AgentInboxPrivacyOwner }, text?: TextInbox,
+      setPrivacyPending?: (pending: boolean) => void, ingress?: AgentInboxGroupLogIngress): Promise<AgentInboxQueue> {
       const { event } = entry
+      if (event.kind === 'red-packet') throw new Error('红包凭证不能进入普通消息收件队列')
       const target = inboxEventTarget(event)
       if (!isConversationAddress(target)) throw new Error('平台事件缺少有效会话地址')
       if (text && (text.kind !== target.kind || platformAccountKey(text.account) !== platformAccountKey(target.account))) {
@@ -191,7 +249,19 @@ export function createAgentInbox(client: AgentInboxRedis) {
       const privacyCommand = entry.privacyCommand
       if (privacyCommand && (event.kind !== 'message' || !entry.bindingToken ||
           (target.kind !== 'group' && target.kind !== 'private'))) throw new Error('隐私指令缺少有效会话归属')
-      const queue: AgentInboxQueue = { account: target.account, kind: privacyCommand ? 'privacy' : target.kind === 'private' ? 'private' : text?.kind ?? 'simulation' }
+      let groupLog: AgentInboxGroupLog | undefined
+      if (ingress !== undefined) {
+        const input = metadata(ingress, ['kind', 'groupLog'])
+        if (input.kind !== 'group-log' || event.kind !== 'message' || target.kind !== 'group' || !validBindingToken(entry.bindingToken)) {
+          throw new Error('平台团录收件缺少有效群消息归属')
+        }
+        groupLog = groupLogMetadata(input.groupLog)
+      }
+      const privacyOwner = entry.privacyOwner === undefined ? undefined : privacyOwnerMetadata(entry.privacyOwner)
+      if (privacyOwner && (event.kind !== 'message' || !validBindingToken(entry.bindingToken) || (target.kind !== 'group' && target.kind !== 'private'))) {
+        throw new Error('平台隐私收件缺少有效会话归属')
+      }
+      const queue: AgentInboxQueue = { account: target.account, kind: privacyCommand ? 'privacy' : groupLog ? 'group-log' : target.kind === 'private' ? 'private' : text?.kind ?? 'simulation' }
       const keys = [queueKey(queue)]
       let stored: AgentInboxEntry
       if (event.kind === 'nudge') {
@@ -203,7 +273,8 @@ export function createAgentInbox(client: AgentInboxRedis) {
         const messageId = event.kind === 'message' ? event.message.messageId : event.messageId
         if (!messageId) throw new Error('平台事件缺少消息标识')
         keys.push(eventKey(event.kind, target, messageId))
-        stored = { event, ...(entry.bindingToken ? { bindingToken: entry.bindingToken } : {}), ...(privacyCommand ? { privacyCommand } : {}) }
+        stored = { event, ...(entry.bindingToken ? { bindingToken: entry.bindingToken } : {}), ...(privacyCommand ? { privacyCommand } : {}),
+          ...(groupLog ? { groupLog } : {}), ...(privacyOwner ? { privacyOwner } : {}) }
       }
       const payload = JSON.stringify(stored)
       if (Buffer.byteLength(payload) > 64 * 1024) throw new Error('平台事件超出收件大小限制')
@@ -215,6 +286,35 @@ export function createAgentInbox(client: AgentInboxRedis) {
       if (!Number.isSafeInteger(result) || result < 0) throw new Error('平台收件队列暂时无法接收消息')
       if (privacyCommand) setPrivacyPending?.(result > 0)
       return queue
+    },
+    /** Transfer one admitted group message without creating or changing its deduplication receipt. */
+    async forward(raw: string, sourceQueue: AgentInboxQueue, destinationQueue: AgentInboxQueue, replacement?: AgentInboxEntry): Promise<void> {
+      if (sourceQueue.kind !== 'group-log' || !['group', 'simulation'].includes(destinationQueue.kind) ||
+          !isPlatformAccount(sourceQueue.account) || !isPlatformAccount(destinationQueue.account) ||
+          platformAccountKey(sourceQueue.account) !== platformAccountKey(destinationQueue.account)) throw new Error('平台团录收件转发目标无效')
+      const original: AgentInboxEntry = JSON.parse(raw)
+      const stored = replacement ?? original
+      if (original?.event?.kind !== 'message' || stored?.event?.kind !== 'message') throw new Error('平台团录收件转发消息无效')
+      const target = inboxEventTarget(original.event), nextTarget = inboxEventTarget(stored.event)
+      if (!isConversationAddress(target) || target.kind !== 'group' || !isConversationAddress(nextTarget) ||
+          conversationAddressKey(target) !== conversationAddressKey(nextTarget) ||
+          platformAccountKey(target.account) !== platformAccountKey(sourceQueue.account) ||
+          !original.event.message.messageId || original.event.message.messageId !== stored.event.message.messageId ||
+          !validBindingToken(original.bindingToken) || !validBindingToken(stored.bindingToken) ||
+          'privacyCommand' in original && original.privacyCommand !== undefined ||
+          'privacyCommand' in stored && stored.privacyCommand !== undefined) throw new Error('平台团录收件转发消息归属无效')
+      const groupLog = groupLogMetadata('groupLog' in original ? original.groupLog : undefined)
+      const originalOwner = 'privacyOwner' in original ? original.privacyOwner : undefined
+      const owner = originalOwner === undefined ? undefined : privacyOwnerMetadata(originalOwner)
+      if ('groupLog' in stored && stored.groupLog !== undefined && JSON.stringify(groupLogMetadata(stored.groupLog)) !== JSON.stringify(groupLog) ||
+          'privacyOwner' in stored && stored.privacyOwner !== undefined && JSON.stringify(privacyOwnerMetadata(stored.privacyOwner)) !== JSON.stringify(owner)) {
+        throw new Error('平台团录收件转发归属已改变')
+      }
+      const payload = JSON.stringify({ event: stored.event, bindingToken: stored.bindingToken, groupLog, ...(owner ? { privacyOwner: owner } : {}) })
+      if (Buffer.byteLength(payload) > 64 * 1024) throw new Error('平台事件超出收件大小限制')
+      const remaining = Number(await client.eval(forward, { keys: [queueKey(sourceQueue), queueKey(destinationQueue)],
+        arguments: [raw, payload, String(maxQueuedEvents), destinationQueue.kind === 'group' ? String(textConversationSeconds) : ''] }))
+      if (!Number.isSafeInteger(remaining) || remaining < 0) throw new Error('平台团录收件暂时无法转发消息')
     },
     async next(queue: AgentInboxQueue, setPrivacyPending?: (pending: boolean) => void): Promise<{ raw: string; entry: AgentInboxEntry } | null> {
       const raw = await client.eval(head, { keys: [queueKey(queue)], arguments: [] })
@@ -258,6 +358,12 @@ export function createAgentInbox(client: AgentInboxRedis) {
     },
     async confirmTextReply(target: ConversationAddress, messageId: string, recallVersion: string): Promise<boolean> {
       return await transitionText(target, messageId, recallVersion, 'attempted', 'confirmed-text')
+    },
+    async confirmTextMedia(target: ConversationAddress, messageId: string, recallVersion: string): Promise<boolean> {
+      return await transitionText(target, messageId, recallVersion, 'action-attempted', 'confirmed-media')
+    },
+    async confirmTextInteraction(target: ConversationAddress, messageId: string, recallVersion: string): Promise<boolean> {
+      return await transitionText(target, messageId, recallVersion, 'action-attempted', 'confirmed-action')
     },
     async textActionReceipt(target: ConversationAddress, messageId: string): Promise<string | undefined> {
       const state = await client.get(eventKey('message', target, messageId))

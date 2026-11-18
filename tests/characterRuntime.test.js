@@ -22,7 +22,8 @@ let callSequence = 0
 let incomingMessageId = 0
 const toolCall = (name, args) => ({ id: `test-call-${++callSequence}`, type: 'function', function: { name, arguments: JSON.stringify(name === 'simSendMessage' ? { continuation: 'chat', ...args } : args) } })
 const tools = (...calls) => ({ role: 'assistant', content: '', tool_calls: calls })
-const quiet = () => ({ role: 'assistant', content: '' })
+const rawEmpty = () => ({ role: 'assistant', content: '' })
+const finishSilently = () => tools(toolCall('simFinishTurn', { choice: 'silent', reason: '本次测试回合明确安静结束' }))
 const finalText = content => ({ role: 'assistant', content })
 
 async function waitFor(check, description, timeoutMs = 6000) {
@@ -47,7 +48,7 @@ function seedSession(kv, groupId, botId, clock) {
 function fixture({
   kv = new Map(), clock = { value: BASE_AT }, botId = BOT,
   identity = { id: 'shiloh', name: '希洛', systemContent: '喜欢独立游戏' },
-  groups = [GROUP], script = () => quiet(), execute, writeFault, onSave, send, review, recordTokens,
+  groups = [GROUP], script = () => finishSilently(), execute, writeFault, onSave, send, review, recordTokens,
   proactiveProbability = 0, seed = true, maxToolRounds = 8, maxSendsPerTurn, consistencyEnabled,
   runCharacterWorker, recordToolResult, judgeSocialPermission, getPersona, loadDelegatedMemories,
   getSelf, handlesTarget, messageActions, getTodaySpendCny, durableIngress, isAccountReady, readFault,
@@ -185,7 +186,7 @@ for (const type of ['image', 'forward']) {
       getForwardContent: async () => ({ lines: ['转发夹具'], imageUrls: urls }),
       async describeImages() { visionCalls++; return '旧回合图片描述' },
       script: (_request, index) => index === 0
-        ? tools(toolCall(type === 'image' ? 'simGetMessageImages' : 'simGetForward', { seq: 1 })) : quiet(),
+        ? tools(toolCall(type === 'image' ? 'simGetMessageImages' : 'simGetForward', { seq: 1 })) : finishSilently(),
     })
     t.after(() => h.runtime.stop())
     await h.runtime.ingest({ version: 1, conversation: binding.target, sender: { ...binding.target.account, id: '30000' },
@@ -213,7 +214,7 @@ test('legacy QQ vision keeps its live binding check and drops a late result', as
       await finishVision.promise
       return '失效图片的描述'
     },
-    script: (_request, index) => index === 0 ? tools(toolCall('simGetMessageImages', { seq: 1 })) : quiet(),
+    script: (_request, index) => index === 0 ? tools(toolCall('simGetMessageImages', { seq: 1 })) : finishSilently(),
   })
   t.after(() => { finishVision.resolve(); h.runtime.stop() })
   await h.runtime.ingest({ version: 1, conversation: binding.target, sender: { ...binding.target.account, id: '30000' },
@@ -298,10 +299,10 @@ test('simulation isolates identical QQ and channel IDs through ingress, budget, 
     kv.set(sessionKey(key), JSON.stringify(state))
   }
   const restarted = fixture({ ...options, script: request => {
-    if (request.messages.some(message => message.role === 'tool')) return quiet()
+    if (request.messages.some(message => message.role === 'tool')) return finishSilently()
     const context = request.messages.map(message => String(message.content)).join('\n')
     if (context.includes(texts[3])) return tools(toolCall('simSendMessage', { messages: ['乙租户恢复成功'], atUserIds: ['member:40000'], replyToSeq: 1 }))
-    return quiet()
+    return finishSilently()
   } })
   t.after(() => restarted.runtime.stop())
   await restarted.runtime.sweepOnce()
@@ -473,7 +474,7 @@ test('messages for a new binding wait for the previous live turn and preserve bo
     getPersona:()=>({personaId:`agent:${binding.agentId}`,persona:{name:'希洛'},systemContent:'',binding}),
     script:async(_request,index)=>{
       if(index===0){enter();await waiting}
-      return quiet()
+      return finishSilently()
     },
   })
   t.after(()=>{release();h.runtime.stop()})
@@ -552,7 +553,8 @@ function seededGoal(harness, id = 'goal-seeded') {
 }
 
 test('当前请求给出动态阶段、剩余轮数和可见来源，普通聊天不会自动创建角色状态', async () => {
-  const h = fixture()
+  // This assertion intentionally exercises ordinary final text without an explicit decision.
+  const h = fixture({ script: () => finalText('[SILENT]') })
   try {
     await h.ingest('只是聊聊，不用记住或安排什么'); await idle(h, 1)
     assert.deepEqual(turnContext(h.calls[0]), { phase: 'acting', remainingToolRounds: 8, focusedGoalId: null, visibleEvidenceRefs: ['message:1'] })
@@ -569,7 +571,7 @@ const finishGoal = { title: '收尾中保存的研究计划', motivation: '这�
 test('correcting a shared source retains the correction through overview cleanup and prevents stale history', async () => {
   const observed = []
   const finish = toolCall('simFinishTurn', { choice: 'chat', reason: '修正原观点', memories: [{ kind: 'opinion', content: '更正后的观点', epistemic: 'inferred', supersedes: 'old', evidenceRefs: ['memory:old', 'message:1'] }] })
-  const h = fixture({ script: (_r, i) => i === 0 ? tools(finish) : quiet(), recordToolResult: result => observed.push(result) })
+  const h = fixture({ script: (_r, i) => i === 0 ? tools(finish) : finishSilently(), recordToolResult: result => observed.push(result) })
   const scope = h.scope(), key = characterKey(scope)
   h.kv.set(key, JSON.stringify(addCharacterMemory(createEmptyCharacterState(scope), { id: 'old', kind: 'opinion', content: '旧观点', epistemic: 'inferred', evidenceRefs: ['message:1'] }, ['message:1'], BASE_AT)))
   const redis = { get: async key => h.kv.get(key) ?? null, set: async (key, value) => { h.kv.set(key, value); return 'OK' } }
@@ -654,7 +656,7 @@ test('a bound commitment waits through disconnect and can start an empty session
     messageActions: { async send(action) { deliveries.push(action); return { state: 'sent', messageId: 'commitment-confirmed' } } },
     script: (request, index) => {
       assert.ok(JSON.stringify(request).includes('迁入的待执行托付'))
-      return index === 0 ? tools(toolCall('simSendMessage', { continuation: 'chat', messages: ['到时间了，记得喝水'] })) : quiet()
+      return index === 0 ? tools(toolCall('simSendMessage', { continuation: 'chat', messages: ['到时间了，记得喝水'] })) : finishSilently()
     },
   })
   try {
@@ -698,7 +700,7 @@ test('a first group message is retained when it arrives during commitment sessio
     },
     script: (_request, index) => index === 0
       ? tools(toolCall('simFinishTurn', { choice: 'chat', reason: '执行到期承诺', messages: ['现在提醒你喝水'] }))
-      : quiet(),
+      : finishSilently(),
   })
   try {
     const task = h.runtime.wakeForCommitment(GROUP, '保留同时到达的群消息', {
@@ -721,7 +723,7 @@ test('a first group message is retained when it arrives during commitment sessio
 test('commitment ownership, cancellation, empty turns and unknown delivery are distinguished', async () => {
   for (const kind of ['cancelled', 'wrong-bot', 'empty', 'unknown', 'failed']) {
     let calls = 0
-    const h = fixture({ script: () => kind === 'empty' ? quiet() : tools(toolCall('simFinishTurn', { choice: 'chat', reason: '执行', messages: ['本次托付结果'] })), send: async () => { if (kind === 'unknown') return { ok: false, unknown: true }; return { ok: false, error: 'explicit rejection' } } })
+    const h = fixture({ script: () => kind === 'empty' ? rawEmpty() : tools(toolCall('simFinishTurn', { choice: 'chat', reason: '执行', messages: ['本次托付结果'] })), send: async () => { if (kind === 'unknown') return { ok: false, unknown: true }; return { ok: false, error: 'explicit rejection' } } })
     try {
       const result = await h.runtime.wakeForCommitment(GROUP, '独立托付', { taskId: kind, botId: kind === 'wrong-bot' ? 'another' : BOT, isCurrent: async () => kind !== 'cancelled', beforeExecution: async () => { calls++; return true } })
       assert.equal(result.status, ['cancelled', 'wrong-bot'].includes(kind) ? 'cancelled' : kind === 'unknown' ? 'unknown' : 'failed', kind)
@@ -735,7 +737,7 @@ test('commitments wait for an ordinary turn and concurrent duplicate claims exec
   let release, entered
   const held = new Promise(resolve => { release = resolve }), modelEntered = new Promise(resolve => { entered = resolve })
   const h = fixture({ script: async (_request, index) => {
-    if (index === 0) { entered(); await held; return quiet() }
+    if (index === 0) { entered(); await held; return finishSilently() }
     return tools(toolCall('simFinishTurn', { choice: 'chat', reason: '兑现独立托付', messages: [`结果 ${index}`] }))
   } })
   let claims = 0
@@ -758,7 +760,7 @@ test('commitment external tool unknown and partial success with a later failure 
   for (const partial of [false, true]) {
     const h = fixture({
       script: (_request, index) => index === 0
-        ? tools(...(partial ? [toolCall('simSendMessage', { messages: ['已发送的一部分'] })] : []), toolCall('searchInformationTool', {})) : quiet(),
+        ? tools(...(partial ? [toolCall('simSendMessage', { messages: ['已发送的一部分'] })] : []), toolCall('searchInformationTool', {})) : finishSilently(),
       execute: async () => partial ? { kind: 'tool_outcome', status: 'error', error: { message: 'explicit rejection' } } : { kind: 'tool_outcome', status: 'unknown', error: { message: 'accepted then disconnected' } },
     })
     try {
@@ -797,7 +799,7 @@ test('worker artifact persistence failure preserves unknown and blocks a second 
   let failWorkspace = false
   const task = { kind: 'research', instruction: '研究来源里的游戏', evidenceRefs: ['memory:worker-save-source'] }
   const h = fixture({
-    script: (_request, index) => index === 0 ? tools(toolCall('simWorkerTask', task), toolCall('simWorkerTask', task)) : quiet(),
+    script: (_request, index) => index === 0 ? tools(toolCall('simWorkerTask', task), toolCall('simWorkerTask', task)) : finishSilently(),
     runCharacterWorker: async task => { workers.push(task); failWorkspace = true; return { status: 'succeeded', summary: '外部已执行', artifact: { title: '研究结果', content: '已得到正文' } } },
     writeFault: async key => { if (failWorkspace && key.endsWith(':workspace')) throw new Error('workspace storage failure') },
   })
@@ -1133,7 +1135,7 @@ test('最后两轮只暴露 finish 并强制 required，provider 忽视工具限
 })
 
 test('被 @ 回合工具主体来自 reason.seq，不借用第一条未读群友身份', async () => {
-  const h = fixture({ script: (_request, index) => index === 0 ? tools(toolCall('ownerAdminTool', {})) : quiet() })
+  const h = fixture({ script: (_request, index) => index === 0 ? tools(toolCall('ownerAdminTool', {})) : finishSilently() })
   try {
     await h.ingest('刚才大家在聊的背景', '30000', { at: false })
     await h.ingest('请查一下这件事', '40000')
@@ -1149,7 +1151,7 @@ test('被 @ 回合工具主体来自 reason.seq，不借用第一条未读群友
 })
 
 test('新会话第一条 @ 同样绑定真实群友，不被 bootstrap 丢失身份', async () => {
-  const h = fixture({ seed: false, script: (_request, index) => index === 0 ? tools(toolCall('ownerAdminTool', {})) : quiet() })
+  const h = fixture({ seed: false, script: (_request, index) => index === 0 ? tools(toolCall('ownerAdminTool', {})) : finishSilently() })
   try {
     await h.ingest('请执行我的请求', '40000')
     await idle(h, 2)
@@ -1161,7 +1163,7 @@ test('新会话第一条 @ 同样绑定真实群友，不被 bootstrap 丢失身
 
 test('主动空闲唤醒无 user_id，管理员工具和伪 sim 前缀工具既不暴露也不能绕过清单执行', async () => {
   const h = fixture({ proactiveProbability: 1, script: (_request, index) => index === 0
-    ? tools(toolCall('ownerAdminTool', {}), toolCall('simDangerTool', {}), toolCall('searchInformationTool', {})) : quiet() })
+    ? tools(toolCall('ownerAdminTool', {}), toolCall('simDangerTool', {}), toolCall('searchInformationTool', {})) : finishSilently() })
   try {
     await h.ingest('上一位群友的普通聊天', '30000', { at: false })
     h.clock.value += 2 * 60 * 60_000
@@ -1218,7 +1220,7 @@ test('本群相处习惯和已发送回复用于原对话对象，不冒充其�
       toolCall('simUpdateAffinity', { userId: '40000', delta: 1, reason: '对方直接说清了喜欢的称呼' }),
     )
     if (index === 1) return tools(toolCall('simFinishTurn', { choice: 'chat', reason: '回应对方', messages: ['行，那就叫你阿晓'] }))
-    return quiet()
+    return finishSilently()
   } })
   try {
     await h.ingest('叫我阿晓就行，别叫我宝')
@@ -1242,7 +1244,7 @@ test('点名接话隔离另一人的快照和历史，引用及显式查阅仍�
     if (index === 0) return tools(toolCall('simFinishTurn', { choice: 'chat', reason: '接梗', messages: ['两块饼干成交'], throughSeq: 1 }))
     if (index === 2) return tools(toolCall('simFinishTurn', { choice: 'chat', reason: '继续接梗', messages: ['第三块一人一半'] }))
     if (index === 3) return tools(toolCall('simGetMessageDetail', { seq: 2 }))
-    return quiet()
+    return finishSilently()
   } })
   try {
     await h.ingest('我给你两块饼干当工资')
@@ -1328,7 +1330,7 @@ test('触发原话被截断时不能授予主动跟进', async () => {
     judgeSocialPermission: async () => { reviewed = true; throw new Error('不应审核被截断的发言') },
     script: (_request, index) => index === 0
       ? tools(toolCall('simRemember', { kind: 'pendingEvent', content: '对方允许明天主动问', dueInMinutes: 1440, welcomeProactiveFollowUp: true }))
-      : quiet(),
+      : finishSilently(),
   })
   try {
     await h.ingest(`明天你可以主动问我。${'补充内容'.repeat(80)}不过碰巧聊到再问`)
@@ -1399,7 +1401,7 @@ test('到期自主目标自动聚焦后 wait 成功即收尾，后续发送仍�
   const nextStep = '等官方补充后继续核对玩法资料'
   const h = fixture({ script: (_request, index) => index === 0
     ? tools(toolCall('simGoal', { action: 'wait', id: goal.id, nextStep, nextCheckInMinutes: 30, outcome: '现有资料不足，先等待新来源' }))
-    : index === 1 ? tools(toolCall('simSendMessage', { messages: ['等待更新已保存后也不该继续发送这条消息'] })) : quiet() })
+    : index === 1 ? tools(toolCall('simSendMessage', { messages: ['等待更新已保存后也不该继续发送这条消息'] })) : finalText('[SILENT]') })
   try {
     await h.ingest('用于自主目标的可见来源', '30000', { at: false })
     goal = seededGoal(h)
@@ -1448,7 +1450,7 @@ for (const wake of ['atMention', 'commitment']) {
 test('自主回合仍可显式调用 simSendMessage 发送', async () => {
   const text = '刚查到这款游戏的新资料，我想分享一下'
   const h = fixture({ proactiveProbability: 1, script: (_request, index) => index === 0
-    ? tools(toolCall('simSendMessage', { messages: [text] })) : quiet() })
+    ? tools(toolCall('simSendMessage', { messages: [text] })) : finishSilently() })
   try {
     await h.ingest('上一位群友的普通聊天', '30000', { at: false })
     h.clock.value += 2 * 60 * 60_000
@@ -1483,7 +1485,7 @@ test('目标至少 15 分钟后经 sweep 唤醒，跨 runtime 重启后完成工
   const first = fixture({ kv, clock, script: (_request, index) => index === 0 ? tools(toolCall('simGoal', {
     action: 'create', title: '关注独立游戏的新资料', motivation: '这是我持续感兴趣的话题', nextStep: '搜索公开介绍',
     completionCriteria: '取得公开资料的成功工具回执', stopConditions: ['群友明确不想继续', '管理员取消'], evidenceRefs: ['message:1'],
-  })) : quiet() })
+  })) : finishSilently() })
   let goal
   try {
     await first.ingest('我最近在玩一款新的独立游戏')
@@ -1504,7 +1506,7 @@ test('目标至少 15 分钟后经 sweep 唤醒，跨 runtime 重启后完成工
         toolCall('simGoal', { action: 'complete', id: goal.id, evidenceRefs: [receipt.evidenceRef], outcome: '已取得公开搜索结果' }),
       )
     }
-    return quiet()
+    return finishSilently()
   } })
   try {
     clock.value = goal.nextCheckAt - 1
@@ -1603,7 +1605,7 @@ test('发送动作 pending 时重启会转 unknown 并暂停目标，后续 swee
 test('只读搜索 pending 时重启转 unknown，最早下次检查时间可继续目标而不伪造旧成功', async () => {
   const crash = await pendingBeforeRestart('searchInformationTool')
   const h = fixture({ ...crash, seed: false, script: (_request, index) => index === 0
-    ? tools(toolCall('searchInformationTool', {})) : quiet() })
+    ? tools(toolCall('searchInformationTool', {})) : finishSilently() })
   try {
     await h.runtime.sweepOnce()
     const recovered = (await h.runtime.describeGroup(GROUP)).character
@@ -1627,7 +1629,7 @@ test('角色记忆按 bot/persona/group 隔离，普通人设文字修改和 run
   const kv = new Map()
   const identity = { id: 'shiloh', name: '希洛', systemContent: '最初的人设文字' }
   const h = fixture({ kv, identity, groups: [GROUP, OTHER_GROUP], script: (_request, index) => index === 0
-    ? tools(toolCall('simCharacterMemory', { action: 'remember', kind: 'interest', content: '我想继续了解独立游戏', epistemic: 'desired', evidenceRefs: ['message:1'] })) : quiet() })
+    ? tools(toolCall('simCharacterMemory', { action: 'remember', kind: 'interest', content: '我想继续了解独立游戏', epistemic: 'desired', evidenceRefs: ['message:1'] })) : finishSilently() })
   try {
     await h.ingest()
     await idle(h, 2)
@@ -1666,7 +1668,7 @@ test('角色记忆按 bot/persona/group 隔离，普通人设文字修改和 run
 test('行动前 pending 回执写入失败时绝不调用外部工具，也不写入成功事实', async () => {
   let failedWrites = 0
   const h = fixture({
-    script: (_request, index) => index === 0 ? tools(toolCall('searchInformationTool', {})) : quiet(),
+    script: (_request, index) => index === 0 ? tools(toolCall('searchInformationTool', {})) : finishSilently(),
     async writeFault(key, value) {
       if (!key.startsWith('shiloh:character:v1:')) return
       const state = JSON.parse(value)
@@ -1693,7 +1695,7 @@ test('重置会话保留 bot/persona 与旧角色记忆目标，消息 seq 单�
     toolCall('simCharacterMemory', { action: 'remember', kind: 'interest', content: '我想了解大家提到的游戏', epistemic: 'desired', evidenceRefs: ['message:1'] }),
     toolCall('simGoal', { action: 'create', title: '继续了解游戏资料', motivation: '这符合我的游戏兴趣', nextStep: '找公开介绍',
       completionCriteria: '取得公开资料的成功回执', stopConditions: ['管理员取消'], evidenceRefs: ['message:1'] }),
-  ) : quiet() })
+  ) : finishSilently() })
   try {
     await h.ingest('我最近发现一款新的独立游戏')
     await idle(h, 2)
@@ -1745,7 +1747,7 @@ test('模型请求中删除来源记忆会清空历史，迟到 send/remember �
         toolCall('simCharacterMemory', { action: 'remember', kind: 'opinion', content: '从已删除来源推导的新观点', epistemic: 'inferred', evidenceRefs: [`memory:${memoryId}`] }),
       )
     }
-    return quiet()
+    return finishSilently()
   } })
   try {
     await h.ingest('这条游戏兴趣是后续的来源')
@@ -1798,7 +1800,7 @@ test('工具 reply 文本数组拒绝参数 JSON 和内部路径，普通数组�
   for (const { label, payload, blocked } of payloads) {
     let replyError
     const h = fixture({
-      script: (_request, index) => index === 0 ? tools(toolCall('searchInformationTool', {})) : quiet(),
+      script: (_request, index) => index === 0 ? tools(toolCall('searchInformationTool', {})) : finishSilently(),
       async execute(_name, _args, event) {
         try { await event.reply(payload) } catch (error) { replyError = error }
         return replyError ? { ok: false, error: 'reply was rejected' } : { ok: true, result: 'reply delivered' }
@@ -1834,7 +1836,7 @@ test('Agent 图片使用平台无关交付口并与工具文字共用发送配�
       actions.push(action)
       return { state: 'sent', messageId: 'image-confirmed' }
     } },
-    script: (_request, index) => index === 0 ? tools(toolCall('searchInformationTool', {})) : quiet(),
+    script: (_request, index) => index === 0 ? tools(toolCall('searchInformationTool', {})) : finishSilently(),
     async execute(_name, _args, event) {
       const results = await Promise.allSettled([event._sendAgentToolImage(agentToolImage), event._sendAgentToolImage(agentToolImage)])
       for (const result of results) {
@@ -1871,7 +1873,7 @@ test('图片发送结果未知会冻结后续图片和文字，明确失败不�
         if (status === 'interrupted') throw new Error('private-adapter-detail')
         return status === 'failed' ? { state: 'failed', code: 'explicit-rejection' } : { state: 'unknown' }
       } },
-      script: (_request, index) => index === 0 ? tools(toolCall('searchInformationTool', {})) : quiet(),
+      script: (_request, index) => index === 0 ? tools(toolCall('searchInformationTool', {})) : finishSilently(),
       async execute(_name, _args, event) {
         receipts.push(await event._sendAgentToolImage(agentToolImage))
         try { receipts.push(await event._sendAgentToolImage(agentToolImage)) } catch (error) { refusals.push(error.message) }
@@ -1898,7 +1900,7 @@ test('沉默或暂缓决定会阻止 Agent 图片交付', async () => {
     const h = fixture({
       messageActions: { async send() { attempts++; return { state: 'sent', messageId: 'must-not-send' } } },
       script: (_request, index) => index === 0 ? tools(toolCall('simDecide', { kind, reason: '先保留想法，不发送' }))
-        : index === 1 ? tools(toolCall('searchInformationTool', {})) : quiet(),
+        : index === 1 ? tools(toolCall('searchInformationTool', {})) : finishSilently(),
       async execute(_name, _args, event) {
         try { await event._sendAgentToolImage(agentToolImage) } catch (error) { refusal = error.message }
         return { ok: false, error: 'Image refused' }
@@ -2011,7 +2013,7 @@ test('前两次普通提交通过后阻止非收尾第三次检查，保留最�
       tools(toolCall('simCharacterMemory', { action: 'remember', kind: 'experience', epistemic: 'reported', content: '群友介绍了一款游戏', evidenceRefs: ['message:1'] })),
       tools(blocked),
       tools(toolCall('simFinishTurn', { choice: 'chat', reason: '合并到最终提交', memories: [{ kind: 'interest', epistemic: 'inferred', content: '有一点兴趣', evidenceRefs: ['message:1'] }], messages: ['最后说声谢谢'], throughSeq: 1 })),
-    ][index] || quiet(),
+    ][index] || finishSilently(),
   })
   try {
     await h.ingest(); await idle(h, 4)

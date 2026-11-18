@@ -58,8 +58,31 @@ jobs:
             tests/agentXiaohongshuRelayProvider.test.js tests/agentXiaohongshuRelayBrowser.test.js tests/agentXiaohongshuRelayReference.test.js \
             tests/agentYoutubeRelayProvider.test.js tests/agentYoutubeRelayNetworkNative.test.js tests/agentYoutubeRelayReference.test.js \
             tests/agentPixivRelayProvider.test.js tests/agentPixivRelayNetwork.test.js tests/agentPixivRelayReference.test.js \
+            tests/agentPixivSearchProvider.test.js tests/agentPixivSearchNetwork.test.js tests/agentPixivListRenderer.test.js \
+            tests/agentPixivTools.test.js tests/agentPixivSessionStore.test.js tests/agentMediaRelayToolPorts.test.js tests/standaloneAgentPixivConfig.test.js tests/standaloneAgentPixivToolsCli.test.js \
+            tests/agentBilibiliSearch.test.js tests/agentVideoCard.test.js tests/agentVideoSearchStore.test.js tests/agentVideoSearchTools.test.js \
+            tests/qqVideoCardDelivery.test.js tests/agentSimulationVideoCard.test.js tests/agentVideoCardRuntime.test.js tests/standaloneAgentVideoSearchConfig.test.js tests/standaloneAgentVideoSearchCli.test.js \
+            tests/standaloneAgentVideoSearchStartup.test.js tests/agentTextVideoRuntime.test.js tests/standaloneAgentVideoAttachmentCli.test.js \
+            tests/agentVideoInput.test.js tests/agentVideoAnalysis.test.js tests/qqMessageVideo.test.js tests/agentVideoSourceRuntime.test.js tests/standaloneAgentVideoAnalysisConfig.test.js tests/standaloneAgentVideoAnalysisCli.test.js \
             tests/agentMediaRelayRuntime.test.js tests/qqMediaShare.test.js tests/standaloneAgentMediaRelayConfig.test.js tests/standaloneAgentMediaRelay.test.js \
             tests/standaloneAgentMediaRelayCli.test.js tests/standaloneAgentDouyinRelayCli.test.js tests/standaloneAgentXiaohongshuRelayCli.test.js tests/standaloneAgentYoutubeRelayCli.test.js tests/standaloneAgentPixivRelayCli.test.js
+          BL_CHAT_AGENT_RELEASE_DIR="$agent_test_root" node --test --test-concurrency=1 \
+            tests/agentGroupLogArtifact.test.js tests/agentGroupLogRenderer.test.js tests/qqGroupLogBridge.test.js tests/qqGroupLogDelivery.test.js
+          BL_CHAT_AGENT_RELEASE_DIR="$agent_test_root" node --test --test-concurrency=1 \
+            tests/agentDiagnostics.test.js tests/agentOperationJournal.test.js tests/agentTextFailures.test.js \
+            tests/agentSimulationDiagnostics.test.js tests/agentToolDiagnostics.test.js tests/agentWorkflowDiagnostics.test.js \
+            tests/standaloneAgentDiagnosticsConfig.test.js tests/standaloneAgentDiagnosticsCli.test.js tests/standaloneAgentDiagnosticsStartup.test.js \
+            tests/agentGroupLogCommand.test.js tests/agentGroupLogInbox.test.js tests/agentGroupLogStore.test.js tests/agentGroupLogWorkflow.test.js tests/agentGroupLogRuntime.test.js \
+            tests/agentConversationActivity.test.js tests/standaloneGroupLog.test.js tests/standaloneAgentGroupLogCli.test.js
+          BL_CHAT_AGENT_RELEASE_DIR="$agent_test_root" node --test --test-concurrency=1 \
+            tests/agentBilibiliAuthService.test.js tests/agentBilibiliQualityProvider.test.js \
+            tests/agentBilibiliQualityStore.test.js tests/agentBilibiliQualityWorkflow.test.js tests/qqBilibiliAuthDelivery.test.js \
+            tests/standaloneAgentBilibiliQuality.test.js tests/standaloneAgentBilibiliQualityStartup.test.js \
+            tests/agentBilibiliQualityRuntime.test.js tests/standaloneAgentBilibiliQualityCli.test.js
+          BL_CHAT_AGENT_RELEASE_DIR="$agent_test_root" node --test --test-concurrency=1 \
+            tests/agentInteractions.test.js tests/agentInteractionTools.test.js tests/qqInteractionDelivery.test.js \
+            tests/agentInteractionRuntime.test.js tests/agentSimulationInteractions.test.js tests/agentConversationSummary.test.js \
+            tests/standaloneAgentInteractionsConfig.test.js tests/standaloneAgentInteractionsStartup.test.js tests/standaloneAgentInteractionsCli.test.js
           printf 'directory=%s\n' "$agent_artifact" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:

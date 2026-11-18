@@ -67,7 +67,8 @@ test('Pixiv preserves two model tools, closed schemas and explicit disabled acti
   assert.deepEqual(['pixivSearchTool', 'pixivDownloadTool'].map(name => f.tool(name).name), ['pixivSearchTool', 'pixivDownloadTool'])
   assert.deepEqual(Object.keys(f.tool('pixivSearchTool').parameters.properties), ['keyword', 'searchType', 'orderBy'])
   assert.deepEqual(Object.keys(f.tool('pixivDownloadTool').parameters.properties), ['target'])
-  assert.equal(f.tool('pixivSearchTool').dataPolicy, 'ephemeral'); assert.equal(f.tool('pixivDownloadTool').timeoutMs, 240000)
+  assert.equal(f.tool('pixivSearchTool').dataPolicy, undefined); assert.equal(f.tool('pixivDownloadTool').dataPolicy, undefined)
+  assert.equal(f.tool('pixivDownloadTool').timeoutMs, 240000)
 })
 test('search sends one checked card, persists twenty safe rows and shares the slot across group users', redisTest, async t => {
   const f = await fixture(t), searchContext = f.context(), outcome = await f.search({ keyword: '初音未来', searchType: 'artist', orderBy: 'popular' }, searchContext)
@@ -134,6 +135,30 @@ test('confirmed image delivery alone renews the selected session; metadata-only,
     assert.equal((await f.store.load(f.binding)).savedAt, mode === 'sent' ? NOW + 200000 : original.savedAt)
     assert.equal(f.released, 1)
   })
+})
+test('direct-ID downloads optionally renew an authorized list without depending on recalled, missing or unavailable lists', redisTest, async t => {
+  for (const mode of ['authorized', 'recalled', 'missing-port', 'throws', 'missing', 'expired']) await t.test(mode, async t => {
+    const f = await fixture(t), original = f.context()
+    if (mode !== 'missing') await f.search(undefined, original)
+    const before = await f.store.load(f.binding); f.advance(mode === 'expired' ? 300000 : 200000)
+    const ctx = f.context()
+    if (mode === 'recalled') f.knownSources.set(original.request.messageId, false)
+    if (mode === 'missing-port') ctx.isSourceAvailable = undefined
+    if (mode === 'throws') ctx.isSourceAvailable = async () => { throw Error('old source unavailable') }
+    const outcome = await f.download('126649495', ctx)
+    assert.equal(outcome.status, 'succeeded'); assert.equal(f.relays.length, 1); assert.equal(f.released, 1)
+    const after = await f.store.load(f.binding)
+    if (mode === 'missing' || mode === 'expired') assert.equal(after, undefined)
+    else assert.equal(after.savedAt, mode === 'authorized' ? NOW + 200000 : before.savedAt)
+  })
+})
+test('a direct-ID renewal captured before a new search cannot overwrite or extend the replacement list', redisTest, async t => {
+  const f = await fixture(t); await f.search(); f.advance(100000)
+  const held = gate(), reached = gate(); t.after(() => held.release())
+  f.setRelay(async () => { reached.release(); await held.promise; return sent() })
+  const pending = f.download('126649495'); await reached.promise
+  f.setSearch(async input => result({ keyword: input.keyword, items: [item(1)] })); await f.search(); const next = await f.store.load(f.binding)
+  f.advance(1000); held.release(); assert.equal((await pending).status, 'succeeded'); assert.deepEqual(await f.store.load(f.binding), next)
 })
 test('a newer list created during a download is never overwritten or extended by the old confirmed receipt', redisTest, async t => {
   const f = await fixture(t); await f.search(); f.advance(100000)

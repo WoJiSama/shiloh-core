@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { types } from 'node:util'
 import type { AgentBindingSnapshot, ConversationAddress, PlatformAccountRef } from '../contracts/agentBinding.js'
 import type { AgentMediaArtifact, AgentMediaRelayPlan, SendMediaRelayAction } from '../contracts/agentMediaRelay.js'
 import type { DeliveryReceipt } from '../contracts/delivery.js'
@@ -18,7 +19,7 @@ const failed = (code: string): DeliveryReceipt => ({ state: 'failed', code })
 const unknown = (): DeliveryReceipt => ({ state: 'unknown' })
 
 function data(input: unknown, keys: readonly string[]): Record<string, unknown> {
-  if (!input || typeof input !== 'object' || Array.isArray(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input))) throw Error('Invalid relay data')
+  if (!input || typeof input !== 'object' || types.isProxy(input) || Array.isArray(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input))) throw Error('Invalid relay data')
   const owned: Record<string, unknown> = Object.create(null)
   for (const key of Reflect.ownKeys(input)) {
     if (typeof key !== 'string' || !keys.includes(key)) throw Error('Invalid relay data')
@@ -128,7 +129,15 @@ export function createQqMediaRelayDeliveryPort(options: {
     let entryScope: ReturnType<typeof AsyncLocalStorage.snapshot>
     try { entryScope = AsyncLocalStorage.snapshot() } catch { return failed('invalid_media_relay_guard') }
     let address: ConversationAddress, targetKey: string, bindingKey: string | undefined, plan: Readonly<AgentMediaRelayPlan>, mode: SendMediaRelayAction['mode']
-    let callerSignal: AbortSignal | undefined, check: (() => boolean) | undefined
+    let callerSignal: AbortSignal | undefined, check: (() => boolean) | undefined, ensureCurrent: (() => Promise<void>) | undefined
+    try {
+      const scope = data(guard, ['signal', 'isCurrent', 'ensureCurrent'])
+      if (scope.signal !== undefined && (types.isProxy(scope.signal) || !(scope.signal instanceof AbortSignal)) ||
+          scope.isCurrent !== undefined && (typeof scope.isCurrent !== 'function' || types.isProxy(scope.isCurrent)) ||
+          scope.ensureCurrent !== undefined && (typeof scope.ensureCurrent !== 'function' || types.isProxy(scope.ensureCurrent))) return failed('invalid_media_relay_guard')
+      callerSignal = scope.signal as AbortSignal | undefined; check = scope.isCurrent as (() => boolean) | undefined
+      ensureCurrent = scope.ensureCurrent as (() => Promise<void>) | undefined
+    } catch { return failed('invalid_media_relay_guard') }
     try {
       const row = data(input, ['version', 'kind', 'target', 'binding', 'mode', 'plan'])
       if (row.version !== 1 || row.kind !== 'media-relay.send' || row.mode !== 'forward' && row.mode !== 'direct-video') return failed('invalid_media_relay')
@@ -139,8 +148,6 @@ export function createQqMediaRelayDeliveryPort(options: {
       plan = validateAgentMediaRelayPlan(row.plan, allowsText ? { allowsText } : {})
       if (mode === 'direct-video' && plan.items.some(item => item.parts.some(part => part.kind !== 'video'))) return failed('invalid_direct_video')
       if (plan.items.some(item => item.parts.some(part => part.kind === 'video' && !part.thumbnail))) return failed('video_thumbnail_missing')
-      callerSignal = guard.signal; check = guard.isCurrent
-      if (callerSignal !== undefined && !(callerSignal instanceof AbortSignal) || check !== undefined && typeof check !== 'function') return failed('invalid_media_relay_guard')
     } catch { return failed('invalid_media_relay') }
     const cancel = new AbortController(), deadline = new AbortController()
     let signal: AbortSignal
@@ -162,13 +169,18 @@ export function createQqMediaRelayDeliveryPort(options: {
       operation.then(value => { clear(); resolve(value) }, () => { clear(); reject(Error('QQ媒体转发失败')) })
       if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true })
     })
+    const ensure = async () => {
+      if (!isCurrent()) throw Error('QQ媒体转发来源已失效')
+      if (ensureCurrent) await wait(Promise.resolve().then(() => ensureCurrent!()))
+      if (!isCurrent()) throw Error('QQ媒体转发来源已失效')
+    }
     try {
       if (!isCurrent()) return failed('binding_changed')
       return await enqueue(async () => {
         const leases: BridgeLease[] = [], urls = new Map<string, string>()
         let dispatched = false, accepting = true
         try {
-          if (!isCurrent()) return failed('binding_changed')
+          await ensure()
           const artifacts = new Map<string, AgentMediaArtifact>()
           for (const item of plan.items) for (const part of item.parts) {
             if (part.kind === 'text') continue
@@ -176,7 +188,7 @@ export function createQqMediaRelayDeliveryPort(options: {
             if (part.kind === 'video' && part.thumbnail) artifacts.set(part.thumbnail.id, part.thumbnail)
           }
           for (const artifact of artifacts.values()) {
-            if (!isCurrent()) return failed('binding_changed')
+            await ensure()
             const staging = Promise.resolve().then(() => {
               if (!isCurrent()) throw Error('QQ媒体转发已取消')
               return bridge.stage(artifact, { signal, isCurrent })
@@ -188,6 +200,7 @@ export function createQqMediaRelayDeliveryPort(options: {
               urls.set(artifact.id, lease.nativeUrl)
             })
             await wait(staging)
+            await ensure()
           }
           if (!isCurrent()) return failed('binding_changed')
           const items = plan.items.map(item => Object.freeze(item.parts.map(part => Object.freeze(part.kind === 'text'
@@ -199,7 +212,8 @@ export function createQqMediaRelayDeliveryPort(options: {
           const params = Object.freeze({ [group ? 'group_id' : 'user_id']: address.id, ...(mode === 'forward'
             ? { messages: Object.freeze(items.map(content => Object.freeze({ type: 'node', data: Object.freeze({ name: 'Agent', uin: address.account.id, content }) }))) }
             : { message: Object.freeze(items.flat()) }) })
-          const result = await wait(Promise.resolve().then(() => {
+          const result = await wait(Promise.resolve().then(async () => {
+            await ensure()
             if (!isCurrent()) return failed('binding_changed')
             dispatched = true
             return withDeliveryGuard(isCurrent, () => sendApi(nativeAction, params, { isCurrent, signal, timeoutMs }))

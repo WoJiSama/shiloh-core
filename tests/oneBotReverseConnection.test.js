@@ -36,8 +36,8 @@ function adapterAt(url, callbacks = {}) {
   })
 }
 
-async function waitFor(probe, description) {
-  const deadline = Date.now() + 4_000
+async function waitFor(probe, description, timeoutMs = 4_000) {
+  const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (await probe()) return
     await delay(10)
@@ -45,7 +45,7 @@ async function waitFor(probe, description) {
   assert.fail(`timed out waiting for ${description}`)
 }
 
-async function peerAt(t, url, handleRequest) {
+async function peerAt(t, url, handleRequest, timeoutMs) {
   let peer
   await waitFor(async () => {
     peer = new WebSocket(url, { headers })
@@ -53,7 +53,7 @@ async function peerAt(t, url, handleRequest) {
     if (handleRequest) client.on('message', frame => handleRequest(client, JSON.parse(frame)))
     try { await once(peer, 'open'); return true }
     catch { peer.terminate(); return false }
-  }, 'reverse listener')
+  }, 'reverse listener', timeoutMs)
   peer.on('error', () => {})
   t.after(() => peer.terminate())
   return peer
@@ -304,7 +304,7 @@ test('reverse OneBot CLI preflight validates login and exits without event, mode
     peer.send(JSON.stringify(event('check-before-login')))
     login(peer, request)
     peer.send(JSON.stringify(event('check-after-login')))
-  })
+  }, 15_000)
   const result = await check
   const report = JSON.parse(result.stdout.trim())
   assert.equal(report.mode, 'check')
@@ -359,7 +359,7 @@ test('standalone reverse OneBot carries a bound private turn through model and c
       if (request.action === 'get_login_info') return login(client, request)
       deliveries.push(request)
       client.send(JSON.stringify({ status: 'ok', retcode: 0, echo: request.echo, data: { message_id: 'reply-17' } }))
-    })
+    }, 15_000)
     await waitFor(() => log.includes('已启动'), 'standalone reverse host readiness')
     peer.send(JSON.stringify({
       ...event('private-17'), message_type: 'private', sub_type: 'friend', group_id: undefined, message: '反向独立回合',

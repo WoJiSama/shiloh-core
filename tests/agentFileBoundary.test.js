@@ -81,7 +81,7 @@ test('tool file wrappers snapshot selection before awaits, strip raw ports and e
     await scoped.listFiles({})
     return { status: 'succeeded', content: 'done' }
   } }
-  const tools = createAgentTools({ builtIn: [definition] }, { signal: new AbortController().signal, context: () => ({ binding: {}, actor: { kind: 'user' }, isCurrent: () => true,
+  const tools = createAgentTools({ builtIn: [definition] }, { signal: new AbortController().signal, context: () => ({ binding: { target: { kind: 'group' } }, actor: { kind: 'user' }, isCurrent: () => true,
     async ensureCurrent() { if (++checks === 2) input.fileName = 'mutated.xlsx' },
     async readFile(selection, current, signal) { assert.ok(current() && !signal.aborted); captured = selection; return file },
     async listFiles(selection, current, signal) { assert.deepEqual(selection, {}); assert.ok(current() && !signal.aborted); return { files: [], totalFiles: 0, truncated: false } },

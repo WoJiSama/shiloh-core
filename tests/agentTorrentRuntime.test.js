@@ -161,7 +161,9 @@ test('Core sibling accounts admit one physical group source and share recall fen
 test('Core explicitly failed private upload reports failure without group ZIP or success confirmation', { timeout: 20000 }, async t => {
   const f = await fixture(t, { deliver: async (stage, _action, _guard, state) => stage === 'archive' ? { state: 'failed', code: 'permission_denied' } : { state: 'sent', messageId: `msg-${state.calls.length}` } })
   await f.emit(); await f.drain(); assert.equal((await f.terminal()).state, 'failed')
-  assert.deepEqual(f.calls.map(row => row.stage), ['text', 'archive', 'text']); assert.match(f.calls.at(-1).action.parts[0].text, /明确拒绝/u)
+  assert.deepEqual(f.calls.map(row => row.stage), ['text', 'archive', 'text'])
+  assert.match(f.calls.at(-1).action.parts[0].text, /查询编号：[a-f\d-]+/u)
+  assert.equal(f.requests.length, 1, 'failed upload asks the model once before using the query-reference fallback')
 })
 
 test('Core rejects a known-secret archive filename before adapter upload', { timeout: 20000 }, async t => {

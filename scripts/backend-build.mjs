@@ -8,11 +8,13 @@ const temporary = await fs.mkdtemp(path.join(root, '.build-'))
 const output = path.join(root, 'dist/backend')
 const previous = path.join(root, 'dist/backend.previous')
 try {
+  const sourceSnapshot = await sourceHashes()
   run(process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.backend.json', '--outDir', temporary])
+  if (JSON.stringify(sourceSnapshot) !== JSON.stringify(await sourceHashes())) throw new Error('Backend sources changed during build; rebuild required')
   const compiler = JSON.parse(await fs.readFile(path.join(root, 'node_modules/typescript/package.json'), 'utf8')).version
   const git = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' })
   const manifest = { schema: 1, commit: git.status === 0 ? git.stdout.trim() : null, node: process.version, compiler,
-    sources: await sourceHashes(), files: await digestFiles(temporary, await filesUnder(temporary)) }
+    sources: sourceSnapshot, files: await digestFiles(temporary, await filesUnder(temporary)) }
   await fs.writeFile(path.join(temporary, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n')
   await fs.mkdir(path.dirname(output), { recursive: true })
   await fs.rm(previous, { recursive: true, force: true })

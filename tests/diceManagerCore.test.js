@@ -3,9 +3,11 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { DiceManager } from "../domains/dice/DiceManager.js"
-import { executeDiceCommand, getCustomDiceCommandGate, getDiceCommandGate, startsWithMentionOfOtherMember } from "../domains/dice/diceCommandGateway.js"
-import { secureDiceInt, secureDiceRandom } from "../utils/diceRandom.js"
+import { importBilibiliHost } from "./helpers/bilibiliQualitySource.mjs"
+const sourceTest = process.env.BL_CHAT_AGENT_SOURCE_TEST === "1"
+const { DiceManager } = await (sourceTest ? importBilibiliHost("modules/dice/infrastructure/DiceManager.js") : import("../domains/dice/DiceManager.js"))
+const { executeDiceCommand, getCustomDiceCommandGate, getDiceCommandGate, startsWithMentionOfOtherMember } = await (sourceTest ? importBilibiliHost("modules/dice/domain/diceCommandGateway.js") : import("../domains/dice/diceCommandGateway.js"))
+const { secureDiceInt, secureDiceRandom } = await (sourceTest ? importBilibiliHost("modules/dice/infrastructure/diceRandom.js") : import("../utils/diceRandom.js"))
 
 function createRuntime(overrides = {}) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dice-core-test-"))

@@ -14,6 +14,8 @@ import { api, authState } from './lib/api'
 import AppShell from './components/AppShell.vue'
 import AuthPage from './pages/AuthPage.vue'
 import PageState from './components/PageState.vue'
+import ConfigRestartBanner from './components/ConfigRestartBanner.vue'
+import { workspace } from './lib/workspace'
 const loading = ref(true),
   error = ref('')
 let savedAppearance = 'dark'
@@ -48,6 +50,10 @@ async function boot() {
   error.value = ''
   try {
     authState.value = await api('/api/auth/state')
+    if (authState.value?.username || authState.value?.tokenWorks) {
+      await workspace.load()
+      if (workspace.mode.value === 'legacy') await api('/api/config-state').catch(() => {})
+    }
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -55,6 +61,7 @@ async function boot() {
   }
 }
 function expired() {
+  workspace.reset()
   if (authState.value) authState.value = { ...authState.value, username: null, tokenWorks: false }
 }
 function toggleTheme() {
@@ -80,6 +87,7 @@ onBeforeUnmount(() => window.removeEventListener('console:unauthorized', expired
     ><NGlobalStyle /><NMessageProvider
       ><NNotificationProvider
         ><NDialogProvider>
+          <ConfigRestartBanner />
           <div v-if="loading || error" class="boot-state">
             <PageState :loading="loading" :error="error" @retry="boot" />
           </div>

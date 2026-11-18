@@ -100,6 +100,13 @@ test("漂移防护:主链路与 utils 里所有 session.X 字段访问都已登�
   const accessed = new Set()
   for (const file of sources) {
     const src = fs.readFileSync(file, "utf8")
+    // The standalone MCP adapter owns a separate client-session lifecycle.
+    // Its abort/client/transport fields are not legacy conversation state.
+    if (file === path.join(root, 'src/modules/tools/infrastructure/agentMcpTools.ts')) {
+      assert.match(src, /interface Session\b/u)
+      assert.doesNotMatch(src, /\b(?:TurnSession|createTurnSessionStore|TURN_SESSION_FIELDS)\b/u)
+      continue
+    }
     for (const match of src.matchAll(/\bsession\??\.([A-Za-z_][A-Za-z0-9_]*)/g)) {
       accessed.add(match[1])
     }

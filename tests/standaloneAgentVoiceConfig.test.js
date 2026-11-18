@@ -3,7 +3,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { readStandaloneAgentConfig } from '../dist/backend/bootstrap/standaloneAgentConfig.js'
+import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
+
+const defaultTools = {
+  qqActions: {
+    qzone: { enabled: false }, gift: { enabled: false },
+    redPackets: { enabled: false, allowExplicit: false, allowRecentSearch: false, allowReferenceFallback: false,
+      allowPasswordSend: false, recentLimit: 100, automatic: { enabled: false, toolConfigured: false, allowPasswordSend: false } },
+  },
+  deferredActions: { enabled: false, rules: [], migrationApprovals: [] },
+}
+
+const { readStandaloneAgentConfig } = await importBilibiliHost('bootstrap/standaloneAgentConfig.js')
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-voice-config-'))
@@ -20,10 +31,10 @@ const declared = { enabled: true, appId: 'app-fixture', accessTokenEnv: 'VOICE_K
 
 test('voice is default off and disabled declarations validate without reading credentials', t => {
   const f = fixture(t)
-  assert.deepEqual(f.read().tools, {})
+  assert.deepEqual(f.read().tools, defaultTools)
   const env = Object.defineProperty({}, 'VOICE_KEY', { enumerable: true, get() { throw new Error('disabled credentials were read') } })
-  assert.deepEqual(f.read({ ...declared, enabled: false }, { env }).tools, {})
-  assert.deepEqual(f.read({ enabled: false }).tools, {})
+  assert.deepEqual(f.read({ ...declared, enabled: false }, { env }).tools, defaultTools)
+  assert.deepEqual(f.read({ enabled: false }).tools, defaultTools)
   assert.throws(() => f.read({ ...declared, enabled: false, endpoint: 'https://host.invalid/?secret=value' }), /endpoint/)
   assert.throws(() => f.read({ ...declared, enabled: false, styles: { normal: { speedRatio: 20 } } }), /speedRatio/)
 })

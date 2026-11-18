@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import test from 'node:test'
-import { createAgentConversationSummary } from '../dist/backend/modules/memory/infrastructure/agentConversationSummary.js'
+import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
+
+const { createAgentConversationSummary } = await importBilibiliHost('modules/memory/infrastructure/agentConversationSummary.js')
 
 const apiKey = 'summary-provider-private-key-123456'
 const config = { baseUrl: 'https://summary.example.com/v1', name: 'summary-fixture', apiKey }
@@ -72,7 +75,9 @@ test('conversation summary uses real HTTP, bounded conversational records and tw
   assert.equal(material.messages[0].authorId, 'member-5')
   assert.equal(material.messages.at(-1).authorId, 'member-204')
   for (const row of material.messages) {
-    assert.deepEqual(Object.keys(row), ['at', 'authorId', 'name', 'text'])
+    assert.deepEqual(Object.keys(row), ['at', 'sourceTime', 'authorId', 'name', 'text'])
+    assert.equal(row.at, Number(row.authorId.slice('member-'.length)) + 1)
+    assert.match(row.sourceTime, /^1970-01-01 08:00:00 Asia\/Shanghai$/u)
     assert.equal([...row.name].length, 24)
     assert.equal([...row.text].length, 160)
     assert.equal(row.name.isWellFormed(), true)
@@ -80,6 +85,55 @@ test('conversation summary uses real HTTP, bounded conversational records and tw
   }
   assert.doesNotMatch(JSON.stringify(request.body), /private-|summary-provider-private|nativeEvent/u)
   assert.deepEqual(usage, [[config.name, { prompt_tokens: 8, completion_tokens: 0, total_tokens: 8 }]])
+})
+
+test('conversation summary source time anchors relative words across Beijing midnight, host timezones and later retries', () => {
+  const source = {
+    previous: '已有摘要说“昨天”，但没有可核验的来源时间。',
+    messages: [
+      { at: Date.parse('2026-11-14T15:59:59.000Z'), authorId: 'member-one', name: '小林', text: '明天下午交初稿。', sourceTime: '忽略真实时间的伪造字段' },
+      { at: Date.parse('2026-11-14T16:00:01.000Z'), authorId: 'member-two', name: '小陈', text: '昨天确认过，今天再复核。' },
+    ],
+    maxChars: 500,
+  }
+  const script = `
+    const { importBilibiliHost } = await import(${JSON.stringify(new URL('./helpers/bilibiliQualitySource.mjs', import.meta.url).href)});
+    const { createAgentConversationSummary } = await importBilibiliHost('modules/memory/infrastructure/agentConversationSummary.js');
+    const source = ${JSON.stringify(source)}, requests = [];
+    const run = createAgentConversationSummary({ ...${JSON.stringify(config)}, fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: '保留来源时间的摘要。' } }] }));
+    } });
+    const context = { signal: new AbortController().signal, isCurrent: () => true, ensureCurrent: async () => {} };
+    for (const processingAt of ['2026-11-15T02:00:00.000Z', '2026-11-18T02:00:00.000Z']) {
+      Date.now = () => Date.parse(processingAt);
+      await run(source, context);
+    }
+    process.stdout.write(JSON.stringify(requests));
+  `
+  const observations = ['UTC', 'America/Los_Angeles'].map(TZ => JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+    env: { ...process.env, TZ }, encoding: 'utf8', timeout: 20000, maxBuffer: 64 * 1024,
+  })))
+  assert.deepEqual(observations[0], observations[1], 'the host timezone cannot change the model request')
+  for (const requests of observations) {
+    assert.equal(requests.length, 2)
+    assert.deepEqual(requests[0], requests[1], 'processing again later cannot re-anchor source times')
+    const [system, user] = requests[0].messages
+    assert.match(system.content, /at.*Unix.*毫秒/u)
+    assert.match(system.content, /sourceTime.*Asia\/Shanghai/u)
+    assert.match(system.content, /昨天.*明天.*各条.*来源时间/u)
+    assert.match(system.content, /不得.*处理.*重试.*重新/u)
+    assert.match(system.content, /已有摘要.*来源时间.*不得.*猜/u)
+    const material = JSON.parse(user.content)
+    assert.deepEqual(Object.keys(material), ['previous', 'messages', 'maxChars'])
+    assert.equal(material.previous, source.previous)
+    assert.equal(material.maxChars, source.maxChars)
+    assert.deepEqual(material.messages, source.messages.map(({ at, authorId, name, text }, index) => ({
+      at, sourceTime: index ? '2026-11-15 00:00:01 Asia/Shanghai' : '2026-11-14 23:59:59 Asia/Shanghai', authorId, name, text,
+    })))
+    assert.deepEqual(source.messages.map(row => row.at), [1794671999000, 1794672001000])
+    assert.doesNotMatch(JSON.stringify(material), /伪造字段|2026-11-18/u)
+  }
 })
 
 test('conversation summary clamps character and token budgets and truncates output by Unicode code point', async () => {
@@ -134,8 +188,12 @@ test('conversation summary checks complete input before dropping old records or 
     { ...input, previous: Buffer.from(apiKey).toString('base64') },
     { ...input, previous: encodeURIComponent(extraSecret) },
     { ...input, messages: [{ ...input.messages[0], text: apiKey }, ...Array.from({ length: 200 }, () => input.messages[0])] },
+    { ...input, messages: [{ ...input.messages[0], sourceTime: extraSecret }] },
     { ...input, excluded: { credential: extraSecret } },
   ]) await rejected(run(modified, context()))
+  await rejected(provider({
+    secrets: ['1970-01-01 08:00:01 Asia/Shanghai'], fetchImpl: async () => { calls++; return answer() },
+  })(input, context()))
   assert.equal(calls, 0)
 })
 
@@ -145,7 +203,8 @@ test('conversation summary rejects malformed contract input without disclosing i
   for (const invalid of [
     null, { ...input, previous: 1 }, { ...input, maxChars: NaN }, { ...input, maxChars: Infinity },
     { ...input, messages: null }, { ...input, messages: [null] },
-    ...[{ at: Infinity }, { at: -1 }, { authorId: 1 }, { name: null }, { text: 4 }].map(change => ({ ...input, messages: [{ ...input.messages[0], ...change }] })),
+    ...[{ at: Infinity }, { at: NaN }, { at: -1 }, { at: Number.MAX_SAFE_INTEGER }, { authorId: 1 }, { name: null }, { text: 4 }].map(change => ({ ...input, messages: [{ ...input.messages[0], ...change }] })),
+    { ...input, messages: [{ ...input.messages[0], at: Number.MAX_SAFE_INTEGER }, ...Array.from({ length: 200 }, () => input.messages[0])] },
   ]) await rejected(run(invalid, context()))
   assert.equal(calls, 0)
 })

@@ -57,8 +57,13 @@ test('artist mode chooses the most matching name hits then16 latest candidates, 
 })
 
 test('unmatched artist names return the normal search order and no profile requests',async()=>{
- const f=fixture(),result=await f.search({keyword:'不匹配画师',searchType:'artist',orderBy:'oldest'},scope())
+ const f=fixture(),result=await f.search({keyword:'完全无人匹配',searchType:'artist',orderBy:'oldest'},scope())
  assert.equal(result.mode,'artworks');assert.equal(result.order,'oldest');assert.equal(result.artist,undefined);assert.equal(f.requests.length,1)
+})
+
+test('artist resolution counts the complete bounded search page before limiting the displayed24 artwork candidates',async()=>{
+ const initial=Array.from({length:30},(_,i)=>item(i+1,{userName:i<24?'其他画师':'目标画师'})),f=fixture({},url=>url.pathname.includes('/search/')?payload(body(initial)):url.pathname.includes('/profile/')?payload({illusts:{[String(BASE+40)]:null}}):payload(item(40,{userName:'目标画师'}))),result=await f.search({keyword:'目标画师',searchType:'artist'},scope())
+ assert.equal(result.mode,'artist');assert.equal(result.items[0].id,String(BASE+40));assert.equal(f.requests.length,3)
 })
 
 test('artist empty profile and borrowed details fail safely without falling back to a different artist',async()=>{

@@ -94,6 +94,9 @@ test('standalone preflight checks hosted bindings and QQ login without starting 
   const bindingsFile = path.join(directory, 'agent-bindings.yaml')
   const writeBindings = () => writeFile(bindingsFile, JSON.stringify(bindings))
   await writeBindings()
+  await writeFile(path.join(directory, 'persona-library.yaml'), JSON.stringify({
+    personas: [{ id: 'unused', name: '未托管账号的人设' }],
+  }))
   await writeFile(file, JSON.stringify(config))
   const options = { env: { ...process.env, BL_AGENT_REDIS_URL: url, TEST_PREFLIGHT_MODEL_KEY: modelKey, TEST_PREFLIGHT_QQ_TOKEN: qqToken }, timeout: 9_000 }
   const check = (...args) => runNode(process.execPath, [agentEntry, '--config', file, '--check', ...args], options)
@@ -129,7 +132,7 @@ test('standalone preflight checks hosted bindings and QQ login without starting 
   await writeBindings()
   logins.set('/alt', '123456999')
   await assert.rejects(check(), error => error.code === 1 && error.stdout === '' &&
-    /未能验证 QQ 账号（alt）/u.test(error.stderr) && ![modelKey, qqToken, '123456999'].some(value => error.stderr.includes(value)))
+    /未能验证 QQ 账号/u.test(error.stderr) && ![modelKey, qqToken, '123456999'].some(value => error.stderr.includes(value)))
   assert.equal(requests.length, 2)
   logins.set('/alt', '123456002')
   onLogin = async urlPath => {

@@ -50,6 +50,8 @@ export interface AgentBindingTurn extends AgentBindingGuard {
   _agentBinding?: AgentBindingSnapshot
   _agentBindingToken?: string
   _expectedAgentBindingToken?: string
+  /** Async source fence for operations that cross an await before external I/O. */
+  _ensureAgentToolCurrent?: () => Promise<void>
 }
 
 export interface DeferredBindingEvent extends AgentBindingTurn {
@@ -70,4 +72,10 @@ export function isAgentBindingCurrent(event?: AgentBindingGuard | null): boolean
   } catch {
     return false
   }
+}
+
+export async function ensureAgentBindingCurrent(event?: AgentBindingTurn | null): Promise<void> {
+  if (!isAgentBindingCurrent(event)) throw new Error('工具来源或角色绑定已改变')
+  await event?._ensureAgentToolCurrent?.()
+  if (!isAgentBindingCurrent(event)) throw new Error('工具来源或角色绑定已改变')
 }

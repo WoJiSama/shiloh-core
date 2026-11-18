@@ -1,14 +1,11 @@
 import assert from 'node:assert/strict'
-import path from 'node:path'
 import test from 'node:test'
-import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
+import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
 
-const repo = fileURLToPath(new URL('../', import.meta.url)), release = path.resolve(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo)
-const compiled = name => pathToFileURL(path.join(release, 'dist/backend', name)).href
-const { createQqMediaRelayDeliveryPort, QQ_MEDIA_RELAY_SEND_TIMEOUT_MS } = await import(compiled('adapters/qqMediaRelayDelivery.js'))
-const { createOneBotConnection } = await import(compiled('adapters/oneBotConnection.js'))
-const { queuedDeliveryAllowed, withDeliveryGuard } = await import(compiled('modules/messaging/infrastructure/deliveryScope.js'))
+const { createQqMediaRelayDeliveryPort, QQ_MEDIA_RELAY_SEND_TIMEOUT_MS } = await importBilibiliHost('adapters/qqMediaRelayDelivery.js')
+const { createOneBotConnection } = await importBilibiliHost('adapters/oneBotConnection.js')
+const { queuedDeliveryAllowed, withDeliveryGuard } = await importBilibiliHost('modules/messaging/infrastructure/deliveryScope.js')
 
 const account = { platform: 'qq', namespace: 'global', id: '123456789' }
 const target = { account, kind: 'group', id: '315320' }
@@ -339,4 +336,38 @@ test('OneBot keeps media relay capability absent by default and exposes it only 
     assert.deepEqual(await configured.actions.sendMediaRelay(action()), { state: 'failed', code: 'onebot_disconnected' })
     assert.equal(d.staged.length, 0)
   } finally { plain.stop(); configured.stop() }
+})
+test('async source authorization is rechecked after resource staging before the sole native dispatch', async () => {
+  let allowed = true, checked = 0
+  const f = bridgeFixture(async value => { allowed = false; return { nativeUrl: 'http://127.0.0.1:4242/resource', async release() {} } })
+  const d = direct(success(), { fixture: f })
+  const receipt = await d.sendMediaRelay(action(), { isCurrent: () => true, async ensureCurrent() { checked++; if (!allowed) throw Error('revoked source') } })
+  assert.equal(receipt.state, 'failed'); assert.ok(checked >= 2); assert.equal(d.calls.length, 0)
+})
+test('a queued relay awaits its own fresh async authority before staging any resource', async () => {
+  let finish, allowed = true, checked = 0
+  const d = direct(() => new Promise(resolve => { finish = resolve }))
+  const first = d.sendMediaRelay(action()); await waitFor(() => finish)
+  const second = d.sendMediaRelay(action(), { async ensureCurrent() { checked++; if (!allowed) throw Error('source replaced while queued') } })
+  allowed = false; finish(success()); assert.equal((await first).state, 'sent')
+  assert.equal((await second).state, 'failed'); assert.equal(checked, 1); assert.equal(d.calls.length, 1); assert.equal(d.staged.length, 3)
+})
+test('media authorization waits are abortable before native send and late permission cannot publish', async () => {
+  const controller = new AbortController(); let resolve, checked = false
+  const d = direct(), pending = d.sendMediaRelay(action(), { signal: controller.signal, async ensureCurrent() { checked = true; await new Promise(done => { resolve = done }) } })
+  await waitFor(() => checked); controller.abort()
+  assert.equal((await pending).state, 'failed'); assert.equal(d.staged.length, 0); assert.equal(d.calls.length, 0)
+  resolve(); await delay(5); assert.equal(d.staged.length, 0); assert.equal(d.calls.length, 0)
+})
+test('media authority is checked again at the final native boundary after every resource has staged', async () => {
+  const d = direct(); let checks = 0
+  const receipt = await d.sendMediaRelay(action(), { async ensureCurrent() { checks++; if (checks === 8) throw Error('final source rejection') } })
+  assert.equal(checks, 8); assert.equal(d.staged.length, 3); assert.equal(receipt.state, 'failed'); assert.equal(d.calls.length, 0); assert.equal(d.released.length, 3)
+})
+test('media guard rejects unknown fields, accessors and proxied callback authority without invoking behavior', async () => {
+  let touched = 0
+  const d = direct(), callback = new Proxy(async () => { touched++ }, { apply() { touched++; return Promise.resolve() } }),
+    getter = { get ensureCurrent() { touched++; return async () => {} } }, proxy = new Proxy({}, { ownKeys() { touched++; return [] } })
+  for (const guard of [null, [], { extra: true }, { ensureCurrent: true }, { ensureCurrent: callback }, getter, proxy]) assert.equal((await d.sendMediaRelay(action(), guard)).state, 'failed')
+  assert.equal(touched, 0); assert.equal(d.staged.length, 0); assert.equal(d.calls.length, 0)
 })
