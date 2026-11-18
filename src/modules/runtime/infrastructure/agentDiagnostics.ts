@@ -2,10 +2,11 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { types } from 'node:util'
 import type { AgentDiagnosticEvent, AgentDiagnosticScope, AgentDiagnosticSink } from '../../../contracts/agentDiagnostics.js'
+import { agentBindingToken, conversationAddressKey, platformAccountKey } from '../domain/agentBindings.js'
 
 type Logger = { info(message: string, ...values: unknown[]): void; warn(message: string, ...values: unknown[]): void; error(message: string, ...values: unknown[]): void }
 export type AgentDiagnosticInput = Pick<AgentDiagnosticEvent, 'stage' | 'operation' | 'outcome'> &
-  Partial<Pick<AgentDiagnosticEvent, 'code' | 'durationMs' | 'httpStatus'>> & { error?: unknown }
+  Partial<Pick<AgentDiagnosticEvent, 'code' | 'durationMs' | 'httpStatus' | 'delivery'>> & { error?: unknown }
 
 /** Never inspect exception text, stack, request bodies, tool arguments or provider responses. */
 function errorKind(error: unknown): NonNullable<AgentDiagnosticEvent['errorKind']> {
@@ -35,22 +36,50 @@ function outcomeOf(result: unknown): AgentDiagnosticEvent['outcome'] {
   return 'succeeded'
 }
 
+function deliveryOf(result: unknown): AgentDiagnosticEvent['delivery'] | undefined {
+  if (!result || typeof result !== 'object' || types.isProxy(result)) return undefined
+  const state = Object.getOwnPropertyDescriptor(result, 'state')?.value as unknown
+  if (state !== 'sent' && state !== 'uploaded' && state !== 'confirmed' && state !== 'unknown' && state !== 'failed') return undefined
+  const messageId = Object.getOwnPropertyDescriptor(result, 'messageId')?.value as unknown
+  const code = Object.getOwnPropertyDescriptor(result, 'code')?.value as unknown
+  return Object.freeze({ state,
+    ...(typeof messageId === 'string' && messageId.length > 0 && messageId.length <= 128 && messageId.trim() === messageId &&
+      !/[\u0000-\u001f\u007f\ud800-\udfff]/u.test(messageId) ? { messageId } : {}),
+    ...(typeof code === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(code) ? { code } : {}),
+  })
+}
+
+function sameScope(left: AgentDiagnosticScope, right: AgentDiagnosticScope): boolean {
+  if (left.kind === 'host') return right.kind === 'host'
+  if (left.kind === 'account') return right.kind === 'account' && platformAccountKey(left.account) === platformAccountKey(right.account)
+  return right.kind === 'conversation' && agentBindingToken(left.binding) === agentBindingToken(right.binding) &&
+    conversationAddressKey(left.binding.target) === conversationAddressKey(right.binding.target) &&
+    (right.messageId === undefined || left.messageId === right.messageId)
+}
+
 /** One context per admitted operation; async tools/model callbacks inherit its ownership and trace. */
-export function createAgentDiagnostics(options: { sink?: AgentDiagnosticSink; logger?: Logger; now?: () => number } = {}) {
+export function createAgentDiagnostics(options: { sink?: AgentDiagnosticSink; logger?: Logger; now?: () => number; configurationRevision?: string } = {}) {
   const contexts = new AsyncLocalStorage<{ scope: AgentDiagnosticScope; traceId: string; operation: string }>()
   const hostTrace = randomUUID()
   const pending = new Set<Promise<unknown>>()
   const now = options.now ?? Date.now
   const terminal = options.logger ?? { info: console.info, warn: console.warn, error: console.error }
   const token = (value: string) => /^[a-z][a-zA-Z0-9_.-]{0,79}$/u.test(value) ? value : 'unclassified'
+  const configurationRevision = typeof options.configurationRevision === 'string' && options.configurationRevision.length > 0 &&
+    options.configurationRevision.length <= 512 && options.configurationRevision.trim() === options.configurationRevision &&
+    !/[\u0000-\u001f\u007f\ud800-\udfff]/u.test(options.configurationRevision) ? options.configurationRevision : undefined
   function emit(input: AgentDiagnosticInput): void {
     const context = contexts.getStore()
+    const delivery = input.delivery === undefined ? undefined : deliveryOf(input.delivery)
     const event: AgentDiagnosticEvent = { version: 1, id: randomUUID(), traceId: context?.traceId ?? hostTrace,
       at: now(), scope: context?.scope ?? { kind: 'host' }, stage: input.stage, operation: token(input.operation), outcome: input.outcome,
       ...(input.code ? { code: token(input.code) } : {}),
       ...(input.error === undefined ? {} : { errorKind: errorKind(input.error) }),
       ...(Number.isFinite(input.durationMs) ? { durationMs: Math.max(0, Math.round(input.durationMs!)) } : {}),
-      ...(Number.isSafeInteger(input.httpStatus) && input.httpStatus! >= 100 && input.httpStatus! <= 599 ? { httpStatus: input.httpStatus } : {}) }
+      ...(Number.isSafeInteger(input.httpStatus) && input.httpStatus! >= 100 && input.httpStatus! <= 599 ? { httpStatus: input.httpStatus } : {}),
+      ...(configurationRevision ? { configurationRevision } : {}),
+      ...(delivery === undefined ? {} : { delivery }),
+    }
     const line = `[Agent] ${event.stage}/${event.operation} ${event.outcome}${event.code ? ` ${event.code}` : ''} trace=${event.traceId}`
     // Console remains observable even when the injected journal is unavailable.
     try { (event.outcome === 'failed' || event.outcome === 'unknown' ? terminal.error : event.outcome === 'cancelled' ? terminal.warn : terminal.info)(line) }
@@ -81,8 +110,7 @@ export function createAgentDiagnostics(options: { sink?: AgentDiagnosticSink; lo
     scope: (): AgentDiagnosticScope => contexts.getStore()?.scope ?? { kind: 'host' },
     async run<T>(scope: AgentDiagnosticScope, operation: string, fn: () => Promise<T>, stage: AgentDiagnosticEvent['stage'] = 'runtime'): Promise<T> {
       const parent = contexts.getStore()
-      const sameTurn = scope.kind !== 'conversation' || parent?.scope.kind === 'conversation' &&
-        parent.scope.binding.id === scope.binding.id && (scope.messageId === undefined || parent.scope.messageId === scope.messageId)
+      const sameTurn = !!parent && sameScope(parent.scope, scope)
       const ownedScope = scope.kind === 'conversation' && scope.messageId === undefined && sameTurn && parent?.scope.kind === 'conversation' && parent.scope.messageId
         ? { ...scope, messageId: parent.scope.messageId } : scope
       return contexts.run({ scope: ownedScope, operation: token(operation), traceId: sameTurn ? parent?.traceId ?? randomUUID() : randomUUID() }, async () => {
@@ -90,7 +118,8 @@ export function createAgentDiagnostics(options: { sink?: AgentDiagnosticSink; lo
         emit({ stage, operation, outcome: 'started' })
         try {
           const result = await fn()
-          emit({ stage, operation, outcome: outcomeOf(result), durationMs: now() - started })
+          const delivery = stage === 'delivery' ? deliveryOf(result) : undefined
+          emit({ stage, operation, outcome: outcomeOf(result), durationMs: now() - started, ...(delivery ? { delivery } : {}) })
           return result
         } catch (error) {
           const kind = errorKind(error)

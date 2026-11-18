@@ -19,6 +19,14 @@ export interface AgentDiagnosticEvent {
   readonly durationMs?: number
   readonly errorKind?: 'Error' | 'TypeError' | 'RangeError' | 'SyntaxError' | 'AbortError' | 'TimeoutError' | 'Unknown'
   readonly httpStatus?: number
+  /** The immutable configuration loaded by the process that produced this event. */
+  readonly configurationRevision?: string
+  /** Native action metadata only. An unknown result never becomes a confirmed delivery. */
+  readonly delivery?: {
+    readonly state: 'sent' | 'uploaded' | 'confirmed' | 'unknown' | 'failed'
+    readonly messageId?: string
+    readonly code?: string
+  }
 }
 
 export interface AgentDiagnosticSink {

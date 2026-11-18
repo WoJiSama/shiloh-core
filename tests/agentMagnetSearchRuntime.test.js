@@ -5,6 +5,7 @@ import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js
 import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 
 const { createAgentRuntime } = await load('core/agentRuntime.js')
+const { createAgentDiagnostics } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
 const { createAgentBindingDirectory, conversationAddressKey, platformAccountKey } = await load('modules/runtime/domain/agentBindings.js')
 const redisTest = { skip: !redisAvailable, timeout: 15_000 }
 const textOf = action => action.parts.filter(part => part.kind === 'text').map(part => part.text).join('')
@@ -24,7 +25,9 @@ async function fixture(t, settings = {}) {
     connections: [{ id: 'connection', platform: account.platform, namespace: account.namespace, accountId: account.id }],
     bindings: [group, other, privateTarget].map(target => ({ connectionId: 'connection', kind: target.kind, conversationId: target.id, agentId: 'role' })) }
   let directory = createAgentBindingDirectory(config, 'initial'), ready = false, accept, sequence = 0
-  const sends = [], models = [], searches = [], sources = new Map(), key = (target, id) => JSON.stringify([conversationAddressKey(target), id])
+  const sends = [], models = [], searches = [], diagnosticsRows = [], sources = new Map(), key = (target, id) => JSON.stringify([conversationAddressKey(target), id])
+  const diagnostics = createAgentDiagnostics({ configurationRevision: 'magnet-loaded-config', logger: { info() {}, warn() {}, error() {} },
+    sink: { async append(row) { diagnosticsRows.push(structuredClone(row)); return true } } })
   const adapter = { id: 'connection', account, botUserId: account.id, botName: 'fixture', isReady: () => ready,
     async start(consume) { accept = consume; ready = true }, stop() { ready = false },
     async readMessage(target, id, guard) { return guard?.isCurrent?.() === false ? undefined : structuredClone(sources.get(key(target, id))) },
@@ -33,7 +36,7 @@ async function fixture(t, settings = {}) {
       sends.push(structuredClone(action)); return { state: 'sent', messageId: `reply-${++sequence}` }
     } },
   }
-  host = createAgentRuntime({ storage: redis.storage, adapters: [adapter], isExecutionCurrent: redis.isCurrent,
+  host = createAgentRuntime({ storage: redis.storage, adapters: [adapter], diagnostics, isExecutionCurrent: redis.isCurrent,
     privateChatEnabled: true, useTextGroup: () => settings.mode !== 'simulation',
     ...(settings.groupLog ? { groupLog: { enabled: true, masters: [user] } } : {}),
     magnetSearch: { enabled: settings.enabled !== false },
@@ -47,7 +50,7 @@ async function fixture(t, settings = {}) {
   })
   await host.start()
   const queueKeys = ['group-log', 'group-text', 'private', 'privacy', 'simulation'].map(kind => redis.prefix + `agent:inbox:${kind}:${platformAccountKey(account)}`)
-  const f = { host, group, other, privateTarget, searches, sends, models,
+  const f = { host, group, other, privateTarget, searches, sends, models, diagnosticsRows,
     async emit(text, target = group) {
       const message = { version: 1, conversation: target, sender: user, messageId: `command-${++sequence}`, occurredAt: Date.now(),
         text, parts: [{ kind: 'text', text }], mentions: [], directedToAccount: target.kind === 'private' }
@@ -55,16 +58,20 @@ async function fixture(t, settings = {}) {
     },
     async recall(source) { sources.delete(key(source.conversation, source.messageId)); await accept({ kind: 'recall', target: source.conversation, messageId: source.messageId }) },
     rebind() { directory = createAgentBindingDirectory({ ...config, bindings: config.bindings.map(row => ({ ...row, agentId: 'replacement' })) }, 'replacement') },
-    async drained() { await waitFor(async () => (await Promise.all(queueKeys.map(key => redis.reader.lLen(key)))).every(size => size === 0), 'inbox drain'); await host.runtime.drain() },
+    async drained() { await waitFor(async () => (await Promise.all(queueKeys.map(key => redis.reader.lLen(key)))).every(size => size === 0), 'inbox drain'); await host.runtime.drain(); await diagnostics.flush() },
   }
   return f
 }
 
 for (const mode of ['text', 'simulation']) test(`explicit Core ${mode} magnet commands use the current target and never a model or downloader`, redisTest, async t => {
   const f = await fixture(t, { mode })
-  await f.emit('  。磁力搜索 ubuntu 99  '); await f.drained()
+  const source = await f.emit('  。磁力搜索 ubuntu 99  '); await f.drained()
   assert.deepEqual(f.searches[0].input, { keyword: 'ubuntu', limit: 20 })
   assert.equal(f.sends.length, 1); assert.deepEqual(f.sends[0].target, f.group); assert.match(textOf(f.sends[0]), /magnet:\?xt=urn:btih:/u)
+  const receipt = f.diagnosticsRows.find(row => row.stage === 'delivery' && row.outcome === 'succeeded' && row.delivery?.state === 'sent')
+  assert.ok(receipt); assert.equal(receipt.configurationRevision, 'magnet-loaded-config'); assert.match(receipt.delivery.messageId, /^reply-/u)
+  assert.deepEqual(receipt.scope.binding.target, f.group); assert.equal(receipt.scope.messageId, source.messageId)
+  assert.ok(f.diagnosticsRows.some(row => row.operation === 'magnet_search' && row.traceId === receipt.traceId && row.scope.messageId === source.messageId))
   await f.emit('.磁力'); await f.drained(); assert.match(textOf(f.sends.at(-1)), /默认 10 条/u)
   assert.equal(f.searches.length, 1); assert.equal(f.models.length, 0)
 })

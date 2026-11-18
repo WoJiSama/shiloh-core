@@ -55,6 +55,8 @@ import { openStandaloneMediaRelay, standaloneMediaRelaySecrets } from './standal
 import { openStandaloneBilibiliAuth } from './standaloneBilibiliQuality.js'
 import { createAgentDiagnostics } from '../modules/runtime/infrastructure/agentDiagnostics.js'
 import { openAgentOperationJournal } from '../modules/runtime/infrastructure/agentOperationJournal.js'
+import { readAgentOperationJournal } from '../modules/runtime/infrastructure/agentOperationJournalReader.js'
+import { createStandaloneAgentObserve } from './standaloneAgentObserve.js'
 import { createStandaloneAgentConsole } from './standaloneAgentConsole.js'
 import { openStandaloneAgentConsoleAuth } from './standaloneAgentConsoleAuth.js'
 import { createStandaloneAgentConsoleServices } from './standaloneAgentConsoleServices.js'
@@ -208,7 +210,8 @@ export async function main(argv: string[]): Promise<void> {
   }
   const termination = new AbortController()
   let journal: Awaited<ReturnType<typeof openAgentOperationJournal>> | undefined
-  const diagnostics = createAgentDiagnostics({ sink: { append: event => journal ? journal.append(event) : Promise.resolve(false) }, logger })
+  const diagnostics = createAgentDiagnostics({ sink: { append: event => journal ? journal.append(event) : Promise.resolve(false) }, logger,
+    configurationRevision: config.sourceSnapshot.revision })
   const safeLogger = diagnostics.logger
   const stop = () => termination.abort()
   const fail = (_message: string) => { diagnostics.emit({ stage: 'host', operation: 'host_authority', outcome: 'failed', code: 'host_authority_lost' }); process.exitCode = 1; stop() }
@@ -596,7 +599,7 @@ export async function main(argv: string[]): Promise<void> {
     if (config.console.enabled) {
       const authority = consoleAuthority, persistence = consolePersistence!
       const bindings = managementBindings
-      const operations = [...AGENT_CONSOLE_SERVICES.map(service => service.operation), 'bindings.list', 'bindings.read', 'agents.read', 'connections.read']
+      const operations = [...AGENT_CONSOLE_SERVICES.map(service => service.operation), 'bindings.list', 'bindings.read', 'agents.read', 'connections.read', 'observe.host']
       consoleAuth = await openStandaloneAgentConsoleAuth({
         userFile: config.console.userFile,
         authority,
@@ -616,6 +619,9 @@ export async function main(argv: string[]): Promise<void> {
       const loadedBindings: AgentManagementBindings = { list: () => config.loadedBindings,
         resolve: target => loadedByAddress.get(conversationAddressKey(target)) }
       const services: AgentConsoleService[] = [...installed]
+      services.push(createStandaloneAgentObserve({ bindings: loadedBindings, auth: consoleAuth,
+        read: guard => readAgentOperationJournal({ dataDir: config.dataDir, maxFiles: config.operationLogging.maxFiles, guard, allowsText: allowsSecretText }),
+        health: () => journal!.health(), configState: persistence.state }))
       services.push(createStandaloneAgentWorkspace({ bindings: loadedBindings, auth: consoleAuth,
         agents: () => config.workspaceAgents,
         connections: () => adapters.map(adapter => ({ id: adapter.id, account: adapter.account,

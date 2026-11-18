@@ -4,11 +4,10 @@ import { constants } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 
-const repo = fileURLToPath(new URL('../', import.meta.url)), release = path.resolve(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo)
-const { openAgentOperationJournal } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/runtime/infrastructure/agentOperationJournal.js')).href)
-const { createAgentSecretTextCheck } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/messaging/infrastructure/agentSecretText.js')).href)
+const { openAgentOperationJournal } = await load('modules/runtime/infrastructure/agentOperationJournal.js')
+const { createAgentSecretTextCheck } = await load('modules/messaging/infrastructure/agentSecretText.js')
 const account = { platform: 'qq', namespace: 'global', id: '19000001' }
 const binding = () => ({ id: 'binding', revision: 'revision', source: 'configured', agentId: 'daily', personaId: 'default', connectionId: 'main', target: { account: { ...account }, kind: 'group', id: '310001' } })
 const event = (index = 1, extra = {}) => ({ version: 1, id: 'event-' + index, traceId: 'trace-' + index, at: 1794816000000, scope: { kind: 'conversation', binding: binding(), messageId: 'message-' + index }, stage: 'tool', operation: 'video.analysis', outcome: 'succeeded', durationMs: 45, ...extra })

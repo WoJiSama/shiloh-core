@@ -130,18 +130,20 @@ test('a completed HTTP request expires its service guard even while the host and
   assert.throws(() => captured.ensureCurrent(), { code: 'conflict' })
 })
 
-test('retired execution leaves only authenticated workspace and config-state host reads available', async t => {
+test('retired execution leaves only authenticated workspace, config-state and metadata observation reads available', async t => {
   const execution = new AbortController(), received = [], invoked = []
   const services = [route('workspace.read', async (_request, context) => {
     received.push(context); return json({ robots: [{ id: 'daily' }], phase: 'requires-restart' })
   }), route('config-state.read', async (_request, context) => {
     received.push(context); return json({ phase: 'requires-restart' })
+  }), route('observe.read', async (_request, context) => {
+    received.push(context); return json({ phase: 'requires-restart', events: [] })
   }), route('tokens.summary', async () => { invoked.push('tokens'); return json({ tokens: 7 }) }),
   route('accounts.action', async () => { invoked.push('action'); return json({ ok: true }) }),
   custom('/api/workspace/extra', async () => { invoked.push('extra'); return json({ ok: true }) })]
   const f = await fixture(t, services, { execution: { signal: execution.signal, isCurrent: () => !execution.signal.aborted } })
   execution.abort()
-  for (const pathname of ['/api/workspace', '/api/config-state']) {
+  for (const pathname of ['/api/workspace', '/api/config-state', '/api/observe/summary']) {
     assert.equal((await f.request(pathname, { token: false })).status, 401)
     for (const options of [{}, { token: false, headers: { cookie: `sid=${sessionId}` } }]) {
       const result = await f.request(pathname, options)
@@ -159,14 +161,14 @@ test('retired execution leaves only authenticated workspace and config-state hos
   assert.deepEqual(invoked, [])
 })
 
-test('retired workspace reads still enforce permissions, secret filtering and session and host revocation', async t => {
+test('retired host metadata reads still enforce permissions, secret filtering and session and host revocation', async t => {
   const execution = new AbortController()
   let payload = { robots: [] }, calls = 0
   const handler = async () => { calls++; return json(payload) }
-  const f = await fixture(t, [route('workspace.read', handler), route('config-state.read', handler)],
+  const f = await fixture(t, [route('workspace.read', handler), route('config-state.read', handler), route('observe.read', handler)],
     { execution: { signal: execution.signal, isCurrent: () => false } })
   execution.abort()
-  for (const [pathname, operation] of [['/api/workspace', 'workspace.read'], ['/api/config-state', 'config-state.read']]) {
+  for (const [pathname, operation] of [['/api/workspace', 'workspace.read'], ['/api/config-state', 'config-state.read'], ['/api/observe/summary', 'observe.read']]) {
     for (const [decision, status] of [['denied', 403], ['unavailable', 503]]) {
       f.permissions.set(operation, decision)
       assert.equal((await f.request(pathname)).status, status)
@@ -175,7 +177,7 @@ test('retired workspace reads still enforce permissions, secret filtering and se
   }
   assert.equal(calls, 0)
   payload = { apiKey: modelSecret }
-  for (const pathname of ['/api/workspace', '/api/config-state']) {
+  for (const pathname of ['/api/workspace', '/api/config-state', '/api/observe/summary']) {
     const filtered = await f.request(pathname)
     assert.equal(filtered.status, 500); assert.deepEqual(filtered.data, { error: 'request_failed' })
     assert.equal(filtered.text.includes(modelSecret), false)
@@ -183,13 +185,13 @@ test('retired workspace reads still enforce permissions, secret filtering and se
   payload = { robots: [] }
   const beforeRevocation = calls, original = f.auth.authorize
   f.auth.authorize = async (...args) => { const decision = await original(...args); f.setSessionCurrent(false); return decision }
-  for (const pathname of ['/api/workspace', '/api/config-state']) {
+  for (const pathname of ['/api/workspace', '/api/config-state', '/api/observe/summary']) {
     f.setSessionCurrent(true)
     assert.equal((await f.request(pathname)).status, 409); assert.equal(calls, beforeRevocation)
     assert.equal((await f.request(pathname, { token: false, headers: { cookie: `sid=${sessionId}` } })).status, 401)
   }
   f.setSessionCurrent(true); f.auth.authorize = original; f.setHostCurrent(false)
-  for (const pathname of ['/api/workspace', '/api/config-state']) assert.equal((await f.request(pathname)).status, 409)
+  for (const pathname of ['/api/workspace', '/api/config-state', '/api/observe/summary']) assert.equal((await f.request(pathname)).status, 409)
   assert.equal(calls, beforeRevocation)
 })
 

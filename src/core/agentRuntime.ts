@@ -890,8 +890,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const current = () => (!permission || allowsConversationAI(target) && permission.isCurrent()) && guard?.isCurrent?.() !== false
       const originalSignal = (guard as { signal?: AbortSignal } | undefined)?.signal
       const signal = permission ? AbortSignal.any([permission.signal, ...(originalSignal ? [originalSignal] : [])]) : originalSignal
-      return diagnostics.run(binding ? { kind: 'conversation', binding } : { kind: 'host' }, `send_${name}`, () => controlDelivery.run(!ai, () => method(action as never,
-        { isCurrent: current, ...(signal ? { signal } : {}), ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}) })), 'delivery').then(async receipt => {
+      return diagnostics.run(binding ? { kind: 'conversation', binding } : { kind: 'host' }, `send_${name}`, async () => {
+          const receipt = await controlDelivery.run(!ai, () => method(action as never,
+            { isCurrent: current, ...(signal ? { signal } : {}), ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}) }))
           const confirmed = receipt && typeof receipt === 'object' ? receipt as { state?: unknown; messageId?: unknown } : undefined
           // Requester archives and authentication notices use a different native
           // destination; their source conversation never acquires recall ownership.
@@ -903,7 +904,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
             catch (error) { diagnostics.emit({ stage: 'delivery', operation: 'outbound_ownership', outcome: 'failed', code: 'ownership_not_recorded', error }) }
           }
           return receipt
-        }).finally(() => { permission?.release(); if (!ai) controlActions.delete(action) })
+        }, 'delivery').finally(() => { permission?.release(); if (!ai) controlActions.delete(action) })
     },
   ])) as unknown as MessageActionPort }
   const messageActions = instrumentActions(true)

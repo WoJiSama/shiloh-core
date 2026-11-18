@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createAgentDiagnostics } from '../dist/backend/modules/runtime/infrastructure/agentDiagnostics.js'
+import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
+const { createAgentDiagnostics } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
 
 const account = { platform: 'qq', namespace: 'global', id: '10001' }
 const binding = { source: 'configured', id: 'scope', revision: 'rev1', agentId: 'daily', personaId: 'default', connectionId: 'main', target: { account, kind: 'group', id: '20001' } }
@@ -22,6 +23,49 @@ test('diagnostics correlate nested model and delivery operations while isolating
     assert.ok(events.some(row => row.stage === 'delivery' && row.outcome === 'unknown'))
   }
   assert.ok(!JSON.stringify(rows).includes('secret provider response'))
+})
+
+test('real delivery receipts and the immutable loaded configuration accompany only delivery events', async () => {
+  const rows = [], d = createAgentDiagnostics({ configurationRevision: 'configuration:loaded-v1', logger: quiet,
+    sink: { async append(event) { rows.push(event); return true } } })
+  for (const receipt of [{ state: 'sent', messageId: 'native-17' }, { state: 'unknown' }, { state: 'failed', code: 'native_rejected' }]) {
+    await d.run({ kind: 'conversation', binding, messageId: 'source-1' }, 'send', async () => ({ ...receipt, body: 'PRIVATE_RESPONSE' }), 'delivery')
+  }
+  await d.run({ kind: 'conversation', binding, messageId: 'source-1' }, 'tool', async () => ({ state: 'confirmed', messageId: 'not-a-delivery' }), 'tool')
+  await d.flush()
+  assert.ok(rows.every(row => row.configurationRevision === 'configuration:loaded-v1'))
+  const completed = rows.filter(row => row.stage === 'delivery' && row.outcome !== 'started')
+  assert.deepEqual(completed.map(row => row.delivery), [{ state: 'sent', messageId: 'native-17' }, { state: 'unknown' }, { state: 'failed', code: 'native_rejected' }])
+  assert.deepEqual(completed.map(row => row.outcome), ['succeeded', 'unknown', 'failed'])
+  assert.equal(rows.some(row => row.stage === 'tool' && row.delivery), false)
+  assert.equal(JSON.stringify(rows).includes('PRIVATE_RESPONSE'), false)
+})
+
+test('nested traces distinguish identical binding IDs across accounts, owners, connections and binding versions', async () => {
+  const rows = [], d = createAgentDiagnostics({ logger: quiet, sink: { async append(event) { rows.push(event); return true } } })
+  const variants = [
+    { ...binding, target: { ...binding.target, account: { ...account, id: '10002' } } },
+    { ...binding, agentId: 'other' }, { ...binding, personaId: 'other' }, { ...binding, connectionId: 'other' },
+    { ...binding, revision: 'rev2' }, { ...binding, target: { ...binding.target, id: 'other-group' } },
+  ]
+  await d.run({ kind: 'conversation', binding, messageId: 'source' }, 'parent', async () => {
+    const original = d.traceId()
+    await d.run({ kind: 'conversation', binding }, 'same', async () => { assert.equal(d.traceId(), original); assert.equal(d.scope().messageId, 'source') })
+    for (const next of variants) await d.run({ kind: 'conversation', binding: next, messageId: 'source' }, 'different', async () => assert.notEqual(d.traceId(), original))
+    await d.run({ kind: 'account', account }, 'account', async () => assert.notEqual(d.traceId(), original))
+  })
+  await d.flush()
+  assert.equal(new Set(rows.map(row => row.traceId)).size, variants.length + 2)
+})
+
+test('receipt classification never invokes getters or Proxy traps', async () => {
+  let traps = 0
+  const rows = [], d = createAgentDiagnostics({ logger: quiet, sink: { async append(event) { rows.push(event); return true } } })
+  const getter = Object.defineProperty({}, 'state', { get() { traps++; throw new Error('PRIVATE') } })
+  const proxy = new Proxy({}, { getOwnPropertyDescriptor() { traps++; throw new Error('PRIVATE') }, getPrototypeOf() { traps++; throw new Error('PRIVATE') } })
+  for (const value of [getter, proxy]) await d.run({ kind: 'host' }, 'send', async () => value, 'delivery')
+  await d.flush()
+  assert.equal(traps, 0); assert.equal(rows.some(row => row.delivery), false)
 })
 
 test('compatibility logger never persists raw exceptions, content or credential-bearing first arguments', async () => {

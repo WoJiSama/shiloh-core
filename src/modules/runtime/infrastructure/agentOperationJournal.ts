@@ -68,17 +68,26 @@ function scope(value: unknown): AgentDiagnosticScope {
   }
   throw failure()
 }
-function event(value: unknown): Readonly<AgentDiagnosticEvent> {
-  const row = record(value, ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code', 'durationMs', 'errorKind', 'httpStatus'])
+/** The writer and read view share the same closed metadata schema, including historical v1 records. */
+export function parseAgentDiagnosticEvent(value: unknown): Readonly<AgentDiagnosticEvent> {
+  const row = record(value, ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code', 'durationMs', 'errorKind', 'httpStatus', 'configurationRevision', 'delivery'])
   if (row.version !== 1 || !Number.isSafeInteger(row.at) || Number(row.at) < 0 || Number(row.at) > 8_640_000_000_000_000 ||
       typeof row.stage !== 'string' || !stages.includes(row.stage) || typeof row.outcome !== 'string' || !outcomes.includes(row.outcome) ||
       row.durationMs !== undefined && (!Number.isSafeInteger(row.durationMs) || Number(row.durationMs) < 0) ||
       row.errorKind !== undefined && (typeof row.errorKind !== 'string' || !errorKinds.includes(row.errorKind)) ||
       row.httpStatus !== undefined && (!Number.isInteger(row.httpStatus) || Number(row.httpStatus) < 100 || Number(row.httpStatus) > 599)) throw failure()
+  let delivery: AgentDiagnosticEvent['delivery']
+  if (row.delivery !== undefined) {
+    const receipt = record(row.delivery, ['state', 'messageId', 'code'])
+    if (typeof receipt.state !== 'string' || !['sent', 'uploaded', 'confirmed', 'unknown', 'failed'].includes(receipt.state)) throw failure()
+    delivery = Object.freeze({ state: receipt.state as NonNullable<AgentDiagnosticEvent['delivery']>['state'],
+      ...(receipt.messageId === undefined ? {} : { messageId: text(receipt.messageId) }), ...(receipt.code === undefined ? {} : { code: token(receipt.code) }) })
+  }
   return Object.freeze({ version: 1, id: token(row.id), traceId: token(row.traceId), at: row.at as number, scope: scope(row.scope),
     stage: row.stage as AgentDiagnosticEvent['stage'], operation: token(row.operation), outcome: row.outcome as AgentDiagnosticEvent['outcome'],
     ...(row.code === undefined ? {} : { code: token(row.code) }), ...(row.durationMs === undefined ? {} : { durationMs: row.durationMs as number }),
-    ...(row.errorKind === undefined ? {} : { errorKind: row.errorKind as NonNullable<AgentDiagnosticEvent['errorKind']> }), ...(row.httpStatus === undefined ? {} : { httpStatus: row.httpStatus as number }) })
+    ...(row.errorKind === undefined ? {} : { errorKind: row.errorKind as NonNullable<AgentDiagnosticEvent['errorKind']> }), ...(row.httpStatus === undefined ? {} : { httpStatus: row.httpStatus as number }),
+    ...(row.configurationRevision === undefined ? {} : { configurationRevision: text(row.configurationRevision, 512) }), ...(delivery === undefined ? {} : { delivery }) })
 }
 
 function integer(value: unknown, fallback: number, minimum: number, maximum: number): number {
@@ -213,7 +222,7 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
     append(input: AgentDiagnosticEvent): Promise<boolean> {
       let safe: AgentDiagnosticEvent, line: string
       try {
-        safe = event(input); line = JSON.stringify(safe) + '\n'
+        safe = parseAgentDiagnosticEvent(input); line = JSON.stringify(safe) + '\n'
         let permitted = true; try { permitted = allows?.(line) !== false } catch { permitted = false }
         if (!permitted) {
           safe = Object.freeze({ version: 1, id: randomUUID(), traceId: randomUUID(), at: Date.now(), scope: Object.freeze({ kind: 'host' }), stage: 'runtime', operation: 'diagnostic.redacted', outcome: 'failed', code: 'DIAGNOSTIC_REDACTED' })
