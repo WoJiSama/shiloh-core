@@ -168,7 +168,7 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       // Bilibili appends a base64 tail (with +/=: characters) to b_4; a rejected b_4 now
       // degrades to a buvid3-only cookie instead of dropping the whole fingerprint,
       // because anonymous view/playback APIs are risk-controlled (HTTP 412) without buvid3.
-      const token = /^[A-Za-z0-9_+=:-]{1,256}$/u
+      const token = /^[A-Za-z0-9_+=:\/-]{1,256}$/u
       const b3 = typeof data.b_3 === 'string' && token.test(data.b_3) ? data.b_3 : ''
       const b4 = typeof data.b_4 === 'string' && token.test(data.b_4) ? data.b_4 : ''
       if (payload.code !== 0 || !b3) { diagnose('bilibili_provider_fingerprint', 'fingerprint_invalid_fallback', context); fingerprintCache = { value: '', expiresAt: Date.now() + 60_000 }; return '' }
@@ -284,7 +284,10 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
         if (!rawBackups) throw bilibiliFailure()
         const backups = strict ? rawBackups.map(value => { if (typeof value !== 'string') throw bilibiliFailure(); bilibiliOfficialUrl(value, 'video'); return value })
           : rawBackups.filter((value): value is string => typeof value === 'string' && mediaCandidate(value))
-        if (!strict && !mediaCandidate(item.url) && !backups.length) continue
+        if (!strict && !mediaCandidate(item.url) && !backups.length) {
+          result.notices.push('B站未提供全部分段的官方可下载资源，未附带视频本体')
+          continue
+        }
         result.resources.push({ url: item.url, backups, size: nonnegative(item.size ?? 0), part, index, quality, preview })
       }
     }

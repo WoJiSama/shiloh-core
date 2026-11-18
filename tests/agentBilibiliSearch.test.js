@@ -99,9 +99,9 @@ test('SPI definite failure falls back anonymously with one safe diagnostic', asy
 })
 
 test('SPI base64 b_4 tails are accepted while a rejected b_4 degrades to buvid3-only', async () => {
-  const full = fixture(url => url.pathname.endsWith('/spi') ? response({ code: 0, data: { b_3: B3, b_4: '404E0022-026111822-wPC5+TsSN7zkqT5Aufv7rA==' } }) : undefined)
+  const full = fixture(url => url.pathname.endsWith('/spi') ? response({ code: 0, data: { b_3: B3, b_4: '404E0022-026111822-wPC5+TsSN7zkqT5/Aufv7rA==' } }) : undefined)
   assert.equal((await full.provider.search('相关', context())).items[0].id, FIRST)
-  assert.equal(full.calls[1].policy.headers.Cookie, `buvid3=${B3}; buvid4=404E0022-026111822-wPC5+TsSN7zkqT5Aufv7rA==`)
+  assert.equal(full.calls[1].policy.headers.Cookie, `buvid3=${B3}; buvid4=404E0022-026111822-wPC5+TsSN7zkqT5/Aufv7rA==`)
   assert.deepEqual(full.diagnostics, [])
   const degraded = fixture(url => url.pathname.endsWith('/spi') ? response({ code: 0, data: { b_3: B3, b_4: 'bad; injected=secret' } }) : undefined)
   assert.equal((await degraded.provider.search('相关', context())).items[0].id, FIRST)

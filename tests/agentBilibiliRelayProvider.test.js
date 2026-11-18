@@ -149,6 +149,21 @@ test('PCDN primary durl with port falls back to official backup instead of faili
   await result.release(); await f.clean()
 })
 
+test('a missing official candidate for any segment keeps automatic playback metadata-only', async t => {
+  for (const missing of [0, 1]) await t.test(`segment ${missing + 1}`, async t => {
+    const f = await fixture(t, { play: { durl: [0, 1].map(index => ({
+      url: index === missing ? 'https://edge.mountaintoys.cn:4483/missing.mp4' : `https://cn-test.bilivideo.com/segment-${index}.mp4`,
+      length: 30000, size: 64,
+    })) } })
+    const result = await f.prepare()
+    assert.equal(result.status, 'metadata-only')
+    assert.equal(result.plan.items.length, 1)
+    assert.match(result.infoText, /全部分段/)
+    assert.ok(f.requests.every(request => !request.url.includes('mountaintoys.cn') && !request.url.includes('bilivideo.com')))
+    await result.release(); await f.clean()
+  })
+})
+
 test('a 24-hour SPI refresh can repeat only its learned device tokens while metadata still rejects them', async t => {
   const original = Date.now; let clock = original()
   Date.now = () => clock
@@ -174,7 +189,7 @@ test('SPI may never receive a configured host or account secret as its device cr
 })
 
 test('SPI base64 b_4 tails are accepted while a rejected b_4 degrades to buvid3-only', async t => {
-  const b4 = '404E0020-4827-645B-6779-CEDB4921136910568-026111822-wPC5+TsSN7zkqT5Aufv7rA=='
+  const b4 = '404E0020-4827-645B-6779-CEDB4921136910568-026111822-wPC5+TsSN7zkqT5/Aufv7rA=='
   await t.test('current b_4 format keeps the full device cookie without diagnostics', async t => {
     const f = await fixture(t, { respond: async url => url.pathname.includes('finger/spi') ? response({ code: 0, data: { b_3: 'BUVID_PRIVATE_3', b_4: b4 } }) : undefined })
     const result = await f.prepare(); assert.equal(result.status, 'ready')

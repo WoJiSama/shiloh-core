@@ -147,7 +147,7 @@ export function createAgentBilibiliSearchProvider(options: AgentBilibiliSearchPr
         const payload = await json(FINGERPRINT, '', true), data = row(payload.data)
         // Same SPI token policy as the relay provider: b_4 may carry a base64 tail; a
         // rejected b_4 degrades to buvid3-only instead of dropping the whole fingerprint.
-        const token = /^[A-Za-z0-9_+=:-]{1,256}$/u
+        const token = /^[A-Za-z0-9_+=:\/-]{1,256}$/u
         const b3 = typeof data.b_3 === 'string' && token.test(data.b_3) ? data.b_3 : ''
         const b4 = typeof data.b_4 === 'string' && token.test(data.b_4) ? data.b_4 : ''
         if (payload.code !== 0 || !b3) throw failure()
