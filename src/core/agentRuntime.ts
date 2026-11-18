@@ -21,6 +21,8 @@ import type { AgentAudioAttachment, AgentMusicExtractionConfig } from '../contra
 import type { AgentMediaRelayConfig, AgentMediaRelayProvider, AgentMediaShare } from '../contracts/agentMediaRelayWorkflow.js'
 import type { AgentMediaRelayPlan } from '../contracts/agentMediaRelay.js'
 import type { AgentTorrentConfig, AgentTorrentProvider, SendRequesterArchiveAction } from '../contracts/agentTorrent.js'
+import type { AgentMagnetSearchConfig, AgentMagnetSearchProvider } from '../contracts/agentMagnetSearch.js'
+import { AGENT_MAGNET_SEARCH_HELP, parseAgentMagnetSearchCommand } from '../modules/media/domain/agentMagnetSearchCommand.js'
 import { validateAgentTorrentArchive, validateAgentTorrentConfig } from '../modules/media/domain/agentTorrent.js'
 import { createAgentTorrentWorkflow, type AgentTorrentWorkflowContext, type AgentTorrentSource } from '../modules/media/infrastructure/agentTorrentWorkflow.js'
 import { validateAgentMediaRelayPlan } from '../modules/media/domain/agentMediaRelayPlan.js'
@@ -42,6 +44,7 @@ import { resolveSimToolSurface } from '../modules/simulation/domain/toolPolicy.j
 import { validateAgentMedia } from '../modules/media/infrastructure/agentMediaBytes.js'
 import { validateAgentFileUpload, normalizeFileDeliveryReceipt, agentFileUploadText } from '../modules/messaging/infrastructure/agentFileDelivery.js'
 import { readAgentPublicFile } from '../modules/tools/infrastructure/agentPublicWeb.js'
+import { abortableAgentWeb } from '../modules/tools/infrastructure/agentPublicWeb.js'
 import { validateAgentFileBytes } from '../modules/content/infrastructure/agentFileBytes.js'
 import type { AgentBindingSnapshot, ConversationAddress, PlatformAccountRef, PlatformUserRef } from '../contracts/agentBinding.js'
 import type { ConversationMember, ConversationMemberSnapshot, ConversationMembersSnapshot, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
@@ -185,6 +188,9 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   torrentDownload?: AgentTorrentConfig
   torrentProvider?: AgentTorrentProvider
   isTorrentDownloadCurrent?(): boolean
+  magnetSearch?: AgentMagnetSearchConfig
+  magnetSearchProvider?: AgentMagnetSearchProvider
+  isMagnetSearchCurrent?(): boolean
   /** Optional neutral card renderer. Core retains the complete text fallback. */
   renderTorrentListing?(text: string, context: import('../contracts/agentMediaRelay.js').AgentMediaResourceContext): Promise<{ readonly mime: string; readonly base64: string }>
 }
@@ -256,6 +262,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
   options = { ...options, bilibiliQuality: qualityConfig }
   if (torrentConfig.enabled && typeof options.torrentProvider?.prepare !== 'function') throw new TypeError('启用磁链下载必须配置 Core 磁链提供器')
+  if (options.magnetSearch?.enabled && typeof options.magnetSearchProvider?.search !== 'function') throw new TypeError('启用磁力搜索必须配置 Core 搜索提供器')
   const mediaRelayConfig = validateAgentMediaRelayConfig(options.mediaRelay)
   if (mediaRelayConfig.enabled && typeof options.mediaRelayProvider?.prepare !== 'function') {
     throw new TypeError('启用媒体搬运必须配置 Core 媒体提供器')
@@ -1892,6 +1899,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       return session.generation
     },
     scopedTools: target => adapterFor(target)?.readMessage ? [
+      ...(target.kind === 'group' && magnetSearchCurrent() ? (options.toolRegistry?.builtIn ?? []).filter(tool => tool.name === 'searchMagnetTool') : []),
       ...(target.kind === 'group' ? qqActions.builtIn.filter(tool => supportsQqAction(target, tool.name)) : []),
       ...(target.kind === 'group' && options.isVideoSearchCurrent?.() !== false ? (options.toolRegistry?.builtIn ?? []).filter(tool =>
         groupTextVideoToolNames.some(name => name === tool.name) && (tool.name === 'searchVideoTool' ||
@@ -2286,9 +2294,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (privateChat && sender.id !== privatePeerFor(target, adapter)) return
       const text = event.message.text.trim()
       const qualityCommand = bilibiliQualityCurrent() && isAgentBilibiliQualityCommand(event.message)
+      const magnetCommand = magnetSearchCurrent() && !!parseAgentMagnetSearchCommand(event.message.text)
       const extractionCandidate = extraction.isCandidate(event.message), extractionCommand = extraction.isCommand(event.message)
       const mediaCandidate = isMediaRelayCandidate(event.message)
-      if (!text && !extractionCandidate && !mediaCandidate || text.startsWith('#') || (text && !privateChat && '.\\/'.includes(text.charAt(0)) && !extractionCommand && !qualityCommand)) return
+      if (!text && !extractionCandidate && !mediaCandidate || text.startsWith('#') || (text && !privateChat && '.\\/'.includes(text.charAt(0)) && !extractionCommand && !qualityCommand && !magnetCommand)) return
       const quoteId = isMessageId(quote?.messageId) ? quote.messageId : undefined
       const message: IncomingMessage = {
         version: 1, conversation: target, sender, occurredAt, text,
@@ -2301,7 +2310,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       }
       // Explicit commands retain their complete neutral source. Its original
       // text and structure must match the adapter's later authoritative read.
-      queued = { kind: 'message', message: qualityCommand ? event.message : message }
+      queued = { kind: 'message', message: qualityCommand || magnetCommand ? event.message : message }
     } else if (event.kind === 'message') {
       const { binding: _binding, quote, ...incoming } = event.message
       const reloadImages = !!adapter.readMessageImages
@@ -2606,6 +2615,49 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       return result.consumed
     } catch (error) { release(); diagnostics.emit({ stage: 'runtime', operation: 'bilibili_quality', outcome: 'failed', code: 'workflow_failed', error }); return true }
   }
+  function magnetSearchCurrent(): boolean {
+    try { return options.magnetSearch?.enabled === true && options.isMagnetSearchCurrent?.() !== false && isRunning() }
+    catch { return false }
+  }
+  async function handleMagnetSearch(incoming: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
+    const command = parseAgentMagnetSearchCommand(incoming.text)
+    if (!command || !magnetSearchCurrent()) return false
+    const target = binding.target, adapter = adapterFor(target), token = agentBindingToken(binding), sourceId = incoming.messageId
+    const age = (options.now?.() ?? Date.now()) - incoming.occurredAt
+    if (!sourceId || !adapter?.readMessage || !adapter.isReady() || age >= textConversationSeconds * 1000 || age < -privacyCommandClockSkewMs) return true
+    const memory = await beginMemoryTurn(binding, false), cancel = new AbortController()
+    const signal = AbortSignal.any([cancel.signal, memory.signal, toolCancellation.signal, AbortSignal.timeout(65_000), ...(options.signal ? [options.signal] : [])])
+    const pending = guardPendingSend(conversationAddressKey(target), () => !signal.aborted && magnetSearchCurrent() && memory.isCurrent() &&
+      adapterFor(target) === adapter && adapter.isReady() && conversationEnabled(target) && bindingIsCurrent(target, token))
+    const current = () => !signal.aborted && pending.isCurrent()
+    const { botId, scene } = personMemoryAddress(target), identity = { botId, personaId: agentPersonaScopeId(binding.agentId) }
+    const ensureCurrent = async () => {
+      signal.throwIfAborted()
+      if (!current() || !await inbox.canReply(target, sourceId) || await inbox.isRecalled(target, sourceId)) throw new Error('磁力命令来源已失效')
+      const observed = await adapter.readMessage!(target, sourceId, { isCurrent: current })
+      if (!observed || observed.messageId !== sourceId || observed.text !== incoming.text || observed.occurredAt !== incoming.occurredAt ||
+          !isConversationAddress(observed.conversation) || conversationAddressKey(observed.conversation) !== conversationAddressKey(target) ||
+          platformAccountKey(observed.sender) !== platformAccountKey(incoming.sender) || options.allowsText?.(observed.text, 'incoming') === false ||
+          options.allowsToolInput?.(observed.text) === false || target.kind === 'private' && privatePeerFor(target, adapter) !== observed.sender.id || !current()) throw new Error('磁力命令来源已失效')
+      const redactions = await personMemory.getRedactions({ identity, subjectId: incoming.sender.id })
+      if (!current() || isPersonMemoryRedacted({ scene, messageId: sourceId, authorId: incoming.sender.id, at: incoming.occurredAt, excerpt: incoming.text }, incoming.text, redactions)) throw new Error('磁力命令来源已失效')
+      signal.throwIfAborted()
+    }
+    const timer = setInterval(() => { if (!current()) cancel.abort() }, 25); timer.unref()
+    try {
+      await diagnostics.run({ kind: 'conversation', binding, messageId: sourceId }, 'magnet_search', async () => {
+        await ensureCurrent()
+        let text: string
+        try { text = 'help' in command ? AGENT_MAGNET_SEARCH_HELP : await abortableAgentWeb(options.magnetSearchProvider!.search(command, { signal, isCurrent: current, ensureCurrent }), signal) }
+        catch { await ensureCurrent(); text = '磁力搜索失败：公开索引暂不可用，请稍后重试。' }
+        await ensureCurrent()
+        if (typeof text !== 'string' || !text || text.length > 32768 || options.allowsToolInput?.(text) === false || options.allowsText?.(text, 'outgoing') === false) return
+        await controlMessageActions.send({ version: 1, kind: 'message.send', target, binding, parts: [{ kind: 'text', text }], ...(target.kind === 'group' ? { replyTo: sourceId } : {}) }, { isCurrent: current })
+      }, 'runtime')
+    } catch (error) { diagnostics.emit({ stage: 'runtime', operation: 'magnet_search', outcome: 'cancelled', code: 'source_unavailable', error }) }
+    finally { clearInterval(timer); cancel.abort(); pending.release(); memory.release() }
+    return true
+  }
   async function handleMusicExtraction(incoming: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
     if (!extraction.isCandidate(incoming)) return false
     const target = binding.target, adapter = adapterFor(target), token = agentBindingToken(binding)
@@ -2650,10 +2702,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   function groupLogForwardMessage(incoming: IncomingMessage, adapter: PlatformConnectionAdapter): IncomingMessage | undefined {
     const { binding: _binding, quote, ...message } = incoming
     if (textInboxFor(message.conversation)) {
+      if (magnetSearchCurrent() && parseAgentMagnetSearchCommand(message.text)) return { ...message, ...quoteReference(quote) }
       const text = message.text.trim(), extractionCandidate = extraction.isCandidate(message), extractionCommand = extraction.isCommand(message)
       const mediaCandidate = isMediaRelayCandidate(message)
       if (!text && !extractionCandidate && !mediaCandidate || text.startsWith('#') ||
-          text && '.\\/'.includes(text.charAt(0)) && !extractionCommand) return undefined
+          text && '.\\/'.includes(text.charAt(0)) && !extractionCommand && !(magnetSearchCurrent() && parseAgentMagnetSearchCommand(message.text))) return undefined
       return { ...message, text, parts: message.parts.filter(part => part.kind === 'text' || part.kind === 'forward' || part.kind === 'file' ||
         (extractionCandidate || mediaCandidate) && part.kind === 'extension'), ...quoteReference(quote) }
     }
@@ -2720,7 +2773,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
             if (groupLogEnabled) await groupLogWorkflow.restore(target, selected.binding)
             const qualityHandled = !diceHandled && bilibiliQualityCurrent() && isAgentBilibiliQualityCommand(incoming)
               ? await handleBilibiliQuality(incoming, selected.binding) : false
-            if (!outcome.consumed && !diceHandled && !qualityHandled && outcome.aiAllowed && conversationEnabled(target)) {
+            // Recording silence consumes ordinary AI messages as well as log
+            // commands. Explicit searches retain their independent command path.
+            const magnetHandled = !diceHandled && !qualityHandled && !parseAgentGroupLogCommand(incoming.text) && conversationEnabled(target) &&
+              await handleMagnetSearch(incoming, selected.binding)
+            if (!outcome.consumed && !diceHandled && !qualityHandled && !magnetHandled && outcome.aiAllowed && conversationEnabled(target)) {
               const message = groupLogForwardMessage(event.message, adapter)
               if (message) {
                 const destination: AgentInboxQueue = { account: queue.account, kind: textInboxFor(target)?.kind ?? 'simulation' }
@@ -2740,12 +2797,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           const persona = conversationEnabled(target) && allowsConversationAI(target) && expectedQueue === queue.kind ? bindingFor(target) : undefined
           if (persona && (queue.kind === 'simulation' ? agentBindingToken(persona.binding) : textBindingToken(persona.binding)) === bindingToken &&
               (event.kind !== 'message' || !event.message.binding || isSameBinding(event.message.binding, persona.binding))) {
-            if (event.kind === 'message' && (extraction.isCandidate(event.message) || isMediaRelayCandidate(event.message) || torrent.isCandidate(event.message)) && !adapter.isReady()) return
+            if (event.kind === 'message' && (extraction.isCandidate(event.message) || isMediaRelayCandidate(event.message) || torrent.isCandidate(event.message) || magnetSearchCurrent() && parseAgentMagnetSearchCommand(event.message.text)) && !adapter.isReady()) return
             const qualityHandled = event.kind === 'message' && await handleBilibiliQuality(event.message, persona.binding)
-            const torrentHandled = !qualityHandled && event.kind === 'message' && await handleTorrent(event.message, persona.binding)
-            const mediaHandled = !qualityHandled && !torrentHandled && event.kind === 'message' && await handleMediaRelay(event.message, persona.binding)
-            const musicHandled = !qualityHandled && !torrentHandled && !mediaHandled && event.kind === 'message' && await handleMusicExtraction(event.message, persona.binding)
-            if (qualityHandled || torrentHandled || mediaHandled || musicHandled) {
+            const magnetHandled = !qualityHandled && event.kind === 'message' && await handleMagnetSearch(event.message, persona.binding)
+            const torrentHandled = !qualityHandled && !magnetHandled && event.kind === 'message' && await handleTorrent(event.message, persona.binding)
+            const mediaHandled = !qualityHandled && !magnetHandled && !torrentHandled && event.kind === 'message' && await handleMediaRelay(event.message, persona.binding)
+            const musicHandled = !qualityHandled && !magnetHandled && !torrentHandled && !mediaHandled && event.kind === 'message' && await handleMusicExtraction(event.message, persona.binding)
+            if (qualityHandled || magnetHandled || torrentHandled || mediaHandled || musicHandled) {
               // Deterministic relay commands and accepted shares never become model prompts.
             } else if (queue.kind !== 'simulation' && event.kind === 'message') {
               if (!adapter.isReady()) return

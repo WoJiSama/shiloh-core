@@ -32,6 +32,7 @@ import { readStandaloneDiceEngine } from './standaloneDice.js'
 import { readStandalonePixivToolsConfig } from './standalonePixiv.js'
 import { readStandaloneVideoAnalysisConfig } from './standaloneVideoAnalysis.js'
 import { readStandaloneVideoSearchConfig } from './standaloneVideoSearch.js'
+import { readStandaloneMagnetSearchConfig } from './standaloneMagnetSearch.js'
 import { readStandaloneBilibiliQualityConfig } from './standaloneBilibiliQuality.js'
 import { readStandaloneQqActionsConfig, readStandaloneQqActionsConnection } from './standaloneQqActions.js'
 import { readStandaloneDeferredActionsConfig } from './standaloneDeferredActions.js'
@@ -262,12 +263,13 @@ function readMcp(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: boo
 
 function readTools(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: boolean, directory: string) {
   const config = value === undefined ? {} : object(value)
-  if (Object.keys(config).some(key => !['search', 'web', 'images', 'mcp', 'github', 'modrinth', 'rendering', 'excel', 'files', 'voice', 'music', 'pixiv', 'videoAnalysis', 'videoSearch', 'interactions', 'qqActions', 'deferredActions'].includes(key))) throw new Error('tools 含不支持的工具配置')
+  if (Object.keys(config).some(key => !['search', 'web', 'images', 'mcp', 'github', 'modrinth', 'rendering', 'excel', 'files', 'voice', 'music', 'pixiv', 'videoAnalysis', 'videoSearch', 'magnetSearch', 'interactions', 'qqActions', 'deferredActions'].includes(key))) throw new Error('tools 含不支持的工具配置')
   const qqActions = readStandaloneQqActionsConfig(config.qqActions)
   const deferredActions = readStandaloneDeferredActionsConfig(config.deferredActions)
   const voice = readStandaloneVoiceConfig(config.voice, env, requireCredentials)
   const videoAnalysis = readStandaloneVideoAnalysisConfig(config.videoAnalysis, env, requireCredentials)
   const videoSearch = readStandaloneVideoSearchConfig(config.videoSearch)
+  const magnetSearch = readStandaloneMagnetSearchConfig(config.magnetSearch)
   const pixiv = readStandalonePixivToolsConfig(config.pixiv, env, requireCredentials)
   let interactions: Readonly<{ enabled: true }> | undefined
   if (config.interactions !== undefined) {
@@ -401,7 +403,7 @@ function readTools(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: b
     if (!Object.keys(images).length) images = undefined
   }
   const mcp = config.mcp === undefined ? undefined : readMcp(config.mcp, env, requireCredentials, directory)
-  return { qqActions, deferredActions, ...(search ? { search } : {}), ...(web ? { web } : {}), ...(images ? { images } : {}), ...(mcp ? { mcp } : {}), ...(github ? { github } : {}), ...(modrinth ? { modrinth } : {}), ...(rendering ? { rendering } : {}), ...(excel ? { excel } : {}), ...(files ? { files } : {}), ...(voice ? { voice } : {}), ...(music ? { music } : {}), ...(pixiv.enabled ? { pixiv } : {}), ...(videoAnalysis ? { videoAnalysis } : {}), ...(videoSearch.enabled ? { videoSearch } : {}), ...(interactions ? { interactions } : {}) }
+  return { qqActions, deferredActions, ...(search ? { search } : {}), ...(web ? { web } : {}), ...(images ? { images } : {}), ...(mcp ? { mcp } : {}), ...(github ? { github } : {}), ...(modrinth ? { modrinth } : {}), ...(rendering ? { rendering } : {}), ...(excel ? { excel } : {}), ...(files ? { files } : {}), ...(voice ? { voice } : {}), ...(music ? { music } : {}), ...(pixiv.enabled ? { pixiv } : {}), ...(videoAnalysis ? { videoAnalysis } : {}), ...(videoSearch.enabled ? { videoSearch } : {}), ...(magnetSearch.enabled ? { magnetSearch } : {}), ...(interactions ? { interactions } : {}) }
 }
 
 function parseSource(source: string, label: string): Record<string, unknown> {

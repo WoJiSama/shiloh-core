@@ -63,6 +63,8 @@ export type { AgentMusicShare, AgentAudioAttachment, SendAudioFileAction, AgentM
 export type { AgentMediaArtifact, AgentMediaArtifactLease, AgentMediaArtifactReader, AgentMediaResourceContext, AgentMediaResourcePort, AgentMediaRelayPart, AgentMediaRelayItem, AgentMediaRelayPlan, SendMediaRelayAction } from '../contracts/agentMediaRelay.js'
 export type { AgentMediaShare, AgentMediaShareAccess, AgentMediaRelayPrepareContext, AgentMediaRelayConfig, AgentPreparedMediaRelay, AgentMediaRelayProvider } from '../contracts/agentMediaRelayWorkflow.js'
 export type { AgentTorrentConfig, AgentTorrentFile, AgentTorrentMetadata, AgentTorrentArchive, AgentPreparedTorrent, AgentTorrentProvider, SendRequesterArchiveAction } from '../contracts/agentTorrent.js'
+export type { AgentMagnetSearchConfig, AgentMagnetSearchInput, AgentMagnetSearchProvider } from '../contracts/agentMagnetSearch.js'
+export { createAgentMagnetSearchTools } from '../modules/tools/infrastructure/agentMagnetSearchTools.js'
 export type { ChatRequestData, ChatResponse } from '../contracts/modelGateway.js'
 export type {
   ForwardContent, ForwardReference, MessageImage, MessageImageReadOptions,

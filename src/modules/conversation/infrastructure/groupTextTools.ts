@@ -11,7 +11,7 @@ import { classifyToolResult, isUnknownToolResult } from '../../tools/domain/tool
 export const groupTextVideoToolNames = ['searchVideoTool', 'videoShareTool', 'videoDownloadTool'] as const
 export const groupTextInteractionToolNames = ['pokeTool', 'likeTool', 'reactionTool', 'recallTool', 'jinyanTool', 'changeCardTool'] as const
 export const groupTextQqActionToolNames = ['sendGiftTool', 'grabRedBagTool', 'qqZoneTool'] as const
-export const groupTextScopedToolNames = [...groupTextVideoToolNames, ...groupTextInteractionToolNames, ...groupTextQqActionToolNames] as const
+export const groupTextScopedToolNames = [...groupTextVideoToolNames, 'searchMagnetTool', ...groupTextInteractionToolNames, ...groupTextQqActionToolNames] as const
 export const groupTextToolNames = ['commitmentTool', 'delegateMemoryTool', 'groupKnowledgeTool', ...groupTextScopedToolNames] as const
 export type GroupTextToolName = typeof groupTextToolNames[number]
 

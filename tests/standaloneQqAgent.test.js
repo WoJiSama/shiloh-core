@@ -199,7 +199,7 @@ test('standalone QQ recovers bound simulation, group text and private turns', { 
       return
     }
     const direct = body.messages[0]?.content.includes('【私聊场景】')
-    const groupText = body.messages[0]?.content.includes('当前群只提供文字回复')
+    const groupText = body.messages[0]?.content.includes('当前群提供文字回复')
     if (direct || groupText) {
       const chatRequests = direct ? directRequests : body.tools?.length ? groupToolRequests : groupTextRequests
       chatRequests.push(body)
@@ -550,7 +550,20 @@ test('standalone QQ recovers bound simulation, group text and private turns', { 
   await delay(200)
   assert.equal(directRequests.length, requestCount)
   assert.equal(await redis.lLen(privateQueue), 0)
+  // A bindings-file revision retires the earlier simulation context, including
+  // its recent messages. Capture a genuine current source before changing modes.
+  const pendingSimulationId = '95999'
+  const modelCountBeforeModeChange = requests.length
+  emit(groupMessage(Number(pendingSimulationId), '切换文字模式前已收件'))
+  const groupState = await waitUntil(async () => {
+    const state = await session()
+    const source = state?.recent.find(message => message.messageId === pendingSimulationId)
+    return source && state.queuedIngressWake?.kind === 'atMention' && state.queuedIngressWake.seq === source.seq &&
+      await inboxLength() === 0 ? state : null
+  }, 'current simulation source and wake are persisted before changing modes')
   assert.deepEqual(await stop(disabled, 'SIGTERM'), [0, null])
+  assert.equal(requests.length, modelCountBeforeModeChange)
+  assert.equal(deliveries.length, 9)
 
   const groupTarget = { account: target.account, kind: 'group', id: String(GROUP) }
   const groupAddress = JSON.stringify(['qq', 'global', String(BOT), 'group', String(GROUP)])
@@ -564,9 +577,9 @@ test('standalone QQ recovers bound simulation, group text and private turns', { 
     return state?.turns.at(-1).replyId === String(id) && await redis.lLen(groupTextQueue) === 0 ? state : null
   }, 'group text reply and receipt persisted')
   const textOptions = [{ connectionId: 'qq-local', conversationId: String(GROUP) }]
-  const groupState = await session()
   const current = readStandaloneAgentConfig(config, env).resolvePersona(groupTarget).binding
-  await redis.set(key, JSON.stringify({ ...groupState, bindingToken: agentBindingToken(current), queuedIngressWake: { kind: 'atMention', seq: groupState.recent.at(-1).seq } }))
+  assert.equal(groupState.bindingToken, agentBindingToken(current))
+  assert.deepEqual(await session(), groupState)
   hostConfig.textGroups = textOptions
   await fs.writeFile(config, YAML.stringify(hostConfig))
   const textHost = launch()

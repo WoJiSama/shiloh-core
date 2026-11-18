@@ -11,7 +11,7 @@ export const qzoneRedisAvailable = spawnSync('redis-server', ['--version'], { st
 /** Uses only the real local Redis client/Lua engine, never old dist or external TCP. */
 export async function createQzoneRedis(t) {
   const directory = await mkdtemp(join(tmpdir(), 'qz-')), socket = join(directory, 's')
-  const server = spawn('redis-server', ['--port', '0', '--unixsocket', socket, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
+  const server = spawn('redis-server', ['--dir', directory, '--port', '0', '--unixsocket', socket, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
   const exited = once(server, 'exit').catch(() => {})
   const clients = []
   const connect = async () => {

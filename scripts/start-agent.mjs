@@ -16,6 +16,10 @@ try {
     ['未能验证 QQ 账号', 'OneBot 连接未能验证 QQ 账号'],
     ['检查期间角色绑定文件已改变', '检查期间角色绑定文件已改变，请重试'],
     ['配置事务检查、离线恢复及其它命令须分别运行', '配置事务检查、离线恢复及其它命令须分别运行'],
+    ['旧默认人格长期记忆迁移须与其它命令分别运行', '旧默认人格长期记忆迁移须与其它命令分别运行'],
+    ['旧默认人格长期记忆迁移需要 --source-root、--backup-dir、--connection 和 --group', '旧默认人格长期记忆迁移需要 --source-root、--backup-dir、--connection 和 --group'],
+    ['旧默认人格来源参数需要 --migrate-legacy-qq-memory', '旧默认人格来源参数需要 --migrate-legacy-qq-memory'],
+    ['旧默认人格记忆来源：', '旧默认人格长期记忆迁移未完成，请核对来源证明、离线状态和迁移回执'],
   ]
   const known = typeof value === 'string' ? safeFailures.find(([needle]) => value.includes(needle))?.[1] : undefined
   console.error(startupStage === 'artifacts'

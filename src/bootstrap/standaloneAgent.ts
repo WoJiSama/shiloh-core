@@ -36,6 +36,9 @@ import { createAgentPixivTools } from '../modules/media/infrastructure/agentPixi
 import { createAgentVideoAnalysisTool } from '../modules/media/infrastructure/agentVideoAnalysis.js'
 import { createAgentBilibiliSearchProvider } from '../modules/media/infrastructure/agentBilibiliSearch.js'
 import { createAgentVideoSearchTools } from '../modules/media/infrastructure/agentVideoSearchTools.js'
+import { createAgentMagnetSearchProvider } from '../modules/media/infrastructure/agentMagnetSearchProvider.js'
+import { createAgentMagnetSearchTools } from '../modules/tools/infrastructure/agentMagnetSearchTools.js'
+import { standaloneMagnetSearchSecrets } from './standaloneMagnetSearch.js'
 import { createAgentPixivSearchProvider } from '../modules/media/infrastructure/agentPixivSearchProvider.js'
 import { standalonePixivToolsSecrets } from './standalonePixiv.js'
 import { openAgentMusicCookieStore } from './agentMusicCookieStore.js'
@@ -47,6 +50,7 @@ import { openAgentMcpTools } from '../modules/tools/infrastructure/agentMcpTools
 import { connectAgentRedis, openAgentRedis } from '../modules/runtime/infrastructure/agentRedis.js'
 import { createStandaloneAgentCandidateValidator, readStandaloneAgentConfig } from './standaloneAgentConfig.js'
 import { runStandaloneQqMigration } from './standaloneAgentMigration.js'
+import { runStandaloneLegacyQqMemoryMigration } from './standaloneAgentLegacyMemoryMigration.js'
 import { openStandaloneMediaRelay, standaloneMediaRelaySecrets } from './standaloneMediaRelay.js'
 import { openStandaloneBilibiliAuth } from './standaloneBilibiliQuality.js'
 import { createAgentDiagnostics } from '../modules/runtime/infrastructure/agentDiagnostics.js'
@@ -97,6 +101,7 @@ export async function main(argv: string[]): Promise<void> {
     config: { type: 'string' }, help: { type: 'boolean', short: 'h' }, check: { type: 'boolean' },
     'inspect-config-transaction': { type: 'boolean' }, 'recover-config': { type: 'boolean' },
     'migrate-qq-state': { type: 'boolean' }, 'source-bindings': { type: 'string' }, 'source-config': { type: 'string' },
+    'migrate-legacy-qq-memory': { type: 'boolean' }, 'source-root': { type: 'string' }, 'backup-dir': { type: 'string' },
     'source-data-dir': { type: 'string' }, 'include-agent-commitments': { type: 'boolean' },
     'include-character-state': { type: 'boolean' }, 'include-group-teaching': { type: 'boolean' }, connection: { type: 'string' },
     group: { type: 'string' }, friend: { type: 'string' }, apply: { type: 'boolean' }, 'deferred-reminders': { type: 'string' },
@@ -114,6 +119,7 @@ export async function main(argv: string[]): Promise<void> {
     console.log('用 --include-group-teaching 从源 data/message_archive 核验并复制群教学；停止源写入，旧共享记录保留')
     console.log('用 --deferred-reminders /path/to/explicit-selections.json 指定延期提醒工具映射和迁移授权；缺授权继续留源，默认仅预览')
     console.log('用 --include-message-archive 接续有完整账号、角色和隐私证据的群或私聊原文；缺来源角色证据继续留源，可用 --source-archive-dir 显式覆盖旧归档目录')
+    console.log('旧默认人格长期记忆  node scripts/start-agent.mjs --config /path/to/agent-host.yaml --migrate-legacy-qq-memory --source-root /path/to/plugin --backup-dir /path/to/verified-cutover-backup --connection qq-main --group 111111 [--apply]；只接续来源闭包可核验的记忆及已结回执，不迁移执行状态')
     return
   }
   const configPath = path.resolve(values.config ?? 'config/agent-host.yaml')
@@ -143,6 +149,19 @@ export async function main(argv: string[]): Promise<void> {
     } finally { process.off('SIGTERM', stopRecovery); process.off('SIGINT', stopRecovery) }
     return
   }
+  if (values['migrate-legacy-qq-memory']) {
+    if (Object.entries(values).some(([key, value]) =>
+      !['config', 'migrate-legacy-qq-memory', 'source-root', 'backup-dir', 'connection', 'group', 'apply'].includes(key) && value !== undefined && value !== false)) {
+      throw new Error('旧默认人格长期记忆迁移须与其它命令分别运行')
+    }
+    const sourceRoot = values['source-root'], backupDir = values['backup-dir'], connectionId = values.connection, groupId = values.group
+    if (!sourceRoot || !backupDir || !connectionId || !groupId) throw new Error('旧默认人格长期记忆迁移需要 --source-root、--backup-dir、--connection 和 --group')
+    const config = readStandaloneAgentConfig(configPath, process.env, { requireCredentials: false })
+    const report = await runStandaloneLegacyQqMemoryMigration(config, { sourceRoot, backupDir, connectionId, groupId, apply: values.apply === true })
+    console.log(JSON.stringify(report))
+    return
+  }
+  if (values['source-root'] !== undefined || values['backup-dir'] !== undefined) throw new Error('旧默认人格来源参数需要 --migrate-legacy-qq-memory')
   const { 'source-bindings': sourceBindings, 'source-config': sourceConfig, 'source-data-dir': sourceDataDir,
     'include-agent-commitments': moveAgentCommitments, 'include-character-state': moveCharacterState,
     'include-group-teaching': moveGroupTeaching, 'include-message-archive': moveMessageArchive, 'source-archive-dir': sourceArchiveDir,
@@ -286,6 +305,7 @@ export async function main(argv: string[]): Promise<void> {
       ...standaloneMediaRelaySecrets(config.mediaRelay),
       ...(config.tools.pixiv ? standalonePixivToolsSecrets(config.tools.pixiv) : []),
       ...torrentProxySecrets,
+      ...(config.tools.magnetSearch ? standaloneMagnetSearchSecrets(config.tools.magnetSearch) : []),
       ...Object.values(config.tools.mcp?.servers ?? {}).flatMap(server => [...Object.values(server.headers ?? {}), ...Object.values(server.env ?? {})]),
       ...config.connections.map(connection => 'accessToken' in connection ? connection.accessToken : undefined)]
       .filter((key): key is string => typeof key === 'string' && !!key)
@@ -460,7 +480,14 @@ export async function main(argv: string[]): Promise<void> {
       provider: videoSearchProvider, storage: storage.storage, secrets: hostSecrets, allowsText: allowsMediaText, diagnostics,
       ...(mediaRelayHost?.videoSearchAttachmentProvider ? { attachmentProvider: mediaRelayHost.videoSearchAttachmentProvider } : {}),
     }).builtIn ?? [] : []
+    const magnetSearchProvider = config.tools.magnetSearch?.enabled ? createAgentMagnetSearchProvider(config.tools.magnetSearch, {
+      secrets: hostSecrets, allowsText: allowsMediaText,
+    }) : undefined
+    const magnetSearchTools = config.tools.magnetSearch && magnetSearchProvider ? createAgentMagnetSearchTools(config.tools.magnetSearch, {
+      provider: magnetSearchProvider, secrets: hostSecrets, allowsText: allowsMediaText,
+    }).builtIn ?? [] : []
     const builtInTools = [
+        ...magnetSearchTools,
         ...videoTools,
         ...videoSearchTools,
         ...pixivTools,
@@ -485,7 +512,7 @@ export async function main(argv: string[]): Promise<void> {
       managementBindings,
       toolRegistry: {
         // Removing a definition also fences its pending HTTP, queued send and late result.
-        get builtIn() { return config.isConfigCurrent() ? builtInTools : builtInTools.filter(tool => !pixivTools.includes(tool) && !videoTools.includes(tool) && !videoSearchTools.includes(tool)) },
+        get builtIn() { return config.isConfigCurrent() ? builtInTools : builtInTools.filter(tool => !pixivTools.includes(tool) && !videoTools.includes(tool) && !videoSearchTools.includes(tool) && !magnetSearchTools.includes(tool)) },
         get custom() { return mcp?.registry.custom ?? [] },
       },
       isExecutionCurrent: () => storage?.isCurrent() === true && config.isConfigCurrent(),
@@ -525,6 +552,9 @@ export async function main(argv: string[]): Promise<void> {
       },
       ...(videoSearchProvider ? { videoSearchProvider } : {}),
       isVideoSearchCurrent: () => config.isConfigCurrent() && config.tools.videoSearch?.enabled === true,
+      magnetSearch: { enabled: config.tools.magnetSearch?.enabled === true },
+      ...(magnetSearchProvider ? { magnetSearchProvider } : {}),
+      isMagnetSearchCurrent: () => config.isConfigCurrent() && config.tools.magnetSearch?.enabled === true,
       groupLog: { enabled: config.groupLog.enabled, maxBytes: config.groupLog.maxBytes, masters: config.groupLog.masters },
       isMusicExtractionCurrent: config.isConfigCurrent,
       mediaRelay: { enabled: config.mediaRelay.enabled,
