@@ -138,6 +138,17 @@ test('ordinary automatic relay uses anonymous fingerprint cookies and never the 
   assert.equal(f.requests.find(request => request.url.includes('bilivideo.com')).policy.headers.Cookie, undefined)
 })
 
+test('PCDN primary durl with port falls back to official backup instead of failing the relay', async t => {
+  const body = mp4(72, 9)
+  const f = await fixture(t, { play: { durl: [{ url: 'https://edge.mountaintoys.cn:4483/upgcxcode/pcdn.mp4?buvid3=BUVID_PRIVATE_3', length: 60000, size: 72,
+      backup_url: ['https://upos-sz-estgcos.bilivideo.com/official.mp4?token=upstream-private&buvid4=BUVID_PRIVATE_4'] }] },
+    respond: async url => url.hostname === 'edge.mountaintoys.cn' ? assert.fail('non-whitelisted host must never be requested') : url.pathname === '/official.mp4' ? response(body, 'video/mp4') : undefined })
+  const result = await f.prepare(); assert.equal(result.status, 'ready')
+  assert.deepEqual(await f.read(result.plan.items[1].parts[0].artifact), body)
+  assert.ok(f.events.some(event => event.operation === 'bilibili_provider_download' && event.code === 'video_candidate_failed'))
+  await result.release(); await f.clean()
+})
+
 test('a 24-hour SPI refresh can repeat only its learned device tokens while metadata still rejects them', async t => {
   const original = Date.now; let clock = original()
   Date.now = () => clock
@@ -322,10 +333,15 @@ test('DNS policy rejects every non-public family, mixed answer and family mismat
   })
 })
 
-test('official URL policy rejects hostile media, cover and every redirect before DNS/request', async t => {
+test('official URL policy never requests hostile media, cover or redirects before DNS/request', async t => {
   for (const hostile of ['http://127.0.0.1/x', 'https://cn-test.bilivideo.com.evil.test/x', 'https://user@cn-test.bilivideo.com/x',
     'https://cn-test.bilivideo.com:443/x', 'https://cn-test.bilivideo.com/a/../x', 'https://cn-test.bilivideo.com/%2e%2e/x']) await t.test(hostile, async t => {
-    const f = await fixture(t, { play: { durl: [{ url: hostile, size: 64 }] } }); await rejected(f.prepare()); assert.ok(!f.lookups.some(host => host.includes('evil') || host === '127.0.0.1')); await f.clean()
+    // Hostile durl candidates are skipped, never requested, and degrade to a metadata-only relay.
+    const f = await fixture(t, { play: { durl: [{ url: hostile, size: 64 }] } })
+    const result = await f.prepare(); assert.equal(result.status, 'metadata-only')
+    assert.ok(!f.lookups.some(host => host.includes('evil') || host === '127.0.0.1'))
+    assert.ok(f.requests.every(request => !request.url.includes('evil.test') && !request.url.includes('127.0.0.1')))
+    await result.release(); await f.clean()
   })
   const f = await fixture(t, { respond: async url => url.hostname === 'b23.tv' ? response('', '', { status: 302, headers: { location: 'https://private.evil.test/x' } }) : undefined })
   await rejected(f.prepare(share('short', 'safe'))); assert.deepEqual(f.lookups, ['b23.tv']); assert.equal(f.requests.length, 1)

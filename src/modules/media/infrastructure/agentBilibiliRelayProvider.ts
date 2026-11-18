@@ -274,9 +274,17 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       }
       for (const [index, item] of durls.entries()) {
         if (typeof item.url !== 'string') throw bilibiliFailure()
-        bilibiliOfficialUrl(item.url, 'video')
-        const backups = item.backup_url === undefined ? [] : Array.isArray(item.backup_url) && item.backup_url.length <= 8 ? item.backup_url.map(value => { if (typeof value !== 'string') throw bilibiliFailure(); bilibiliOfficialUrl(value, 'video'); return value }) : undefined
-        if (!backups) throw bilibiliFailure()
+        // Bilibili's PCDN scheduling can point the primary durl at a non-whitelisted
+        // edge host while official upos mirrors sit in backup_url. Outside strict mode
+        // such candidates are skipped instead of failing the whole playback; the URL
+        // whitelist itself stays enforced per request inside download/createBilibiliHttp.
+        const mediaCandidate = (value: string): boolean => { try { bilibiliOfficialUrl(value, 'video'); return true } catch { return false } }
+        if (strict && !mediaCandidate(item.url)) throw bilibiliFailure()
+        const rawBackups = item.backup_url === undefined ? [] : Array.isArray(item.backup_url) && item.backup_url.length <= 8 ? item.backup_url : undefined
+        if (!rawBackups) throw bilibiliFailure()
+        const backups = strict ? rawBackups.map(value => { if (typeof value !== 'string') throw bilibiliFailure(); bilibiliOfficialUrl(value, 'video'); return value })
+          : rawBackups.filter((value): value is string => typeof value === 'string' && mediaCandidate(value))
+        if (!strict && !mediaCandidate(item.url) && !backups.length) continue
         result.resources.push({ url: item.url, backups, size: nonnegative(item.size ?? 0), part, index, quality, preview })
       }
     }
