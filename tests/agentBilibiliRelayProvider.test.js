@@ -162,6 +162,31 @@ test('SPI may never receive a configured host or account secret as its device cr
   })
 })
 
+test('SPI base64 b_4 tails are accepted while a rejected b_4 degrades to buvid3-only', async t => {
+  const b4 = '404E0020-4827-645B-6779-CEDB4921136910568-026111822-wPC5+TsSN7zkqT5Aufv7rA=='
+  await t.test('current b_4 format keeps the full device cookie without diagnostics', async t => {
+    const f = await fixture(t, { respond: async url => url.pathname.includes('finger/spi') ? response({ code: 0, data: { b_3: 'BUVID_PRIVATE_3', b_4: b4 } }) : undefined })
+    const result = await f.prepare(); assert.equal(result.status, 'ready')
+    assert.equal(f.requests.find(request => request.url.includes('web-interface/view')).policy.headers.Cookie, `buvid3=BUVID_PRIVATE_3; buvid4=${b4}`)
+    assert.ok(!f.events.some(event => event.operation === 'bilibili_provider_fingerprint'))
+    await result.release(); await f.clean()
+  })
+  await t.test('cookie-unsafe b_4 still parses with buvid3-only and one partial diagnostic', async t => {
+    const f = await fixture(t, { respond: async url => url.pathname.includes('finger/spi') ? response({ code: 0, data: { b_3: 'BUVID_PRIVATE_3', b_4: 'bad; injected=secret' } }) : undefined })
+    const result = await f.prepare(); assert.equal(result.status, 'ready')
+    assert.equal(f.requests.find(request => request.url.includes('web-interface/view')).policy.headers.Cookie, 'buvid3=BUVID_PRIVATE_3')
+    assert.deepEqual(f.events.filter(event => event.operation === 'bilibili_provider_fingerprint'), [{ stage: 'runtime', operation: 'bilibili_provider_fingerprint', outcome: 'failed', code: 'fingerprint_partial_fallback' }])
+    await result.release(); await f.clean()
+  })
+  await t.test('cookie-unsafe b_3 still drops the whole fingerprint anonymously', async t => {
+    const f = await fixture(t, { respond: async url => url.pathname.includes('finger/spi') ? response({ code: 0, data: { b_3: 'bad; injected=secret', b_4: 'BUVID_PRIVATE_4' } }) : undefined })
+    const result = await f.prepare(); assert.equal(result.status, 'ready')
+    assert.ok(f.requests.every(request => request.policy.headers.Cookie === undefined))
+    assert.ok(f.events.some(event => event.code === 'fingerprint_invalid_fallback'))
+    await result.release(); await f.clean()
+  })
+})
+
 for (const trigger of ['preview', 'login']) test(`one authorized retry occurs only after anonymous ${trigger} and the final full video is used`, async t => {
   const cookies = [], f = await fixture(t, { options: { authCookie: 'SESSDATA=ACCOUNT_PRIVATE_VALUE', autoAuthorizedRetry: true }, respond: async (url, policy) => {
     if (!url.pathname.includes('player/playurl')) return

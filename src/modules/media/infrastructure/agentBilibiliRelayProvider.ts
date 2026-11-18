@@ -163,10 +163,17 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
     if (Date.now() < fingerprintCache.expiresAt) return fingerprintCache.value
     try {
       const payload = await json('https://api.bilibili.com/x/frontend/finger/spi', context), data = row(payload.data)
-      if (payload.code !== 0 || typeof data.b_3 !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/u.test(data.b_3) || data.b_4 !== undefined && (typeof data.b_4 !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/u.test(data.b_4))) { diagnose('bilibili_provider_fingerprint', 'fingerprint_invalid_fallback', context); fingerprintCache = { value: '', expiresAt: Date.now() + 60_000 }; return '' }
-      for (const value of [data.b_3, data.b_4]) if (typeof value === 'string' && value) secrets.add(value)
+      // Bilibili appends a base64 tail (with +/=: characters) to b_4; a rejected b_4 now
+      // degrades to a buvid3-only cookie instead of dropping the whole fingerprint,
+      // because anonymous view/playback APIs are risk-controlled (HTTP 412) without buvid3.
+      const token = /^[A-Za-z0-9_+=:-]{1,256}$/u
+      const b3 = typeof data.b_3 === 'string' && token.test(data.b_3) ? data.b_3 : ''
+      const b4 = typeof data.b_4 === 'string' && token.test(data.b_4) ? data.b_4 : ''
+      if (payload.code !== 0 || !b3) { diagnose('bilibili_provider_fingerprint', 'fingerprint_invalid_fallback', context); fingerprintCache = { value: '', expiresAt: Date.now() + 60_000 }; return '' }
+      if (!b4 && data.b_4) diagnose('bilibili_provider_fingerprint', 'fingerprint_partial_fallback', context)
+      for (const value of [b3, b4]) if (value) secrets.add(value)
       secretCheck = createAgentSecretTextCheck([...secrets])
-      const value = `buvid3=${data.b_3}${data.b_4 ? `; buvid4=${data.b_4}` : ''}`
+      const value = `buvid3=${b3}${b4 ? `; buvid4=${b4}` : ''}`
       fingerprintCache = { value, expiresAt: Date.now() + 24 * 60 * 60 * 1000 }; return value
     } catch { diagnose('bilibili_provider_fingerprint', 'fingerprint_unavailable_fallback', context); const guard = bilibiliGuard(context, Math.min(timeout, 10_000)); try { await guard.ensure(); fingerprintCache = { value: '', expiresAt: Date.now() + 60_000 }; return '' } finally { guard.close() } }
   }
