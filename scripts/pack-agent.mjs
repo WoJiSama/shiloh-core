@@ -17,6 +17,8 @@ const exports = {
   './interactions': 'modules/tools/infrastructure/agentInteractions.js',
   './images': 'modules/tools/infrastructure/agentImageTools.js',
   './image-search': 'modules/content/infrastructure/agentImageSearchTools.js',
+  './local-emoji': 'modules/emoji/infrastructure/agentLocalEmojiRuntime.js',
+  './life-threads': 'modules/simulation/infrastructure/agentLifeThreadProvider.js',
   './mcp': 'modules/tools/infrastructure/agentMcpTools.js',
   './semantic': 'modules/memory/infrastructure/agentSemanticBackend.js',
   './repositories': 'modules/tools/infrastructure/agentRepositoryTools.js',
@@ -100,7 +102,7 @@ const [project, projectLock] = await Promise.all(['package.json', 'package-lock.
 const packageJson = {
   name: 'bl-chat-agent', version: project.version, private: true, type: 'module', license: project.license, engines: project.engines,
   scripts: { start: 'node scripts/start-agent.mjs' },
-  files: ['dist/backend', 'console/frontend/dist', 'scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'utils/backendArtifactGuard.js', 'release-manifest.json', 'npm-shrinkwrap.json'],
+  files: ['dist/backend', 'console/frontend/dist', 'scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'utils/backendArtifactGuard.js', 'release-manifest.json', 'npm-shrinkwrap.json'],
   exports: Object.fromEntries(Object.entries(exports).map(([key, name]) => [key, {
     types: `./dist/backend/${name.replace(/\.js$/, '.d.ts')}`, import: `./dist/backend/${name}`,
   }])),
@@ -139,7 +141,7 @@ try {
   for (const name of frontendFiles) await copy(name, path.posix.join('console/frontend/dist', path.relative(frontendOutput, name)))
   const files = Object.fromEntries([...new Set([...runtimeFiles, ...declarations])].sort().map(file => [file, manifest.files[file]]))
   for (const name of Object.keys(files)) await copy(path.join(backend, name), `dist/backend/${name}`)
-  for (const name of ['scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'utils/backendArtifactGuard.js', 'LICENSE']) await copy(path.join(root, name), name)
+  for (const name of ['scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'utils/backendArtifactGuard.js', 'LICENSE']) await copy(path.join(root, name), name)
   await copy(path.join(root, 'docs/architecture/agent-bindings.md'), 'README.md')
   await writeJson('package.json', packageJson)
   await copy(path.join(root, 'package-lock.json'), 'package-lock.json')

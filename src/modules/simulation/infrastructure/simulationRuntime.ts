@@ -14,6 +14,9 @@ import type { AgentMessageVideo, AgentVideoInput, MessageVideoReadOptions } from
 import type { SendMediaAction } from '../../../contracts/agentMedia.js'
 import type { AgentMusicCard } from '../../../contracts/agentMusic.js'
 import type { AgentVideoCard } from '../../../contracts/agentVideoCard.js'
+import type { AgentLifeThreadContext, AgentLifeThreadProvider } from '../../../contracts/agentLifeThread.js'
+import type { AgentLocalEmojiCollectionContext } from '../../../contracts/agentLocalEmoji.js'
+import { createAgentLifeThreadRuntime } from './agentLifeThreadRuntime.js'
 import type { AgentMediaArtifact, AgentMediaRelayPlan, AgentMediaResourceContext } from '../../../contracts/agentMediaRelay.js'
 import { validateAgentMediaRelayPlan } from '../../media/domain/agentMediaRelayPlan.js'
 import { validateAgentMusicCard } from '../../media/infrastructure/agentMusicCard.js'
@@ -229,6 +232,12 @@ export interface SimulationRuntimePorts {
   /** 生活线真实数据源：resolve 按 kind 用真实搜索定位（找不到返回 error，拒绝编造）；sync 拉取真实更新 */
   lifeThreadResolve?(input: { title: string }): Promise<{ ok: true; sourceId: string; title: string; episode?: number } | { ok: false; error: string }>
   lifeThreadSync?(input: { sourceId: string; title: string; lastEpisode?: number }): Promise<{ newNotes: string[]; episode?: number } | { error: string }>
+  /** Independent fixed-source provider; the complete binding is retained through persistence. */
+  lifeThreadProvider?: AgentLifeThreadProvider
+  isLifeThreadsCurrent?(): boolean
+  /** Trusted visible-message bytes, never a model-selected URL or legacy event. */
+  collectMessageSticker?(image: MessageImage, context: AgentLocalEmojiCollectionContext): Promise<{ ok: boolean; error?: string }>
+  isLocalEmojiCurrent?(): boolean
   /** 群成员列表（B3）：[{userId, nick}] */
   getGroupMembers?(groupId: string, selfId?: string): Promise<{ userId: string; nick: string }[]>
   readGroupMembers?(target: ConversationAddress, signal: AbortSignal, isCurrent: () => boolean): Promise<ConversationMembersSnapshot | undefined>
@@ -366,6 +375,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   const now = ports.now ?? Date.now
   const random = ports.random ?? Math.random
   const store: SimSessionStore = createSimSessionStore({ redis: ports.redis, logger, now })
+  const lifeThreads = ports.lifeThreadProvider ? createAgentLifeThreadRuntime(ports.lifeThreadProvider, now) : undefined
   const videoCardLedger = createSimulationVideoCardLedger(ports.redis, now)
   const initialPromptStore = ports.durableIngress ? createInitialPromptStore(ports.redis) : undefined
   const personMemory = createPersonMemoryStore({ redis: ports.redis, now })
@@ -439,6 +449,34 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return createSimSessionStore({ redis: ports.redis, logger, now, characterScope: scope,
       ...(binding?.source === 'configured' ? { memoryScope: binding } : {}),
     })
+  }
+  async function withLifeThreads<T>(groupId: string, target: ConversationAddress, binding: AgentBindingSnapshot, signal: AbortSignal | undefined,
+    outerCurrent: () => boolean, outerEnsure: () => Promise<void>, operation: (store: SimSessionStore, context: AgentLifeThreadContext) => Promise<T>): Promise<T> {
+    const lifetime = new AbortController(), token = agentBindingToken(binding)
+    const scope = characterScopeFor(target, agentPersonaScopeId(binding.agentId))
+    const current = () => {
+      try { return !stopped && !lifetime.signal.aborted && !signal?.aborted && outerCurrent() &&
+        runtimeConfig().enabled && groupActive(runtimeConfig(), groupId) && runtimeConfig(groupId).lifeThreads.enabled &&
+        ports.isLifeThreadsCurrent?.() !== false && ports.isMemoryInputAvailable?.(target.account) !== false &&
+        allowsConversationAI(target) && agentBindingToken(personaFor(target).binding!) === token }
+      catch { return false }
+    }
+    const combined = AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000), ...(signal ? [signal] : [])])
+    let memory: Awaited<ReturnType<NonNullable<SimulationRuntimePorts['beginMemoryTurn']>>> | undefined
+    const check = () => { if (combined.aborted || !current() || memory?.isCurrent() === false) throw new Error('生活线所属角色或权限已改变') }
+    const ensure = async () => {
+      check(); await outerEnsure(); check()
+      if ((await characters.load(scope)).paused) throw new Error('生活线所属角色已暂停')
+      check()
+    }
+    try {
+      check()
+      memory = await ports.beginMemoryTurn?.(binding); check()
+      const context: AgentLifeThreadContext = { binding, signal: memory ? AbortSignal.any([combined, memory.signal]) : combined,
+        isCurrent: () => { try { check(); return true } catch { return false } }, ensureCurrent: ensure }
+      return await awaitSideModel(() => administration.run({ signal: context.signal, isCurrent: context.isCurrent,
+        ensureCurrent: check, beforeWrite: ensure }, () => operation(scopedStore(scope, binding), context)), context.signal, context.isCurrent)
+    } finally { lifetime.abort(); memory?.release() }
   }
   async function sceneMemories(groupId: string, at = now()): Promise<SimMemoryEntry[]> {
     const state = liveStates.get(groupId) ?? await store.load(groupId)
@@ -1442,7 +1480,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             await ensureExecution()
             if (!canCallModel()) throw new Error('工具所属回合或消息来源已失效')
           },
-          _sendAgentToolImage: (image: { readonly mime: string; readonly base64: string }, isCurrent?: () => boolean) => sendAgentToolImage(image, isCurrent),
+          _sendAgentToolImage: (image: MessageImage, isCurrent?: () => boolean) => sendAgentToolImage(image, isCurrent),
           _sendAgentToolFile: (file: AgentFileUpload, isCurrent?: () => boolean, signal?: AbortSignal) => sendAgentToolFile(file, isCurrent, signal),
           _sendAgentToolMedia: (media: SendMediaAction['media'], isCurrent?: () => boolean, signal?: AbortSignal) => sendAgentToolMedia(media, isCurrent, signal),
           _sendAgentToolMusic: (music: AgentMusicCard, isCurrent?: () => boolean, signal?: AbortSignal) => sendAgentToolMusic(music, isCurrent, signal),
@@ -2184,6 +2222,34 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           attachmentSourceIds.add(originalId)
           return images.slice(0, 2)
         }
+        if (ports.collectMessageSticker && resolvedPersona.binding) ctx.collectSticker = async seq => {
+          const lifetime = new AbortController()
+          const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(90_000), ...(memoryTurn ? [memoryTurn.signal] : [])])
+          const selected = () => visibleMessageSeqs.has(seq)
+            ? state!.recent.find(message => message.seq === seq) ?? state!.unread.find(message => message.seq === seq) : undefined
+          const message = selected(), binding = resolvedPersona.binding!
+          const quote = message?.imageCount === 0 ? message.quoteSource : undefined
+          const source = message?.messageId ? { messageId: quote?.messageId ?? String(message.messageId),
+            author: { ...target.account, id: quote?.image?.authorId ?? message.userId }, occurredAt: quote?.image?.occurredAt ?? message.at } : undefined
+          const current = () => !signal.aborted && canRunTurn() && selected() === message && ports.isLocalEmojiCurrent?.() !== false
+          const ensure = async () => {
+            await ensureExecution()
+            if (!current() || !source || source.author.id === target.account.id ||
+                await ports.isMessageRecalled?.(target, source.messageId) || !current()) throw new Error('收藏图片来源已失效')
+          }
+          try {
+            if (!Number.isSafeInteger(seq) || seq < 1 || !source || !isPlatformIdentifier(source.author.id) ||
+                !Number.isSafeInteger(source.occurredAt) || source.occurredAt <= 0) return { ok: false, error: '请选择本轮可见的真实附图消息' }
+            await ensure()
+            const images = await readAgentToolImages(seq, current, signal); await ensure()
+            const image = images[0]
+            if (!image) return { ok: false, error: '没有取得可收藏的图片' }
+            const result = await awaitSideModel(() => ports.collectMessageSticker!(image,
+              { binding, source, signal, isCurrent: current, ensureCurrent: ensure }), signal, current)
+            await ensure(); return result
+          } catch { return { ok: false, error: '表情收藏未完成，请核实来源、权限或服务状态' } }
+          finally { lifetime.abort() }
+        }
         if (readImages && describeImages) {
           ctx.getMessageImages = async seq => {
             const refused = { seq, error: '本轮无法读取这条消息的图片' }
@@ -2731,7 +2797,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             return receipt
           })
         }
-        const sendAgentToolImage = (image: { readonly mime: string; readonly base64: string }, isCurrent?: () => boolean): Promise<DeliveryReceipt> => queueToolSend(async () => {
+        const sendAgentToolImage = (image: MessageImage, isCurrent?: () => boolean): Promise<DeliveryReceipt> => queueToolSend(async () => {
           if (isCurrent?.() === false) throw new Error('工具所属回合已失效')
           await ensureToolSend()
           if (isCurrent?.() === false) throw new Error('工具所属回合已失效')
@@ -2745,7 +2811,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           try {
             receipt = normalizeDeliveryReceipt(await ports.messageActions.send({
               version: 1, kind: 'message.send', target,
-              parts: [{ kind: 'image', resource: { kind: 'reference', value: `base64://${validated.base64}` } }],
+              parts: [{ kind: 'image', resource: { kind: 'reference', value: `base64://${validated.base64}` },
+                ...(validated.presentation === undefined ? {} : { presentation: validated.presentation }) }],
               ...(sendOptions.binding ? { binding: sendOptions.binding } : {}),
             }, { isCurrent: guard }))
           } catch { receipt = { state: 'unknown' } }
@@ -3625,7 +3692,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         rhythmCache = null
         return `已设定你的作息：${sleepFrom}:00 睡到 ${sleepTo}:00。这个时间你会更少说话（被@还是会回），对话中可以自然提到自己的作息习惯。`
       },
-      ...(typeof ports.lifeThreadResolve === 'function' ? {
+      ...(lifeThreads && sendOptions?.binding ? {
+        lifeThreadFollow: (title: string) => withLifeThreads(groupId, target, sendOptions.binding!, undefined,
+          () => sendOptions.isCurrent?.() !== false, async () => { await beforeSend?.() }, (store, context) => lifeThreads.follow(title, store, context)),
+        lifeThreadList: () => withLifeThreads(groupId, target, sendOptions.binding!, undefined,
+          () => sendOptions.isCurrent?.() !== false, async () => { await beforeSend?.() }, (store, context) => lifeThreads.list(store, context)),
+        lifeThreadDrop: (title: string) => withLifeThreads(groupId, target, sendOptions.binding!, undefined,
+          () => sendOptions.isCurrent?.() !== false, async () => { await beforeSend?.() }, (store, context) => lifeThreads.drop(title, store, context)),
+      } : typeof ports.lifeThreadResolve === 'function' ? {
         lifeThreadFollow: async (title: string) => {
           const threads = normalizeLifeThreads(await store.loadLifeThreads().catch(() => []))
           const activeCount = threads.filter(t => t.status === 'active').length
@@ -3920,7 +3994,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (!hasWake && isCurrent() && !running.has(groupId)) await maybeExtractPersonProfiles(groupId, state, cfg)
       // 按人挖口头禅（风格个性化）：冷却默认 6h，读归档 → 纯函数挖掘 → Redis
       if (!hasWake && isCurrent() && !running.has(groupId)) await maybeMineUserStyle(groupId, cfg)
-      if (!hasWake && !running.has(groupId) && isCurrent()) await maybeSyncLifeThreads(cfg, scopedStore(scopeFor(groupId, state.botId)), isCurrent)
+      if (!hasWake && !running.has(groupId) && isCurrent()) {
+        if (lifeThreads && binding) {
+          await withLifeThreads(groupId, target, binding, sweepActivity.signal, isCurrent, async () => {
+            await refreshGroupState(true)
+            if (!isCurrent()) throw new Error('生活线调度所属角色已改变')
+          }, (store, context) => lifeThreads.sync(cfg.lifeThreads.syncIntervalMs, store, context)).catch(() => undefined)
+        } else await maybeSyncLifeThreads(cfg, scopedStore(scopeFor(groupId, state.botId)), isCurrent)
+      }
       // 健康哨兵：全局每小时跑一次（挂在第一个群的 sweep 里）
       if (now() - healthSentinelLastRun > 3600_000) {
         healthSentinelLastRun = now()

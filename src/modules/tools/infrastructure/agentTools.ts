@@ -4,7 +4,7 @@ import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnos
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest } from '../../../contracts/agentFiles.js'
 import { snapshotAgentFileRequest, validateAgentFileBytes, validateAgentFileListing } from '../../content/infrastructure/agentFileBytes.js'
 import type { AgentTool, AgentToolContext, AgentToolRegistry, AgentToolMessage } from '../../../contracts/agentTool.js'
-import type { ConversationMemberSnapshot, ConversationMembersSnapshot } from '../../../contracts/platformConnection.js'
+import type { ConversationMemberSnapshot, ConversationMembersSnapshot, MessageImage } from '../../../contracts/platformConnection.js'
 import { isPlatformAccount, isPlatformIdentifier, samePlatformNamespace } from '../../runtime/domain/agentBindings.js'
 import type { DeliveryReceipt } from '../../../contracts/delivery.js'
 import type { AgentFileUpload, FileDeliveryReceipt } from '../../../contracts/agentFileDelivery.js'
@@ -43,7 +43,7 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
     readVideo?(isCurrent: () => boolean, signal: AbortSignal): Promise<AgentVideoInput>
     listFiles?(input: { readonly query?: string; readonly folderPath?: string }, isCurrent: () => boolean, signal: AbortSignal): Promise<AgentFileListing>
     readHistory?(input: Record<string, unknown>, isCurrent: () => boolean, signal: AbortSignal): Promise<string>
-    sendImage?(image: { readonly mime: string; readonly base64: string }, isCurrent?: () => boolean): Promise<DeliveryReceipt>
+    sendImage?(image: MessageImage, isCurrent?: () => boolean): Promise<DeliveryReceipt>
     sendFile?(file: AgentFileUpload, isCurrent: () => boolean, signal: AbortSignal): Promise<FileDeliveryReceipt>
     sendAudio?(audio: AgentAudioBytes, isCurrent: () => boolean, signal: AbortSignal): Promise<DeliveryReceipt>
     sendVideo?(video: AgentVideoBytes, isCurrent: () => boolean, signal: AbortSignal): Promise<DeliveryReceipt>
@@ -158,7 +158,7 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
               }
               const ensureMediaKnown = () => { if (mediaDeliveryUnknown) throw new Error('媒体发送结果未知，核实前不重复执行或发送') }
               const sendImage = scope.sendImage
-                ? async (image: { readonly mime: string; readonly base64: string }) => {
+                ? async (image: MessageImage) => {
                   ensureMediaKnown()
                   await ensureCurrent()
                   const validated = validateAgentToolImage(image)

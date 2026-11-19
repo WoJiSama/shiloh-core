@@ -26,6 +26,27 @@ test('inline delivery validates real PNG, JPEG, WebP and GIF bytes without alter
   }
 })
 
+test('inline sticker presentation survives validation and the scoped sendImage boundary', async () => {
+  const image = { ...png, presentation: 'sticker' }
+  assert.deepEqual(validateAgentToolImage(image), image)
+  assert.deepEqual(validateAgentToolImageBytes(Buffer.from(png.base64, 'base64'), png.mime), png)
+  let sends = 0
+  const result = await tool(async (_input, context) => {
+    assert.deepEqual(await context.sendImage(image), { state: 'sent', messageId: 'sticker' })
+    return { status: 'succeeded', content: 'sent' }
+  }, scope({ async sendImage(owned, guard) {
+    assert.equal(guard(), true)
+    assert.deepEqual(owned, image)
+    sends++
+    return { state: 'sent', messageId: 'sticker' }
+  } })).execute({}, {})
+  assert.equal(result.status, 'success')
+  assert.equal(sends, 1)
+  for (const presentation of ['', 'image', 'normal', 'STICKER', null, 1, {}, ['sticker']])
+    assert.throws(() => validateAgentToolImage({ ...png, presentation }))
+  assert.throws(() => validateAgentToolImage({ ...png, presentation: 'sticker', sub_type: 1 }))
+})
+
 test('inline delivery rejects URLs, paths, noncanonical base64, MIME mismatches and oversized canvases or payloads', () => {
   for (const image of [null, {}, { ...png, url: 'https://example.test/image.png' },
     { ...png, base64: 'https://example.test/image.png' }, { ...png, base64: '/tmp/image.png' },

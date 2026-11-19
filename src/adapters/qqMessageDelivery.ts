@@ -48,6 +48,8 @@ export function createQqMessageActionPort(options: {
         const useNativeQuote = Boolean(quote && options.reply?.messageId === quote)
         const segments: unknown[] = quote && !useNativeQuote ? [{type:'reply', data:{id:quote}}] : []
         for (const part of action.parts) {
+          const presentation = part.kind === 'image' ? part.presentation : undefined
+          if (presentation !== undefined && presentation !== 'sticker') return rejected('invalid_image_presentation')
           if (part.kind === 'text') {
             segments.push({type:'text', data:{text:part.text}})
           } else if (part.kind === 'mention') {
@@ -62,7 +64,7 @@ export function createQqMessageActionPort(options: {
             segments.push(native)
           } else {
             const type = part.kind === 'audio' ? 'record' : part.kind
-            segments.push({type, data:{file:part.resource.value, ...(part.name ? {name:part.name} : {})}})
+            segments.push({type, data:{file:part.resource.value, ...(part.name ? {name:part.name} : {}), ...(presentation === 'sticker' ? { sub_type: 1 } : {})}})
           }
         }
         if (options.reply) {
@@ -126,7 +128,7 @@ export function createQqMessageActionPort(options: {
               uin: action.target.account.id,
               content: item.parts.map(part => part.kind === 'text'
                 ? { type: 'text', data: { text: part.text } }
-                : { type: 'image', data: { file: `base64://${part.base64}` } }),
+                : { type: 'image', data: { file: `base64://${part.base64}`, ...(part.presentation === 'sticker' ? { sub_type: 1 } : {}) } }),
             },
           })),
         }

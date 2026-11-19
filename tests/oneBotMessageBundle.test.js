@@ -83,6 +83,33 @@ async function fixture(t, transport) {
 }
 
 for (const transport of ['forward-websocket', 'reverse-websocket']) {
+  test(`${transport} maps neutral sticker images and bundle parts to QQ sub_type without changing ordinary images`, { timeout: 15_000 }, async t => {
+    const { adapter, requests } = await fixture(t, transport)
+    const image = { kind: 'image', resource: { kind: 'reference', value: `base64://${png.base64}` } }
+    const single = parts => ({ version: 1, kind: 'message.send', target, parts })
+    for (const kind of ['group', 'private']) {
+      const receipt = await adapter.actions.send({ ...single([image, { ...image, presentation: 'sticker' }]), target: { ...target, kind } })
+      assert.equal(receipt.state, 'sent')
+      const request = requests.at(-1)
+      assert.equal(request.action, kind === 'group' ? 'send_group_msg' : 'send_private_msg')
+      assert.deepEqual(request.params.message, [
+        { type: 'image', data: { file: image.resource.value } },
+        { type: 'image', data: { file: image.resource.value, sub_type: 1 } },
+      ])
+      assert.equal((await adapter.actions.sendBundle(action([{ parts: [png, { ...png, presentation: 'sticker' }] }], { ...target, kind }))).state, 'sent')
+      assert.deepEqual(requests.at(-1).params.messages[0].data.content, [
+        { type: 'image', data: { file: image.resource.value } },
+        { type: 'image', data: { file: image.resource.value, sub_type: 1 } },
+      ])
+    }
+    const dispatched = requests.length
+    for (const presentation of ['', 'normal', null, 1, {}, ['sticker']]) {
+      assert.equal((await adapter.actions.send(single([{ ...image, presentation }]))).state, 'failed')
+      assert.equal((await adapter.actions.sendBundle(action([{ parts: [{ ...png, presentation }] }]))).state, 'failed')
+    }
+    assert.equal(requests.length, dispatched)
+  })
+
   test(`${transport} delivers bounded bundles to the original QQ account and fences the final write`, { timeout: 15_000 }, async t => {
     const { adapter, requests } = await fixture(t, transport)
     assert.equal(adapter.isReady(), true)

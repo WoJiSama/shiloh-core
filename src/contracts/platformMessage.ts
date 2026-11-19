@@ -50,7 +50,8 @@ export interface IncomingMessage {
 export type OutgoingPart =
   | { readonly kind: 'text'; readonly text: string }
   | { readonly kind: 'mention'; readonly user: PlatformUserRef | 'everyone' }
-  | { readonly kind: 'image' | 'audio' | 'video' | 'file'; readonly resource: MessageResource; readonly name?: string }
+  | { readonly kind: 'image'; readonly resource: MessageResource; readonly name?: string; readonly presentation?: 'sticker' }
+  | { readonly kind: 'audio' | 'video' | 'file'; readonly resource: MessageResource; readonly name?: string }
   | { readonly kind: 'extension'; readonly platform: string; readonly type: string; readonly ref: string }
 
 export interface SendMessageAction {
@@ -65,7 +66,7 @@ export interface SendMessageAction {
 /** A bounded, platform-neutral bundle uses inline bytes and never supplies node authors. */
 export type MessageBundlePart =
   | { readonly kind: 'text'; readonly text: string }
-  | { readonly kind: 'image'; readonly mime: string; readonly base64: string }
+  | { readonly kind: 'image'; readonly mime: string; readonly base64: string; readonly presentation?: 'sticker' }
 
 export interface MessageBundleItem {
   readonly parts: readonly MessageBundlePart[]

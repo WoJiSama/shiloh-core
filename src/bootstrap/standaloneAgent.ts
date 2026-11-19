@@ -29,6 +29,8 @@ import { createAgentModrinthTools } from '../modules/tools/infrastructure/agentM
 import { createAgentModrinthCardRenderer } from '../modules/media/infrastructure/agentModrinthCardRenderer.js'
 import { agentImageBackends, createAgentImageTools } from '../modules/tools/infrastructure/agentImageTools.js'
 import { createAgentImageSearchTools } from '../modules/content/infrastructure/agentImageSearchTools.js'
+import { createAgentLocalEmojiRuntime } from '../modules/emoji/infrastructure/agentLocalEmojiRuntime.js'
+import { createAgentLifeThreadProvider } from '../modules/simulation/infrastructure/agentLifeThreadProvider.js'
 import { createAgentExcelTool } from '../modules/content/infrastructure/agentExcelTool.js'
 import { createAgentFileTextTool } from '../modules/content/infrastructure/agentFileTextTool.js'
 import { createAgentVoiceTool } from '../modules/media/infrastructure/agentVoiceTool.js'
@@ -231,6 +233,7 @@ export async function main(argv: string[]): Promise<void> {
   let bilibiliAuthService: Awaited<ReturnType<typeof openStandaloneBilibiliAuth>>
   let torrentHost: Awaited<ReturnType<typeof openStandaloneTorrent>> | undefined
   let groupLogHost: Awaited<ReturnType<typeof openStandaloneGroupLog>> | undefined
+  let localEmoji: ReturnType<typeof createAgentLocalEmojiRuntime> | undefined
   let consoleAuth: Awaited<ReturnType<typeof openStandaloneAgentConsoleAuth>> | undefined
   let consoleHost: ReturnType<typeof createStandaloneAgentConsole> | undefined
   let consolePersistence: ReturnType<typeof createStandaloneAgentConsolePersistence> | undefined
@@ -255,7 +258,7 @@ export async function main(argv: string[]): Promise<void> {
       execution.signal.addEventListener('abort', () => {
         if (musicTimer) clearInterval(musicTimer)
         // stop() revokes admission, tool cancellation and queued sends synchronously before its drain awaits.
-        const draining = [() => host?.stop(), () => mcp?.close(), () => bilibiliAuthService?.close(),
+        const draining = [() => host?.stop(), () => localEmoji?.close(), () => mcp?.close(), () => bilibiliAuthService?.close(),
           () => mediaRelayHost?.close(), () => torrentHost?.close(), () => groupLogHost?.close()]
         for (const close of draining) {
           try { void Promise.resolve(close()).catch(() => diagnostics.emit({ stage: 'host', operation: 'config_retire', outcome: 'failed', code: 'execution_cleanup_failed' })) }
@@ -307,6 +310,7 @@ export async function main(argv: string[]): Promise<void> {
       try { return [value, decodeURIComponent(value)] } catch { return [value] }
     }) : []
     const hostSecrets = [reviewBackend?.apiKey, config.execution.chatAiConfig?.chatApiKey, config.vision?.apiKey,
+      config.tools.localEmoji.analysis?.apiKey, config.tools.localEmoji.embedding?.apiKey, config.tools.localEmoji.tools?.apiKey,
       config.tools.search?.apiKey, config.tools.github?.token, config.tools.modrinth?.translation.apiKey, config.personMemoryExtraction?.apiKey, config.midtermSummary?.apiKey, config.groupMemoryExtraction?.apiKey,
       ...[config.tools.images?.generation, config.tools.images?.edit].flatMap(value => agentImageBackends(value).map(backend => backend.apiKey)),
       config.tools.rendering?.mindMap?.apiKey,
@@ -527,7 +531,11 @@ export async function main(argv: string[]): Promise<void> {
       provider: magnetSearchProvider, secrets: hostSecrets, allowsText: allowsMediaText,
     }).builtIn ?? [] : []
     const imageSearchTools = createAgentImageSearchTools({ ...config.tools.imageSearch, secrets: hostSecrets, allowsText: allowsMediaText }).builtIn ?? []
+    localEmoji = createAgentLocalEmojiRuntime({ dataDir: config.dataDir, ...config.tools.localEmoji, secrets: hostSecrets, allowsText: allowsMediaText })
+    const localEmojiTools = localEmoji.builtIn
+    const lifeThreadProvider = config.simulation.lifeThreads?.enabled !== false ? createAgentLifeThreadProvider({ secrets: hostSecrets, allowsText: allowsMediaText }) : undefined
     const builtInTools = [
+        ...localEmojiTools,
         ...imageSearchTools,
         ...magnetSearchTools,
         ...videoTools,
@@ -554,7 +562,7 @@ export async function main(argv: string[]): Promise<void> {
       managementBindings,
       toolRegistry: {
         // Removing a definition also fences its pending HTTP, queued send and late result.
-        get builtIn() { return config.isConfigCurrent() ? builtInTools : builtInTools.filter(tool => !pixivTools.includes(tool) && !videoTools.includes(tool) && !videoSearchTools.includes(tool) && !magnetSearchTools.includes(tool) && !imageSearchTools.includes(tool)) },
+        get builtIn() { return config.isConfigCurrent() ? builtInTools : builtInTools.filter(tool => !pixivTools.includes(tool) && !videoTools.includes(tool) && !videoSearchTools.includes(tool) && !magnetSearchTools.includes(tool) && !imageSearchTools.includes(tool) && !localEmojiTools.includes(tool)) },
         get custom() { return mcp?.registry.custom ?? [] },
       },
       isExecutionCurrent: () => storage?.isCurrent() === true && config.isConfigCurrent(),
@@ -624,6 +632,11 @@ export async function main(argv: string[]): Promise<void> {
       judgeSocialPermission: (request, _config, signal, isCurrent, ensureCurrent) => runModel(request, { forceChatBackend: true, signal, ...(isCurrent ? { isCurrent } : {}), ...(ensureCurrent ? { ensureCurrent } : {}) }),
       ...(reviewCharacter ? { reviewCharacter } : {}),
       ...(describeImages ? { describeImages } : {}),
+      ...(lifeThreadProvider ? { lifeThreadProvider } : {}),
+      isLifeThreadsCurrent: () => config.isConfigCurrent() && config.simulation.lifeThreads?.enabled !== false,
+      ...(config.tools.localEmoji.enabled ? { collectMessageSticker: (image, context) => localEmoji!.collect(image, context) } : {}),
+      isLocalEmojiCurrent: () => config.isConfigCurrent() && config.tools.localEmoji.enabled,
+      autoCollectLocalEmoji: config.tools.localEmoji.enabled && config.tools.localEmoji.config.autoCollect === true,
       ...(personProfileExtract ? { personProfileExtract } : {}),
       ...(wakeGateJudge ? { wakeGateJudge } : {}),
       ...(memeExtract ? { memeExtract } : {}),
@@ -722,6 +735,7 @@ export async function main(argv: string[]): Promise<void> {
       await Promise.all([
         cleanup('media_relay_close', () => mediaRelayHost?.close()), cleanup('torrent_close', () => torrentHost?.close()),
         cleanup('group_log_close', () => groupLogHost?.close()),
+        cleanup('local_emoji_close', () => localEmoji?.close()),
         cleanup('mcp_close', () => mcp?.close()), cleanup('semantic_close', () => semanticBackend?.dispose()),
         cleanup('ledger_flush', () => ledger.flush()),
       ])

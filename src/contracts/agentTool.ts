@@ -2,7 +2,7 @@ import type { AgentBindingSnapshot, PlatformUserRef } from './agentBinding.js'
 import type { DeliveryReceipt } from './delivery.js'
 import type { AgentFileUpload, FileDeliveryReceipt } from './agentFileDelivery.js'
 import type { MessageBundleItem } from './platformMessage.js'
-import type { ConversationMemberSnapshot, ConversationMembersSnapshot } from './platformConnection.js'
+import type { ConversationMemberSnapshot, ConversationMembersSnapshot, MessageImage } from './platformConnection.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest } from './agentFiles.js'
 import type { AgentAudioBytes, AgentVideoBytes } from './agentMedia.js'
 import type { AgentVideoInput } from './agentVideo.js'
@@ -57,7 +57,7 @@ export interface AgentToolContext {
   /** Attribute a provider call to this conversation's existing token ledger. */
   recordUsage?(model: string, usage: unknown): void
   /** Deliver validated inline image bytes through this tool call's existing send permissions and budget. */
-  sendImage?(image: { readonly mime: string; readonly base64: string }): Promise<DeliveryReceipt>
+  sendImage?(image: MessageImage): Promise<DeliveryReceipt>
   /** Upload controlled bytes to this turn's fixed conversation, sharing its send budget and unknown-result fence.
    * Binary producers must apply their output policy before encoding; text bodies are checked by the host. */
   sendFile?(file: AgentFileUpload): Promise<FileDeliveryReceipt>

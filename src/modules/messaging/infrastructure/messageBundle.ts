@@ -45,7 +45,7 @@ export function validateMessageBundle(items: unknown): readonly MessageBundleIte
     const item = record(input, ['parts'])
     const parts: MessageBundlePart[] = []
     for (const inputPart of array(item.parts, MAX_PARTS)) {
-      const part = record(inputPart, ['kind', 'text', 'mime', 'base64'])
+      const part = record(inputPart, ['kind', 'text', 'mime', 'base64', 'presentation'])
       if (part.kind === 'text') {
         if (Reflect.ownKeys(part).some(key => key !== 'kind' && key !== 'text') ||
             typeof part.text !== 'string' || !part.text.trim() || part.text.length > MAX_TEXT_LENGTH) throw invalid()
@@ -53,10 +53,11 @@ export function validateMessageBundle(items: unknown): readonly MessageBundleIte
         if (textLength > MAX_TOTAL_TEXT_LENGTH) throw invalid()
         parts.push(Object.freeze({ kind: 'text', text: part.text }))
       } else if (part.kind === 'image') {
-        if (Reflect.ownKeys(part).some(key => key !== 'kind' && key !== 'mime' && key !== 'base64') ||
+        if (Reflect.ownKeys(part).some(key => !['kind', 'mime', 'base64', 'presentation'].includes(String(key))) ||
             typeof part.mime !== 'string' || typeof part.base64 !== 'string' ||
+            part.presentation !== undefined && part.presentation !== 'sticker' ||
             part.base64.length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4) throw invalid()
-        const image = validateAgentToolImage({ mime: part.mime, base64: part.base64 })
+        const image = validateAgentToolImage({ mime: part.mime, base64: part.base64, ...(part.presentation === undefined ? {} : { presentation: part.presentation }) })
         const bytes = image.base64.length / 4 * 3 - (image.base64.endsWith('==') ? 2 : image.base64.endsWith('=') ? 1 : 0)
         imageBytes += bytes
         if (bytes > MAX_IMAGE_BYTES || imageBytes > MAX_TOTAL_IMAGE_BYTES) throw invalid()

@@ -59,7 +59,7 @@ const COMMON_QUERY_STOPWORDS = [
   "希洛", "帮我", "给我", "想要", "可以", "一下", "这种", "那种", "图片"
 ]
 
-type EmojiConfig=typeof DEFAULT_EMOJI_CONFIG & {admissionExtraAllow?:string[];admissionExtraReject?:string[];sendAsSticker?:boolean}
+export type EmojiConfig=typeof DEFAULT_EMOJI_CONFIG & {admissionExtraAllow?:string[];admissionExtraReject?:string[];sendAsSticker?:boolean}
 let instance:EmojiPackManager|null = null
 
 
@@ -118,6 +118,15 @@ export class EmojiPackManager {
   }
 
   refreshConfig() {
+    if (this.ports.standalone) {
+      const settings = this.ports.standalone
+      this.config = { ...DEFAULT_EMOJI_CONFIG, ...decodeEmojiConfig(settings.config),
+        dbPath: path.join(settings.rootDirectory, 'emoji-packs.ndjson'), storeDir: path.join(settings.rootDirectory, 'emoji_files') }
+      this.analysisAiConfig = { ...settings.analysisAiConfig }
+      this.embeddingAiConfig = { ...settings.embeddingAiConfig }
+      this.toolsAiConfig = { ...settings.toolsAiConfig }
+      return
+    }
     try {
       const file = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : CONFIG_DEFAULT_PATH
       if (!fs.existsSync(file)) return
@@ -146,6 +155,7 @@ export class EmojiPackManager {
   }
 
   async ensureDirs() {
+    if (this.ports.storage) return this.ports.storage.ensureDirs()
     await fsp.mkdir(path.dirname(this.dbPath), { recursive: true })
     await fsp.mkdir(this.storeDir, { recursive: true })
   }
@@ -156,6 +166,13 @@ export class EmojiPackManager {
 
   async loadItems(force = false) {
     this.refreshConfig()
+    if (this.ports.storage) {
+      const items = await this.ports.storage.loadItems()
+      this.ports.assertCurrent?.()
+      for (const item of items) this.normalizeItem(item)
+      this.cache = { mtimeMs: 0, items, loaded: true }
+      return items
+    }
     if (!(await this.fileExists(this.dbPath))) {
       this.cache = { mtimeMs: 0, items: [], loaded: true }
       return []
@@ -185,7 +202,7 @@ export class EmojiPackManager {
   getSelectionVocabularySync() {
     this.refreshConfig()
     let items = this.cache.loaded ? this.cache.items : []
-    if (!items.length && fs.existsSync(this.dbPath)) {
+    if (!items.length && !this.ports.standalone && fs.existsSync(this.dbPath)) {
       try {
         items = fs.readFileSync(this.dbPath, "utf8")
           .split("\n")
@@ -258,6 +275,13 @@ export class EmojiPackManager {
   }
 
   async saveItems(items:EmojiItem[]) {
+    if (this.ports.storage) {
+      await this.ports.storage.saveItems(items)
+      this.ports.assertCurrent?.()
+      this.cache = { mtimeMs: 0, items, loaded: true }
+      this.notifyCatalogChanged()
+      return
+    }
     await this.ensureDirs()
     const data = items.map(item => JSON.stringify(item)).join("\n") + (items.length ? "\n" : "")
     await fsp.writeFile(this.dbPath, data, "utf-8")
@@ -290,7 +314,11 @@ export class EmojiPackManager {
 
   async addFromBuffer(buffer:Buffer, opts:EmojiAddOptions = {}):Promise<EmojiAddResult> {
     // 串行队列：保证同一时刻只有一个 addFromBuffer 在读-改-写 ndjson，避免并发竞争丢记录
-    const task = () => this._addFromBufferInternal(buffer, opts)
+    const task = async () => {
+      await this.ports.ensureCurrent?.()
+      this.ports.assertCurrent?.()
+      return this._addFromBufferInternal(buffer, opts)
+    }
     const result = this.writeQueue.then(task, task)  // 不管前一次成败都执行下一次
     this.writeQueue = result.catch(() => {})         // 防 unhandled rejection 且让链不断
     return result
@@ -302,6 +330,7 @@ export class EmojiPackManager {
 
     const hash = this.sha256OfBuffer(buffer)
     const items = await this.loadItems(true)
+    this.ports.assertCurrent?.()
     const existing = items.find(i => i.hash === hash)
     if (existing) return { added: false, reason: "duplicate", item: existing }
 
@@ -317,6 +346,7 @@ export class EmojiPackManager {
     }
     try {
       const meta = await sharp(buffer, { failOn: "none" }).metadata()
+      this.ports.assertCurrent?.()
       const w = meta.width || 0
       const h = meta.height || 0
       if (w && h) {
@@ -345,6 +375,7 @@ export class EmojiPackManager {
     if (this.config.contentFiltration) {
       try {
         const verdict = await this.contentFilterWithVLM(buffer, ext)
+        this.ports.assertCurrent?.()
         if (!verdict.isEmoji) {
           this.logInfo(`内容审查未通过 (${hash.slice(0, 8)}): ${verdict.reason}`)
           return { added: false, reason: "content_filtered", filterReason: verdict.reason }
@@ -371,13 +402,16 @@ export class EmojiPackManager {
     if (items.length >= maxItems) {
       try {
         let removedHash = await this.pickStaleLowUsageHash(items)
+        this.ports.assertCurrent?.()
         if (!removedHash) removedHash = await this.replaceOldestByLLM(items)
+        this.ports.assertCurrent?.()
         if (removedHash) {
           const removeIdx = items.findIndex(i => i.hash === removedHash)
           if (removeIdx >= 0) {
             const removed = items.splice(removeIdx, 1)[0]!
             const removedAbs = path.join(this.storeDir, path.basename(removed.file))
-            try { await fsp.unlink(removedAbs) } catch {}
+            if (this.ports.storage) await this.ports.storage.removeImage(path.basename(removed.file))
+            else { try { await fsp.unlink(removedAbs) } catch {} }
             this.logInfo(`满额替换：删除 ${removed.hash.slice(0, 8)} 给 ${hash.slice(0, 8)} 让位`)
           }
         } else {
@@ -392,7 +426,9 @@ export class EmojiPackManager {
     const fileName = `${hash}${ext}`
     const file = `emoji_files/${fileName}`
     const absFile = path.join(this.storeDir, fileName)
-    await fsp.writeFile(absFile, buffer)
+    if (this.ports.storage) await this.ports.storage.writeImage(fileName, buffer)
+    else await fsp.writeFile(absFile, buffer)
+    this.ports.assertCurrent?.()
 
     const record:EmojiItem = {
       hash,
@@ -411,6 +447,7 @@ export class EmojiPackManager {
     if (autoTag && this.config.visionTagOnAdd !== false) {
       try {
         const tagResult = await this.tagWithVLM(buffer, ext)
+        this.ports.assertCurrent?.()
         record.tags = tagResult.tags
         record.useCases = tagResult.useCases
         record.description = tagResult.description
@@ -419,7 +456,8 @@ export class EmojiPackManager {
         }
       } catch (err) {
         this.logWarn(`VLM 打标失败 (${hash.slice(0, 8)}): ${emojiError(err)}，跳过入库`)
-        try { await fsp.unlink(absFile) } catch {}
+        if (this.ports.storage) await this.ports.storage.removeImage(fileName)
+        else { try { await fsp.unlink(absFile) } catch {} }
         return { added: false, reason: "tag_failed", error: emojiError(err) }
       }
 
@@ -428,7 +466,8 @@ export class EmojiPackManager {
         .map(t => String(t).toLowerCase().trim())
         .filter(t => TAG_BLACKLIST.has(t))
       if (hitBlacklist.length) {
-        try { await fsp.unlink(absFile) } catch {}
+        if (this.ports.storage) await this.ports.storage.removeImage(fileName)
+        else { try { await fsp.unlink(absFile) } catch {} }
         this.logInfo(`L3 黑名单拦截 (${hash.slice(0, 8)}): 命中 [${hitBlacklist.join(",")}]`)
         return { added: false, reason: "tag_blacklist", hitTags: hitBlacklist }
       }
@@ -438,12 +477,15 @@ export class EmojiPackManager {
       try {
         const embeddingText = this.buildSemanticText(record)
         record.embedding = await this.getEmbedding(embeddingText)
+        this.ports.assertCurrent?.()
       } catch (err) {
         this.logWarn(`embedding 生成失败 (${hash.slice(0, 8)}): ${emojiError(err)}`)
       }
     }
 
     items.push(record)
+    await this.ports.ensureCurrent?.()
+    this.ports.assertCurrent?.()
     await this.saveItems(items)
     this.logInfo(`新增表情包: ${hash.slice(0, 8)} tags=[${(record.tags || []).join(",")}]`)
     return { added: true, item: record }
@@ -484,11 +526,14 @@ export class EmojiPackManager {
     }
     const finalBody = { model: modelField?cfg[modelField]:undefined, ...body }
     // analysisApiUrl 可能配的是 base(/v1)也可能是完整端点,统一规整成 chat completions
+    await this.ports.ensureCurrent?.()
+    this.ports.assertCurrent?.()
     const response = await (this.ports.fetch||globalThis.fetch)(resolveChatCompletionUrl(url), {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify(finalBody)
     })
+    this.ports.assertCurrent?.()
     if (!response.ok) {
       const text = await response.text().catch(() => "")
       throw new Error(`API ${response.status}: ${text.slice(0, 120)}`)
@@ -732,7 +777,8 @@ ${list}
       if (idx < 0) break
       const removed = items.splice(idx, 1)[0]!
       const abs = path.join(this.storeDir, path.basename(removed.file))
-      try { await fsp.unlink(abs) } catch {}
+      if (this.ports.storage) await this.ports.storage.removeImage(path.basename(removed.file))
+      else { try { await fsp.unlink(abs) } catch {} }
       removedItems.push(removed)
     }
     return { removed: removedItems.length, removedItems }
@@ -743,11 +789,14 @@ ${list}
     if (!cfg?.embeddingApiUrl || !cfg?.embeddingApiKey || cfg.embeddingApiKey.includes("sk-xxx")) {
       throw new Error("embeddingAiConfig 未配置")
     }
+    await this.ports.ensureCurrent?.()
+    this.ports.assertCurrent?.()
     const response = await (this.ports.fetch||globalThis.fetch)(cfg.embeddingApiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.embeddingApiKey}` },
       body: JSON.stringify({ model: cfg.embeddingApiModel || "text-embedding-3-small", input })
     })
+    this.ports.assertCurrent?.()
     if (!response.ok) {
       const text = await response.text().catch(() => "")
       throw new Error(`embedding API ${response.status}: ${text.slice(0, 120)}`)
@@ -1000,7 +1049,7 @@ ${list}
     const usableAll = allItems.filter(i => {
       if (i.isBanned || i.noFileFlag) return false
       const abs = this.getAbsoluteFilePath(i)
-      return fs.existsSync(abs)
+      return this.ports.storage ? this.ports.storage.fileAvailable(path.basename(i.file)) : fs.existsSync(abs)
     })
     if (!usableAll.length) return { item: null, strategy: "empty" }
 
@@ -1042,6 +1091,7 @@ ${list}
     if (q && useEmbed && hasEmbedCfg && embeddedItems.length) {
       try {
         const qEmbed = await this.getEmbedding(q)
+        this.ports.assertCurrent?.()
         if (Array.isArray(qEmbed)) {
           const threshold = Number(this.config.embeddingThreshold) || 0.55
           const topK = Number(this.config.selectionTopK) || 5
@@ -1077,6 +1127,8 @@ ${list}
   }
 
   scheduleSave(items:EmojiItem[]) {
+    // Explicit hosts persist under the calling operation rather than an unowned timer.
+    if (this.ports.standalone) return
     this.pendingItems = items
     if (this.pendingWriteTimer) clearTimeout(this.pendingWriteTimer)
     this.pendingWriteTimer = setTimeout(() => {
@@ -1095,7 +1147,8 @@ ${list}
     if (!item) return
     item.usedCount = (item.usedCount || 0) + 1
     item.lastUsedAt = new Date().toISOString()
-    this.scheduleSave(items)
+    if (this.ports.standalone) await this.saveItems(items)
+    else this.scheduleSave(items)
   }
 
   async removeByHashPrefix(hashPrefix:string) {
@@ -1233,6 +1286,8 @@ ${list}
   }
 
   ensureMaintenanceRunning() {
+    // Independent hosts invoke maintenance under their own captured authority.
+    if (this.ports.standalone) return
     const enabled = !!this.config.enabled && !!this.config.enableMaintenance
     const intervalMs = Math.max(1, Number(this.config.checkIntervalMinutes) || 10) * 60 * 1000
 
@@ -1257,6 +1312,8 @@ ${list}
   }
 
   async runMaintenance():Promise<EmojiMaintenance> {
+    await this.ports.ensureCurrent?.()
+    this.ports.assertCurrent?.()
     if (!this.config.enabled) return { skipped: true }
     const items = await this.loadItems(true)
     let changed = false
@@ -1265,7 +1322,7 @@ ${list}
     // 1. 记录指向的文件不存在 → 标记 noFileFlag
     for (const item of items) {
       const abs = path.join(this.storeDir, path.basename(item.file))
-      const exists = fs.existsSync(abs)
+      const exists = this.ports.storage ? this.ports.storage.fileAvailable(path.basename(item.file)) : fs.existsSync(abs)
       if (!exists && !item.noFileFlag) {
         item.noFileFlag = true
         changed = true
@@ -1280,7 +1337,8 @@ ${list}
 
     // 2. 目录有图片但 ndjson 没记录 → 补登（仅记录 hash 和 file，不打标）
     try {
-      const files = await fsp.readdir(this.storeDir)
+      const files = this.ports.storage ? await this.ports.storage.listImages() : await fsp.readdir(this.storeDir)
+      this.ports.assertCurrent?.()
       const knownFiles = new Set(items.map(i => path.basename(i.file)))
       for (const f of files) {
         if (knownFiles.has(f)) continue
@@ -1319,7 +1377,8 @@ ${list}
         const hasEmbed = Array.isArray(item.embedding) && item.embedding.length > 0
         if (!hasTag && !hasEmbed) {
           const abs = path.join(this.storeDir, path.basename(item.file))
-          try { await fsp.unlink(abs) } catch {}
+          if (this.ports.storage) await this.ports.storage.removeImage(path.basename(item.file))
+          else { try { await fsp.unlink(abs) } catch {} }
           items.splice(i, 1)
           report.cleanedUntagged++
           changed = true
@@ -1345,6 +1404,7 @@ ${list}
   }
 
   async maybeAutoCollect(e:unknown) {
+    if (this.ports.standalone) throw new Error('独立表情收藏必须提供已核验的图片来源')
     this.refreshConfig()
     if (!this.config.enabled || !this.config.autoCollect) return
     const message=emojiRecord(e).message
@@ -1364,6 +1424,15 @@ ${list}
         this.logWarn(`autoCollect 失败: ${emojiError(err)}`)
       }
     }
+  }
+
+  async close() {
+    if (this.pendingWriteTimer) clearTimeout(this.pendingWriteTimer)
+    if (this.maintenanceTimer) clearInterval(this.maintenanceTimer)
+    this.pendingWriteTimer = this.maintenanceTimer = null
+    this.pendingItems = null
+    await this.writeQueue.catch(() => {})
+    this.catalogChangedCallbacks.clear()
   }
 }
 

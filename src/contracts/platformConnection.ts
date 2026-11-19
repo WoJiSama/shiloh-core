@@ -41,6 +41,8 @@ export interface ForwardContent {
 export interface MessageImage {
   readonly mime: string
   readonly base64: string
+  /** Optional platform-neutral rendering hint; native parameters belong to adapters. */
+  readonly presentation?: 'sticker'
 }
 
 /** Fresh ownership evidence contains no message body, resource or quoted content. */

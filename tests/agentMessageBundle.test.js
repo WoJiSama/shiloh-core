@@ -39,6 +39,42 @@ test('message bundles preserve text and inline bytes in a detached, immutable sn
   for (const value of [snapshot, snapshot[0], snapshot[0].parts, ...snapshot[0].parts]) assert.equal(Object.isFrozen(value), true)
 })
 
+test('message bundles retain neutral sticker presentation through immutable and JSON snapshots', () => {
+  const items = [{ parts: [{ ...png, presentation: 'sticker' }, { ...png }] }]
+  const snapshot = validateMessageBundle(items)
+  assert.deepEqual(snapshot, items)
+  assert.deepEqual(validateMessageBundle(JSON.parse(JSON.stringify(snapshot))), snapshot)
+  items[0].parts[0].presentation = 'invalid'
+  assert.equal(snapshot[0].parts[0].presentation, 'sticker')
+  assert.equal(Object.hasOwn(snapshot[0].parts[1], 'presentation'), false)
+  for (const presentation of ['', 'normal', null, 1, {}, ['sticker']])
+    assert.throws(() => validateMessageBundle([{ parts: [{ ...png, presentation }] }]))
+  assert.throws(() => validateMessageBundle([{ parts: [{ kind: 'text', text: 'x', presentation: 'sticker' }] }]))
+  assert.throws(() => validateMessageBundle([{ parts: [{ ...png, presentation: 'sticker', sub_type: 1 }] }]))
+})
+
+test('QQ snapshots sticker presentation before the final authorization await for single and bundle sends', async () => {
+  for (const method of ['send', 'sendBundle']) {
+    let release, reached, calls = 0
+    const entered = new Promise(resolve => { reached = resolve }), gate = new Promise(resolve => { release = resolve })
+    const part = method === 'send' ? { kind: 'image', resource: { kind: 'reference', value: `base64://${png.base64}` }, presentation: 'sticker' }
+      : { ...png, presentation: 'sticker' }
+    const input = method === 'send' ? { version: 1, kind: 'message.send', target, parts: [part] } : action([{ parts: [part] }])
+    const port = createQqMessageActionPort({ async sendApi(_api, params) {
+      calls++
+      const segment = method === 'send' ? params.message[0] : params.messages[0].data.content[0]
+      assert.deepEqual(segment, { type: 'image', data: { file: `base64://${png.base64}`, sub_type: 1 } })
+      return { message_id: 1 }
+    } })
+    const pending = port[method](input, { async ensureCurrent() { reached(); await gate }, isCurrent: () => true })
+    await entered
+    part.presentation = 'invalid'
+    release()
+    assert.deepEqual(await pending, { state: 'sent', messageId: '1' })
+    assert.equal(calls, 1)
+  }
+})
+
 test('message bundles close item and part structures and enforce text/node limits', () => {
   const customIterator = [item('不能借迭代器越过节点上限')]
   customIterator[Symbol.iterator] = function* () { yield* Array.from({ length: 13 }, () => item('x')) }

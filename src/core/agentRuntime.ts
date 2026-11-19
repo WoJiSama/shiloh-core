@@ -48,7 +48,7 @@ import { readAgentPublicFile } from '../modules/tools/infrastructure/agentPublic
 import { abortableAgentWeb } from '../modules/tools/infrastructure/agentPublicWeb.js'
 import { validateAgentFileBytes } from '../modules/content/infrastructure/agentFileBytes.js'
 import type { AgentBindingSnapshot, ConversationAddress, PlatformAccountRef, PlatformUserRef } from '../contracts/agentBinding.js'
-import type { ConversationMember, ConversationMemberSnapshot, ConversationMembersSnapshot, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
+import type { ConversationMember, ConversationMemberSnapshot, ConversationMembersSnapshot, MessageImage, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
 import type { IncomingMessage, MessageActionPort, MessageBundleItem } from '../contracts/platformMessage.js'
 import type { AgentToolRegistry, AgentToolMessage, AgentToolRequest } from '../contracts/agentTool.js'
 import type { DeliveryReceipt } from '../contracts/delivery.js'
@@ -116,12 +116,13 @@ import { createAgentGroupLogStore } from '../modules/dice/infrastructure/agentGr
 import { createAgentGroupLogWorkflow } from '../modules/dice/infrastructure/agentGroupLogWorkflow.js'
 import { parseAgentGroupLogCommand } from '../modules/dice/domain/agentGroupLogCommand.js'
 import { createAgentConversationActivity } from '../modules/runtime/infrastructure/agentConversationActivity.js'
+import { createAgentLocalEmojiIngress } from '../modules/emoji/infrastructure/agentLocalEmojiIngress.js'
 import type { AgentVideoCard, AgentVideoSearchProvider } from '../contracts/agentVideoCard.js'
 import { validateAgentVideoCard } from '../modules/media/infrastructure/agentVideoCard.js'
 import { createAgentVideoSearchStore } from '../modules/media/infrastructure/agentVideoSearchStore.js'
 
 type ResolvePersona = NonNullable<ReturnType<SimulationRuntimePorts['getPersona']>> & { binding: AgentBindingSnapshot }
-type RuntimePorts = Pick<SimulationRuntimePorts, 'logger' | 'getSection' | 'getExecutionConfig' | 'YTapi' | 'recordTokens' | 'getTodaySpendCny' | 'reflectCharacter' | 'reviewCharacter' | 'judgeSocialPermission' | 'describeImages' | 'personProfileExtract' | 'wakeGateJudge' | 'memeExtract' | 'now'>
+type RuntimePorts = Pick<SimulationRuntimePorts, 'logger' | 'getSection' | 'getExecutionConfig' | 'YTapi' | 'recordTokens' | 'getTodaySpendCny' | 'reflectCharacter' | 'reviewCharacter' | 'judgeSocialPermission' | 'describeImages' | 'personProfileExtract' | 'wakeGateJudge' | 'memeExtract' | 'lifeThreadProvider' | 'isLifeThreadsCurrent' | 'collectMessageSticker' | 'isLocalEmojiCurrent' | 'now'>
 
 export const AGENT_DEFERRED_POKE_DEFINITION_ID = 'core:deferred-poke:v1'
 
@@ -149,6 +150,8 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   textTriggerModel?: Parameters<typeof createAgentTextTriggerModels>[0]['model']
   groupTextTools?(target: ConversationAddress): readonly GroupTextToolName[]
   toolRegistry?: AgentToolRegistry
+  /** Independent bounded collection of verified human ingress images. */
+  autoCollectLocalEmoji?: boolean
   memorySystem?: TextPersonMemoryConfig
   midtermMemory?: MidtermMemoryConfig
   episodicMemory?: EpisodicMemoryConfig
@@ -1355,7 +1358,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const incoming = event as AgentBindingTurn & {
         simulationActor?: { kind?: string; userId?: string }
         _ensureAgentToolCurrent?: () => Promise<void>
-        _sendAgentToolImage?: (image: { readonly mime: string; readonly base64: string }, isCurrent?: () => boolean) => Promise<DeliveryReceipt>
+        _sendAgentToolImage?: (image: MessageImage, isCurrent?: () => boolean) => Promise<DeliveryReceipt>
         _sendAgentToolFile?: (file: AgentFileUpload, isCurrent?: () => boolean, signal?: AbortSignal) => Promise<FileDeliveryReceipt>
         _sendAgentToolMedia?: (media: SendMediaAction['media'], isCurrent?: () => boolean, signal?: AbortSignal) => Promise<DeliveryReceipt>
         _sendAgentToolMusic?: (music: AgentMusicCard, isCurrent?: () => boolean, signal?: AbortSignal) => Promise<DeliveryReceipt>
@@ -1410,7 +1413,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           if (!isCurrent()) throw new Error('工具所属回合已失效')
         },
         ...(typeof incoming._sendAgentToolImage === 'function' ? {
-          sendImage: (image: { readonly mime: string; readonly base64: string }, toolCurrent?: () => boolean) =>
+          sendImage: (image: MessageImage, toolCurrent?: () => boolean) =>
             incoming._sendAgentToolImage!(image, () => isCurrent() && toolCurrent?.() !== false),
         } : {}),
         ...(typeof incoming._sendAgentToolFile === 'function' && adapterFor(target)?.actions.sendFile ? {
@@ -1623,7 +1626,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       return { entries: entries.map(entry => ({ ...entry, text: sanitizeAgentXiaohongshuShareText(entry.text),
         ...(entry.senderName === undefined ? {} : { senderName: sanitizeAgentXiaohongshuShareText(entry.senderName) }) })), partial: content.partial || entries.length !== content.entries.length }
     },
-    supportsMessageImages: target => !!options.describeImages && !!adapterFor(target)?.readMessageImages,
+    supportsMessageImages: target => (!!options.describeImages || !!options.collectMessageSticker) && !!adapterFor(target)?.readMessageImages,
     async readMessageImages(target, source, guard) {
       const adapter = adapterFor(target)
       if (!adapter?.readMessageImages || target.kind === 'private') return undefined
@@ -2146,6 +2149,43 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
   })
 
+  const localEmojiIngress = options.collectMessageSticker ? createAgentLocalEmojiIngress({
+    collect: options.collectMessageSticker,
+    enabled: () => isRunning() && options.autoCollectLocalEmoji === true && options.isLocalEmojiCurrent?.() !== false,
+    allowsText: text => options.allowsToolInput?.(text) !== false && options.allowsText?.(text, 'incoming') !== false,
+  }) : undefined
+  function enqueueLocalEmoji(source: IncomingMessage, binding: AgentBindingSnapshot, adapter: PlatformConnectionAdapter): void {
+    if (!localEmojiIngress || !source.messageId || !source.parts.some(part => part.kind === 'image') || source.sender.id === binding.target.account.id ||
+        !adapter.readMessageImages || options.autoCollectLocalEmoji !== true) return
+    const target = binding.target, token = agentBindingToken(binding), lifetime = new AbortController()
+    let memory: Awaited<ReturnType<typeof beginMemoryTurn>> | undefined
+    const current = () => observeCurrent(() => !lifetime.signal.aborted && memory?.isCurrent() !== false && isRunning() &&
+      options.isLocalEmojiCurrent?.() !== false && adapterFor(target) === adapter && adapter.isReady() &&
+      conversationEnabled(target) && allowsConversationAI(target) && bindingIsCurrent(target, token))
+    const ensureCurrent = async () => {
+      if (!current()) throw new Error('自动收藏所属会话已失效')
+      if (!memory) {
+        const captured = await beginMemoryTurn(binding)
+        if (lifetime.signal.aborted) { captured.release(); throw new Error('自动收藏已取消') }
+        memory = captured
+      }
+      if (!current() || await inbox.isRecalled(target, source.messageId!)) throw new Error('自动收藏来源已撤回')
+      const { botId, scene } = personMemoryAddress(target), excerpt = source.text || '[图片]'
+      const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: source.sender.id })
+      if (!current() || isPersonMemoryRedacted({ scene, messageId: source.messageId!, authorId: source.sender.id,
+          at: source.occurredAt, excerpt }, excerpt, redactions)) throw new Error('自动收藏来源隐私权限已改变')
+    }
+    localEmojiIngress.enqueue({ binding, source: { ...source, binding },
+      guard: { signal: toolCancellation.signal, isCurrent: current, ensureCurrent },
+      release() { lifetime.abort(); memory?.release() },
+      read: guard => adapter.readMessageImages!(target, source.messageId!, { ...guard, async allowsSource(original) {
+        await guard.ensureCurrent()
+        return original.messageId === source.messageId && conversationAddressKey(original.conversation) === conversationAddressKey(target) &&
+          platformAccountKey(original.sender) === platformAccountKey(source.sender) && original.occurredAt === source.occurredAt &&
+          original.text === source.text && options.allowsText?.(original.text, 'incoming') !== false && allowsFileNames(original) && guard.isCurrent()
+      } }),
+    })
+  }
   const consumers = new Map<string, Promise<void>>()
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   let maintenance: ReturnType<typeof setInterval> | undefined
@@ -2300,12 +2340,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const queue = await inbox.accept({ event: queued, bindingToken: agentBindingToken(persona.binding) }, undefined, undefined,
         { kind: 'group-log', groupLog: { agentId: persona.binding.agentId, ...epochs,
           ...(diceCandidate(message) ? { dicePolicy } : {}) } })
+      enqueueLocalEmoji(message, persona.binding, adapter)
       silenceReservations.get(conversationAddressKey(target))?.admitting.delete(message.messageId)
       kickInbox(queue)
       } finally { silenceReservations.get(conversationAddressKey(target))?.admitting.delete(message.messageId) }
       return
     }
     if (!conversationEnabled(target) || !allowsConversationAI(target)) return
+    if (event.kind === 'message') {
+      const selected = bindingFor(target)?.binding
+      if (selected) enqueueLocalEmoji(event.message, selected, adapter)
+    }
     const queue = textInboxFor(target)
     let queued = event
     if (queue) {
@@ -3008,7 +3053,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     privacyWaiters.clear()
     for (const adapter of adapters.values()) adapter.stop()
     runtime.stop()
-    shuttingDown = Promise.allSettled([textDrained, deferredDrained, ...commitmentTasks.values(), ...pendingAdmissions, ...automaticQqWork.values(), ...consumers.values(), ...(bilibiliQuality ? [bilibiliQuality.stop()] : []), torrent.stop(), mediaOutbox.stop(), commitments.drainCommitmentTicks(), runtime.drain(), textPersonMemory.stop(), conversationMemory.stop(), semanticMemory.stop(), history.stop(), groupMemory.stop()]).then(async results => {
+    shuttingDown = Promise.allSettled([textDrained, deferredDrained, localEmojiIngress?.stop(), ...commitmentTasks.values(), ...pendingAdmissions, ...automaticQqWork.values(), ...consumers.values(), ...(bilibiliQuality ? [bilibiliQuality.stop()] : []), torrent.stop(), mediaOutbox.stop(), commitments.drainCommitmentTicks(), runtime.drain(), textPersonMemory.stop(), conversationMemory.stop(), semanticMemory.stop(), history.stop(), groupMemory.stop()]).then(async results => {
       for (const result of results) if (result.status === 'rejected') diagnostics.emit({ stage: 'runtime', operation: 'shutdown', outcome: 'failed', error: result.reason })
       await diagnostics.flush()
     })

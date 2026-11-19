@@ -716,22 +716,22 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
       if (action === 'list') {
         if (typeof ctx.lifeThreadList !== 'function') return 'error: 当前环境不支持生活线'
         const list = await ctx.lifeThreadList()
-        if (!list.length) return '你还没有在追的番——用 follow(番名) 开始追一部你感兴趣的'
-        return list.map(t => `- 《${t.title}》${t.status === 'dropped' ? '（已弃）' : `（在追${t.lastEpisode ? `，看到第 ${t.lastEpisode} 集` : ''}）`}${t.notes.length ? `\n  最近动态：${t.notes.slice(0, 2).join(' / ')}` : ''}`).join('\n')
+        return JSON.stringify({ ok: true, summary: !list.length ? '你还没有在追的番——用 follow(番名) 开始追一部你感兴趣的' :
+          list.map(t => `- 《${t.title}》${t.status === 'dropped' ? '（已弃）' : `（在追${t.lastEpisode ? `，看到第 ${t.lastEpisode} 集` : ''}）`}${t.notes.length ? `\n  最近动态：${t.notes.slice(0, 2).join(' / ')}` : ''}`).join('\n') })
       }
       if (action === 'follow') {
         if (!title) return 'error: follow 需要 title（番剧名）'
         if (typeof ctx.lifeThreadFollow !== 'function') return 'error: 当前环境不支持生活线'
         const result = await ctx.lifeThreadFollow(title)
         if (!result.ok) return `error: ${result.error || '没找到这部作品'}——确保输入的是真实存在的番剧名，别编造`
-        return `已开始追《${result.title}》。系统会定期拉取真实更新，你谈论时以真实资料为据。`
+        return JSON.stringify({ ok: true, summary: `已开始追《${result.title}》。系统会定期拉取真实更新，你谈论时以真实资料为据。` })
       }
       if (action === 'drop') {
         if (!title) return 'error: drop 需要 title'
         if (typeof ctx.lifeThreadDrop !== 'function') return 'error: 当前环境不支持生活线'
         const result = await ctx.lifeThreadDrop(title)
         if (!result.ok) return `error: ${result.error || '没找到这部'}`
-        return `已弃《${title}》。`
+        return JSON.stringify({ ok: true, summary: `已弃《${title}》。` })
       }
       return 'error: action 必须是 follow | list | drop'
     }
@@ -883,7 +883,8 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
 
     async func(opts: Record<string, unknown>) {
       if (!ctx.collectSticker) return 'error: 收藏不可用'
-      const result = await ctx.collectSticker(Math.floor(Number(opts.seq)))
+      if (typeof opts.seq !== 'number' || !Number.isSafeInteger(opts.seq) || opts.seq < 1) return 'error: 请使用本轮可见附图消息的正整数序号'
+      const result = await ctx.collectSticker(opts.seq)
       if (!result.ok) return `error: ${result.error}`
       return JSON.stringify({ ok: true, note: '已收藏（自动打标后就能用）' })
     }
