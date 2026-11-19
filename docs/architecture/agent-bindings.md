@@ -1760,4 +1760,12 @@ NjuGVo 实际 npm 归档为 `/tmp/bl-console-perf-archive-NjuGVo-XcZVkK/bl-chat-
 
 完整 CLI 同例先在旧固定安装包 `83a7d19` 复现：实际索引后停机，关闭语义功能并解绑原群，本人私聊遗忘已确认，但原文和向量仍留存，见 `/tmp/bl-semantic-forget-cli-baseline-red-20261119.log`。新版源码同例通过，实际删除旧群及其他场景的本人原文和向量，保留其他人的现有向量，重启不复活且未请求语义提供器，见 `/tmp/bl-semantic-forget-cli-source-fixed-20261119.log`。最初夹具未同步移除解绑群的 textGroups，另一次源码启动器遗漏 Node `--` 分隔符，均为测试启动问题并已修正，没有放宽业务或启动期限。该 CLI 使用隔离 Redis、本地模型和替身 OneBot，不替代真实 QQ 客户端表现。
 
-本批固定安装包、严格公共消费者及生产交付尚待本节后续实际证据。整体独立 Core/QQ 迁移保持进行中，其他遗忘分区、真实 QQ 多连接权限与长期模型效果仍须分别验收。
+实现提交 `1f395b8fba6efe6c7dfce221367c71f7bb979a6a` 已原子推送到开发分支并快进合入远端 main，远端两分支已逐项回读。完整后端类型、架构边界及后端构建通过；最终发布目录 `.release/agent-3iNO2H` 含六百九十六个清单文件。真实 npm 归档 SHA-256 为 `fc2a5c0a4de6dc5af1aa4227b3ed809c1764878647046031016cbeb141391440`，在仓库外解包后按包内锁执行 `npm ci --omit=dev`。strict NodeNext 公共消费者实际构造 Core，在真实隔离 Redis 上执行关闭语义功能后的清理，验证公开四类型、零删除计数和停止后拒绝继续调用。第一次消费者夹具遗漏必需的平台账号，已补合法离线适配器，未修改产品实现；初始失败日志保留在 `/tmp/bl-semantic-forget-install-final-20261119.log`，通过证据为 `/tmp/bl-core-semantic-forget-installed-20261119.json`。
+
+安装目录十四文件首轮一百七十四项中一百七十三项通过，唯一失败是旧 `agentMemoryPrivacy` CLI 的五秒启动等待超时，原结果保留在 `/tmp/bl-semantic-forget-installed-suites-20261119.log` 和 `/tmp/bl-core-semantic-forget-installed-tests-20261119.json`。同一安装包、同一测试文件未修改原样独立复跑五项全部通过，仍为原五秒窗口，见 `/tmp/bl-semantic-forget-installed-privacy-repeat-20261119.log` 与 `/tmp/bl-core-semantic-forget-installed-privacy-repeat-20261119.json`；没有把初轮称为全绿，也未放宽业务期限。六百九十六个发布文件及复制的测试/helper 在各次测试前后 SHA-256 相同。新版关闭功能、解绑原群后真人私聊遗忘的完整 CLI 已在该固定包通过；以上使用隔离 Redis、本地提供器与替身 OneBot，不替代真实 QQ 客户端验收。
+
+生产平铺归档 SHA-256 为 `2096486f1db0e460b2a9fbdbc3f9f66672c6cbeaede1bef1e12b082c9d43aa9d`。服务器核验归档及六百九十六个文件、安装生产依赖并通过 artifact guard 和 CLI 检查后，current、实际进程目录和 manifest 均切换到该实现提交。四份配置的内容和关键元数据全部保持一致，本次交付写配置数为零；配置备份为 `/opt/bl-chat-agent/backups/semantic-forget-2026-11-19T10-56-41Z`。实际回读 Core active、NRestarts=0、qq-main connected、三位本人及二十个绑定；配置 active、loaded/stored revision 一致、无需重启且事务 clean。前端及认证接口 200、未认证任务接口 401；实际 HTTP 返回的六十五个前端资源逐项符合发布清单，包含“语义原文库”“语义向量库”。日志可用、未降级、failed=0；任务列表返回四条并标记有界扫描截断。
+
+二百条历史档案和一百九十四张图片仍逐项核验通过，读数共二百零七条，保留自然业务增删能力。旧两个 unit 继续 `not-found`，`/opt/trss-yunzai` 不存在；独立备份保留。交付回执、验证及独立最终回读分别为服务器 `/opt/bl-chat-agent/staging/core-semantic-forget-20261119/deployment-receipt.json`、同目录 `verification.json` 和 `final-readback.json`，本地安全副本为 `/tmp/bl-core-semantic-forget-production-*.json`。生产验证只检查清理公共声明，没有主动调用生产删除端口、读取语义正文、发送真实 QQ 消息或调用付费模型。
+
+本批语义原文和向量库切片的源码、独立安装与生产加载已分别核验，整体独立 Core/QQ 迁移保持进行中。下一实际缺口是 `agent:conversation-memory:v1:state:<scope摘要>` 中滚动原文、摘要及情节的持久清理：现有读取水位和在途取消不能替代原始 JSON 删除证明。下一切片须按原账号、原 Agent、人物、完整场景和固定截止点删除本人旧 records，保留其他人原文；缺少逐作者来源的旧 epoch 摘要和情节整体失效清除，并防止迟到摘要或旧快照复活，覆盖功能关闭、无摘要后端及解绑后的清理。其他无证明的分区继续 unsupported；真实 QQ 多连接权限与长期模型效果仍须分别验收。
