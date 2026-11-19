@@ -7,7 +7,7 @@ import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js
 const { createAgentRuntime } = await load('core/agentRuntime.js')
 const { createAgentBindingDirectory, agentBindingIdentity, agentBindingToken, agentConversationKey, agentPersonaScopeId,
   conversationAddressKey, platformAccountKey } = await load('modules/runtime/domain/agentBindings.js')
-const { createCommitmentStore } = await load('modules/commitments/infrastructure/commitmentStore.js')
+const { createCommitmentStore, commitmentDetailKey } = await load('modules/commitments/infrastructure/commitmentStore.js')
 const { createDefaultSimSession } = await load('modules/simulation/domain/simConfig.js')
 const { simulationAddressKey } = await load('modules/simulation/infrastructure/simulationAddress.js')
 const { simulationSessionKey, simulationBusyKey } = await load('modules/simulation/infrastructure/simSessionStore.js')
@@ -141,7 +141,7 @@ async function fixture(t, settings = {}) {
     async task() { const records = await store.listDeferredActions(); assert.equal(records.length, 1, JSON.stringify({ records, logs: logs.slice(-5), requests: requests.map(row => row.messages.slice(-2)) })); return records[0] },
     async due(id, expected = ['completed', 'cancelled', 'unknown']) {
       clock += 60_001
-      await waitFor(async () => { await host.resumePendingWork(); return expected.includes((await store.getCommitment(id))?.status) },
+      await waitFor(async () => { await host.resumePendingWork(); return expected.includes((await store.getCommitment(id))?.status ?? null) },
         () => 'due deferred task did not settle: ' + JSON.stringify({ effects, sends, logs: logs.slice(-6) }))
       return store.getCommitment(id)
     },
@@ -211,19 +211,47 @@ async function revoke(f, fence, message) {
 for (const fence of ['configuration', 'binding', 'recall', 'privacy']) {
   test(`Core ${fence} revocation before due time prevents the delegated extra`, redisTest, async t => {
     const f = await fixture(t), message = await f.run(), task = await f.task()
+    if (fence === 'privacy') assert.equal(await f.reader.exists(f.prefix + commitmentDetailKey(task.id)), 1)
     await revoke(f, fence, message)
-    const saved = await f.due(task.id)
-    assert.equal(saved.status, 'cancelled'); assert.deepEqual(f.attempts, []); assert.deepEqual(reminderSends(f), [])
+    if (fence === 'privacy') {
+      const sendsBeforeDue = f.sends.length, modelCalls = f.requests.length
+      assert.equal(await f.reader.exists(f.prefix + commitmentDetailKey(task.id)), 0)
+      assert.equal(await f.store.getCommitment(task.id), null)
+      assert.deepEqual(await f.store.listDeferredActions(), [])
+      assert.equal(await f.due(task.id, [null]), null)
+      await f.restart(); await f.host.resumePendingWork(); await f.host.stop()
+      assert.equal(await f.reader.exists(f.prefix + commitmentDetailKey(task.id)), 0)
+      assert.equal(await f.store.getCommitment(task.id), null)
+      assert.deepEqual(f.attempts, []); assert.deepEqual(f.effects, []); assert.deepEqual(reminderSends(f), [])
+      assert.equal(f.sends.length, sendsBeforeDue); assert.equal(f.requests.length, modelCalls)
+    } else {
+      const saved = await f.due(task.id)
+      assert.equal(saved.status, 'cancelled'); assert.deepEqual(f.attempts, []); assert.deepEqual(reminderSends(f), [])
+    }
   })
 
   test(`Core rechecks ${fence} after a native extra is queued and blocks its dispatch`, redisTest, async t => {
     let original, revoked = false
     const f = await fixture(t, { async beforeEffect(run) { revoked = true; await revoke(run, fence, original) } })
-    original = await f.run(); const task = await f.task(), saved = await f.due(task.id)
+    original = await f.run(); const task = await f.task()
+    if (fence === 'privacy') assert.equal(await f.reader.exists(f.prefix + commitmentDetailKey(task.id)), 1)
+    const saved = await f.due(task.id, fence === 'privacy' ? [null] : undefined)
     assert.equal(revoked, true); assert.equal(f.attempts.length, 1)
-    assert.equal(saved.status, 'unknown'); assert.deepEqual(f.effects, []); assert.deepEqual(reminderSends(f), [])
+    if (fence === 'privacy') {
+      assert.equal(saved, null)
+      assert.equal(await f.reader.exists(f.prefix + commitmentDetailKey(task.id)), 0)
+      assert.deepEqual(await f.store.listDeferredActions(), [])
+    } else assert.equal(saved.status, 'unknown')
+    assert.deepEqual(f.effects, []); assert.deepEqual(reminderSends(f), [])
+    const sendsBeforeRestart = f.sends.length, modelCalls = f.requests.length
     await f.restart(); await f.host.resumePendingWork(); await f.host.stop()
     assert.equal(f.attempts.length, 1)
+    if (fence === 'privacy') {
+      assert.equal(await f.reader.exists(f.prefix + commitmentDetailKey(task.id)), 0)
+      assert.equal(await f.store.getCommitment(task.id), null)
+      assert.deepEqual(f.effects, []); assert.deepEqual(reminderSends(f), [])
+      assert.equal(f.sends.length, sendsBeforeRestart); assert.equal(f.requests.length, modelCalls)
+    }
   })
 }
 
