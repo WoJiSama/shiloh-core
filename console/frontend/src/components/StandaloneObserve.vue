@@ -614,6 +614,7 @@ code {
   margin: 20px 0;
 }
 .table-scroll {
+  position: relative;
   overflow-x: auto;
 }
 .events-table {
