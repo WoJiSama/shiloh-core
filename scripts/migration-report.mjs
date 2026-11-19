@@ -385,7 +385,10 @@ export const migrations = [
   { legacy: 'console/lib/pipelineJobs.js', implementation: 'src/modules/messaging/application/pipelineJobs.ts' },
 ];
 export const bootstrapEntries = [
-  { legacy: 'scripts/start-agent.mjs', kind: 'composition', reason: 'Standalone QQ Agent entry', reviewedSha256: '66ca938d34b8da3f498727ec9aa117a4eec841145e6a46b5ec1491bfca5ab442' },
+  // Reviewed 17fef9a against 5acd1ee: only four fixed, sanitized legacy-memory
+  // diagnostics were added. Artifact verification and main(argv) delegation stay
+  // here; command validation and migration remain in src/bootstrap TypeScript.
+  { legacy: 'scripts/start-agent.mjs', kind: 'composition', reason: 'Artifact-verified standalone Agent entry and fixed sanitized startup diagnostics', reviewedSha256: 'ba071da3f79fef998e2d7427f08fb4c9cf531e5c78ba1819f12f4a95b8e30a5f' },
   {
     "legacy": "guoba.support.js",
     "kind": "composition",
