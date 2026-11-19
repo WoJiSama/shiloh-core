@@ -127,11 +127,19 @@ async function fixture(t, mode) {
       const content = await readFile(file, 'utf8'); assert.ok(content.endsWith('\n'), 'shutdown leaves only complete journal lines')
       texts.push(content); for (const line of content.trimEnd().split('\n')) rows.push(JSON.parse(line))
     }
-    const allowed = ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code', 'durationMs', 'errorKind', 'httpStatus']
+    const allowed = ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code', 'durationMs', 'errorKind', 'httpStatus', 'configurationRevision', 'delivery']
     for (const row of rows) {
       assert.equal(row.version, 1); assert.ok(Object.keys(row).every(key => allowed.includes(key)), 'journal contains only approved metadata fields')
       assert.match(row.traceId, /^[a-f0-9-]{36}$/u)
+      assert.match(row.configurationRevision, /^[a-f0-9]{64}$/u, 'each event identifies the configuration loaded by its process')
+      if (row.delivery) {
+        assert.ok(Object.keys(row.delivery).every(key => ['state', 'messageId', 'code'].includes(key)), 'native receipts contain only approved metadata')
+        assert.ok(['sent', 'unknown'].includes(row.delivery.state))
+        if (row.delivery.state === 'sent') assert.equal(row.delivery.messageId, '975001')
+        else assert.equal(row.delivery.messageId, undefined, 'an unknown native result cannot acquire a message ID')
+      }
     }
+    assert.equal(new Set(rows.map(row => row.configurationRevision)).size, 1, 'a restart without source changes preserves the loaded configuration revision')
     for (const value of [MODEL_KEY, QQ_TOKEN, CHAT, RAW_BODY, NOTICE, ANSWER, FALLBACK]) {
       assert.equal((log + texts.join('')).includes(value), false, 'logs exclude credentials, provider body and chat text')
     }
@@ -205,6 +213,9 @@ test('actual standalone CLI logs unknown QQ delivery and never explains, resends
   assert.equal(run.models.length, 1)
   await run.replayAcrossRestart(); await run.stop()
   const rows = turnRows(await run.journal())
+  assert.ok(rows.some(row => row.operation === 'provider_http' && row.outcome === 'succeeded' && row.httpStatus === 200))
+  assert.equal(rows.some(row => row.operation === 'provider_request' && row.outcome === 'failed'), false, 'a successful model response is not a provider error')
+  assert.equal(rows.some(row => row.operation === 'model_request' && row.outcome === 'failed'), false)
   assert.ok(rows.some(row => row.operation === 'text_delivery' && row.outcome === 'unknown'))
   assert.equal(rows.some(row => row.operation === 'failure_notice'), false)
   assert.equal(rows.filter(row => row.operation === 'text_delivery' && row.outcome === 'started').length, 1)

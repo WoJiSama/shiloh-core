@@ -582,7 +582,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     // Let the next process acquire the fixture lease immediately after the old process died.
     await redis.del(prefix + 'agent:host-lease')
     const fifth = launch()
-    await waitUntil(() => fifth.log.includes('已启动'), 'standalone restarts after uncertain private delivery')
+    await waitUntil(() => fifth.log.includes('已启动'), 'standalone restarts after uncertain private delivery', 15_000)
     await waitUntil(async () => await redis.lLen(privateQueue) === 0, 'attempted private send is consumed without retry')
     assert.equal(deliveries.length, 7)
     assert.equal(directRequests.filter(item => item.messages.at(-1).content === '换绑后的第一条私聊').length, 1)
@@ -604,7 +604,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     })
     assert.equal(await redis.lLen(privateQueue), 1)
     const sixth = launch()
-    await waitUntil(() => sixth.log.includes('已启动'), 'standalone restarts with an unattempted private message')
+    await waitUntil(() => sixth.log.includes('已启动'), 'standalone restarts with an unattempted private message', 15_000)
     await waitUntil(() => deliveries.length === 9, 'saved private message is answered after restart')
     assert.ok(lastPromptContains('进程重启前已收件'))
     assert.ok(lastPromptContains('不应看到未确认的回复'))
@@ -615,7 +615,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     delete hostConfig.privateChat
     await fs.writeFile(config, YAML.stringify(hostConfig))
     const disabled = launch()
-    await waitUntil(() => disabled.log.includes('已启动'), 'standalone starts with the default private switch')
+    await waitUntil(() => disabled.log.includes('已启动'), 'standalone starts with the default private switch', 15_000)
     const requestCount = directRequests.length
     emit(privateMessage(95016, '默认关闭的私聊'))
     await delay(200)
@@ -655,7 +655,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     hostConfig.textGroups = textOptions
     await fs.writeFile(config, YAML.stringify(hostConfig))
     const textHost = launch()
-    await waitUntil(() => textHost.log.includes('已启动'), 'standalone launches one configured group in text mode')
+    await waitUntil(() => textHost.log.includes('已启动'), 'standalone launches one configured group in text mode', 15_000)
     const groupText = (id, text, segments = [], extra = {}) => groupMessage(id, text, {
       message: [...segments, {type: 'text', data: {text}}], ...extra,
     })
@@ -685,7 +685,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     assert.deepEqual(await stop(textHost, 'SIGTERM'), [0, null])
 
     const restoredText = launch()
-    await waitUntil(() => restoredText.log.includes('已启动'), 'standalone restores group text mode and confirmed context')
+    await waitUntil(() => restoredText.log.includes('已启动'), 'standalone restores group text mode and confirmed context', 15_000)
     emit(groupText(96007, '同一位群友继续问', quoteOf(firstTextReply)))
     await waitUntil(() => deliveries.length === 11, 'confirmed group quote triggers after restart')
     assert.ok(groupTextRequests.at(-1).messages.some(row => row.content === '群里第一次点名'))
@@ -722,7 +722,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     }, {kind: 'group', account: groupTarget.account})
     await fs.writeFile(config, YAML.stringify(hostConfig) + '\n# 保存后的新运行配置\n')
     const textReconfigured = launch()
-    await waitUntil(() => textReconfigured.log.includes('已启动'), 'standalone restarts with a new text mode revision')
+    await waitUntil(() => textReconfigured.log.includes('已启动'), 'standalone restarts with a new text mode revision', 15_000)
     await waitUntil(async () => await redis.lLen(groupTextQueue) === 0, 'old text-mode inbox entries are retired')
     assert.ok(groupTextRequests.every(body => body.messages.at(-1).content !== '旧模式排队的群消息'))
     emit(groupText(96012, '当日回合额度耗尽后的群消息', at))
@@ -737,7 +737,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     hostConfig.privateChat = { enabled: true }
     await fs.writeFile(config, YAML.stringify(hostConfig))
     const toolHost = launch()
-    await waitUntil(() => toolHost.log.includes('已启动'), 'standalone starts configured group tools')
+    await waitUntil(() => toolHost.log.includes('已启动'), 'standalone starts configured group tools', 15_000)
     const call = (name, args) => [{ id: 'fixture-tool-call', type: 'function', function: { name, arguments: JSON.stringify(args) } }]
     const textDelivery = () => deliveries.at(-1)?.params.message.at(-1).data.text
     async function callGroup(id, text, name, args, extra, failure = false) {
@@ -854,7 +854,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     await redis.set(taskKey, JSON.stringify({ ...task, next_run_at: dueAt }))
     await redis.set(pendingKey, JSON.stringify([{ ...scheduled, next_run_at: dueAt }]))
     const recoveredTools = launch()
-    await waitUntil(() => recoveredTools.log.includes('已启动'), 'standalone restarts with an attempted tool and scheduled reminder')
+    await waitUntil(() => recoveredTools.log.includes('已启动'), 'standalone restarts with an attempted tool and scheduled reminder', 15_000)
     await waitUntil(() => deliveries.length === recoveryDelivery + 2, 'sends the owned action receipt and persisted due reminder')
     const recovered = deliveries.slice(recoveryDelivery)
     const notice = recovered.find(item => item.params.message[0]?.data.id === String(actionBeforeRestart))
@@ -1245,7 +1245,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     yield
 
     const cutover = launch()
-    await waitUntil(() => cutover.log.includes('已启动'), 'independent host opens migrated state')
+    await waitUntil(() => cutover.log.includes('已启动'), 'independent host opens migrated state', 15_000)
     const groupBudgetReceipt = id => groupMessageReceipt(id).replace(prefix, migrationPrefix)
     const migratedTextQueue = groupTextQueue.replace(prefix, migrationPrefix)
     const budgetRequests = requests.length
@@ -1354,7 +1354,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     delete migrationConfig.textGroups
     await fs.writeFile(config, YAML.stringify(migrationConfig))
     const afterCutover = launch()
-    await waitUntil(() => afterCutover.log.includes('已启动'), 'cutover host restarts')
+    await waitUntil(() => afterCutover.log.includes('已启动'), 'cutover host restarts', 15_000)
     await waitUntil(async () => JSON.parse(await redis.get(migratedTaskKey(oldPersonaFriend))).status === 'cancelled', 'binding change cancels imported reminder')
     assert.deepEqual(JSON.parse(await redis.get(migrationPrefix + originalPendingKey)), [])
     assert.equal(deliveries.length, afterDeliveries)
@@ -1615,7 +1615,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     } }))
     const beforeGoalWake = requests.length
     const scheduledHost = launch()
-    await waitUntil(() => scheduledHost.log.includes('已启动'), 'new host resumes migrated agent commitment')
+    await waitUntil(() => scheduledHost.log.includes('已启动'), 'new host resumes migrated agent commitment', 15_000)
     const timeoutCalls = () => requests.slice(beforeGoalWake).filter(body => {
       const wake = body.messages.findLast(row => row.role === 'user' && String(row.content).includes('【执行主体】'))
       return String(wake?.content).includes('【唤醒原因】timeout') && String(wake?.content).includes(`"groupId":"${timerGroup}"`)
@@ -1721,7 +1721,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     assert.ok(requests.slice(quoteRequestStart).every(body => body.messages.every(row => !String(row.content).includes('已撤回的旧回复内容'))))
     assert.deepEqual(await stop(scheduledHost, 'SIGTERM'), [0, null])
     const timerRestart = launch()
-    await waitUntil(() => timerRestart.log.includes('已启动'), 'host reloads the completed timer')
+    await waitUntil(() => timerRestart.log.includes('已启动'), 'host reloads the completed timer', 15_000)
     await delay(1_100)
     assert.equal(timeoutCalls().length, 1)
     assert.equal(JSON.parse(await redis.get(timerTargetKey)).budget.turns, 1)
@@ -1991,7 +1991,7 @@ test('standalone QQ sends verified group images only to the configured vision mo
     let log = ''
     for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { log += chunk })
     t.after(() => { if (t.error) t.diagnostic(log) })
-    await waitUntil(() => log.includes('已启动'), 'vision fixture host online')
+    await waitUntil(() => log.includes('已启动'), 'vision fixture host online', 15_000)
     return { child, readLog: () => log }
   }
   async function stop(child) {

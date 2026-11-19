@@ -13,6 +13,7 @@ const exports = {
   './logging': 'modules/runtime/infrastructure/agentOperationJournal.js',
   './web': 'modules/tools/infrastructure/agentWebTools.js',
   './memory': 'modules/memory/infrastructure/agentMemoryModels.js',
+  './simulation-models': 'modules/simulation/infrastructure/agentSimulationModels.js',
   './interactions': 'modules/tools/infrastructure/agentInteractions.js',
   './images': 'modules/tools/infrastructure/agentImageTools.js',
   './mcp': 'modules/tools/infrastructure/agentMcpTools.js',

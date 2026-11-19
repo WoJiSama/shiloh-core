@@ -121,7 +121,7 @@ import { validateAgentVideoCard } from '../modules/media/infrastructure/agentVid
 import { createAgentVideoSearchStore } from '../modules/media/infrastructure/agentVideoSearchStore.js'
 
 type ResolvePersona = NonNullable<ReturnType<SimulationRuntimePorts['getPersona']>> & { binding: AgentBindingSnapshot }
-type RuntimePorts = Pick<SimulationRuntimePorts, 'logger' | 'getSection' | 'getExecutionConfig' | 'YTapi' | 'recordTokens' | 'getTodaySpendCny' | 'reflectCharacter' | 'reviewCharacter' | 'judgeSocialPermission' | 'describeImages' | 'personProfileExtract' | 'now'>
+type RuntimePorts = Pick<SimulationRuntimePorts, 'logger' | 'getSection' | 'getExecutionConfig' | 'YTapi' | 'recordTokens' | 'getTodaySpendCny' | 'reflectCharacter' | 'reviewCharacter' | 'judgeSocialPermission' | 'describeImages' | 'personProfileExtract' | 'wakeGateJudge' | 'memeExtract' | 'now'>
 
 export const AGENT_DEFERRED_POKE_DEFINITION_ID = 'core:deferred-poke:v1'
 
@@ -1555,6 +1555,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (!selected) throw new Error('历史查询的角色绑定不可用')
       return history.read(selected.binding, input, source, guard, signal)
     } } : {}),
+    ...(options.history?.enabled === true ? { async readUserStyleSources(target: ConversationAddress, days: number, guard: () => boolean, signal: AbortSignal) {
+      const selected = bindingFor(target)
+      if (!selected || target.kind !== 'group') throw new Error('口头禅来源会话不可用')
+      return history.readStyleSources(selected.binding, days, guard, signal)
+    } } : {}),
+    getStyleBotUserIds: () => [...adapters.values()].map(adapter => adapter.botUserId).filter((id): id is string => typeof id === 'string' && !!id),
     getSelf: (_id, account) => {
       const adapter = account && adapters.get(platformAccountKey(account))
       return adapter ? { id: adapter.account.id, name: adapter.botName, userId: adapter.botUserId } : { id: '', name: '' }

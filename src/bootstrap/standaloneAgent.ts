@@ -17,6 +17,7 @@ import { removeToolPromptsFromMessages } from '../modules/foundation/domain/text
 import { createAgentPersonExtractor } from '../modules/memory/infrastructure/agentPersonExtractor.js'
 import { createAgentConversationSummary } from '../modules/memory/infrastructure/agentConversationSummary.js'
 import { createAgentGroupMemoryModel } from '../modules/memory/infrastructure/agentGroupMemoryModel.js'
+import { createAgentSimulationWakeGate, createAgentSimulationMemeExtractor } from '../modules/simulation/infrastructure/agentSimulationModels.js'
 import { createAgentSemanticBackend } from '../modules/memory/infrastructure/agentSemanticBackend.js'
 import { createModelExecutor } from '../modules/models/application/modelExecution.js'
 import { resolveChatCompletionUrl } from '../modules/models/domain/chatCompletionUrl.js'
@@ -478,6 +479,14 @@ export async function main(argv: string[]): Promise<void> {
       baseUrl: extractionBackend.apiUrl, name: extractionBackend.model, apiKey: extractionBackend.apiKey,
       secrets: hostSecrets,
     })
+    // The old side paths used memoryAiConfig; this slot carries that backend in standalone.
+    const wakeGateJudge = extractionBackend && createAgentSimulationWakeGate({
+      baseUrl: extractionBackend.apiUrl, name: config.simulation.wakeGate?.model?.trim() || extractionBackend.model,
+      apiKey: extractionBackend.apiKey, secrets: hostSecrets,
+    })
+    const memeExtract = extractionBackend && createAgentSimulationMemeExtractor({
+      baseUrl: extractionBackend.apiUrl, name: extractionBackend.model, apiKey: extractionBackend.apiKey, secrets: hostSecrets,
+    })
     const summaryBackend = config.midtermSummary
     const summarizeConversation = summaryBackend && createAgentConversationSummary({
       baseUrl: summaryBackend.apiUrl, name: summaryBackend.model, apiKey: summaryBackend.apiKey,
@@ -611,10 +620,12 @@ export async function main(argv: string[]): Promise<void> {
       ...(reviewCharacter ? { reviewCharacter } : {}),
       ...(describeImages ? { describeImages } : {}),
       ...(personProfileExtract ? { personProfileExtract } : {}),
+      ...(wakeGateJudge ? { wakeGateJudge } : {}),
+      ...(memeExtract ? { memeExtract } : {}),
       ...(summarizeConversation ? { summarizeConversation } : {}),
       ...(groupMemoryModel ? { groupMemoryModel } : {}),
       recordTokens: input => {
-        if (input.stage === 'agent-tool' || ['person-profile', 'midterm-summary', 'group-memory', 'group-teaching'].includes(input.stage) && input.usage !== undefined) {
+        if (input.stage === 'agent-tool' || ['person-profile', 'midterm-summary', 'group-memory', 'group-teaching', 'wake-gate', 'meme-extract'].includes(input.stage) && input.usage !== undefined) {
           ledger.record({ ...input, scope: 'global', stage: 'api', usage: input.usage })
         }
         ledger.record({ ...input, usage: input.usage })

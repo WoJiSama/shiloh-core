@@ -124,7 +124,7 @@ export interface SimSessionStore {
   saveAffinity(groupId: string, affinity: Record<string, unknown>): Promise<void>
   /** 按人口头禅表：{ userId: string[], updatedAt } */
   loadUserStyle(groupId: string): Promise<{ users: Record<string, string[]>; updatedAt: number }>
-  saveUserStyle(groupId: string, users: Record<string, string[]>): Promise<void>
+  saveUserStyle(groupId: string, users: Record<string, string[]>, isCurrent?: () => boolean): Promise<void>
   /** 当前机器人/人设下、有本人来源且可跨群的档案投影；无scope仅供管理旧数据。 */
   loadPersonProfile(userId: string): Promise<{ name?: string; interests: string[]; taboos: string[]; traits?: string[]; facts?: string[]; updatedAt?: number }>
   mergePersonProfile(userId: string, patch: PersonProfileWritePatch, maxFields: number, isCurrent?: () => boolean): Promise<{ name?: string; interests: string[]; taboos: string[]; traits?: string[]; facts?: string[] }>
@@ -229,6 +229,7 @@ export function createSimSessionStore(ports: SimSessionStorePorts): SimSessionSt
     }
     return simulationNotebookKey(scope)
   }
+  const userStyleKey = (groupId: string) => ports.memoryScope ? `${memoryKey(groupId)}:user-style` : USER_STYLE_KEY(groupId)
   const legacyProfile = async (userId: string): Promise<PersonProfile & { updatedAt?: number }> => {
     try {
       const raw = await redis.get(PERSON_KEY(userId)), parsed = raw ? record(JSON.parse(raw)) : {}
@@ -424,7 +425,7 @@ export function createSimSessionStore(ports: SimSessionStorePorts): SimSessionSt
     },
     async loadUserStyle(groupId) {
       try {
-        const raw = await redis.get(USER_STYLE_KEY(groupId))
+        const raw = await redis.get(userStyleKey(groupId))
         const parsed = raw ? record(JSON.parse(raw)) : {}
         const users: Record<string, string[]> = {}
         for (const [userId, words] of Object.entries(record(parsed.users))) {
@@ -435,8 +436,10 @@ export function createSimSessionStore(ports: SimSessionStorePorts): SimSessionSt
         return { users: {}, updatedAt: 0 }
       }
     },
-    async saveUserStyle(groupId, users) {
-      await redis.set(USER_STYLE_KEY(groupId), JSON.stringify({ users, updatedAt: now() }))
+    async saveUserStyle(groupId, users, isCurrent) {
+      const key = userStyleKey(groupId), snapshot = JSON.stringify({ users, updatedAt: now() })
+      if (isCurrent?.() === false) throw new Error('角色绑定已改变，口头禅未保存')
+      await redis.set(key, snapshot)
     },
     async loadPersonProfile(userId) {
       const id = String(userId || '').trim()

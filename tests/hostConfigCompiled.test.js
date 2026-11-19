@@ -34,3 +34,9 @@ test('host decoder validates explicit consistency enablement without filling or 
  }
  for(const value of [{simulation:{consistency:{enabled:'false'}}},{simulation:{consistency:true}},{simulation:{consistency:[]}}])assert.throws(()=>decodeHostConfig(value))
 })
+test('host decoder validates the optional wake gate backend override before standalone composition',()=>{
+ const input={simulation:{wakeGate:{enabled:true,model:'gate-model'},custom:'preserved'}}
+ assert.deepEqual(decodeHostConfig(input).simulation,input.simulation)
+ assert.equal(input.simulation.wakeGate.model,'gate-model')
+ for(const wakeGate of [true,[],{enabled:'false'},{model:42},{model:null}])assert.throws(()=>decodeHostConfig({simulation:{wakeGate}}))
+})

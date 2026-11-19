@@ -14,6 +14,10 @@ type SourceKind = 'all' | 'recent' | 'archive' | 'memory'
 type Query = { question: string; userId?: string; start: number | null; end: number | null; limit: number; offset: number; kind: SourceKind; ids?: string[]; keywords?: string[] }
 type Evidence = { binding: AgentBindingSnapshot; row: AgentHistoryRow; kind: 'recent' | 'archive' }
 type MemoryEvidence = { entry: PersonMemoryEntry; binding?: AgentBindingSnapshot }
+export interface AgentHistoryStyleSources {
+  messages: { userId: string; text: string }[]
+  isCurrent(): Promise<boolean>
+}
 const DAY = 86_400_000
 const MAX_CHARS = 16_000
 const STOPWORDS = new Set(['一下', '帮我', '帮忙', '麻烦', '请问', '看看', '查查', '查询', '搜索', '检索', '找找', '找出', '出来', '告诉', '记得', '记忆', '回忆', '上次', '之前', '以前', '刚才', '刚刚', '最近', '今天', '昨天', '前天', '那天', '当时', '最后', '一次', '来着', '聊天', '历史', '记录', '消息', '内容', '大家', '群友', '群里', '我们', '你们', '他们', '她们', '讨论', '发言', '说的', '说过', '说了', '什么', '怎么', '怎样', '那个', '这个', '那些', '哪些', '哪句', '哪条', '有没有', '是否', '是谁'])
@@ -104,7 +108,7 @@ export function createAgentHistory(ports: {
   const store = createAgentHistoryStore(ports.redis), now = ports.now ?? Date.now
   const lifecycle = new AbortController()
   const requests = new Set<{ target: ConversationAddress; related: AgentBindingSnapshot[]; controller: AbortController }>()
-  let sweep: Promise<void> | undefined, nextMaintenance = 0
+  let sweep: Promise<void> | undefined, nextMaintenance = 0, styleInvalidation = 0
   const enabled = () => !lifecycle.signal.aborted && ports.config()?.enabled === true
   const retention = () => bounded(ports.config()?.retentionDays, 30, 1, 90) * DAY
   const maxRows = () => bounded(ports.config()?.maxMessagesPerConversation, 1000, 50, 2000)
@@ -188,6 +192,65 @@ export function createAgentHistory(ports: {
         }, context.isCurrent)
       })
     } catch { ports.logger.warn('[Agent] 历史原始来源未能保存') }
+  }
+  /** Background style extraction consumes only this group's already captured originals. */
+  async function readStyleSources(binding: AgentBindingSnapshot, days: number, guard: () => boolean, signal?: AbortSignal): Promise<AgentHistoryStyleSources> {
+    const unavailable = (): AgentHistoryStyleSources => ({ messages: [], isCurrent: async () => false })
+    if (binding.source !== 'configured' || binding.target.kind !== 'group' || !Number.isSafeInteger(days) || days < 1 || days > 14 || signal?.aborted) return unavailable()
+    const selected = structuredClone(binding), invalidation = styleInvalidation, window = days * DAY
+    const selectedRows: AgentHistoryRow[] = [], revisions = new Map<string, string>()
+    let invalidated = false
+    const isCurrent = () => {
+      if (invalidated) return false
+      const allowed = safeGuard(() => {
+        const live = ports.resolve(selected.target)?.binding
+        return !signal?.aborted && styleInvalidation === invalidation && safeGuard(guard) && current(selected) &&
+          conversationAddressKey(binding.target) === conversationAddressKey(selected.target) && agentBindingToken(binding) === agentBindingToken(selected) &&
+          !!live && conversationAddressKey(live.target) === conversationAddressKey(selected.target) && agentBindingToken(live) === agentBindingToken(selected)
+      })
+      if (!allowed) invalidated = true
+      return allowed
+    }
+    const eligible = (row: AgentHistoryRow) => row.authorId !== selected.target.account.id && row.at >= now() - window &&
+      row.at <= now() && !row.peerId && !/^[#＃.!！/。]|\[CQ:(?:forward|node)[,\]]/iu.test(row.text.trim())
+    const check = async (context: PersonProfileExtractionContext): Promise<boolean> => {
+      await context.ensureCurrent()
+      const saved = await store.read(agentHistoryId(selected))
+      await context.ensureCurrent()
+      const rows = new Map(saved?.rows.map(row => [row.messageId, row]))
+      for (const row of selectedRows) {
+        const fresh = rows.get(row.messageId)
+        if (!fresh || !sameRow(row, fresh) || !eligible(row) || !await permitted(selected, row)) return false
+        await context.ensureCurrent()
+        const privacy = await ports.memory.getRedactions({ identity: identity(selected), subjectId: row.authorId })
+        if (privacy.revision !== revisions.get(row.authorId)) return false
+        await context.ensureCurrent()
+      }
+      return isCurrent()
+    }
+    try {
+      await withContext(selected, isCurrent, signal, async context => {
+        const saved = await store.read(agentHistoryId(selected))
+        await context.ensureCurrent()
+        for (const row of (saved?.rows ?? []).slice(-Math.min(3000, maxRows()))) {
+          if (!eligible(row) || !await permitted(selected, row)) continue
+          await context.ensureCurrent()
+          const privacy = await ports.memory.getRedactions({ identity: identity(selected), subjectId: row.authorId })
+          const previous = revisions.get(row.authorId)
+          if (previous !== undefined && previous !== privacy.revision) throw new Error('历史来源权限在读取期间改变')
+          revisions.set(row.authorId, privacy.revision)
+          selectedRows.push(row)
+        }
+        if (!await check(context)) throw new Error('历史来源在读取期间改变')
+      })
+      return { messages: selectedRows.map(row => ({ userId: row.authorId, text: Array.from(row.text).slice(0, 160).join('') })),
+        async isCurrent() {
+          try {
+            if (!isCurrent() || !await withContext(selected, isCurrent, signal, check)) { invalidated = true; return false }
+            return true
+          } catch { invalidated = true; return false }
+        } }
+    } catch { return unavailable() }
   }
   async function read(binding: AgentBindingSnapshot, input: Record<string, unknown>, suppliedSource: AgentHistoryRequestSource,
     guard: () => boolean, signal?: AbortSignal): Promise<AgentHistoryRecall> {
@@ -357,6 +420,7 @@ export function createAgentHistory(ports: {
     } catch { return empty(binding, guard, 'unavailable', '历史来源读取超时、被撤销或暂时不可用；本次无法核实，不能认定从未发生。') }
   }
   function invalidate(target: ConversationAddress) {
+    styleInvalidation++
     // Source authorization may still be in flight before a scope is selected.
     // Cancelling an account's private reads is conservative and never grants data.
     for (const request of requests) if (conversationAddressKey(request.target) === conversationAddressKey(target) || request.related.some(binding => conversationAddressKey(binding.target) === conversationAddressKey(target)) ||
@@ -377,5 +441,5 @@ export function createAgentHistory(ports: {
     })().catch(() => { ports.logger.warn('[Agent] 历史来源清理暂时未完成') }).finally(() => { sweep = undefined })
     return sweep
   }
-  return { capture, read, invalidate, tick, async stop() { lifecycle.abort(); for (const request of requests) request.controller.abort(); await sweep } }
+  return { capture, read, readStyleSources, invalidate, tick, async stop() { lifecycle.abort(); for (const request of requests) request.controller.abort(); await sweep } }
 }

@@ -54,7 +54,7 @@ import type { ConversationMembersSnapshot } from '../../../contracts/platformCon
 import type { PersonaScope } from '../../../contracts/persona.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
 import { createDefaultSimSession, isSimulationUserId } from '../domain/simConfig.js'
-import { affinityLevel, buildMemeExtractionPrompt, bumpMemeUsage, defaultAffinityEntry, dueMemories, formatSelfMemorySection, mergeMemeCandidates, normalizeMemoryList, parseMemeCandidates } from '../domain/simMemory.js'
+import { affinityLevel, bumpMemeUsage, defaultAffinityEntry, dueMemories, formatSelfMemorySection, mergeMemeCandidates, normalizeMemoryList, parseMemeCandidates } from '../domain/simMemory.js'
 import { mineUserCatchphrases } from '../domain/userStyle.js'
 import { boundedTimerDelay, safeSetTimeout, isDuplicateMessageId, sanitizeUntrustedText, safeToolErrorText, shouldSendErrorNotice } from '../domain/safety.js'
 import { evaluateWakeTrigger, formatWakeReason, mergeWakeReason, messageReasonStillPending, pushPendingReason, TIMER_WAKE_REASONS } from '../domain/wakeTrigger.js'
@@ -202,6 +202,10 @@ export interface SimulationRuntimePorts {
   getStyleDigest?(groupId: string): Promise<string> | string
   /** 读归档消息（按人挖口头禅的数据源）：近 N 天该群消息（userId+text） */
   readArchiveMessages?(groupId: string, days: number): Promise<{ userId: string; text: string }[]>
+  /** Core history originals, scoped to the current binding and revocable after the read. */
+  readUserStyleSources?(target: ConversationAddress, days: number, isCurrent: () => boolean, signal: AbortSignal): Promise<{
+    messages: { userId: string; text: string }[]; isCurrent(): Promise<boolean>
+  }>
   /** P0 反污染：风格学习要跳过的机器人 QQ（pluginSettings.botUserIds + 自家账号） */
   getStyleBotUserIds?(): string[]
   /** 戳群成员（B2：回应拍一拍/主动逗熟人） */
@@ -217,7 +221,7 @@ export interface SimulationRuntimePorts {
   supportsQqAction?(target: ConversationAddress, toolName: string): boolean
   executeQzone?(operation: AgentQzoneOperation, context: AgentToolContext): Promise<AgentQzoneResult>
   /** 唤醒预判闸：低信号唤醒先判断值不值得进完整回合；返回 null = 预判不可用（fail-open 放行） */
-  wakeGateJudge?(input: { reason: string; messages: { name: string; text: string; atSelf: boolean }[] }, isCurrent?: ExecutionOptions['isCurrent']): Promise<{ engage: boolean; reason?: string } | null>
+  wakeGateJudge?(input: { reason: string; messages: { name: string; text: string; atSelf: boolean }[] }, isCurrent?: ExecutionOptions['isCurrent'], context?: PersonProfileExtractionContext): Promise<{ engage: boolean; reason?: string } | null>
   /** QQ空间互动：看指定成员的最近说说 / 点赞 / 评论（凭据由装配层处理；内容已在上层脱敏） */
   qzoneInteract?(input: { action: 'visit' | 'like' | 'comment'; userId?: string; tid?: string; text?: string }, target: ConversationAddress, options?: SimSendOptions): Promise<{ ok: boolean; error?: string; feeds?: { tid: string; time: string; text: string; likes: number }[] }>
   /** 人物核心档案提取（侧路小模型）：近期消息 → 跨群身份级事实补丁 */
@@ -236,7 +240,7 @@ export interface SimulationRuntimePorts {
   recordEpisode?(input: { groupId: string; userId?: string; userName?: string; summary: string; reply: string; source?: PersonaScope;
     binding?: AgentBindingSnapshot; at?: number; messageIds?: string[]; replyIds?: string[]; isCurrent?: () => boolean }): void | Promise<void>
   /** 本群专属梗提取（侧路小模型，返回原始模型文本；runtime 负责容错解析） */
-  memeExtract?(messages: { name: string; text: string }[]): Promise<string>
+  memeExtract?(messages: { name: string; text: string }[], isCurrent?: () => boolean, context?: PersonProfileExtractionContext): Promise<string>
   /** 令牌账本：仿真回合/梗提取的归组记录 */
   recordTokens?(input: { scope: string; stage: string; model?: string; usage?: unknown; ms?: number }): void
   /** 只读观察实际工具协议回复；返回值不参与执行，观察失败不影响业务。 */
@@ -326,6 +330,21 @@ interface CommitmentExecution {
 }
 
 function sleep(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, boundedTimerDelay(ms))) }
+
+function awaitSideModel<T>(start: () => Promise<T>, signal: AbortSignal, isCurrent: () => boolean): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false, poll: ReturnType<typeof setInterval> | undefined
+    const cleanup = () => { if (poll) clearInterval(poll); signal.removeEventListener('abort', cancel) }
+    const fail = (error: unknown) => { if (settled) return; settled = true; cleanup(); reject(error) }
+    const cancel = () => fail(new Error('侧路处理已取消'))
+    signal.addEventListener('abort', cancel, { once: true })
+    poll = setInterval(() => { try { if (!isCurrent()) cancel() } catch { cancel() } }, 25)
+    poll.unref?.()
+    try { if (signal.aborted || !isCurrent()) { cancel(); return } } catch { cancel(); return }
+    Promise.resolve().then(() => { signal.throwIfAborted(); if (!isCurrent()) throw new Error('侧路处理已取消'); return start() })
+      .then(value => { if (settled) return; settled = true; cleanup(); resolve(value) }, fail)
+  })
+}
 function record(value: unknown): Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {} }
 function safeText(resolve: () => string | undefined): string {
   try { return String(resolve() || '') } catch { return '' }
@@ -459,6 +478,16 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       out.push(filtered)
     }
     return out
+  }
+
+  async function ensureSideModelSources(scope: CharacterScope, target: ConversationAddress, sources: SimMessage[], isCurrent: () => boolean): Promise<void> {
+    if (!isCurrent()) throw new Error('侧路模型来源已失效')
+    const allowed = await redactSceneMessages(scope, sources)
+    if (!isCurrent() || allowed.length !== sources.length) throw new Error('侧路模型来源已失效')
+    for (const source of sources) {
+      if (!isCurrent() || source.messageId && await ports.isMessageRecalled?.(target, String(source.messageId))) throw new Error('侧路模型来源已失效')
+    }
+    if (!isCurrent()) throw new Error('侧路模型来源已失效')
   }
 
   function withoutResolvedQuote(message: SimMessage): SimMessage {
@@ -1594,14 +1623,42 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         // 预判不可用/异常 → 放行（fail-open，宁多花一次也不丢回复）。
         const judgeWake = ports.wakeGateJudge
         if (!followUpId && cfg.wakeGate.enabled && judgeWake && !WAKE_GATE_BYPASS_KINDS.has(reason.kind)) {
+          const gateReadThroughSeq = turnState.unread.reduce((max, message) => Math.max(max, message.seq), turnState.lastReadThroughSeq)
+          const gateSources = [...turnState.unread].sort((a, b) => a.seq - b.seq)
+            .filter(message => !resolvedPersona.binding || message.kind === 'text' && !!message.messageId && !message.forwardId && !message.textTruncated)
+            .slice(-10).map(message => ({ ...message }))
+          let gateRevoked = false, gateUsageRecorded = false, gateActive = true
+          const gateSignal = AbortSignal.any([turnSignal, AbortSignal.timeout(8_000)])
+          const gateAuthorized = () => gateActive && !gateRevoked && canCallModel() && gateSources.every(source => turnState.recent.some(message =>
+            message.seq === source.seq && message.messageId === source.messageId && message.userId === source.userId &&
+            message.at === source.at && message.text === source.text))
+          const gateCurrent = () => !gateSignal.aborted && gateAuthorized()
+          const gateContext: PersonProfileExtractionContext = { target, ...(resolvedPersona.binding ? { binding: resolvedPersona.binding } : {}),
+            signal: gateSignal, isCurrent: gateCurrent,
+            async ensureCurrent() {
+              try { await assertTriggerCurrent(); await ensureSideModelSources(characterScope, target, gateSources, gateAuthorized) }
+              catch { gateRevoked = true; throw new Error('唤醒预判来源已失效') }
+              gateSignal.throwIfAborted()
+            },
+            recordUsage(model, usage) {
+              if (!gateActive || gateUsageRecorded) return
+              gateUsageRecorded = true
+              ports.recordTokens?.({ scope: groupId, stage: 'wake-gate', model, usage })
+            },
+          }
           const invokeGate = async () => {
-            if (!canCallModel()) return null
-            if (durableWake) { recordWakeStart(); noteProactiveCheck?.() }
-            return await judgeWake({
-              reason: formatWakeReason(reason),
-              messages: [...turnState.unread].sort((a, b) => a.seq - b.seq).slice(-10)
-                .map(m => ({ name: String(m.name || ''), text: String(m.text || '').slice(0, 80), atSelf: Boolean(m.atSelf || m.quoteToSelf) })),
-            }, canCallModel)
+            try {
+              if (!gateCurrent() || !gateSources.length) return null
+              if (durableWake) { recordWakeStart(); noteProactiveCheck?.() }
+              await gateContext.ensureCurrent()
+              const verdict = await awaitSideModel(() => judgeWake({
+                reason: formatWakeReason(reason),
+                messages: gateSources
+                  .map(m => ({ name: String(m.name || ''), text: String(m.text || '').slice(0, 80), atSelf: Boolean(m.atSelf || m.quoteToSelf) })),
+              }, gateCurrent, gateContext), gateSignal, gateCurrent)
+              await gateContext.ensureCurrent()
+              return verdict
+            } finally { gateActive = false }
           }
           const runGate = () => invokeGate().catch(() => {
             diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'failed', code: 'wake_gate_unavailable' })
@@ -1610,10 +1667,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           const gate = durableWake ? await beginWake(runGate) : { result: runGate() }
           if (!gate) return
           const verdict = await gate.result
-          if (!canCallModel()) return
+          if (!canCallModel() || gateRevoked) return
           if (verdict && verdict.engage === false) {
-            state.lastReadThroughSeq = state.unread.reduce((max, m) => Math.max(max, m.seq), state.lastReadThroughSeq)
-            state.unread = []
+            state.lastReadThroughSeq = Math.max(state.lastReadThroughSeq, gateReadThroughSeq)
+            state.unread = state.unread.filter(message => message.seq > gateReadThroughSeq)
+            const [next, ...remaining] = state.pendingWakeReasons.filter(pending => messageReasonStillPending(pending, state!.unread))
+            state.pendingWakeReasons = remaining
+            nextWake = ports.durableIngress && next ? queueWake(state, next) : next
             await store.save(groupId, state)
             logger.info(`[仿真] 群 ${groupId} 预判闸拦截 wake=${reason.kind}${verdict.reason ? `（${verdict.reason}）` : ''}，省一次完整回合`)
             return
@@ -1669,7 +1729,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             return ''
           }
         })()
-        const userStyle = allowUnprovenAggregates ? (await store.loadUserStyle(groupId).catch(() => {
+        const userStyle = allowUnprovenAggregates ? (await selfStore.loadUserStyle(groupId).catch(() => {
           diagnose({ stage: 'memory', operation: 'simulation_user_style_read', outcome: 'failed', code: 'user_style_unavailable' })
           return { users: {} as Record<string, string[]>, updatedAt: 0 }
         })).users || {} : {}
@@ -4028,6 +4088,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   /** 梗提取管线：冷却 + 游标之后的新消息达到阈值才调侧路小模型；合并入库后等下次唤醒注入。 */
   async function maybeExtractMemes(groupId: string, state: SimSessionState, cfg: SimRuntimeConfig): Promise<void> {
     if (!cfg.meme.enabled || typeof ports.memeExtract !== 'function' || !state.botId) return
+    if (running.has(groupId) || background.has(groupId) || pendingWakes.has(groupId) || ingressQueue.has(groupId)) return
     const at = now()
     const target = targetFor(groupId, state.botId)
     if (!allowsConversationAI(target)) return
@@ -4037,48 +4098,102 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const memoryStore = scopedStore(scope, resolved.binding)
     const token = resolved.binding ? agentBindingToken(resolved.binding) : undefined
     if (state.bindingToken !== token) return
-    const privacy = await personMemory.getSceneRedactions({ identity: scope, scene })
-    const activityVersion = await store.loadActivityVersion(groupId)
     const cursor = state.memeCursor
     if (cursor && at - cursor.at < cfg.meme.extractCooldownMs) return
-    const fresh = (await redactSceneMessages(scope, state.recent)).filter(m => m.at > privacy.invalidatedAt && m.seq > (cursor?.seq ?? Math.max(0, state.seq - 40)))
-    if (fresh.length < cfg.meme.extractMinMessages) return
+    const candidateMessages = () => state.recent.filter(m => m.seq > (cursor?.seq ?? Math.max(0, state.seq - 40)))
+      .filter(m => !resolved.binding || m.kind === 'text' && !!m.messageId && !m.forwardId && !m.textTruncated).slice(-40)
+    if (candidateMessages().length < cfg.meme.extractMinMessages) return
     const extraction = activity.capture(target)
+    const controller = new AbortController()
+    let memoryInvalidatedAt = 0, activityVersion = ''
+    let fresh: SimMessage[] = []
+    let memoryTurn: Awaited<ReturnType<NonNullable<SimulationRuntimePorts['beginMemoryTurn']>>> | undefined
+    let active = true, bindingCurrent = true, usageRecorded = false, completed = false
+    const signal = AbortSignal.any([controller.signal, extraction.signal, AbortSignal.timeout(15_000)])
+    const isCurrent = () => {
+      try {
+        const live = personaFor(target)
+        bindingCurrent &&= state.botId === target.account.id && state.bindingToken === token &&
+          (live.personaId || 'default') === scope.personaId &&
+          (live.binding ? agentBindingToken(live.binding) : undefined) === token
+        return active && !signal.aborted && memoryTurn?.isCurrent() !== false && !memoryTurn?.signal.aborted &&
+          !stopped && bindingCurrent && extraction.isCurrent() && allowsConversationAI(target) &&
+          handlesTarget(target) && groupActive(runtimeConfig(), groupId) && runtimeConfig(groupId).meme.enabled &&
+          ports.isAccountReady?.(target.account) !== false && ports.isMemoryInputAvailable?.(target.account) !== false &&
+          fresh.every(source => state.recent.some(message => message.seq === source.seq && message.messageId === source.messageId &&
+            message.userId === source.userId && message.at === source.at && message.text === source.text))
+      } catch { return false }
+    }
+    const ensureCurrent = async () => {
+      await ensureSideModelSources(scope, target, fresh, isCurrent)
+      if (await store.loadActivityVersion(groupId) !== activityVersion || !isCurrent() ||
+          (await personMemory.getSceneRedactions({ identity: scope, scene })).invalidatedAt !== memoryInvalidatedAt || !isCurrent()) {
+        throw new Error('梗提取来源已失效')
+      }
+      if ((await characters.load(scope)).paused || !isCurrent()) throw new Error('梗提取所属角色已暂停')
+    }
+    background.add(groupId); liveStates.set(groupId, state)
+    backgroundControllers.add(controller); backgroundByGroup.set(groupId, controller)
     try {
-      if (!allowsConversationAI(target) || !extraction.isCurrent()) return
+      if (!isCurrent()) return
+      if (resolved.binding && ports.beginMemoryTurn) memoryTurn = await awaitSideModel(() => ports.beginMemoryTurn!(resolved.binding!).then(turn => {
+        if (!active || signal.aborted) { turn.release(); throw new Error('梗提取已取消') }
+        return turn
+      }), signal, isCurrent)
+      memoryInvalidatedAt = (await personMemory.getSceneRedactions({ identity: scope, scene })).invalidatedAt
+      activityVersion = await store.loadActivityVersion(groupId)
+      fresh = (await redactSceneMessages(scope, candidateMessages())).filter(m => m.at > memoryInvalidatedAt).map(message => ({ ...message }))
+      if (fresh.length < cfg.meme.extractMinMessages) return
+      await ensureCurrent()
       const extractStartedAt = now()
-      const raw = await ports.memeExtract(fresh.slice(-40).map(m => ({ name: m.name, text: m.text })))
-      try { ports.recordTokens?.({ scope: groupId, stage: 'meme-extract', ms: now() - extractStartedAt }) } catch { /* 账本不可用 */ }
+      const context: PersonProfileExtractionContext = { target, ...(resolved.binding ? { binding: resolved.binding } : {}),
+        signal: memoryTurn ? AbortSignal.any([signal, memoryTurn.signal]) : signal, isCurrent, ensureCurrent,
+        recordUsage(model, usage) {
+          if (!active || usageRecorded) return
+          usageRecorded = true
+          ports.recordTokens?.({ scope: groupId, stage: 'meme-extract', model, usage, ms: now() - extractStartedAt })
+        },
+      }
+      const raw = await awaitSideModel(() => ports.memeExtract!(fresh.map(m => ({ name: m.name, text: m.text })), isCurrent, context), context.signal, isCurrent)
+      if (!usageRecorded) try { ports.recordTokens?.({ scope: groupId, stage: 'meme-extract', ms: now() - extractStartedAt }) } catch { /* 账本不可用 */ }
+      await ensureCurrent()
       const candidates = parseMemeCandidates(raw)
-      if (stopped || !allowsConversationAI(target) || !extraction.isCurrent() || await store.loadActivityVersion(groupId) !== activityVersion ||
-        (await personMemory.getSceneRedactions({ identity: scope, scene })).invalidatedAt !== privacy.invalidatedAt) return
       if (!candidates.length) return
       // 回合可能刚改过记忆库：重新加载合并，避免双写者互覆
       const current = normalizeMemoryList(await memoryStore.loadMemories(groupId), at, isQqSimulationAddress(target) ? undefined : isSimulationUserId)
       const { memories, newCount } = mergeMemeCandidates(current, candidates, at)
-      await memoryStore.saveMemories(groupId, memories, () => {
-        const live = personaFor(target)
-        return !stopped && allowsConversationAI(target) && extraction.isCurrent() && (live.personaId || 'default') === scope.personaId &&
-          (live.binding ? agentBindingToken(live.binding) : undefined) === token
-      })
-      await saveExtractionCursor(groupId, token, 'memeCursor', fresh.at(-1)!.seq, at)
+      await ensureCurrent()
+      await memoryStore.saveMemories(groupId, memories, isCurrent)
+      await ensureCurrent()
+      completed = true
       if (newCount > 0) logger.info(`[仿真] 群 ${groupId} 梗库新增 ${newCount} 条（提取自 ${fresh.length} 条消息）`)
-    } catch (error) {
-      logger.warn(`[仿真] 群 ${groupId} 梗提取失败：${error instanceof Error ? error.message : String(error)}`)
-    } finally { extraction.release() }
-  }
-
-  async function saveExtractionCursor(groupId: string, bindingToken: string | undefined, cursor: 'memeCursor' | 'personProfileCursor', seq: number, at: number) {
-    await queueIngress(groupId,async () => {
-      if (running.has(groupId) || background.has(groupId)) return false
-      const latest = await store.load(groupId)
-      if (latest.bindingToken !== bindingToken || running.has(groupId) || background.has(groupId)) return false
-      if ((latest[cursor]?.seq ?? 0) < seq) {
-        latest[cursor] = {seq, at}
-        await store.save(groupId, latest)
+    } catch {
+      logger.warn(`[仿真] 群 ${groupId} 梗提取未完成，已丢弃未提交结果`)
+    } finally {
+      let pending: SimWakeReason[] = [], finalSave: Promise<void> | undefined
+      try {
+        await store.save(groupId, state)
+        if (completed) {
+          try { await ensureCurrent(); state.memeCursor = { seq: fresh.at(-1)!.seq, at } }
+          catch { /* Revoked results cannot advance the extraction cursor. */ }
+        }
+        pending = (bindingCurrent ? state.pendingWakeReasons : []).filter(reason => messageReasonStillPending(reason, state.unread))
+        state.pendingWakeReasons = []
+        const [first, ...rest] = pending
+        const next = first && rest.reduce((best, reason) => mergeWakeReason(best, reason).reason, first)
+        if (ports.durableIngress && next) {
+          state.pendingWakeReasons = pending.filter(reason => reason !== next && isDirectAddressKind(reason.kind))
+          pending = [queueWake(state, next)]
+        }
+        finalSave = store.save(groupId, state)
+      } finally {
+        active = false; controller.abort(); extraction.release(); memoryTurn?.release()
+        backgroundControllers.delete(controller); backgroundByGroup.delete(groupId)
+        background.delete(groupId); liveStates.delete(groupId); notifyWaiters(groupId)
       }
-      return true
-    })
+      await finalSave
+      if (!stopped && pending.length) await scheduleWake(groupId, pending.reduce((a, b) => mergeWakeReason(a, b).reason), state.bindingToken, cfg)
+    }
   }
 
   /** 按人口头禅挖掘：每群冷却（默认 6h），从归档挖"他说得多、别人基本不说"的专属词 */
@@ -4299,28 +4414,43 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   }
 
   async function maybeMineUserStyle(groupId: string, cfg: SimRuntimeConfig): Promise<void> {
-    if (!cfg.userStyle.enabled || typeof ports.readArchiveMessages !== 'function') return
+    if (!cfg.userStyle.enabled || typeof ports.readArchiveMessages !== 'function' && typeof ports.readUserStyleSources !== 'function') return
     let extraction: AgentConversationActivityCapture | undefined
     try {
       const session = await store.load(groupId), scope = boundScopeFor(groupId, session.botId)
       const target = targetFor(groupId, session.botId || ports.getSelf().id)
       if (!allowsConversationAI(target)) return
+      const resolved = personaFor(target), bindingToken = resolved.binding ? agentBindingToken(resolved.binding) : undefined
+      if (session.bindingToken !== bindingToken || resolved.binding && !ports.readUserStyleSources) return
       extraction = activity.capture(target)
+      const signal = AbortSignal.any([extraction.signal, AbortSignal.timeout(15_000)])
+      let activeBinding = true
+      const isCurrent = () => {
+        try {
+          const live = personaFor(target)
+          activeBinding &&= (live.binding ? agentBindingToken(live.binding) : undefined) === bindingToken
+          return !stopped && !signal.aborted && activeBinding && extraction?.isCurrent() === true && allowsConversationAI(target) &&
+            ports.isAccountReady?.(target.account) !== false && ports.isMemoryInputAvailable?.(target.account) !== false
+        } catch { return false }
+      }
       if (!scope || (await personMemory.getSceneRedactions({ identity: scope, scene: { kind: 'group', id: scope.groupId } })).invalidatedAt > 0) return
-      const current = await store.loadUserStyle(groupId)
+      const styleStore = scopedStore(scope, resolved.binding)
+      const current = await styleStore.loadUserStyle(groupId)
       if (now() - current.updatedAt < cfg.userStyle.cooldownMs) return
       // P0 反污染：机器人发言不进口头禅挖掘——学 AI 的口头禅只会更像机器
-      const botIds = new Set(ports.getStyleBotUserIds?.() || [])
-      const messages = (await ports.readArchiveMessages(groupId, cfg.userStyle.archiveDays)).filter(item => !botIds.has(String(item.userId || '')))
+      const botIds = new Set([target.account.id, ...(ports.getStyleBotUserIds?.() || [])])
+      const sources = ports.readUserStyleSources ? await ports.readUserStyleSources(target, cfg.userStyle.archiveDays, isCurrent, signal) : undefined
+      const messages = (sources ? sources.messages : await ports.readArchiveMessages!(groupId, cfg.userStyle.archiveDays)).filter(item => !botIds.has(String(item.userId || '')))
       if (messages.length < 50) return
       const catchphrases = mineUserCatchphrases(messages)
       const users: Record<string, string[]> = {}
       for (const item of catchphrases) users[item.userId] = item.words
-      if (!allowsConversationAI(target) || !extraction.isCurrent()) return
-      await store.saveUserStyle(groupId, users)
+      if (!isCurrent() || sources && !await sources.isCurrent() || !isCurrent() ||
+          (await personMemory.getSceneRedactions({ identity: scope, scene: { kind: 'group', id: scope.groupId } })).invalidatedAt > 0 || !isCurrent()) return
+      await styleStore.saveUserStyle(groupId, users, isCurrent)
       if (Object.keys(users).length) logger.info(`[仿真] 群 ${groupId} 口头禅库更新：${Object.keys(users).length} 人`)
-    } catch (error) {
-      logger.warn(`[仿真] 群 ${groupId} 口头禅挖掘失败：${error instanceof Error ? error.message : String(error)}`)
+    } catch {
+      logger.warn(`[仿真] 群 ${groupId} 口头禅挖掘未完成，已丢弃未提交结果`)
     } finally { extraction?.release() }
   }
 
