@@ -1,6 +1,6 @@
 # bl-chat 控制台
 
-控制台前端采用 Vue 3、TypeScript、Vite、Vue Router 和 Naive UI。`console/server.js` 保留独立 Node 服务，提供认证、配置和运营 API，并直接返回 `console/frontend/dist/index.html` 与构建后的静态资源。前端源码不再拼接进服务文件。
+控制台前端采用 Vue 3、TypeScript、Vite、Vue Router 和 Naive UI。当前生产由独立 Core 宿主内置的 HTTP 服务提供控制台，与聊天共同运行在 `bl-chat-agent.service`。旧 `bl-console.service` 已退役并移除；`console/server.js` 仅保留兼容插件入口。
 
 独立 Agent 的内置 HTTP 宿主复用这份前端，通过认证的 `/api/workspace` 返回已加载的机器人本人、连接、版本化会话及真实管理能力。工作区有总览、机器人、连接、资源库、运行中心、系统六个入口，机器人详情有主页、会话、自我与记忆、行动、能力与边界五个标签。插件模式继续走原导航；接口错误不会切换成空工作区。
 
@@ -36,23 +36,23 @@ node scripts/start-agent.mjs --config /path/to/agent-host.yaml --recover-config
 
 ## 安装、构建和启动
 
-前端构建需要 **Node 20.19 及以上的 20.x，或 Node 22.12 及以上**，建议使用受支持的 LTS。Vite 7 不支持更早的 Node 版本。以下命令均从插件根目录执行；插件根目录的依赖仍需按现有部署流程安装。
+独立宿主需要 **Node 22.12 及以上**，建议使用受支持的 LTS。以下命令均从源码仓库根目录执行；先安装根目录和前端的锁定依赖。
 
 ```sh
+npm ci
 npm --prefix console/frontend ci
-npm --prefix console/frontend run build
-npm run console:start
+npm run agent:pack
 ```
 
-`build` 会先运行 TypeScript 检查，再生成 `console/frontend/dist/`。`dist`、前端 `node_modules` 和 Vite 缓存不提交 Git；提交源码与 `console/frontend/package-lock.json`，在目标机器或构建流水线执行 `npm ci` 和构建，再交付 `dist`。
-
-更新已运行的控制台时，**先完成构建，再重启控制台服务**。沿用示例 systemd unit 的机器可在构建成功后运行：
+`agent:pack` 会检查并构建前后端，生成含控制台的 `.release/agent-*` 独立发布包。`dist`、前端 `node_modules` 和 Vite 缓存不提交 Git。安装发布包与生产依赖、校验 `release-manifest.json` 后，由同一个宿主启动聊天和控制台：
 
 ```sh
-sudo systemctl restart bl-console
+node scripts/start-agent.mjs --config /path/to/agent-host.yaml
 ```
 
-本轮还更新了 Yunzai 页面接口及规则导入的 `stageId` 协议。部署时需要一起交付相关插件代码，并让机器人 / Yunzai 服务加载新版本；仅更新控制台会使旧上游接口缺少 `stageId`，前端无法确认规则导入。
+宿主配置须显式开启 `console.enabled`，默认监听 `127.0.0.1:8787`；认证及初始化按 [独立 QQ 宿主](../docs/architecture/agent-bindings.md#独立-qq-宿主) 配置。
+
+生产更新先交付完整独立包，再切换 `/opt/bl-chat-agent/current`，最后运行 `sudo systemctl restart bl-chat-agent`。宿主与控制台共同加载新版本，无需单独控制台服务。旧 `scripts/deploy.sh` 只返回退役说明，不再操作服务器。
 
 构建产物不存在或首页不可读时，首页返回 HTTP 503，并提示安装、构建命令。服务不会回退到旧模板；配置 API 与鉴权仍可用。HTML 使用 `no-store`，带内容哈希的资源使用长期 immutable 缓存。
 
@@ -65,11 +65,12 @@ sudo systemctl restart bl-console
 | `npm run console:check` | 仅运行前端 TypeScript 检查 |
 | `npm run console:test` | 运行前端 Vitest 测试 |
 | `npm run console:smoke` | 用构建产物、localhost 假 API 和 Chrome 运行跨页/主题/宽度浏览器检查 |
-| `npm run console:start` | 启动控制台 Node 服务 |
+| `npm run agent:start -- --config /path/to/agent-host.yaml` | 启动独立宿主及内置控制台 |
+| `npm run console:start` | 兼容插件模式的旧 Node 服务入口 |
 
-开发模式下分别启动 `console:start` 和 `console:dev`。默认控制台端口为 8787。容器采集需要 Docker；收发统计和管道记录需要本机 Redis；命令、语义记忆和完整运行明细需要 Yunzai 页面服务。
+开发模式下分别启动配置了控制台的 `agent:start` 和 `console:dev`，Vite 默认代理到本机 8787。
 
-## 页面和地址
+## 兼容插件模式的页面和地址
 
 继续使用 hash 路由，原 `#/`、`#/persona`、`#/ai`、`#/draw`、`#/commands`、`#/observe`、`#/semantic` 地址保持可用。新增 `#/conversation`（对话设置）、`#/groups`、`#/group-admin`（群管理）、`#/pipeline`、`#/risk` 和 `#/bot/<QQ>` 等页面。
 

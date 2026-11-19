@@ -87,7 +87,7 @@ COC7 / DND 全套指令（`.r` `.ra` `.st` `.pc` `.sc` `.ri` `.log` 等约 85 �
 | 消息搬运 | B 站高清搬运（可扫码取会员）、抖音 / YouTube / Pixiv 卡片、磁链搜索 | `.高清搬运`、`.磁力搜索` |
 | 聊天记录 | NDJSON 归档、撤回回写、关键词搜索、音乐提取 | `#查看群聊记录` |
 | 风控观测 | 出站审查限流、三级风控响应、观测日志 | `#观测日志` |
-| 运维 | 命令总表（121 条）、一键部署与回滚、Web 控制台 | `.命令`、`scripts/deploy.sh` |
+| 运维 | 命令总表（121 条）、独立发布包、Web 控制台 | `.命令`、`npm run agent:pack` |
 
 ## 快速开始
 
@@ -115,15 +115,14 @@ TypeScript 编译产物 `dist/backend` 不随仓库分发，`npm run backend:bui
 
 ### 更新
 
-项目已启用 TypeScript 编译发布，群内 `#bl更新` 自动更新已停用（不会拉取代码或重启服务）。维护者更新方式二选一：
+当前生产使用独立 Core，`bl-chat-agent.service` 同时运行聊天宿主与控制台。旧 `trss-yunzai` / `bl-console` 服务已退役，`scripts/deploy.sh` 只返回退役提示，不再部署或启动旧服务。群内 `#bl更新` 也不会拉取代码或重启服务。
 
 ```bash
-# 手动：拉取 → 装依赖 → 重建 → 重启 Yunzai
-git pull && npm install && npm run backend:build
-
-# 或一键部署（先跑全量验收，再打包校验、原子安装、健康检查，失败自动回滚）
-bash scripts/deploy.sh
+npm run verify:phase
+npm run agent:pack
 ```
+
+将生成的 `.release/agent-*` 包及生产依赖交付到新发布目录，校验发布清单后切换 `/opt/bl-chat-agent/current`，再重启 `bl-chat-agent`。宿主配置在 `/opt/bl-chat-agent/config/agent-host.yaml`；服务定义见 [bl-chat-agent.service](scripts/bl-chat-agent.service)，完整说明见 [独立 QQ 宿主](docs/architecture/agent-bindings.md#独立-qq-宿主)。本节之前的 Yunzai 安装步骤仅供兼容插件模式使用。
 
 ### 最小可用配置
 
@@ -270,15 +269,16 @@ oneapi_tools:
 
 ## Web 控制台
 
-控制台采用 Vue 3；插件使用独立 Koa 服务，独立 Agent 使用宿主内置的认证 HTTP 服务。安装、构建和环境变量详见 [console/README.md](console/README.md)：
+控制台采用 Vue 3，由独立 Agent 宿主内置的认证 HTTP 服务提供。安装、构建和配置详见 [console/README.md](console/README.md)：
 
 ```bash
 npm --prefix console/frontend ci
-npm --prefix console/frontend run build
-npm run console:start    # 默认 0.0.0.0:8787
+npm run agent:pack
+# 安装发布包后，由同一宿主启动控制台
+node scripts/start-agent.mjs --config /path/to/agent-host.yaml
 ```
 
-首次访问创建管理员账号（scrypt 密码哈希 + HttpOnly 会话）。独立 Agent 的工作区分为总览、机器人、连接、资源库、运行中心、系统；机器人详情按主页、会话、自我与记忆、行动、能力与边界组织。本人和人设模板分开，所有场景操作保留账号、连接和绑定版本；未接入的能力显示真实状态。插件模式继续使用原控制台入口。当前实施范围及待验收项见 [架构进度](docs/architecture/agent-bindings.md)。
+在宿主配置中显式开启 `console.enabled` 并配置认证；只有显式开启 `console.allowSetup` 时才允许首次创建管理员。工作区分为总览、机器人、连接、资源库、运行中心、系统；机器人详情按主页、会话、自我与记忆、行动、能力与边界组织。本人和人设模板分开，所有场景操作保留账号、连接和绑定版本；未接入的能力显示真实状态。当前实施范围及待验收项见 [架构进度](docs/architecture/agent-bindings.md)。
 
 ## 独立功能插件
 
@@ -320,7 +320,8 @@ src/
 | `npm run migration:report` | 旧路径兼容层映射校验 |
 | `npm run verify:phase` | 聚合以上全部 + 前端检查 / 测试 / 构建 |
 | `npm run console:dev` … | 控制台开发 / 构建 / 检查 / 冒烟 |
-| `npm run release:pack` / `release:verify` | 发布打包与校验（支持原子安装与回滚） |
+| `npm run agent:pack` | 独立 Core 与 QQ 宿主发布包（含控制台） |
+| `npm run release:pack` / `release:verify` | 兼容插件发布打包与校验 |
 
 自定义本地工具放 `custom_tools/`（不要改 `functions/functions_tools` 内置工具）：复制 `exampleTool.js.example`，实现 `func()`，把工具名加进 `oneapi_tools`，重启或改一次配置触发热更新。
 
@@ -330,7 +331,7 @@ src/
 - `trackAiConfig` / `intentAiConfig` 选快而便宜的模型，闸门延迟直接决定群里"像不像人在看消息"。
 - 群聊量大的群调大记忆抽取的 debounce 与最小间隔，避免频繁调用模型。
 - 生图、修图、识图分开配模型，不要共用一个慢模型；长任务工具都加 `(dedupe)`。
-- 部署到生产建议走 `npm run verify:phase` + `release:pack` 流程，产物带校验、可回滚。
+- 独立 Core 发布使用 `npm run verify:phase` + `npm run agent:pack`，交付前校验发布清单，再切换 `current` 并重启 `bl-chat-agent`。
 
 ## 致谢与上游
 
