@@ -6,7 +6,7 @@ import fs from 'node:fs/promises'
 import { createServer } from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import test, { after, describe } from 'node:test'
+import test, { after, before, describe } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -100,16 +100,13 @@ test('QQ image downloads pin a public QQ CDN address and reject other resources'
   }
 })
 
-describe('standalone QQ recovery and migration checkpoints', { skip: redisAvailable ? false : 'redis-server unavailable', concurrency: false }, async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'bl-agent-qq-'))
-  const socket = path.join(directory, 'redis.sock')
+describe('standalone QQ recovery and migration checkpoints', { skip: redisAvailable ? false : 'redis-server unavailable', concurrency: false }, () => {
+  let directory, socket, redisProcess, redis, config, bindingFile, hostConfig, env
   const children = []
   const hostLogs = []
   const hostStartTimes = []
   const migrationTimes = []
   let checkpointReady = true
-  const redisProcess = spawn('redis-server', ['--port', '0', '--unixsocket', socket, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
-  let redis
   const backend = createServer()
   const platform = new WebSocketServer({ noServer: true })
   const deliveries = []
@@ -143,17 +140,13 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     backend.closeAllConnections()
     await new Promise(resolve => backend.close(resolve))
     if (redis?.isOpen) await redis.close()
-    if (redisProcess.exitCode === null && redisProcess.signalCode === null) {
+    if (redisProcess && redisProcess.exitCode === null && redisProcess.signalCode === null) {
       const ended = once(redisProcess, 'exit')
       redisProcess.kill('SIGTERM')
       await ended
     }
-    await fs.rm(directory, { force: true, recursive: true })
+    if (directory) await fs.rm(directory, { force: true, recursive: true })
   })
-  await waitUntil(() => fs.stat(socket).then(() => true, () => false), 'fixture Redis socket')
-  redis = createClient({ socket: { path: socket, reconnectStrategy: false } })
-  redis.on('error', () => {})
-  await redis.connect()
 
   backend.on('upgrade', (request, connection, head) => {
     if (request.url !== '/' || request.headers.authorization !== `Bearer ${auth}`) { connection.destroy(); return }
@@ -279,19 +272,6 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
       model: 'local-test', choices: [{ message, finish_reason: message.tool_calls ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
     }))
   })
-  const port = await listen(backend)
-  const config = path.join(directory, 'agent-host.yaml')
-  const hostConfig = {
-    version: 1, instance: 'standalone-test', dataDir: 'data',
-    persona: { name: '独立群聊角色', identity: '仅用于本地端到端验收' },
-    model: { baseUrl: `http://127.0.0.1:${port}`, name: 'local-test', apiKeyEnv: 'TEST_AGENT_MODEL_KEY' },
-    simulation: { wake: { batchWindowMs: 4_000, probability: 0, proactiveProbability: 0 }, rhythm: { enabled: false }, reflection: { enabled: false },
-      turn: { minSendGapMs: 0, maxTurnsPerDay: 5 } },
-    privateChat: { enabled: true },
-    forbiddenWords: { words: ['禁止输入样本'] },
-    connections: [{ id: 'qq-local', url: `ws://127.0.0.1:${port}/`, accessTokenEnv: 'TEST_AGENT_ONEBOT_TOKEN' }],
-  }
-  const bindingFile = path.join(directory, 'agent-bindings.yaml')
   const bindingConfig = {
     version: 1, agents: [{ id: 'local-agent', personaId: 'default' }, { id: 'another-agent', personaId: 'default' }],
     connections: [{ id: 'qq-local', platform: 'qq', namespace: 'global', accountId: String(BOT) }],
@@ -300,9 +280,31 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
       { connectionId: 'qq-local', kind: 'private', conversationId: String(USER), agentId: 'local-agent' },
     ],
   }
-  await fs.writeFile(config, YAML.stringify(hostConfig))
-  await fs.writeFile(bindingFile, YAML.stringify(bindingConfig))
-  const env = { ...process.env, BL_AGENT_REDIS_URL: `unix://${socket}`, TEST_AGENT_MODEL_KEY: 'isolated-key', TEST_AGENT_ONEBOT_TOKEN: auth }
+  before(async () => {
+    directory = await fs.mkdtemp(path.join(os.tmpdir(), 'bl-agent-qq-'))
+    socket = path.join(directory, 'redis.sock')
+    redisProcess = spawn('redis-server', ['--port', '0', '--unixsocket', socket, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
+    await waitUntil(() => fs.stat(socket).then(() => true, () => false), 'fixture Redis socket')
+    redis = createClient({ socket: { path: socket, reconnectStrategy: false } })
+    redis.on('error', () => {})
+    await redis.connect()
+    const port = await listen(backend)
+    config = path.join(directory, 'agent-host.yaml')
+    bindingFile = path.join(directory, 'agent-bindings.yaml')
+    hostConfig = {
+      version: 1, instance: 'standalone-test', dataDir: 'data',
+      persona: { name: '独立群聊角色', identity: '仅用于本地端到端验收' },
+      model: { baseUrl: `http://127.0.0.1:${port}`, name: 'local-test', apiKeyEnv: 'TEST_AGENT_MODEL_KEY' },
+      simulation: { wake: { batchWindowMs: 4_000, probability: 0, proactiveProbability: 0 }, rhythm: { enabled: false }, reflection: { enabled: false },
+        turn: { minSendGapMs: 0, maxTurnsPerDay: 5 } },
+      privateChat: { enabled: true },
+      forbiddenWords: { words: ['禁止输入样本'] },
+      connections: [{ id: 'qq-local', url: `ws://127.0.0.1:${port}/`, accessTokenEnv: 'TEST_AGENT_ONEBOT_TOKEN' }],
+    }
+    await fs.writeFile(config, YAML.stringify(hostConfig))
+    await fs.writeFile(bindingFile, YAML.stringify(bindingConfig))
+    env = { ...process.env, BL_AGENT_REDIS_URL: `unix://${socket}`, TEST_AGENT_MODEL_KEY: 'isolated-key', TEST_AGENT_ONEBOT_TOKEN: auth }
+  })
   function launch() {
     const startedAt = performance.now()
     const startup = { readyMs: null }
@@ -1856,9 +1858,10 @@ test('standalone QQ sends verified group images only to the configured vision mo
   const lookups = []
   const deliveries = []
   const originals = new Map()
-  const groups = { plain: 10091, direct: 10092, quote: 10093, foreign: 10094, recalled: 10095, rebound: 10096 }
+  const groups = { plain: 10091, direct: 10092, quote: 10093, foreign: 10094, recalled: 10095, rebound: 10096, unauthorized: 10097, empty: 10098 }
   const text = '图上有一只拿蓝伞的猫'
   const forbidden = '图片测试禁词'
+  const privateVisionBody = 'VISION_CLI_PRIVATE_PROVIDER_BODY'
   const image = { type: 'image', data: { file: `base64://${fixturePng}` } }
   const mention = { type: 'at', data: { qq: String(BOT) } }
   const talk = value => ({ type: 'text', data: { text: value } })
@@ -1868,6 +1871,7 @@ test('standalone QQ sends verified group images only to the configured vision mo
   let redis
   let holdLookup
   let nextVisionGate
+  let nextVisionResponse
   t.after(async () => {
     for (const child of children) {
       if (child.exitCode === null && child.signalCode === null) {
@@ -1917,10 +1921,19 @@ test('standalone QQ sends verified group images only to the configured vision mo
     for await (const chunk of request) raw += chunk
     const body = JSON.parse(raw)
     if (request.method === 'POST' && request.url === '/vision/v1/chat/completions') {
-      visionRequests.push({ body, auth: request.headers.authorization })
+      const status = nextVisionResponse
+      nextVisionResponse = undefined
+      visionRequests.push({ body, auth: request.headers.authorization, status })
       const gate = nextVisionGate
       nextVisionGate = undefined
       await gate
+      if (status === 401) {
+        response.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: {
+          message: `${privateVisionBody} vision-fixture chat-fixture ${request.url} https://private.invalid/vision?token=private ${fixturePng}`,
+        } }))
+        return
+      }
+      if (status === 200) { sendModel(response, { content: '' }); return }
       sendModel(response, { content: text })
       return
     }
@@ -1932,7 +1945,7 @@ test('standalone QQ sends verified group images only to the configured vision mo
     const hasImages = body.tools?.some(item => item.function.name === 'simGetMessageImages') ?? false
     modelRequests.push({ body, visible, result, hasImages })
     if (lastWake < 0) { sendModel(response, { content: '' }); return }
-    const command = [...visible.matchAll(/^#(\d+)[^\n]*(?:直接看图验收|引用看图验收|跨群看图验收|来源不符验收|来源禁词验收|撤回看图验收|换绑看图验收)[^\n]*$/gmu)].at(-1)
+    const command = [...visible.matchAll(/^#(\d+)[^\n]*(?:直接看图验收|引用看图验收|跨群看图验收|来源不符验收|来源禁词验收|撤回看图验收|换绑看图验收|认证失败看图验收|空内容看图验收)[^\n]*$/gmu)].at(-1)
     const pureImage = visible.match(/^#(\d+)[^\n]*图源发送者:[ \t]+\[附图×1\]$/mu)
     const seq = Number(command?.[1] ?? pureImage?.[1] ?? 0)
     const success = results.some(row => String(row.content).includes(text))
@@ -2050,6 +2063,22 @@ test('standalone QQ sends verified group images only to the configured vision mo
   assert.ok(modelRequests.some(item => item.visible.includes('引用看图验收') && item.visible.includes('附1张图')))
   assert.equal((await session(groups.quote)).recent.find(row => row.messageId === '90104').quoteSource.image.count, 1)
 
+  const deliveriesBeforeFailures = deliveries.length
+  for (const scenario of [
+    { group: groups.unauthorized, id: 90110, status: 401, command: '认证失败看图验收' },
+    { group: groups.empty, id: 90111, status: 200, command: '空内容看图验收' },
+  ]) {
+    const before = visionRequests.length
+    nextVisionResponse = scenario.status
+    publish(scenario.group, scenario.id, [mention, talk(scenario.command), image])
+    await waitUntil(() => visionRequests.length === before + 1, 'diagnostic failure reaches the configured vision provider')
+    await waitUntil(() => modelRequests.some(item => item.visible.includes(scenario.command) && String(item.result).startsWith('error:')),
+      'failed vision returns a tool error to the current turn')
+    await settled(scenario.group)
+    assert.equal(visionRequests.length, before + 1, 'HTTP or empty-content failure does not retry vision')
+    assert.equal(deliveries.length, deliveriesBeforeFailures, 'unconfirmed vision never sends an answer')
+  }
+
   const visionCount = visionRequests.length
   publish(groups.foreign, 90105, [mention, talk('跨群看图验收'), image], {}, { group_id: groups.quote })
   await waitUntil(() => modelRequests.some(item => item.visible.includes('跨群看图验收') && item.result), 'wrong-group image is refused')
@@ -2099,7 +2128,36 @@ test('standalone QQ sends verified group images only to the configured vision mo
   const ledger = (await Promise.all((await fs.readdir(ledgerDir)).map(name => fs.readFile(path.join(ledgerDir, name), 'utf8'))))
     .join('').trim().split('\n').map(line => JSON.parse(line))
   const visionUsage = ledger.filter(entry => entry.stage === 'sim-vision')
-  assert.equal(visionUsage.length, visionRequests.length)
+  assert.equal(visionUsage.length, visionRequests.filter(request => request.status === undefined).length)
   assert.ok(visionUsage.every(entry => entry.model === 'local-vision' && entry.u.total === 15))
   assert.ok(![withoutVision, active].some(app => /vision-fixture|chat-fixture|base64:\/\//u.test(app.readLog())))
+
+  const operations = path.join(directory, 'data', 'operations')
+  const journalText = (await Promise.all((await fs.readdir(operations)).filter(name => name.endsWith('.ndjson'))
+    .map(name => fs.readFile(path.join(operations, name), 'utf8')))).join('')
+  const events = journalText.trim().split('\n').map(line => JSON.parse(line))
+  const visionEvents = events.filter(event => ['simulation_image_description', 'vision_provider_http'].includes(event.operation))
+  for (const [group, status] of [[groups.unauthorized, 401], [groups.empty, 200]]) {
+    const scoped = visionEvents.filter(event => event.scope.kind === 'conversation' && event.scope.binding.target.id === String(group))
+    assert.ok(scoped.some(event => event.operation === 'vision_provider_http' && event.outcome === 'started'), 'vision HTTP start is durable')
+    assert.ok(scoped.some(event => event.operation === 'vision_provider_http' && event.httpStatus === status &&
+      event.code === (status === 401 ? 'http_error' : 'http_ok') && event.outcome === (status === 401 ? 'failed' : 'succeeded')),
+      'vision HTTP outcome preserves only its status')
+    assert.ok(scoped.some(event => event.operation === 'simulation_image_description' && event.outcome === 'started'), 'image description start is durable')
+    assert.ok(scoped.some(event => event.operation === 'simulation_image_description' && event.outcome === 'failed' &&
+      event.code === 'image_model_response_error' && event.httpStatus === status), 'HTTP and empty-content failures retain their safe distinction')
+  }
+  assert.ok(visionEvents.some(event => event.operation === 'simulation_image_description' && event.outcome === 'succeeded' &&
+    event.code === 'image_description_completed'), 'normal vision 200 records its confirmed description')
+  assert.ok(visionEvents.some(event => event.operation === 'vision_provider_http' && event.outcome === 'succeeded' &&
+    event.code === 'http_ok' && event.httpStatus === 200), 'normal vision 200 records its HTTP result')
+  for (const event of visionEvents.filter(event => event.outcome !== 'started')) {
+    assert.ok(Number.isFinite(event.durationMs) && event.durationMs >= 0, 'terminal vision diagnostics retain safe duration')
+    assert.ok(Object.keys(event).every(key => ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code',
+      'durationMs', 'errorKind', 'httpStatus', 'configurationRevision'].includes(key)), 'vision diagnostics expose metadata only')
+  }
+  for (const secret of [privateVisionBody, fixturePng, text, forbidden, 'vision-fixture', 'chat-fixture', 'https://private.invalid',
+    `http://127.0.0.1:${port}`, '/vision/v1/chat/completions', 'base64://', 'data:image/', 'image_url', '图源发送者']) {
+    assert.equal((journalText + withoutVision.readLog() + active.readLog()).includes(secret), false, 'journal and host logs omit provider payload, images, credentials and addresses')
+  }
 })

@@ -438,3 +438,66 @@ test('public web has a full-request deadline and excludes extra host credentials
     .execute({ url: 'https://example.com' }, context())
   assert.equal(acrossLimit.status, 'failed', 'credential checks precede output truncation')
 })
+
+test('public web failure diagnostics expose only controlled stages and safe metadata', async () => {
+  for (const [stage, dependencies, url, guard, status] of [
+    ['url', {}, 'https://localhost/private', {}, undefined],
+    ['authority', {}, 'https://example.com/private', { isCurrent: () => false }, undefined],
+    ['dns', { lookup: async () => { throw new Error('private-dns-detail') } }, 'https://example.com/private', {}, undefined],
+    ['request', { request: async () => { throw Object.assign(new Error('private-transport-detail'), { code: 'ECONNRESET' }) } }, 'https://example.com/private', {}, undefined],
+    ['redirect', { request: async () => ({ status: 302, headers: { location: 'https://localhost/private' }, body: 'private-body' }) }, 'https://example.com/private', {}, 302],
+    ['response', { request: async () => ({ status: 403, headers: {}, body: 'private-body' }) }, 'https://example.com/private', {}, 403],
+    ['response', { request: async () => webResponse('private-body', { 'content-type': 'image/png' }) }, 'https://example.com/private', {}, 200],
+    ['response', { request: async () => webResponse('<script>private-body</script>') }, 'https://example.com/private', {}, 200],
+    ['response', { request: async () => webResponse(new Uint8Array([65]), { 'content-type': 'text/plain; charset=invalid-private' }) }, 'https://example.com/private', {}, 200],
+  ]) {
+    const failures = [], events = []
+    const result = await webTool({ ...dependencies, onFailure: event => failures.push(event) }, { diagnostics: { emit: event => events.push(event) } })
+      .execute({ url }, context(guard))
+    assert.equal(result.status, 'failed')
+    assert.equal(failures.length, 1, stage)
+    assert.equal(failures[0].stage, stage)
+    assert.equal(failures[0].httpStatus, status)
+    assert.ok(Number.isSafeInteger(failures[0].durationMs) && failures[0].durationMs >= 0)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].operation, 'public_web_read')
+    assert.match(events[0].code, new RegExp(`^public_web_${stage}_`))
+    assert.doesNotMatch(JSON.stringify([failures, events]), /private|https?:|8\.8\.8\.8/u)
+  }
+})
+
+test('public web distinguishes its deadline from caller cancellation without changing results', async () => {
+  for (const stage of ['authority', 'dns', 'request']) for (const interruption of ['deadline', 'cancelled']) {
+    const controller = new AbortController(), failures = []
+    const timer = setTimeout(() => controller.abort(), interruption === 'cancelled' ? 10 : 1000)
+    try {
+      const result = await webTool({ timeoutMs: interruption === 'deadline' ? 10 : undefined,
+        lookup: async () => stage === 'dns' ? new Promise(() => {}) : [publicAddress],
+        request: async () => new Promise(() => {}), onFailure: event => failures.push(event),
+      }).execute({ url: 'https://example.com/private' }, context({ signal: controller.signal,
+        ...(stage === 'authority' ? { ensureCurrent: async () => new Promise(() => {}) } : {}),
+      }))
+      assert.equal(result.status, 'failed')
+      assert.equal(failures.length, 1)
+      assert.equal(failures[0].stage, stage)
+      assert.equal(failures[0].kind, interruption)
+    } finally { clearTimeout(timer) }
+  }
+})
+
+test('public web ignores diagnostic observer errors and unsafe transport error properties', async () => {
+  let getters = 0, requests = 0
+  const unsafe = new Error('private-detail')
+  Object.defineProperty(unsafe, 'code', { get() { getters++; return 'ECONNRESET' } })
+  for (const error of [unsafe, new Proxy({}, { get() { throw new Error('private-proxy') } })]) {
+    const failures = []
+    const result = await webTool({ request: async () => { requests++; throw error }, onFailure: event => { failures.push(event); throw new Error('private-observer') } },
+      { diagnostics: { emit() { throw new Error('private-diagnostics') } } }).execute({ url: 'https://example.com/private' }, context())
+    assert.equal(result.status, 'failed')
+    assert.equal(failures.length, 1)
+    assert.equal(failures[0].kind, 'transport_unknown')
+    assert.doesNotMatch(result.content, /private/u)
+  }
+  assert.equal(getters, 0)
+  assert.equal(requests, 2)
+})

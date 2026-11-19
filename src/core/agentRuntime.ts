@@ -1622,8 +1622,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const adapter = adapterFor(target)
       if (!adapter?.readMessageImages || target.kind === 'private') return undefined
       const originalId = source.quotedMessageId ?? source.messageId
-      const isCurrent = () => isRunning() && !guard.signal?.aborted && adapter.isReady() && conversationEnabled(target) &&
-        !textInboxFor(target) && guard.isCurrent?.() !== false
+      const isCurrent = () => observeCurrent(() => isRunning() && !guard.signal?.aborted && adapter.isReady() && conversationEnabled(target) &&
+        !textInboxFor(target) && guard.isCurrent?.() !== false)
       const canRead = async () => isCurrent() && await inbox.canReply(target, source.messageId) &&
         !(source.quotedMessageId && await inbox.isRecalled(target, source.quotedMessageId)) && isCurrent()
       if (!await canRead()) return undefined

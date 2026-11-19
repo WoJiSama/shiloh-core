@@ -3,6 +3,7 @@ import { lookup as dnsLookup } from 'node:dns/promises'
 import http from 'node:http'
 import https from 'node:https'
 import { isIP } from 'node:net'
+import { types } from 'node:util'
 import type { AgentToolContext } from '../../../contracts/agentTool.js'
 import type { AgentFileBytes, FileReadGuard } from '../../../contracts/agentFiles.js'
 import { validateAgentToolImageBytes } from '../../image/infrastructure/agentToolImage.js'
@@ -38,6 +39,36 @@ export interface AgentPublicWebDependencies {
   request?(url: URL, address: LookupAddress, signal: AbortSignal): Promise<AgentPublicWebResponse>
   /** May shorten the fixed deadline, never increase it. */
   readonly timeoutMs?: number
+  /** Safe HTTP/static-text failure metadata only; observer errors never affect a read. */
+  readonly onFailure?: (failure: AgentPublicWebFailure) => void
+}
+
+export interface AgentPublicWebFailure {
+  readonly stage: 'url' | 'authority' | 'dns' | 'request' | 'redirect' | 'response'
+  readonly kind: 'deadline' | 'cancelled' | 'rejected' | 'transport_unknown' | 'connection_reset' |
+    'connection_refused' | 'network_unreachable' | 'dns_unavailable' | 'tls_rejected'
+  readonly durationMs: number
+  readonly httpStatus?: number
+}
+
+function reportPublicWebFailure(dependencies: AgentPublicWebDependencies, stage: AgentPublicWebFailure['stage'],
+  started: number, signal: AbortSignal, context: PublicReadGuard, error: unknown, httpStatus?: number,
+  forcedKind?: AgentPublicWebFailure['kind']): void {
+  let kind: AgentPublicWebFailure['kind'] = forcedKind ?? (stage === 'dns' || stage === 'request' ? 'transport_unknown' : 'rejected')
+  if (context.signal.aborted) kind = 'cancelled'
+  else if (signal.aborted) kind = 'deadline'
+  else if (!forcedKind && (stage === 'dns' || stage === 'request') && error && typeof error === 'object' &&
+      !types.isProxy(error) && types.isNativeError(error)) {
+    const code: unknown = Object.getOwnPropertyDescriptor(error, 'code')?.value
+    if (code === 'ECONNRESET') kind = 'connection_reset'
+    else if (code === 'ECONNREFUSED') kind = 'connection_refused'
+    else if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH') kind = 'network_unreachable'
+    else if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') kind = 'dns_unavailable'
+    else if (code === 'CERT_HAS_EXPIRED' || code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') kind = 'tls_rejected'
+  }
+  const failure = Object.freeze({ stage, kind, durationMs: Math.max(0, Date.now() - started),
+    ...(Number.isSafeInteger(httpStatus) && httpStatus! >= 100 && httpStatus! <= 599 ? { httpStatus: httpStatus! } : {}) })
+  try { dependencies.onFailure?.(failure) } catch { /* Diagnostics cannot change the original failure. */ }
 }
 
 export interface AgentPublicWebContent {
@@ -208,43 +239,71 @@ export function extractAgentHtmlText(html: string): { title: string; text: strin
 }
 
 async function readAgentPublicResponse(input: string, context: PublicReadGuard, dependencies: AgentPublicWebDependencies, policy: PublicReadPolicy) {
+  const started = Date.now()
   const signal = AbortSignal.any([context.signal, AbortSignal.timeout(boundedAgentWebTimeout(dependencies.timeoutMs, policy.timeoutMs ?? MAX_WEB_MS))])
   const lookup = dependencies.lookup ?? (hostname => dnsLookup(hostname, { all: true, verbatim: true }))
   const request = dependencies.request ?? ((url, address, signal) => nativePublicWebRequest(url, address, signal, policy))
-  assertAgentWebCurrent(context, signal)
-  let url = normalizeAgentPublicUrl(input, policy.signedQuery)
-  for (let redirects = 0; redirects <= 3; redirects++) {
-    await ensureAgentWebCurrent(context, signal)
-    const hostname = url.hostname.replace(/^\[|\]$/gu, '')
-    const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await abortableAgentWeb(lookup(hostname), signal)
-    if (!addresses.length || addresses.some(address => isIP(address.address) !== address.family || !isPublicAddress(address.address))) throw new Error('网页 DNS 含非公共地址')
-    await ensureAgentWebCurrent(context, signal)
-    const response = await abortableAgentWeb(request(url, addresses[0]!, signal), signal)
-    await ensureAgentWebCurrent(context, signal)
-    if (response.status >= 300 && response.status < 400) {
-      if (redirects === 3 || !response.headers.location) throw new Error('网页重定向过多或无目标')
-      url = normalizeAgentPublicUrl(new URL(response.headers.location, url).href, policy.signedQuery)
-      continue
+  let stage: AgentPublicWebFailure['stage'] = 'authority', httpStatus: number | undefined, forcedKind: AgentPublicWebFailure['kind'] | undefined
+  try {
+    assertAgentWebCurrent(context, signal)
+    stage = 'url'
+    let url = normalizeAgentPublicUrl(input, policy.signedQuery)
+    for (let redirects = 0; redirects <= 3; redirects++) {
+      httpStatus = undefined
+      stage = 'authority'
+      await ensureAgentWebCurrent(context, signal)
+      const hostname = url.hostname.replace(/^\[|\]$/gu, '')
+      stage = 'dns'
+      const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await abortableAgentWeb(lookup(hostname), signal)
+      if (!addresses.length || addresses.some(address => isIP(address.address) !== address.family || !isPublicAddress(address.address))) {
+        forcedKind = 'rejected'
+        throw new Error('网页 DNS 含非公共地址')
+      }
+      stage = 'authority'
+      await ensureAgentWebCurrent(context, signal)
+      stage = 'request'
+      const response = await abortableAgentWeb(request(url, addresses[0]!, signal), signal)
+      httpStatus = response.status
+      stage = 'authority'
+      await ensureAgentWebCurrent(context, signal)
+      stage = 'redirect'
+      if (response.status >= 300 && response.status < 400) {
+        if (redirects === 3 || !response.headers.location) throw new Error('网页重定向过多或无目标')
+        url = normalizeAgentPublicUrl(new URL(response.headers.location, url).href, policy.signedQuery)
+        continue
+      }
+      stage = 'response'
+      if (response.status < 200 || response.status >= 300) throw new Error('网页服务未返回成功结果')
+      if (response.headers['content-encoding'] && response.headers['content-encoding']!.toLowerCase() !== 'identity') throw new Error('网页不接受压缩响应')
+      if (Number(response.headers['content-length']) > policy.maxBytes ||
+          (typeof response.body === 'string' ? Buffer.byteLength(response.body) : response.body.byteLength) > policy.maxBytes) throw new Error('网页响应过大')
+      return { url, response, signal, started }
     }
-    if (response.status < 200 || response.status >= 300) throw new Error('网页服务未返回成功结果')
-    if (response.headers['content-encoding'] && response.headers['content-encoding']!.toLowerCase() !== 'identity') throw new Error('网页不接受压缩响应')
-    if (Number(response.headers['content-length']) > policy.maxBytes ||
-        (typeof response.body === 'string' ? Buffer.byteLength(response.body) : response.body.byteLength) > policy.maxBytes) throw new Error('网页响应过大')
-    return { url, response, signal }
+    throw new Error('网页重定向过多')
+  } catch (error) {
+    reportPublicWebFailure(dependencies, stage, started, signal, context, error, httpStatus, forcedKind)
+    throw error
   }
-  throw new Error('网页重定向过多')
 }
 
 export async function readAgentPublicWeb(input: string, context: AgentToolContext, dependencies: AgentPublicWebDependencies = {}): Promise<AgentPublicWebContent> {
-  const { url, response, signal } = await readAgentPublicResponse(input, context, dependencies, WEB_POLICY)
-  const type = (response.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase()
-  if (!TEXT_TYPES.has(type)) throw new Error('网页响应不是支持的文本')
-  const charset = response.headers['content-type']?.match(/charset\s*=\s*["']?([\w-]+)/iu)?.[1] ?? 'utf-8'
-  const body = typeof response.body === 'string' ? response.body : new TextDecoder(charset).decode(response.body)
-  const content = type === 'text/html' || type === 'application/xhtml+xml' ? extractAgentHtmlText(body) : { title: '', text: plainText(body) }
-  await ensureAgentWebCurrent(context, signal)
-  if (!content.text) throw new Error('未找到静态网页正文')
-  return { url: url.href, ...content }
+  const { url, response, signal, started } = await readAgentPublicResponse(input, context, dependencies, WEB_POLICY)
+  let stage: AgentPublicWebFailure['stage'] = 'response'
+  try {
+    const type = (response.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase()
+    if (!TEXT_TYPES.has(type)) throw new Error('网页响应不是支持的文本')
+    const charset = response.headers['content-type']?.match(/charset\s*=\s*["']?([\w-]+)/iu)?.[1] ?? 'utf-8'
+    const body = typeof response.body === 'string' ? response.body : new TextDecoder(charset).decode(response.body)
+    const content = type === 'text/html' || type === 'application/xhtml+xml' ? extractAgentHtmlText(body) : { title: '', text: plainText(body) }
+    stage = 'authority'
+    await ensureAgentWebCurrent(context, signal)
+    stage = 'response'
+    if (!content.text) throw new Error('未找到静态网页正文')
+    return { url: url.href, ...content }
+  } catch (error) {
+    reportPublicWebFailure(dependencies, stage, started, signal, context, error, response.status)
+    throw error
+  }
 }
 
 /** Provider-result images may use signed CDN queries; no host credentials or URL are returned. */
