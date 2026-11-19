@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createForgetOperationStore } from '../dist/backend/modules/runtime/infrastructure/forgetOperationStore.js'
+import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
+const { createForgetOperationStore } = await load('modules/runtime/infrastructure/forgetOperationStore.js')
 
 function storage() {
   const values = new Map()
@@ -96,4 +97,24 @@ test('an operation ID collision cannot overwrite an existing receipt or claim a 
   await assert.rejects(store.begin({ requestId: 'collision', operationId: first.operationId, kind: 'person-profile', binding, subject: { userId: 'u2' } }))
   assert.equal((await store.read(first.operationId)).subject.userId, 'u1')
   assert.equal(await store.readByRequestId('collision'), undefined)
+})
+
+test('cleanup plans survive restart and only confirmed source deletion can resume failed owners', async () => {
+  const redis = storage(), first = createForgetOperationStore({ redis, now: () => 100 })
+  const receipt = await first.begin({ requestId: 'cleanup-plan', kind: 'person-profile', binding,
+    subject: { userId: 'u1' }, cleanupOwners: ['local-emoji', 'semantic-memory'] })
+  assert.deepEqual(receipt.cleanupPlan, { version: 1, sourceCommitted: false,
+    owners: [{ owner: 'local-emoji', state: 'pending' }, { owner: 'semantic-memory', state: 'pending' }] })
+  await assert.rejects(first.resumeCleanup(receipt.operationId), /来源删除尚未确认/u)
+  await first.markCommitted(receipt.operationId)
+  await first.update(receipt.operationId, { cleanupOwner: { owner: 'semantic-memory', state: 'completed' } })
+  await first.fail(receipt.operationId, { state: 'unknown', errorCode: 'OWNER_UNAVAILABLE' })
+  const restarted = createForgetOperationStore({ redis, now: () => 200 })
+  const resumed = await restarted.resumeCleanup(receipt.operationId)
+  assert.equal(resumed.phase, 'settling'); assert.equal(resumed.cleanup, 'pending'); assert.equal(resumed.usage, 'blocked')
+  assert.equal(resumed.createdAt, 100); assert.deepEqual(resumed.binding, binding)
+  assert.equal(resumed.cleanupPlan.sourceCommitted, true)
+  assert.deepEqual(resumed.cleanupPlan.owners, [{ owner: 'local-emoji', state: 'pending' }, { owner: 'semantic-memory', state: 'completed' }])
+  await assert.rejects(restarted.update(receipt.operationId, { cleanupOwner: { owner: 'semantic-memory', state: 'unknown' } }), /已确认的清理结果不可回退/u)
+  await assert.rejects(restarted.update(receipt.operationId, { cleanupOwner: { owner: 'conversation-memory', state: 'completed' } }), /清理负责人不在原计划中/u)
 })

@@ -246,8 +246,8 @@ test('unknown actions are only inspected or cancelled, never reconstructed; gran
 for(const change of ['revision','rebind','removed','directory-added','resolve-missing'])test(`cancel rejects ${change} changes across storage await`,options,async t=>{
   const owner=binding(),f=await fixture(t,[owner]);await f.store.createCommitment(task(owner))
   const original=await f.raw.get(commitmentDetailKey('task-a'))
-  f.state.hooks.afterGet=async key=>{
-    assert.equal(key,commitmentDetailKey('task-a'))
+  f.state.hooks.afterEval=async script=>{
+    assert.match(script,/commitment-cleanup-read-v1/)
     if(change==='removed')f.state.owners=[]
     else if(change==='directory-added')f.state.owners=[owner,binding('agent-b','900002')]
     else if(change==='resolve-missing')f.state.resolve=()=>undefined
@@ -280,7 +280,11 @@ for(const mismatch of ['scope','id'])test(`cancel validates stored ${mismatch} i
 test('cancellation still invalidates workers if request authority changes after the atomic write',options,async t=>{
   const owner=binding(),f=await fixture(t,[owner]);await f.store.createCommitment(task(owner))
   let invalidated=false;f.store.onInvalidated('task-a',()=>{invalidated=true})
-  f.state.hooks.afterEval=async script=>{assert.match(script,/commitment-state-v2/);f.state.live=false}
+  const afterWrite=async script=>{
+    if(!script.includes('commitment-state-v2')){f.state.hooks.afterEval=afterWrite;return}
+    f.state.live=false
+  }
+  f.state.hooks.afterEval=afterWrite
   await assert.rejects(f.management.cancelCommitment(agentConversationKey(owner),'task-a',f.context().ctx),hasCode('conflict'))
   assert.equal(invalidated,true);assert.equal((await f.store.getCommitment('task-a')).status,'cancelled')
   assert.equal(await f.raw.get(COMMITMENT_LOCK_KEY),null)
@@ -346,10 +350,11 @@ test('delegated management is strict about malformed data and preserves the orig
 test('delegated deletion retries CAS against current entries and preserves a concurrent addition',options,async t=>{
   const owner=binding(),f=await fixture(t,[owner]),key=delegatedMemoryStorageKey(owner)
   await f.raw.set(key,JSON.stringify([entry('remove'),entry('keep')]))
-  f.state.hooks.beforeEval=async script=>{
-    assert.match(script,/local current=redis.call/)
+  const beforeCas=async script=>{
+    if(!script.includes('local current=redis.call')){f.state.hooks.beforeEval=beforeCas;return}
     await f.raw.set(key,JSON.stringify([entry('remove'),entry('keep'),entry('concurrent')]))
   }
+  f.state.hooks.beforeEval=beforeCas
   assert.equal(await f.management.deleteDelegated(agentConversationKey(owner),'remove',f.context().ctx),true)
   assert.deepEqual(JSON.parse(await f.raw.get(key)).map(row=>row.id),['keep','concurrent'])
   assert.ok(f.state.checks.filter(row=>row.operation==='delegated.delete').length>6)

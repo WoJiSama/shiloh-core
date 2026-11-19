@@ -56,7 +56,8 @@ import { normalizeDeliveryReceipt } from '../modules/messaging/domain/deliveryRe
 import type { TextPersonMemoryConfig } from '../contracts/textPersonMemory.js'
 import type { ConversationSummaryModel, MidtermMemoryConfig, EpisodicMemoryConfig, AgentConversationMemoryCleanup,
   AgentConversationMemoryCleanupGuard, AgentConversationMemoryCleanupReceipt, AgentConversationMemoryPurgeSubject } from '../contracts/conversationMemory.js'
-import type { GroupMemoryConfig, GroupMemoryModel } from '../contracts/groupMemory.js'
+import type { GroupMemoryConfig, GroupMemoryModel, AgentGroupMemoryCleanup } from '../contracts/groupMemory.js'
+import type { AgentSourceMemoryCleanup, AgentSourceMemoryCleanupGuard, AgentSourceMemoryPurgeSubject } from '../contracts/sourceMemoryCleanup.js'
 import type { AgentSemanticMemoryConfig, AgentSemanticMemoryBackend, AgentSemanticMemoryCleanup, AgentSemanticMemoryCleanupGuard,
   AgentSemanticMemoryCleanupReceipt, AgentSemanticMemoryPurgeSubject } from '../contracts/semanticMemory.js'
 import type { AgentHistoryConfig, AgentHistoryRequestSource } from '../contracts/agentHistory.js'
@@ -78,7 +79,9 @@ import { createAgentTextTrigger } from '../modules/conversation/infrastructure/a
 import { createAgentTextTriggerModels } from '../modules/conversation/infrastructure/agentTextTriggerModels.js'
 import type { AgentTextTriggerConfig } from '../contracts/agentTextTrigger.js'
 import { resolveAgentTextTriggerConfig } from '../modules/conversation/infrastructure/agentTextTriggerConfig.js'
-import { createGroupTextTools, groupTextVideoToolNames, type GroupTextToolName } from '../modules/conversation/infrastructure/groupTextTools.js'
+import { createGroupTextTools, groupTextVideoToolNames, isTextRegistryToolName, type GroupTextToolName } from '../modules/conversation/infrastructure/groupTextTools.js'
+import { createAgentTextRegistryTools, agentTextToolPorts, type AgentTextToolPorts } from '../modules/conversation/infrastructure/agentTextRegistryTools.js'
+import { createAgentTextToolSources } from '../modules/conversation/infrastructure/agentTextToolSources.js'
 import { createDelegateMemoryRuntime } from '../modules/memory/infrastructure/delegateMemoryTool.js'
 import { matchPersonMemoryCommand, personMemoryCommand, personMemoryCommandText, type PersonMemoryCommand } from '../modules/memory/domain/personMemoryCommands.js'
 import { personMemoryAddress, revokePersonMemorySourceForAccount } from '../modules/memory/infrastructure/personMemoryContext.js'
@@ -97,7 +100,7 @@ import { dayKey } from '../modules/simulation/domain/simConfig.js'
 import { simulationAddressKey } from '../modules/simulation/infrastructure/simulationAddress.js'
 import {
   agentBindingToken, agentPersonaScopeId, conversationAddressKey, isConversationAddress, isPlatformAccount,
-  isPlatformIdentifier, platformAccountKey, samePlatformNamespace,
+  isPlatformIdentifier, platformAccountKey, samePlatformNamespace, agentConversationKey,
 } from '../modules/runtime/domain/agentBindings.js'
 import { createAgentInbox, inboxEventTarget, textConversationSeconds, type AgentInboxQueue, type AgentInboxRedis, type TextInbox } from '../modules/runtime/infrastructure/agentInbox.js'
 import { createAgentDiagnostics, type AgentDiagnostics } from '../modules/runtime/infrastructure/agentDiagnostics.js'
@@ -124,6 +127,8 @@ import type { AgentLocalEmojiCleanupGuard, AgentLocalEmojiCleanupReceipt, AgentL
 import type { AgentVideoCard, AgentVideoSearchProvider } from '../contracts/agentVideoCard.js'
 import { validateAgentVideoCard } from '../modules/media/infrastructure/agentVideoCard.js'
 import { createAgentVideoSearchStore } from '../modules/media/infrastructure/agentVideoSearchStore.js'
+import type { AgentGroupGameContext, AgentGroupGameHandler, AgentGroupGameSendGuard } from '../contracts/agentGames.js'
+import { validateAgentToolImage } from '../modules/image/infrastructure/agentToolImage.js'
 
 type ResolvePersona = NonNullable<ReturnType<SimulationRuntimePorts['getPersona']>> & { binding: AgentBindingSnapshot }
 type RuntimePorts = Pick<SimulationRuntimePorts, 'logger' | 'getSection' | 'getExecutionConfig' | 'YTapi' | 'recordTokens' | 'getTodaySpendCny' | 'reflectCharacter' | 'reviewCharacter' | 'judgeSocialPermission' | 'describeImages' | 'personProfileExtract' | 'wakeGateJudge' | 'memeExtract' | 'lifeThreadProvider' | 'isLifeThreadsCurrent' | 'collectMessageSticker' | 'isLocalEmojiCurrent' | 'now'>
@@ -146,7 +151,7 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   /** Host credentials, including newly refreshed values, cannot become model-selected tool inputs. */
   allowsToolInput?(input: string): boolean
   privateChatEnabled?: boolean
-  privateTextTools?: readonly ('likeTool' | 'recallTool')[]
+  privateTextTools?: readonly string[]
   useTextGroup?(target: ConversationAddress): boolean
   textGroupRevision?: string
   textTrigger?: AgentTextTriggerConfig
@@ -154,6 +159,10 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   textTriggerModel?: Parameters<typeof createAgentTextTriggerModels>[0]['model']
   groupTextTools?(target: ConversationAddress): readonly GroupTextToolName[]
   toolRegistry?: AgentToolRegistry
+  /** Trusted group-game factories receive only Core-authorized source contexts. */
+  createGroupGames?(ports: {
+    authorizeBackground(input: { source: IncomingMessage; binding: AgentBindingSnapshot }): Promise<AgentGroupGameContext | undefined>
+  }): readonly AgentGroupGameHandler[]
   /** Independent bounded collection of verified human ingress images. */
   autoCollectLocalEmoji?: boolean
   /** Trusted privacy cleanup remains available when collection and sending are disabled. */
@@ -399,6 +408,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     if (receipt.usage !== 'blocked' || receipt.cleanup !== 'completed') throw new Error('会话记忆清理尚未完成')
     return receipt
   }
+  async function completeSourceMemoryCleanup(input: AgentSourceMemoryPurgeSubject, guard = sourceCleanupGuard()) {
+    const receipt = await sourceMemoryCleanup.purgeSubject(input, guard)
+    if (receipt.usage !== 'blocked' || receipt.partitions.some(partition => partition.cleanup !== 'completed')) throw new Error('来源记忆清理尚未完成')
+    return receipt
+  }
+  async function completeGroupMemoryCleanup(input: AgentSourceMemoryPurgeSubject, guard = sourceCleanupGuard()) {
+    const receipt = await groupMemoryCleanup.purgeSubject(input, guard)
+    if (receipt.usage !== 'blocked' || receipt.cleanup !== 'completed') throw new Error('群记忆清理尚未完成')
+    return receipt
+  }
   function conversationEnabled(target: ConversationAddress): boolean {
     return options.getSection().enabled !== false && (target.kind !== 'private' || options.privateChatEnabled === true)
   }
@@ -408,7 +427,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     catch { return false }
   }
   function allowsConversationAI(target: ConversationAddress): boolean {
-    return activityHydrated && activity.allows(target)
+    const binding = bindingFor(target)?.binding
+    return activityHydrated && activity.allows(target) && (!binding || !gameHandlers.some(handler => handler.isActive?.(binding)))
   }
   function setConversationAI(target: ConversationAddress, allowed: boolean): void {
     const key = conversationAddressKey(target)
@@ -641,6 +661,25 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       } catch { return { state: 'unknown' } }
       finally { pending.release() }
     },
+    async sendGamePrivate(request, guard) {
+      const target = request.binding?.target, adapter = isConversationAddress(target) ? adapterFor(target) : undefined
+      const live = isConversationAddress(target) ? bindingFor(target)?.binding : undefined
+      if (!controlActions.has(request) || !live || target.kind !== 'group' || !adapter?.actions.sendGamePrivate ||
+          !isSameBinding(live, request.binding) || !isSameBinding(live, request.origin.binding) ||
+          options.allowsText?.(request.text, 'outgoing') === false || options.allowsToolInput?.(request.text) === false) return { state: 'failed', code: 'game_private_unavailable' }
+      const pending = guardPendingSend(conversationAddressKey(target), () => isRunning() && adapterFor(target) === adapter && adapter.isReady() &&
+        !guard.signal.aborted && guard.isCurrent() && bindingIsCurrent(target, agentBindingToken(live)))
+      const ensureCurrent = async () => {
+        if (!pending.isCurrent()) throw new Error('游戏私发来源已失效')
+        await guard.ensureCurrent()
+        if (!pending.isCurrent()) throw new Error('游戏私发来源已失效')
+      }
+      try {
+        await ensureCurrent()
+        return normalizeDeliveryReceipt(await adapter.actions.sendGamePrivate(request, { signal: guard.signal, isCurrent: pending.isCurrent, ensureCurrent }))
+      } catch { return { state: 'unknown' } }
+      finally { pending.release() }
+    },
     async sendVideoCard(action, guard) {
       const target = action.target
       if (action.version !== 1 || action.kind !== 'video-card.send' || !isConversationAddress(target) || target.kind !== 'group') return { state: 'failed', code: 'invalid_video_card' }
@@ -789,7 +828,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       try {
         if (!send.isCurrent()) return { state: 'failed', code: 'binding_changed' }
         try {
-          const receipt = await adapter.actions.sendMusic({ ...action, music, binding }, { isCurrent: send.isCurrent, ...(guard?.signal ? { signal: guard.signal } : {}) })
+          const receipt = await adapter.actions.sendMusic({ ...action, music, binding }, { isCurrent: send.isCurrent, ...(guard?.signal ? { signal: guard.signal } : {}), ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}) })
           if (receipt.state === 'failed') return receipt
           if (receipt.state === 'sent' && isMessageId(receipt.messageId)) return receipt
         } catch { /* Native signing and send may continue after local cancellation. */ }
@@ -816,7 +855,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       try {
         if (!send.isCurrent()) return { state: 'failed', code: 'binding_changed' }
         try {
-          const receipt = await adapter.actions.sendMedia({ ...action, media, binding }, { isCurrent: send.isCurrent, ...(guard?.signal ? { signal: guard.signal } : {}) })
+          const receipt = await adapter.actions.sendMedia({ ...action, media, binding }, { isCurrent: send.isCurrent, ...(guard?.signal ? { signal: guard.signal } : {}), ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}) })
           if (receipt.state === 'failed') return receipt
           if (receipt.state === 'sent' && isMessageId(receipt.messageId)) return receipt
         } catch { /* The platform may already have accepted the media. */ }
@@ -845,7 +884,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         conversationAddressKey(target) === targetKey && conversationEnabled(target) && guard?.isCurrent?.() !== false && bindingIsCurrent(target, expected))
       try {
         if (!send.isCurrent()) return { state: 'failed', code: 'binding_changed' }
-        try { return normalizeFileDeliveryReceipt(await adapter.actions.sendFile({ ...action, file, binding }, { isCurrent: send.isCurrent, ...(guard?.signal ? { signal: guard.signal } : {}) })) }
+        try { return normalizeFileDeliveryReceipt(await adapter.actions.sendFile({ ...action, file, binding }, { isCurrent: send.isCurrent, ...(guard?.signal ? { signal: guard.signal } : {}), ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}) })) }
         catch { return { state: 'unknown' } }
       } finally { send.release() }
     },
@@ -873,7 +912,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       try {
         if (!send.isCurrent()) return { state: 'failed', code: 'binding_changed' }
         try {
-          const receipt = await adapter.actions.sendBundle({ ...action, items, binding }, { isCurrent: send.isCurrent })
+          const receipt = await adapter.actions.sendBundle({ ...action, items, binding }, { isCurrent: send.isCurrent, ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}) })
           if (receipt.state === 'failed') return receipt
           if (receipt.state === 'sent' && isMessageId(receipt.messageId)) return receipt
         } catch { /* A bundle may already have been accepted by the transport. */ }
@@ -960,6 +999,116 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   const messageActions = instrumentActions(true)
   // Only the deterministic control workflow receives this closure; it is never exposed to tools.
   const controlMessageActions = instrumentActions(false)
+  const gameHandlers: readonly AgentGroupGameHandler[] = Object.freeze([...(options.createGroupGames?.({
+    async authorizeBackground(input) {
+      try { return await authorizeGame(input.source, input.binding) } catch { return undefined }
+    },
+  }) ?? [])])
+  if (new Set(gameHandlers.map(handler => handler.id)).size !== gameHandlers.length || gameHandlers.length > 2) throw new Error('重复或无效的群游戏入口')
+  const gameHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+  function gameCandidate(source: IncomingMessage): boolean {
+    const binding = source.conversation.kind === 'group' ? bindingFor(source.conversation)?.binding : undefined
+    return !!binding && gameHandlers.some(handler => handler.isCandidate(source, binding))
+  }
+  async function authorizeGame(original: IncomingMessage, owner: AgentBindingSnapshot): Promise<AgentGroupGameContext | undefined> {
+    const source = structuredClone(original), binding = structuredClone(owner), target = binding.target
+    const adapter = adapterFor(target), token = agentBindingToken(binding)
+    const live = bindingFor(target)?.binding
+    if (target.kind !== 'group' || !adapter?.readMessage || !live || !isMessageId(source.messageId) || source.sender.id === adapter.botUserId ||
+        !hasValidInboundEvent({ kind: 'message', message: source }, adapter) || !isSameBinding(live, binding) ||
+        conversationAddressKey(source.conversation) !== conversationAddressKey(target)) return undefined
+    const signal = AbortSignal.any([toolCancellation.signal, ...(options.signal ? [options.signal] : [])])
+    const fingerprint = agentDiceSourceFingerprint(source), operationId = gameHash(['group-game', agentConversationKey(binding), source.messageId])
+    const current = () => observeCurrent(() => !signal.aborted && isRunning() &&
+      adapterFor(target) === adapter && adapter.isReady() && bindingIsCurrent(target, token) && !privacyBlocked(platformAccountKey(target.account)))
+    let role: 'owner' | 'admin' | 'member' | undefined, name = ''
+    const ensureCurrent = async () => {
+      if (!current() || options.allowsText?.(source.text, 'incoming') === false || options.allowsToolInput?.(source.text) === false ||
+          !await inbox.canReply(target, source.messageId!) || await inbox.isRecalled(target, source.messageId!)) throw new Error('游戏来源已失效')
+      const fresh = await adapter.readMessage!(target, source.messageId!, { signal, isCurrent: current })
+      if (!fresh || agentDiceSourceFingerprint(fresh) !== fingerprint || !current()) throw new Error('游戏来源已改变')
+      const observed = await readGroupMember(target, source.sender.id, signal, current)
+      const bot = await readGroupMember(target, adapter.botUserId, signal, current)
+      if (!observed || !bot || observed.member.role === 'unknown' || role !== undefined && observed.member.role !== role || !current()) throw new Error('游戏成员权限已改变')
+      role ??= observed.member.role; name ||= observed.member.displayName
+      const { botId, scene } = personMemoryAddress(target)
+      const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: source.sender.id })
+      if (!current() || isPersonMemoryRedacted({ scene, messageId: source.messageId!, authorId: source.sender.id,
+        at: source.occurredAt, excerpt: source.text.slice(0, 4000) }, source.text, redactions)) throw new Error('游戏来源已撤销')
+    }
+    await ensureCurrent()
+    // A durable send attempt belongs to this original source and destination.
+    // Unknown delivery is consumed; a repeated callback cannot replay it.
+    const attempt = async (destination: string, content: string, send: () => Promise<{ state: string; messageId?: string }>, ensure = ensureCurrent) => {
+      await ensure()
+      const key = 'agent:game:send:' + gameHash([operationId, destination, content])
+      if (await storage.set(key, 'unknown', { NX: true, PX: 30 * 86400_000 }) !== 'OK') throw new Error('游戏结果已有投递尝试')
+      await ensure()
+      const receipt = normalizeDeliveryReceipt(await send())
+      if (receipt.state !== 'sent' || !isMessageId(receipt.messageId)) throw new Error('游戏结果投递尚未确认')
+      await storage.set(key, 'sent', { PX: 30 * 86400_000 })
+    }
+    const clean = (value: string) => {
+      if (typeof value !== 'string' || !value.trim() || value.length > 16000) throw new Error('游戏回复无效')
+      const text = sanitizeFinalReplyText(value)
+      if (!text.trim() || options.allowsToolInput?.(text) === false || options.allowsText?.(text, 'outgoing') === false) throw new Error('游戏回复不可发送')
+      return text
+    }
+    const sending = (guard?: AgentGroupGameSendGuard) => ({
+      signal: AbortSignal.any([signal, ...(guard?.signal ? [guard.signal] : [])]),
+      isCurrent: () => current() && !guard?.signal?.aborted && guard?.isCurrent() !== false,
+      async ensureCurrent() {
+        if (guard?.signal?.aborted || guard?.isCurrent() === false) throw new Error('游戏回合已取消')
+        await ensureCurrent(); await guard?.ensureCurrent()
+        if (guard?.signal?.aborted || guard?.isCurrent() === false || !current()) throw new Error('游戏回合已取消')
+      },
+    })
+    return Object.freeze({ source, binding, member: Object.freeze({ id: source.sender.id, name, role: role! }), signal,
+      isCurrent: current, ensureCurrent,
+      async sendText(value: string, guard?: AgentGroupGameSendGuard) {
+        const text = clean(value), delivery = sending(guard)
+        await attempt('group', text, () => controlMessageActions.send({ version: 1, kind: 'message.send', target, binding,
+          replyTo: source.messageId!, parts: [{ kind: 'text', text }] }, delivery), delivery.ensureCurrent)
+      },
+      async sendImage(value: Parameters<AgentGroupGameContext['sendImage']>[0], guard?: AgentGroupGameSendGuard) {
+        const image = validateAgentToolImage(value), delivery = sending(guard)
+        await attempt('group-image', gameHash(image), () => controlMessageActions.send({ version: 1, kind: 'message.send', target, binding,
+          replyTo: source.messageId!, parts: [{ kind: 'image', resource: { kind: 'reference', value: 'base64://' + image.base64 } }] }, delivery), delivery.ensureCurrent)
+      },
+      async sendPrivate(userId: string, value: string, guard?: AgentGroupGameSendGuard) {
+        const text = clean(value), delivery = sending(guard)
+        if (!isPlatformIdentifier(userId) || userId === adapter.botUserId) throw new Error('游戏私发对象无效')
+        const ensure = async () => { await delivery.ensureCurrent(); if (!await readGroupMember(target, userId, delivery.signal, delivery.isCurrent)) throw new Error('游戏私发对象不在原群'); await delivery.ensureCurrent() }
+        await ensure()
+        await attempt('private:' + userId, text, () => controlMessageActions.sendGamePrivate!({ binding, source,
+          origin: { binding, source: { messageId: source.messageId!, author: source.sender, occurredAt: source.occurredAt, fingerprint },
+            operationId, authorityRevision: gameHash(['game-authority', token]) },
+          recipient: { ...target.account, id: userId }, text, operationId, index: 0 }, { signal: delivery.signal, isCurrent: delivery.isCurrent, ensureCurrent: ensure }), ensure)
+      },
+    })
+  }
+  async function handleGames(source: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
+    if (binding.target.kind !== 'group') return false
+    for (const handler of gameHandlers) {
+      if (!handler.isCandidate(source, binding)) continue
+      try {
+        const context = await authorizeGame(source, binding)
+        if (!context) return true
+        await context.ensureCurrent()
+        const key = 'agent:game:action:' + gameHash([handler.id, agentConversationKey(binding), source.messageId])
+        if (await storage.set(key, 'unknown', { NX: true, PX: 30 * 86400_000 }) !== 'OK') return true
+        await context.ensureCurrent()
+        const consumed = await handler.handle(context)
+        await context.ensureCurrent()
+        await storage.set(key, consumed ? 'completed' : 'ignored', { PX: 30 * 86400_000 })
+        if (consumed) return true
+      } catch (error) {
+        diagnostics.emit({ stage: 'runtime', operation: 'group_game', outcome: 'failed', error })
+        return true
+      }
+    }
+    return false
+  }
   const workflowDiagnostics = {
     diagnostics,
     withDiagnosticScope: diagnostics.run,
@@ -1794,6 +1943,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         ensureCurrent() { context.ensureCurrent(); if (!current()) invalid() } }
       const { ensureCurrent } = authority
       return { ...authority, ...(context.binding ? { binding: context.binding } : {}),
+        ...(context.profileForget ? { profileForget: context.profileForget } : {}),
         async authorize(operation, binding, guard) {
           const ownerCheck = captureSynchronousGuardCheck(authority, invalid), selectedCheck = captureSynchronousGuardCheck(guard, invalid)
           const selected = ownerCheck && selectedCheck ? createSynchronousGuard(signal, () => {
@@ -1832,8 +1982,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         if (decision !== 'allowed') throw new AgentManagementError(decision === 'denied' ? 'forbidden' : 'unavailable')
         // Invalidate existing source consumers before the first storage await. Future turns wait
         // until the real store has committed its tombstones, then re-read the privacy versions.
+        const at = options.now?.() ?? Date.now(), cutoff = guard.profileForget
+        if (cutoff && (operation !== 'profiles.delete' || cutoff.userId !== cleanupSubjectId || cutoff.bindingToken !== agentBindingToken(binding) ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(cutoff.operationId) ||
+            !Number.isSafeInteger(cutoff.through) || cutoff.through < 0 || cutoff.through > at)) throw new AgentManagementError('invalid_request')
+        const through = cutoff?.through ?? at
         const finishAdmission = beginPrivacyAdmission(binding)
-        const through = options.now?.() ?? Date.now()
         try {
           const result = await action(guard); ensureBinding()
           if (cleanupSubjectId !== undefined) {
@@ -1845,6 +1999,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
               ...(options.localEmojiCleanup ? [completeLocalEmojiCleanup(cleanup => options.localEmojiCleanup!.purgeSubject(subject, cleanup), cleanupGuard)] : []),
               completeSemanticMemoryCleanup(subject, cleanupGuard),
               completeConversationMemoryCleanup(subject, cleanupGuard),
+              completeSourceMemoryCleanup(subject, cleanupGuard),
+              completeGroupMemoryCleanup(subject, cleanupGuard),
             ])
             const rejected = results.find(result => result.status === 'rejected')
             if (rejected?.status === 'rejected') throw rejected.reason
@@ -1929,6 +2085,37 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       }
     },
   })
+  async function runSourceCleanup<T>(input: AgentSourceMemoryPurgeSubject, authority: AgentSourceMemoryCleanupGuard,
+    action: (selected: AgentSourceMemoryPurgeSubject, guard: AgentSourceMemoryCleanupGuard) => Promise<T>): Promise<T> {
+    conversationCleanupSelector(input)
+    const owned = structuredClone(input)
+    const guard = sourceCleanupGuard(() => authority.isCurrent(), () => authority.ensureCurrent(), authority.signal)
+    await guard.ensureCurrent()
+    const key = platformAccountKey(owned.account), targetKey = owned.target && conversationAddressKey(owned.target)
+    privacyAdmissions.set(key, (privacyAdmissions.get(key) ?? 0) + 1)
+    for (const [invalidate, turn] of memoryTurns.get(key) ?? []) if (turn.agentId === owned.agentId && (!targetKey || turn.targetKey === targetKey)) invalidate()
+    try { const result = await action(owned, guard); await guard.ensureCurrent(); return result }
+    finally {
+      const remaining = (privacyAdmissions.get(key) ?? 1) - 1
+      if (remaining > 0) privacyAdmissions.set(key, remaining)
+      else privacyAdmissions.delete(key)
+      wakeMemoryTurns(key)
+    }
+  }
+  const sourceMemoryCleanup: AgentSourceMemoryCleanup = Object.freeze({
+    purgeSubject: (input: AgentSourceMemoryPurgeSubject, authority: AgentSourceMemoryCleanupGuard) => runSourceCleanup(input, authority, async (selected, guard) => {
+      const results = await Promise.allSettled([
+        history.purgeSubject(selected, guard), textPersonMemory.purgeSubject(selected, guard), memories.store.purgeSubject(selected, guard),
+        commitments.store.purgeSubject(selected, guard),
+      ])
+      const rejected = results.find(result => result.status === 'rejected')
+      if (rejected?.status === 'rejected') throw rejected.reason
+      return { usage: 'blocked' as const, partitions: results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []) }
+    }),
+  })
+  const groupMemoryCleanup: AgentGroupMemoryCleanup = Object.freeze({
+    purgeSubject: (input: AgentSourceMemoryPurgeSubject, authority: AgentSourceMemoryCleanupGuard) => runSourceCleanup(input, authority, (selected, guard) => groupMemory.purgeSubject(selected, guard)),
+  })
   const authorizePrivateSource: NonNullable<Parameters<typeof createAgentSemanticMemory>[0]['authorizePrivateSource']> = async (viewer, source, subjectId, context) => {
     const adapter = adapterFor(source.target)
     const viewerToken = agentBindingToken(viewer), sourceToken = agentBindingToken(source)
@@ -1992,12 +2179,33 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   // Tool and failure-notice scopes share one source pin, even after an
   // individual tool's signal ends. Weak ownership lasts only for this turn.
   const textInteractionQuotes = new WeakMap<IncomingMessage, { token: string; author: PlatformUserRef; text: string; at: number }>()
+  const textRegistry = createAgentTextRegistryTools({
+    get builtIn() { return (options.toolRegistry?.builtIn ?? []).filter(tool => isTextRegistryToolName(tool.name)) },
+    get custom() { return (options.toolRegistry?.custom ?? []).filter(tool => isTextRegistryToolName(tool.name)) },
+  }, {
+    signal: toolCancellation.signal, diagnostics,
+    ...(options.allowsToolInput ? { allowsInput: options.allowsToolInput } : {}),
+    onStart(event, cancel) {
+      const target = (event as AgentBindingTurn)._agentBinding!.target, key = conversationAddressKey(target)
+      const callbacks = pendingTools.get(key) ?? new Set<() => void>()
+      callbacks.add(cancel); pendingTools.set(key, callbacks)
+      return () => { callbacks.delete(cancel); if (!callbacks.size) pendingTools.delete(key) }
+    },
+  })
   const textConversation = createTextConversation({
     inbox, actions: messageActions, personMemory, diagnostics,
     ...(options.failureNoticeFallback ? { fallbackText: options.failureNoticeFallback } : {}),
     bindingToken: textBindingToken,
     groupToolNames: target => options.groupTextTools?.(target) ?? [],
     privateToolNames: options.privateTextTools ?? [],
+    registryTools(target) {
+      if (!adapterFor(target)?.readMessage) return []
+      const config = defaultSimRuntimeConfig(options.getSection())
+      const surface = resolveSimToolSurface({ policy: config.toolPolicy, builtInNames: (options.toolRegistry?.builtIn ?? []).map(tool => tool.name),
+        extraTools: config.extraTools, groupId: target.kind === 'group' ? target.id : '' })
+      const denied = [...config.toolPolicy.denyTools, ...(target.kind === 'group' ? config.toolPolicy.groups[target.id] ?? [] : [])]
+      return textRegistry.list().filter(tool => surface.includes(tool.name) && !denied.includes(tool.name))
+    },
     groupTools: createGroupTextTools({ diagnostics, commitment: new commitments.CommitmentTool(), memory: new memories.DelegateMemoryTool(),
       ...(options.groupMemory?.enabled === true ? { knowledge: groupKnowledge } : {}) }),
     ...(options.allowsToolInput ? { allowsToolInput: options.allowsToolInput } : {}),
@@ -2017,7 +2225,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         (!['jinyanTool', 'changeCardTool'].includes(tool.name) || !!adapterFor(target)?.readConversationMember && !!adapterFor(target)?.listConversationMembers) &&
         (tool.name !== 'recallTool' || !!adapterFor(target)?.readOwnMessage)) : []),
     ] : [],
-    scopedContext(incoming, binding, turnCurrent, ensureTurn, signal) {
+    scopedContext(incoming, binding, turnCurrent, ensureTurn, signal, registryScope) {
       const target = binding.target, adapter = adapterFor(target), token = textBindingToken(binding), peer = privatePeerFor(target, adapter)
       if (!adapter?.readMessage || !incoming.messageId ||
           !isPlatformAccount(incoming.sender) || !samePlatformNamespace(incoming.sender, target.account) ||
@@ -2052,8 +2260,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const ensure = async () => {
         if (!await available({ messageId: incoming.messageId!, author: incoming.sender })) throw new Error('工具请求来源已失效')
       }
-      const request: { messageId: string; text: string; mentions: readonly PlatformUserRef[]; replyMessageId?: string; replyAuthor?: PlatformUserRef } = {
-        messageId: incoming.messageId, text: incoming.text, mentions: incoming.mentions,
+      const request: { messageId: string; text: string; occurredAt: number; mentions: readonly PlatformUserRef[]; replyMessageId?: string; replyAuthor?: PlatformUserRef } = {
+        messageId: incoming.messageId, text: incoming.text, occurredAt: incoming.occurredAt, mentions: incoming.mentions,
         ...(incoming.quote?.messageId ? { replyMessageId: incoming.quote.messageId } : {}),
       }
       let interactionQuote = textInteractionQuotes.get(incoming)
@@ -2092,8 +2300,53 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       // A previously pinned interaction quote can acquire its reply author during validation.
       const sourceGuard = request.replyMessageId && interactionQuote ? { ...sourceContext, ensureCurrent: ensureSource }
         : createAgentToolSourceGuard(sourceContext, ensureSource)
+      const mediaGuard = (toolCurrent: () => boolean, toolSignal: AbortSignal) => ({ signal: AbortSignal.any([signal, toolSignal]),
+        isCurrent: () => current() && !toolSignal.aborted && toolCurrent(), async ensureCurrent() {
+          await ensureSource(); if (!current() || toolSignal.aborted || !toolCurrent()) throw new Error('文字媒体来源已失效')
+        } })
+      const genericPorts: AgentTextToolPorts = registryScope ? {
+        ...createAgentTextToolSources({ incoming, adapter, signal, now: options.now ?? Date.now, isCurrent: current, ensureCurrent: ensureSource,
+          ...(peer ? { privatePeer: peer } : {}), available, registerProjection: registryScope.registerProjection,
+          async allowsUnlinkedSource(author, at) {
+            await ensureSource()
+            if (!isPlatformAccount(author) || !samePlatformNamespace(author, target.account) || !Number.isSafeInteger(at) || at <= 0 || at > incoming.occurredAt ||
+                target.kind === 'private' && author.id !== peer || [...adapters.values()].some(row => samePlatformNamespace(row.account, author) && [row.account.id, row.botUserId].includes(author.id))) return false
+            const { botId, scene } = personMemoryAddress(target, peer), identity = { botId, personaId: agentPersonaScopeId(binding.agentId) }
+            const [privacy, sceneState] = await Promise.all([personMemory.getRedactions({ identity, subjectId: author.id }), personMemory.getSceneRedactions({ identity, scene })])
+            const rule = privacy.scenes.find(row => row.scene.kind === scene.kind && row.scene.id === scene.id)
+            const inScene = (key: string) => { try { const value = JSON.parse(key); return Array.isArray(value) && value[0] === scene.kind && value[1] === scene.id } catch { return true } }
+            if (privacy.disabled || rule?.disabled || at <= privacy.forgottenBefore || at <= (rule?.forgottenBefore ?? 0) ||
+                at <= sceneState.invalidatedAt && privacy.revokedSources.some(inScene) || privacy.tombstones.some(row => at <= row.before && (!row.sourceKey || inScene(row.sourceKey)))) return false
+            await ensureSource(); return current()
+          },
+        }),
+        ...(adapter.actions.sendFile ? { async sendFile(file, toolCurrent, toolSignal) { const guard = mediaGuard(toolCurrent, toolSignal); await guard.ensureCurrent();
+          return messageActions.sendFile!({ version: 1, kind: 'file.upload', target, binding, file }, guard) } } : {}),
+        ...(adapter.actions.sendMedia ? {
+          async sendAudio(audio, toolCurrent, toolSignal) { const guard = mediaGuard(toolCurrent, toolSignal); await guard.ensureCurrent();
+            return messageActions.sendMedia!({ version: 1, kind: 'media.send', target, binding, media: { kind: 'audio', ...audio } }, guard) },
+          async sendVideo(video, toolCurrent, toolSignal) { const guard = mediaGuard(toolCurrent, toolSignal); await guard.ensureCurrent();
+            return messageActions.sendMedia!({ version: 1, kind: 'media.send', target, binding, media: { kind: 'video', ...video } }, guard) },
+        } : {}),
+        ...(target.kind === 'group' && adapter.actions.sendMusic ? { async sendMusic(music, toolCurrent, toolSignal) { const guard = mediaGuard(toolCurrent, toolSignal); await guard.ensureCurrent();
+          return messageActions.sendMusic!({ version: 1, kind: 'music.send', target, binding, music }, guard) } } : {}),
+      } : {}
       return {
         ...sourceGuard, botUserId: adapter.botUserId,
+        ...(registryScope ? { [agentTextToolPorts]: genericPorts, persona: registryScope.persona,
+          recordUsage(model: string, usage: unknown) { options.recordTokens?.({ scope: simulationAddressKey(target), stage: 'agent-tool', model, usage }) },
+          async sendImage(image, guard) {
+            await beforeSend(guard)
+            return messageActions.send({ version: 1, kind: 'message.send', target, binding,
+              parts: [{ kind: 'image', resource: { kind: 'reference', value: `base64://${image.base64}` }, ...(image.presentation ? { presentation: image.presentation } : {}) }] },
+              { isCurrent: () => current() && guard?.isCurrent() !== false && !guard?.signal.aborted, ensureCurrent: () => beforeSend(guard) })
+          },
+          ...(adapter.actions.sendBundle ? { async sendBundle(items, guard) {
+            await beforeSend(guard)
+            return messageActions.sendBundle!({ version: 1, kind: 'message.bundle.send', target, binding, items },
+              { isCurrent: () => current() && guard?.isCurrent() !== false && !guard?.signal.aborted, ensureCurrent: () => beforeSend(guard) })
+          } } : {}),
+        } : {}),
         ...(target.kind === 'private' && peer ? { privatePeer: Object.freeze({ ...target.account, id: peer }) } : {}),
         ...(target.kind === 'group' && qqActions.builtIn.some(tool => supportsQqAction(target, tool.name)) ? {
           readMember: async (userId: string) => { await ensureInteraction(); return readGroupMember(target, userId, signal, current) },
@@ -2286,7 +2539,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     // cannot overtake an on/off/export command from this receiving account.
     const key = platformAccountKey(adapter.account)
     const ordered = event.kind === 'message' && event.message.conversation.kind === 'group' && !personMemoryCommand(event.message) &&
-      (groupLogEnabled || diceCandidate(event.message))
+      (groupLogEnabled || diceCandidate(event.message) || gameCandidate(event.message))
     const previous = ordered ? admissions.get(key) ?? Promise.resolve() : undefined
     const task = (previous ? previous.catch(() => {}).then(() => acceptEvent(adapter, event)) : acceptEvent(adapter, event)).catch(error => {
       diagnostics.emit({ stage: 'inbox', operation: 'admit_event', outcome: 'failed', code: 'admission_not_confirmed', error })
@@ -2399,7 +2652,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         return
       }
     }
-    if (target.kind === 'group' && event.kind === 'message' && (groupLogEnabled || diceCandidate(event.message))) {
+    if (target.kind === 'group' && event.kind === 'message' && (groupLogEnabled || diceCandidate(event.message) || gameCandidate(event.message))) {
       const persona = bindingFor(target), message = event.message
       if (!persona || !message.messageId || message.binding && !isSameBinding(message.binding, persona.binding) ||
           options.allowsText?.(message.text, 'incoming') === false || !allowsFileNames(message)) return
@@ -2516,6 +2769,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           if (await inbox.privacyCommandState(target, messageId, raw) !== 'applied') throw new Error('隐私指令尚未提交')
         })),
         completeConversationMemoryCleanup({ ...subject, through: incoming.occurredAt }, sourceCleanupGuard(() => true, async () => {
+          if (await inbox.privacyCommandState(target, messageId, raw) !== 'applied') throw new Error('隐私指令尚未提交')
+        })),
+        completeSourceMemoryCleanup({ ...subject, through: incoming.occurredAt }, sourceCleanupGuard(() => true, async () => {
+          if (await inbox.privacyCommandState(target, messageId, raw) !== 'applied') throw new Error('隐私指令尚未提交')
+        })),
+        completeGroupMemoryCleanup({ ...subject, through: incoming.occurredAt }, sourceCleanupGuard(() => true, async () => {
           if (await inbox.privacyCommandState(target, messageId, raw) !== 'applied') throw new Error('隐私指令尚未提交')
         })),
         groupLogs.purgeSubject({ account: target.account, agentId: originalAgentId, subjectId: sender.id,
@@ -2937,7 +3196,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
             const incoming = event.message
             const outcome = groupLogEnabled ? await diagnostics.run({ kind: 'conversation', binding: selected.binding, messageId: incoming.messageId! }, 'group_log',
               () => groupLogWorkflow.handle(incoming, selected.binding, capture), 'runtime') : { consumed: false, aiAllowed: allowsConversationAI(target) }
-            const diceHandled = diceRevoked || await handleDice(incoming, selected.binding, capture)
+            const gameHandled = !outcome.consumed && await handleGames(incoming, selected.binding)
+            const diceHandled = gameHandled || diceRevoked || await handleDice(incoming, selected.binding, capture)
             releaseSilence(target, event.message.messageId)
             if (groupLogEnabled) await groupLogWorkflow.restore(target, selected.binding)
             const qualityHandled = !diceHandled && bilibiliQualityCurrent() && isAgentBilibiliQualityCommand(incoming)
@@ -2963,16 +3223,20 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           }
         } else if (!request) {
           const expectedQueue = textInboxFor(target)?.kind ?? 'simulation'
-          const persona = conversationEnabled(target) && allowsConversationAI(target) && expectedQueue === queue.kind ? bindingFor(target) : undefined
+          const selectedPersona = conversationEnabled(target) && expectedQueue === queue.kind ? bindingFor(target) : undefined
+          const gameMessage = event.kind === 'message' ? event.message : undefined
+          const gameCandidate = selectedPersona && gameMessage && gameHandlers.some(handler => handler.isCandidate(gameMessage, selectedPersona.binding))
+          const persona = selectedPersona && (allowsConversationAI(target) || gameCandidate) ? selectedPersona : undefined
           if (persona && (queue.kind === 'simulation' ? agentBindingToken(persona.binding) : textBindingToken(persona.binding)) === bindingToken &&
               (event.kind !== 'message' || !event.message.binding || isSameBinding(event.message.binding, persona.binding))) {
             if (event.kind === 'message' && (extraction.isCandidate(event.message) || isMediaRelayCandidate(event.message) || torrent.isCandidate(event.message) || magnetSearchCurrent() && parseAgentMagnetSearchCommand(event.message.text)) && !adapter.isReady()) return
-            const qualityHandled = event.kind === 'message' && await handleBilibiliQuality(event.message, persona.binding)
-            const magnetHandled = !qualityHandled && event.kind === 'message' && await handleMagnetSearch(event.message, persona.binding)
-            const torrentHandled = !qualityHandled && !magnetHandled && event.kind === 'message' && await handleTorrent(event.message, persona.binding)
-            const mediaHandled = !qualityHandled && !magnetHandled && !torrentHandled && event.kind === 'message' && await handleMediaRelay(event.message, persona.binding)
-            const musicHandled = !qualityHandled && !magnetHandled && !torrentHandled && !mediaHandled && event.kind === 'message' && await handleMusicExtraction(event.message, persona.binding)
-            if (qualityHandled || magnetHandled || torrentHandled || mediaHandled || musicHandled) {
+            const gameHandled = event.kind === 'message' && await handleGames(event.message, persona.binding)
+            const qualityHandled = !gameHandled && event.kind === 'message' && await handleBilibiliQuality(event.message, persona.binding)
+            const magnetHandled = !gameHandled && !qualityHandled && event.kind === 'message' && await handleMagnetSearch(event.message, persona.binding)
+            const torrentHandled = !gameHandled && !qualityHandled && !magnetHandled && event.kind === 'message' && await handleTorrent(event.message, persona.binding)
+            const mediaHandled = !gameHandled && !qualityHandled && !magnetHandled && !torrentHandled && event.kind === 'message' && await handleMediaRelay(event.message, persona.binding)
+            const musicHandled = !gameHandled && !qualityHandled && !magnetHandled && !torrentHandled && !mediaHandled && event.kind === 'message' && await handleMusicExtraction(event.message, persona.binding)
+            if (gameHandled || qualityHandled || magnetHandled || torrentHandled || mediaHandled || musicHandled) {
               // Deterministic relay commands and accepted shares never become model prompts.
             } else if (queue.kind !== 'simulation' && event.kind === 'message') {
               if (!adapter.isReady()) return
@@ -3157,7 +3421,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     privacyWaiters.clear()
     for (const adapter of adapters.values()) adapter.stop()
     runtime.stop()
-    shuttingDown = Promise.allSettled([textDrained, deferredDrained, localEmojiIngress?.stop(), ...commitmentTasks.values(), ...pendingAdmissions, ...automaticQqWork.values(), ...consumers.values(), ...(bilibiliQuality ? [bilibiliQuality.stop()] : []), torrent.stop(), mediaOutbox.stop(), commitments.drainCommitmentTicks(), runtime.drain(), textPersonMemory.stop(), conversationMemory.stop(), semanticMemory.stop(), history.stop(), groupMemory.stop()]).then(async results => {
+    shuttingDown = Promise.allSettled([textDrained, deferredDrained, localEmojiIngress?.stop(), ...commitmentTasks.values(), ...pendingAdmissions, ...automaticQqWork.values(), ...gameHandlers.map(handler => Promise.resolve().then(() => handler.stop())), ...consumers.values(), ...(bilibiliQuality ? [bilibiliQuality.stop()] : []), torrent.stop(), mediaOutbox.stop(), commitments.drainCommitmentTicks(), runtime.drain(), textPersonMemory.stop(), conversationMemory.stop(), semanticMemory.stop(), history.stop(), groupMemory.stop()]).then(async results => {
       for (const result of results) if (result.status === 'rejected') diagnostics.emit({ stage: 'runtime', operation: 'shutdown', outcome: 'failed', error: result.reason })
       await diagnostics.flush()
     })
@@ -3172,6 +3436,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     /** Trusted host cleanup only; never installed as a model tool. */
     semanticMemoryCleanup,
     conversationMemoryCleanup,
+    sourceMemoryCleanup,
+    groupMemoryCleanup,
     /** Expected admission identity for read-only queue observations; does not claim or execute work. */
     inboxBindingToken(binding: AgentBindingSnapshot, queue: AgentInboxQueue['kind']): string {
       return queue === 'private' || queue === 'group' ? textBindingToken(binding) : agentBindingToken(binding)

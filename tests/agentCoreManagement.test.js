@@ -196,13 +196,76 @@ test('Core management mutations alter only the selected real storage partition',
   assert.equal(await f.host.management.profiles.remove(userId, f.context(targets[0]).value), true)
   assert.deepEqual(await f.host.management.profiles.list(f.context(targets[0]).value), [])
   assert.equal((await f.host.management.profiles.list(f.context(targets[1]).value)).length, 1)
-  assert.equal(await f.host.management.trusteeship.cancelCommitment(f.key(targets[0]), 'task-0', f.context(targets[0]).value), true)
-  assert.equal((await f.store.getCommitment('task-0')).status, 'cancelled'); assert.equal((await f.store.getCommitment('task-1')).status, 'active')
-  assert.equal(await f.host.management.trusteeship.deleteDelegated(f.key(targets[0]), 'delegated-0', f.context(targets[0]).value), true)
+  assert.equal(await f.store.getCommitment('task-0'), null); assert.equal((await f.store.getCommitment('task-1')).status, 'active')
   assert.deepEqual(await f.delegated.load(f.binding(targets[0])), [])
   assert.equal((await f.delegated.load(f.binding(targets[1]))).length, 1)
+  f.advance(1)
+  const fresh = await f.task(targets[0], 'post-forget-task')
+  await f.delegated.update(f.binding(targets[0]), () => ({ entries: [{ id: 'post-forget-delegated', owner: userId, ownerName: '隔离用户',
+    content: '新的托付', dueAt: 0, status: 'active', createdAt: f.now, updatedAt: f.now, sourceAt: f.now }], result: true }))
+  assert.equal(await f.host.management.trusteeship.cancelCommitment(f.key(targets[0]), fresh.id, f.context(targets[0]).value), true)
+  assert.equal((await f.store.getCommitment(fresh.id)).status, 'cancelled')
+  assert.equal(await f.host.management.trusteeship.deleteDelegated(f.key(targets[0]), 'post-forget-delegated', f.context(targets[0]).value), true)
+  await f.store.appendFailLog({ id: fresh.id, intent: fresh.intent, group_id: fresh.group_id, reason: 'new failure', at: f.now })
   assert.equal(await f.host.management.trusteeship.clearFailLog(f.context(targets[0]).value), true)
   assert.deepEqual((await f.host.management.trusteeship.overview(f.context().value)).failures.map(row => row.reason).sort(), ['failure-source-1', 'failure-source-2'])
+})
+
+test('Core forget bridges the original durable cutoff, exposes all four source owners and resumes without replaying source deletion', settings, async t => {
+  const [{ createStandaloneAgentForgetOperations }, { createStandaloneAgentConsoleManagement }, { createForgetOperationStore },
+    { createAgentHistoryStore, agentHistoryId }] = await Promise.all([
+      load('bootstrap/standaloneAgentForgetOperations.js'), load('bootstrap/standaloneAgentConsoleManagement.js'),
+      load('modules/runtime/infrastructure/forgetOperationStore.js'), load('modules/memory/infrastructure/agentHistoryStore.js'),
+    ])
+  const f = await fixture(t), cutoff = f.now, target = targets[0], binding = f.binding(target)
+  await f.remember(target, '人物来源待忘记')
+  await f.task(target, 'old-source-task')
+  await f.task(target, 'new-source-task', { sourceAt: cutoff + 1 })
+  const history = createAgentHistoryStore(f.storage), scope = { agentId: binding.agentId, target }, id = agentHistoryId(scope)
+  await history.update(id, () => ({ version: 1, id, scope, rows: [
+    { messageId: 'old-source', authorId: userId, name: '用户', text: 'old history source', at: cutoff },
+    { messageId: 'new-source', authorId: userId, name: '用户', text: 'new history source', at: cutoff + 1 },
+  ] }))
+  f.advance(5_000); await f.host.start()
+  const auth = { async authorize() { return 'allowed' }, isCurrent() { return true } }
+  const management = createStandaloneAgentConsoleManagement({ management: f.host.management, auth })
+  const request = { ...f.context(target).value, principal: { id: 'trusted-admin', username: 'admin', via: 'session' } }
+  const profiles = { ...management.profiles, async remove(...args) { removals++; return management.profiles.remove(...args) } }
+  let removals = 0
+  const calls = [], store = createForgetOperationStore({ redis: f.storage, now: () => cutoff })
+  const forgetting = createStandaloneAgentForgetOperations({ store, bindings: f.bindings, auth, profiles,
+    characters: { async describeGroup() { throw Error('unused') }, async controlCharacter() { throw Error('unused') } },
+    sourceMemoryCleanup: { async purgeSubject(input, guard) {
+      calls.push(structuredClone(input))
+      const receipt = await f.host.sourceMemoryCleanup.purgeSubject(input, guard)
+      assert.deepEqual(receipt.partitions.map(row => row.id).sort(), ['commitments', 'delegated-memory', 'history-records', 'person-extraction-batches'])
+      return calls.length === 1 ? { ...receipt, partitions: receipt.partitions.map(row => row.id === 'history-records' ? { ...row, cleanup: 'unknown' } : row) } : receipt
+    } },
+  })
+  const first = await forgetting.profile({ userId, requestId: 'core-forget-fixed-cutoff' }, request)
+  assert.equal(first.createdAt, cutoff); assert.equal(first.phase, 'unknown'); assert.equal(removals, 1)
+  assert.deepEqual((await history.read(id)).rows.map(row => row.messageId), ['new-source'])
+  assert.equal(await f.store.getCommitment('old-source-task'), null)
+  assert.equal((await f.store.getCommitment('new-source-task')).sourceAt, cutoff + 1)
+  f.advance(10_000)
+  const completed = await forgetting.profile({ userId, requestId: 'core-forget-fixed-cutoff' }, request)
+  assert.equal(completed.phase, 'completed'); assert.equal(completed.cleanup, 'unsupported')
+  assert.equal(completed.operationId, first.operationId); assert.equal(removals, 1)
+  assert.equal(calls.length, 2); assert.deepEqual(calls[0], calls[1]); assert.equal(calls[0].through, cutoff)
+  assert.deepEqual((await history.read(id)).rows.map(row => row.messageId), ['new-source'])
+  assert.notEqual(await f.store.getCommitment('new-source-task'), null)
+})
+
+test('Core rejects host cutoff metadata for a different subject, binding or future timestamp before source mutation', settings, async t => {
+  const f = await fixture(t), target = targets[0]
+  await f.remember(target, '不能扩大此来源'); await f.host.start()
+  const { agentBindingToken } = await load('modules/runtime/domain/agentBindings.js')
+  for (const extra of [{ userId: 'different' }, { bindingToken: 'different' }, { through: f.now + 1 }]) {
+    const request = { ...f.context(target).value, profileForget: { operationId: '019cb495-1f56-7756-aa47-459067a692d9',
+      userId, bindingToken: agentBindingToken(f.binding(target)), through: f.now, ...extra } }
+    await assert.rejects(f.host.management.profiles.remove(userId, request), { code: 'invalid_request' })
+    assert.equal((await f.host.management.profiles.list(f.context(target).value)).length, 1)
+  }
 })
 
 for (const revoked of ['stop', 'execution', 'external-signal']) {

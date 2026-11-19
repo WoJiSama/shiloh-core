@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type {
-  ForgetCleanupState, ForgetImpact, ForgetImpactKind, ForgetOperationKind, ForgetOperationPhase,
+  ForgetCleanupOwner, ForgetCleanupPlan, ForgetCleanupState, ForgetImpact, ForgetImpactKind, ForgetOperationKind, ForgetOperationPhase,
   ForgetOperationGuard, ForgetOperationReceipt, ForgetOperationStorage, ForgetOperationStore, ForgetOperationSubject, ForgetUsageState,
 } from '../../../contracts/forgetOperation.js'
 import { ForgetOperationConflictError } from '../../../contracts/forgetOperation.js'
@@ -22,6 +22,7 @@ const operationKinds = new Set<ForgetOperationKind>(['person-profile', 'person-e
 const phases = new Set<ForgetOperationPhase>(['accepted', 'committed', 'settling', 'completed', 'failed', 'unknown'])
 const cleanups = new Set<ForgetCleanupState>(['pending', 'completed', 'failed', 'unknown', 'unsupported'])
 const usages = new Set<ForgetUsageState>(['pending', 'blocked', 'unknown'])
+const cleanupOwners = new Set<ForgetCleanupOwner>(['local-emoji', 'semantic-memory', 'conversation-memory', 'group-memory', 'source-memory'])
 const impactKinds = new Set<ForgetImpactKind>([
   'person-memory-entry', 'character-memory', 'character-goal', 'character-work', 'character-shared-derived', 'source-consumer', 'partition',
 ])
@@ -77,6 +78,19 @@ function copyImpacts(value: unknown): readonly ForgetImpact[] {
   }
   return Object.freeze(output)
 }
+function copyCleanupPlan(value: unknown): ForgetCleanupPlan {
+  const row = plain(value)
+  if (row.version !== 1 || typeof row.sourceCommitted !== 'boolean' || !Array.isArray(row.owners) || row.owners.length > cleanupOwners.size) return failure()
+  const seen = new Set<string>()
+  const owners = row.owners.map(value => {
+    const item = plain(value)
+    if (typeof item.owner !== 'string' || !cleanupOwners.has(item.owner as ForgetCleanupOwner) || seen.has(item.owner) ||
+        typeof item.state !== 'string' || !cleanups.has(item.state as ForgetCleanupState)) return failure()
+    seen.add(item.owner)
+    return Object.freeze({ owner: item.owner as ForgetCleanupOwner, state: item.state as ForgetCleanupState })
+  })
+  return Object.freeze({ version: 1, sourceCommitted: row.sourceCommitted, owners: Object.freeze(owners) })
+}
 function copyReceipt(value: unknown): ForgetOperationReceipt {
   const row = plain(value)
   if (row.version !== 1 || typeof row.operationId !== 'string' || !uuidPattern.test(row.operationId) ||
@@ -90,8 +104,10 @@ function copyReceipt(value: unknown): ForgetOperationReceipt {
     impacts: copyImpacts(row.impacts), createdAt: time(row.createdAt), updatedAt: time(row.updatedAt),
     ...(row.sourceRevision === undefined ? {} : { sourceRevision: text(row.sourceRevision, 4096) }),
     ...(row.errorCode === undefined ? {} : { errorCode: text(row.errorCode, 256) }),
+    ...(row.cleanupPlan === undefined ? {} : { cleanupPlan: copyCleanupPlan(row.cleanupPlan) }),
   }
   if (output.updatedAt < output.createdAt) return failure()
+  if (output.cleanupPlan && (output.kind !== 'person-profile' || !output.subject.userId || output.cleanupPlan.sourceCommitted && output.usage !== 'blocked')) return failure()
   return Object.freeze(output)
 }
 
@@ -146,9 +162,12 @@ export function createForgetOperationStore(options: {
       const binding = copyBinding(input.binding), subject = copySubject(input.subject), at = input.now === undefined ? time(now()) : time(input.now)
       const operationId = input.operationId === undefined ? randomUUID() : text(input.operationId, 128, uuidPattern)
       const requestDigest = input.requestDigest === undefined ? createHash('sha256').update(JSON.stringify([kind, binding, subject])).digest('hex') : text(input.requestDigest, 64, /^[0-9a-f]{64}$/u)
-      const receipt: ForgetOperationReceipt = Object.freeze({ version: 1, operationId, requestId, requestDigest, kind, binding, subject,
-        phase: 'accepted', usage: 'pending', cleanup: 'pending', impacts: Object.freeze([]), createdAt: at, updatedAt: at,
-        ...(input.sourceRevision === undefined ? {} : { sourceRevision: text(input.sourceRevision, 4096) }) })
+      const plan = input.cleanupOwners === undefined ? undefined : copyCleanupPlan({ version: 1, sourceCommitted: false,
+        owners: input.cleanupOwners.map(owner => ({ owner, state: 'pending' })) })
+      const receipt = copyReceipt({ version: 1, operationId, requestId, requestDigest, kind, binding, subject,
+        phase: 'accepted', usage: 'pending', cleanup: 'pending', impacts: copyImpacts(input.impacts ?? []), createdAt: at, updatedAt: at,
+        ...(input.sourceRevision === undefined ? {} : { sourceRevision: text(input.sourceRevision, 4096) }),
+        ...(plan === undefined ? {} : { cleanupPlan: plan }) })
       const result = await access(guard, () => options.redis.eval(BEGIN, { keys: [requestKey(requestId), operationKey(operationId)], arguments: [operationId, JSON.stringify(receipt)] }))
       const selected = text(String(result ?? ''), 128, uuidPattern)
       const existing = await readRaw(selected, guard)
@@ -168,19 +187,44 @@ export function createForgetOperationStore(options: {
         if (patch.phase !== undefined && (!phases.has(patch.phase) || phaseRank(patch.phase) < phaseRank(current.phase) || terminal(current.phase) && patch.phase !== current.phase)) return failure('遗忘操作状态不可回退')
         if (patch.usage !== undefined && (!usages.has(patch.usage) || current.usage === 'blocked' && patch.usage !== 'blocked' || current.usage === 'unknown' && patch.usage === 'pending')) return failure('遗忘使用状态不可回退')
         if (patch.cleanup !== undefined && (!cleanups.has(patch.cleanup) || current.cleanup !== 'pending' && patch.cleanup !== current.cleanup)) return failure('遗忘清理状态不可回退')
+        let plan = current.cleanupPlan
+        if (patch.cleanupOwner !== undefined) {
+          if (!plan?.sourceCommitted || !['committed', 'settling'].includes(current.phase)) return failure('来源删除尚未确认或清理未恢复')
+          const selected = plan.owners.find(item => item.owner === patch.cleanupOwner!.owner)
+          if (!selected) return failure('清理负责人不在原计划中')
+          if (!cleanups.has(patch.cleanupOwner.state)) return failure()
+          if (['completed', 'unsupported'].includes(selected.state) && selected.state !== patch.cleanupOwner.state) return failure('已确认的清理结果不可回退')
+          plan = copyCleanupPlan({ ...plan, owners: plan.owners.map(item => item.owner === selected.owner ? patch.cleanupOwner : item) })
+        }
+        if (plan && (patch.phase === 'completed' || patch.cleanup === 'completed' || patch.cleanup === 'unsupported') &&
+            (!plan.sourceCommitted || plan.owners.some(item => !['completed', 'unsupported'].includes(item.state)))) return failure('仍有未确认的清理负责人')
         const at = patch.now === undefined ? time(now()) : time(patch.now)
         if (at < current.updatedAt) return failure('遗忘操作时间不可回退')
         const next: ForgetOperationReceipt = { ...current, ...(patch.phase === undefined ? {} : { phase: patch.phase }), ...(patch.usage === undefined ? {} : { usage: patch.usage }),
           ...(patch.cleanup === undefined ? {} : { cleanup: patch.cleanup }), ...(patch.impacts === undefined ? {} : { impacts: copyImpacts(patch.impacts) }),
-          ...(patch.sourceRevision === undefined ? {} : { sourceRevision: text(patch.sourceRevision, 4096) }), ...(patch.errorCode === undefined ? {} : { errorCode: text(patch.errorCode, 256) }), updatedAt: at }
+          ...(patch.sourceRevision === undefined ? {} : { sourceRevision: text(patch.sourceRevision, 4096) }), ...(patch.errorCode === undefined ? {} : { errorCode: text(patch.errorCode, 256) }),
+          ...(plan === undefined ? {} : { cleanupPlan: plan }), updatedAt: at }
         return copyReceipt(next)
       }, guard)
     },
+    async resumeCleanup(operationId, guard) {
+      return mutate(text(operationId, 128, uuidPattern), current => {
+        if (!current.cleanupPlan?.sourceCommitted || current.usage !== 'blocked') return failure('来源删除尚未确认')
+        if (current.phase === 'completed') return current
+        const { errorCode: _errorCode, ...retained } = current
+        return copyReceipt({ ...retained, phase: 'settling', cleanup: 'pending', updatedAt: Math.max(current.updatedAt, time(now())) })
+      }, guard)
+    },
     async markCommitted(operationId, input = {}, guard) {
-      const current = await readRaw(text(operationId, 128, uuidPattern), guard)
-      if (!current) return failure('遗忘操作不存在')
-      if (terminal(current.phase)) return current
-      return this.update(current.operationId, { phase: 'committed', usage: 'blocked', cleanup: 'pending', ...(input.impacts === undefined ? {} : { impacts: input.impacts }), ...(input.sourceRevision === undefined ? {} : { sourceRevision: input.sourceRevision }), ...(input.now === undefined ? {} : { now: input.now }) }, guard)
+      return mutate(text(operationId, 128, uuidPattern), current => {
+        if (terminal(current.phase) && (!current.cleanupPlan || current.cleanupPlan.sourceCommitted) || current.phase === 'completed' || current.phase === 'settling') return current
+        const at = input.now === undefined ? time(now()) : time(input.now)
+        if (at < current.updatedAt) return failure('遗忘操作时间不可回退')
+        return copyReceipt({ ...current, phase: 'committed', usage: 'blocked', cleanup: 'pending', updatedAt: at,
+          ...(input.impacts === undefined ? {} : { impacts: copyImpacts(input.impacts) }),
+          ...(input.sourceRevision === undefined ? {} : { sourceRevision: text(input.sourceRevision, 4096) }),
+          ...(current.cleanupPlan === undefined ? {} : { cleanupPlan: { ...current.cleanupPlan, sourceCommitted: true } }) })
+      }, guard)
     },
     async complete(operationId, input = {}, guard) {
       const current = await readRaw(text(operationId, 128, uuidPattern), guard)

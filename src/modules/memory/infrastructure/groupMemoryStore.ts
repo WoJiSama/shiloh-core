@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
-import type { AgentBindingSnapshot, ConversationAddress } from '../../../contracts/agentBinding.js'
-import type { GroupMemoryEntry, GroupMemoryMessage, GroupMemoryState } from '../../../contracts/groupMemory.js'
+import type { AgentBindingSnapshot, AgentConversationScope, ConversationAddress } from '../../../contracts/agentBinding.js'
+import type { AgentGroupMemoryCleanupGuard, AgentGroupMemoryCleanupReceipt, AgentGroupMemoryPurgeSubject, GroupMemoryEntry, GroupMemoryMessage, GroupMemoryState } from '../../../contracts/groupMemory.js'
 import { agentConversationKey, agentPersonaScopeId, conversationAddressKey, decodeAgentConversationKey, isConversationAddress, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
 import { personMemoryAddress } from './personMemoryContext.js'
+import { groupCleanupCurrent, groupCleanupMatchesScope, groupCleanupSelector, groupCleanupToken, ensureGroupCleanup, filterGroupMemoryState, groupMemoryContent, groupMemoryRetained, parseGroupCleanup, GROUP_CLEANUP_MAX_BYTES, GROUP_CLEANUP_MAX_SELECTORS, type GroupCleanupFences } from './groupMemoryCleanup.js'
 
 interface GroupMemoryRedis {
   get(key: string): Promise<string | null>
@@ -19,6 +20,7 @@ type GroupMemoryChange = (state: GroupMemoryState | undefined) => GroupMemorySta
 
 const PREFIX = 'agent:group-memory:v1'
 const CATALOG_KEY = `${PREFIX}:catalog`
+const CLEANUP_KEY = `${PREFIX}:cleanup`
 const MAX_STATES = 200
 const MAX_ATTEMPTS = 20
 const FAILURE = '群记忆存储不可用或状态无效，已停止读写。'
@@ -29,20 +31,27 @@ const stateKey = (id: string) => `${PREFIX}:state:${id}`
 
 // Catalog and document are read and compared together. Every accessed key is
 // explicit so the host's key prefix and storage lease cover the whole operation.
-const READ_PAIR = `return {redis.call('GET', KEYS[1]) or false, redis.call('GET', KEYS[2]) or false}`
+const READ_PAIR = `return {redis.call('GET', KEYS[1]) or false, redis.call('GET', KEYS[2]) or false, redis.call('GET', KEYS[3]) or false}`
 const READ_LIST = `
 local catalog = redis.call('GET', KEYS[1])
 if (catalog or false) ~= (ARGV[1] == '1' and ARGV[2] or false) then return false end
-local result = {}
-for i = 2, #KEYS do result[i - 1] = redis.call('GET', KEYS[i]) or false end
+local result = {redis.call('GET', KEYS[2]) or false}
+for i = 3, #KEYS do result[i - 1] = redis.call('GET', KEYS[i]) or false end
 return result`
 const COMPARE_AND_SET = `
 local catalog = redis.call('GET', KEYS[1])
 local state = redis.call('GET', KEYS[2])
+local cleanup = redis.call('GET', KEYS[3])
 if (catalog or false) ~= (ARGV[1] == '1' and ARGV[2] or false)
-  or (state or false) ~= (ARGV[3] == '1' and ARGV[4] or false) then return 0 end
-redis.call('SET', KEYS[1], ARGV[5])
-if ARGV[6] == '1' then redis.call('SET', KEYS[2], ARGV[7]) else redis.call('DEL', KEYS[2]) end
+  or (state or false) ~= (ARGV[3] == '1' and ARGV[4] or false)
+  or (cleanup or false) ~= (ARGV[5] == '1' and ARGV[6] or false) then return 0 end
+redis.call('SET', KEYS[1], ARGV[7])
+if ARGV[8] == '1' then redis.call('SET', KEYS[2], ARGV[9]) else redis.call('DEL', KEYS[2]) end
+return 1`
+const PUBLISH_CLEANUP = `
+local cleanup = redis.call('GET', KEYS[1])
+if (cleanup or false) ~= (ARGV[1] == '1' and ARGV[2] or false) then return 0 end
+redis.call('SET', KEYS[1], ARGV[3])
 return 1`
 
 function fail(): never { throw new Error(FAILURE) }
@@ -114,12 +123,13 @@ function validPersona(value: unknown, target: ConversationAddress, personaIds: S
 }
 function validEntry(value: unknown, target: ConversationAddress, personaIds: Set<string>, fact: boolean): value is GroupMemoryEntry {
   if (!object(value) || !keys(value, ['id', 'kind', 'key', 'source', 'excerpt', 'persona', 'createdBy', 'createdAt', 'updatedAt',
-    'text', 'subject', 'condition', 'targetUserIds', 'relatedUserIds', 'ownerId', 'file', 'tags']) ||
+    'text', 'subject', 'condition', 'targetUserIds', 'relatedUserIds', 'ownerId', 'file', 'tags', 'cleanupToken']) ||
       !messageId(value.id) || typeof value.kind !== 'string' || !ENTRY_KINDS.has(value.kind) || (value.kind === 'fact') !== fact ||
       !nonempty(value.key, 4096) || !validMessage(value.source) || typeof value.excerpt !== 'string' || !value.excerpt.trim() ||
       !value.source.text.includes(value.excerpt) || value.createdBy !== value.source.authorId ||
       !integer(value.createdAt) || value.createdAt === 0 || !integer(value.updatedAt) || value.updatedAt === 0 ||
       !ids(value.targetUserIds, 50) || !ids(value.relatedUserIds, 50) ||
+      (value.cleanupToken !== undefined && (typeof value.cleanupToken !== 'string' || !ID_PATTERN.test(value.cleanupToken))) ||
       (value.ownerId !== undefined && !isPlatformIdentifier(value.ownerId)) ||
       (value.text !== undefined && !nonempty(value.text, 4000)) || (value.subject !== undefined && !nonempty(value.subject, 4000)) ||
       (value.condition !== undefined && !nonempty(value.condition, 4000)) || (value.file !== undefined && !validFile(value.file)) ||
@@ -172,9 +182,10 @@ function parseState(value: string | null, id: string): GroupMemoryState | undefi
     const personaId = agentPersonaScopeId(agent.agentId)
     personaIds.add(personaId)
     for (const job of agent.jobs) {
-      if (!object(job) || !keys(job, ['id', 'mode', 'messages', 'attempts', 'retryAt', 'invalidatedAt']) || !messageId(job.id) ||
+      if (!object(job) || !keys(job, ['id', 'mode', 'messages', 'attempts', 'retryAt', 'invalidatedAt', 'cleanupToken']) || !messageId(job.id) ||
           !['consensus', 'teaching'].includes(String(job.mode)) || !integer(job.attempts) || job.attempts > 3 ||
-          !integer(job.retryAt) || !integer(job.invalidatedAt) || !Array.isArray(job.messages) || !job.messages.length ||
+          !integer(job.retryAt) || !integer(job.invalidatedAt) ||
+          (job.cleanupToken !== undefined && (typeof job.cleanupToken !== 'string' || !ID_PATTERN.test(job.cleanupToken))) || !Array.isArray(job.messages) || !job.messages.length ||
           job.messages.length > 40 || !job.messages.every(validMessage) ||
           new Set(job.messages.map(message => message.messageId)).size !== job.messages.length) fail()
     }
@@ -194,22 +205,27 @@ function parseState(value: string | null, id: string): GroupMemoryState | undefi
   return state
 }
 
-function parseSnapshot(catalogRaw: string | null, stateRaw: string | null, id: string) {
+function parseSnapshot(catalogRaw: string | null, stateRaw: string | null, cleanupRaw: string | null, id: string) {
   const catalog = parseCatalog(catalogRaw), state = parseState(stateRaw, id)
   if (catalog.includes(id) !== Boolean(state)) fail()
-  return { catalogRaw, stateRaw, catalog, state }
+  return { catalogRaw, stateRaw, cleanupRaw, cleanup: parseGroupCleanup(cleanupRaw), catalog, state }
 }
 
 function projectUpdate(snapshot: ReturnType<typeof parseSnapshot>, id: string, change: GroupMemoryChange) {
-  const { catalog, state } = snapshot
-  const candidate = change(state === undefined ? undefined : structuredClone(state))
-  const nextRaw = candidate === undefined ? null : JSON.stringify(candidate)
-  const next = parseState(nextRaw, id)
-  if (state && next) {
-    if (conversationAddressKey(state.target) !== conversationAddressKey(next.target) ||
-        state.agents.some(agent => !next.agents.some(value => value.agentId === agent.agentId))) fail()
+  const { catalog, state, cleanup } = snapshot
+  const projected = state && filterGroupMemoryState(state, cleanup)
+  const candidate = change(projected === undefined ? undefined : structuredClone(projected))
+  const validated = parseState(candidate === undefined ? null : JSON.stringify(candidate), id)
+  const filtered = validated && filterGroupMemoryState(validated, cleanup)
+  const removedByCleanup = validated && filtered && groupMemoryContent(validated) > groupMemoryContent(filtered) ||
+    state && projected && groupMemoryContent(state) > groupMemoryContent(projected)
+  const next = filtered && !groupMemoryRetained(filtered) && removedByCleanup ? undefined : filtered
+  const nextRaw = next === undefined ? null : JSON.stringify(next)
+  if (state && validated) {
+    if (conversationAddressKey(state.target) !== conversationAddressKey(validated.target) ||
+        state.agents.some(agent => !validated.agents.some(value => value.agentId === agent.agentId))) fail()
     const previous = new Map(sources(state).map(source => [source.messageId, source]))
-    for (const source of sources(next)) {
+    for (const source of sources(validated)) {
       const original = previous.get(source.messageId)
       if (original && !sameMessage(original, source)) fail()
     }
@@ -224,8 +240,8 @@ export async function stageGroupMemoryUpdate(storage: GroupMemoryStaging, target
   try {
     if (!validTarget(target)) fail()
     const id = groupMemoryId(target)
-    const [catalogRaw, stateRaw] = await Promise.all([storage.get(CATALOG_KEY), storage.get(stateKey(id))])
-    const snapshot = parseSnapshot(raw(catalogRaw), raw(stateRaw), id)
+    const [catalogRaw, stateRaw, cleanupRaw] = await Promise.all([storage.get(CATALOG_KEY), storage.get(stateKey(id)), storage.get(CLEANUP_KEY)])
+    const snapshot = parseSnapshot(raw(catalogRaw), raw(stateRaw), raw(cleanupRaw), id)
     const { next, nextRaw, nextCatalogRaw } = projectUpdate(snapshot, id, change)
     if (next && conversationAddressKey(next.target) !== conversationAddressKey(target)) fail()
     if (nextRaw !== snapshot.stateRaw) {
@@ -238,32 +254,66 @@ export async function stageGroupMemoryUpdate(storage: GroupMemoryStaging, target
 
 export function createGroupMemoryStore(redis: GroupMemoryRedis) {
   async function read(id: string) {
-    const snapshot = await redis.eval(READ_PAIR, { keys: [CATALOG_KEY, stateKey(id)], arguments: [] })
-    if (!Array.isArray(snapshot) || snapshot.length !== 2) fail()
-    const catalogRaw = raw(snapshot[0]), stateRaw = raw(snapshot[1])
-    return parseSnapshot(catalogRaw, stateRaw, id)
+    const snapshot = await redis.eval(READ_PAIR, { keys: [CATALOG_KEY, stateKey(id), CLEANUP_KEY], arguments: [] })
+    if (!Array.isArray(snapshot) || snapshot.length !== 3) fail()
+    return parseSnapshot(raw(snapshot[0]), raw(snapshot[1]), raw(snapshot[2]), id)
+  }
+  function visible(state: GroupMemoryState | undefined, cleanup: GroupCleanupFences) {
+    if (!state) return undefined
+    const projected = filterGroupMemoryState(state, cleanup)
+    return groupMemoryContent(state) && !groupMemoryRetained(projected) ? undefined : projected
+  }
+  async function rawList() {
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const catalogRaw = raw(await redis.get(CATALOG_KEY)), catalog = parseCatalog(catalogRaw)
+      const snapshot = await redis.eval(READ_LIST, { keys: [CATALOG_KEY, CLEANUP_KEY, ...catalog.map(stateKey)], arguments: expected(catalogRaw) })
+      if (snapshot === null) continue
+      if (!Array.isArray(snapshot) || snapshot.length !== catalog.length + 1) fail()
+      const cleanup = parseGroupCleanup(raw(snapshot[0]))
+      const states = catalog.map((id, index) => {
+        const state = parseState(raw(snapshot[index + 1]), id)
+        if (!state) fail()
+        return state
+      })
+      return { states, cleanup }
+    }
+    return fail()
+  }
+  async function commit(saved: Awaited<ReturnType<typeof read>>, id: string, next: GroupMemoryState | undefined) {
+    const ids = next ? saved.catalog.includes(id) ? saved.catalog : [...saved.catalog, id] : saved.catalog.filter(value => value !== id)
+    if (ids.length > MAX_STATES) fail()
+    const result = await redis.eval(COMPARE_AND_SET, { keys: [CATALOG_KEY, stateKey(id), CLEANUP_KEY], arguments: [
+      ...expected(saved.catalogRaw), ...expected(saved.stateRaw), ...expected(saved.cleanupRaw),
+      JSON.stringify({ version: 1, ids }), ...expected(next === undefined ? null : JSON.stringify(next)),
+    ] })
+    if (result !== 0 && result !== 1) fail()
+    return result === 1
   }
   return {
     async list(): Promise<GroupMemoryState[]> {
       try {
-        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-          const catalogRaw = raw(await redis.get(CATALOG_KEY)), catalog = parseCatalog(catalogRaw)
-          const snapshot = await redis.eval(READ_LIST, { keys: [CATALOG_KEY, ...catalog.map(stateKey)], arguments: expected(catalogRaw) })
-          if (snapshot === null) continue
-          if (!Array.isArray(snapshot) || snapshot.length !== catalog.length) fail()
-          return catalog.map((id, index) => {
-            const state = parseState(raw(snapshot[index]), id)
-            if (!state) fail()
-            return state
-          })
-        }
-      } catch { fail() }
-      return fail()
+        const { states, cleanup } = await rawList()
+        return states.flatMap(state => { const projected = visible(state, cleanup); return projected ? [projected] : [] })
+      } catch { return fail() }
+    },
+    async cleanupToken(scope: AgentConversationScope): Promise<string | undefined> {
+      try {
+        if (!validTarget(scope.target) || decodeAgentConversationKey(agentConversationKey(scope)) === null) fail()
+        return groupCleanupToken(scope, parseGroupCleanup(raw(await redis.get(CLEANUP_KEY))))
+      } catch { return fail() }
+    },
+    async filterState(state: GroupMemoryState): Promise<GroupMemoryState> {
+      try {
+        const validated = parseState(JSON.stringify(state), state.id)
+        if (!validated) fail()
+        return filterGroupMemoryState(validated, parseGroupCleanup(raw(await redis.get(CLEANUP_KEY))))
+      } catch { return fail() }
     },
     async load(id: string): Promise<GroupMemoryState | undefined> {
       try {
         if (typeof id !== 'string' || !ID_PATTERN.test(id)) fail()
-        return (await read(id)).state
+        const saved = await read(id)
+        return visible(saved.state, saved.cleanup)
       } catch { return fail() }
     },
     async update(id: string, change: GroupMemoryChange, isCurrent?: () => boolean): Promise<boolean> {
@@ -271,20 +321,80 @@ export function createGroupMemoryStore(redis: GroupMemoryRedis) {
         if (typeof id !== 'string' || !ID_PATTERN.test(id)) fail()
         for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
           if (!current(isCurrent)) return false
-          const snapshot = await read(id)
-          const { catalogRaw, stateRaw } = snapshot
+          const saved = await read(id)
           if (!current(isCurrent)) return false
-          const { nextRaw, nextCatalogRaw } = projectUpdate(snapshot, id, change)
+          const { next, nextRaw } = projectUpdate(saved, id, change)
           if (!current(isCurrent)) return false
-          if (nextRaw === stateRaw) return true
-          const arguments_ = [...expected(catalogRaw), ...expected(stateRaw), nextCatalogRaw, ...expected(nextRaw)]
+          if (nextRaw === saved.stateRaw || !saved.state && !next) return true
           if (!current(isCurrent)) return false
-          const committed = await redis.eval(COMPARE_AND_SET, { keys: [CATALOG_KEY, stateKey(id)], arguments: arguments_ })
-          if (committed === 1) return true
-          if (committed !== 0) fail()
+          if (await commit(saved, id, next)) return true
         }
       } catch { fail() }
       return fail()
+    },
+    async purgeSubject(input: AgentGroupMemoryPurgeSubject, guard: AgentGroupMemoryCleanupGuard): Promise<AgentGroupMemoryCleanupReceipt> {
+      const selector = groupCleanupSelector(input)
+      await ensureGroupCleanup(guard)
+      let published = false, authorizationFailed = false
+      let removedRecords = 0, removedJobs = 0, removedEntries = 0, removedPartitions = 0
+      const authorize = async () => {
+        try { await ensureGroupCleanup(guard) }
+        catch (error) { authorizationFailed = true; throw error }
+      }
+      const receipt = (cleanup: 'completed' | 'unknown'): AgentGroupMemoryCleanupReceipt => ({ usage: 'blocked', cleanup, removedRecords, removedJobs, removedEntries, removedPartitions })
+      try {
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+          const previousRaw = raw(await redis.get(CLEANUP_KEY)), previous = parseGroupCleanup(previousRaw)
+          const existing = previous.entries.find(entry => entry.id === selector.id)
+          if (!existing && previous.entries.length >= GROUP_CLEANUP_MAX_SELECTORS) fail()
+          const entries = existing
+            ? previous.entries.map(entry => entry.id === selector.id ? { ...entry, through: Math.max(entry.through, selector.through) } : entry)
+            : [...previous.entries, selector]
+          const nextRaw = existing && existing.through >= selector.through ? previousRaw! : JSON.stringify({ version: 1, entries })
+          if (nextRaw.length > GROUP_CLEANUP_MAX_BYTES) fail()
+          await authorize()
+          const result = await redis.eval(PUBLISH_CLEANUP, { keys: [CLEANUP_KEY], arguments: [...expected(previousRaw), nextRaw] })
+          if (result === 1) { published = true; break }
+          if (result !== 0) fail()
+        }
+        if (!published) fail()
+        await authorize()
+        for (let pass = 0; pass < MAX_ATTEMPTS; pass++) {
+          const ids = parseCatalog(raw(await redis.get(CATALOG_KEY)))
+          await authorize()
+          for (const id of ids) {
+            let settled = false
+            for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+              const saved = await read(id)
+              await authorize()
+              const state = saved.state
+              if (!state || !state.agents.some(agent => groupCleanupMatchesScope({ agentId: agent.agentId, target: state.target }, selector))) { settled = true; break }
+              const next = filterGroupMemoryState(state, saved.cleanup)
+              const recordCount = state.agents.reduce((count, agent, index) => count + agent.records.length - next.agents[index]!.records.length, 0)
+              const jobCount = state.agents.reduce((count, agent, index) => count + agent.jobs.length - next.agents[index]!.jobs.length, 0)
+              const entryCount = state.entries.length - next.entries.length + state.agents.reduce((count, agent, index) => count + agent.entries.length - next.agents[index]!.entries.length, 0)
+              if (!recordCount && !jobCount && !entryCount) { settled = true; break }
+              await authorize()
+              if (!await commit(saved, id, groupMemoryRetained(next) ? next : undefined)) continue
+              removedRecords += recordCount; removedJobs += jobCount; removedEntries += entryCount
+              if (!groupMemoryRetained(next)) removedPartitions++
+              await authorize()
+              settled = true; break
+            }
+            if (!settled) fail()
+          }
+          const verified = await rawList()
+          await authorize()
+          if (!verified.cleanup.entries.some(entry => entry.id === selector.id && entry.through >= selector.through)) fail()
+          if (verified.states.every(state => !state.agents.some(agent => groupCleanupMatchesScope({ agentId: agent.agentId, target: state.target }, selector)) ||
+              groupMemoryContent(filterGroupMemoryState(state, verified.cleanup)) === groupMemoryContent(state))) return receipt('completed')
+        }
+        fail()
+      } catch {
+        if (authorizationFailed || !groupCleanupCurrent(guard) || !published) fail()
+        await authorize()
+        return receipt('unknown')
+      }
     },
   }
 }

@@ -1,5 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { realpathSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { release } from 'node:os'
 import runtimeProcess from 'node:process'
 import { types } from 'node:util'
 
@@ -44,7 +46,8 @@ export interface AgentDiceScriptRunner {
   executeSync(input: AgentDiceScriptInput, options: AgentDiceScriptRunOptions): AgentDiceScriptResult
 }
 
-const MAX_SOURCE = 64 * 1024
+export const AGENT_DICE_SCRIPT_SOURCE_MAX_BYTES = 128 * 1024
+const MAX_SOURCE = AGENT_DICE_SCRIPT_SOURCE_MAX_BYTES
 const MAX_INPUT = 1024 * 1024
 const MAX_OUTPUT = 1024 * 1024
 const MAX_STDERR = 32 * 1024
@@ -361,4 +364,141 @@ export function executeAgentDiceScriptSync(input: AgentDiceScriptInput, options:
     if (Buffer.byteLength(JSON.stringify(result)) > runner.limits.outputBytes) throw rejected()
     return result
   } catch { throw options.signal?.aborted ? cancelled() : rejected() }
+}
+
+
+const SYSTEMD_RUN = '/usr/bin/systemd-run', SYSTEMCTL = '/usr/bin/systemctl'
+const SYSTEMD_PROPERTIES = Object.freeze([
+  'MemoryAccounting=yes', 'MemoryMax=134217728', 'MemorySwapMax=0', 'OOMPolicy=kill',
+  'CPUAccounting=yes', 'CPUQuota=100%', 'LimitCPU=1', 'RuntimeMaxSec=1500ms',
+  'TasksAccounting=yes', 'TasksMax=16', 'KillMode=control-group', 'KillSignal=SIGKILL', 'SendSIGKILL=yes', 'TimeoutStopSec=100ms',
+  'DynamicUser=yes', 'NoNewPrivileges=yes', 'PrivateNetwork=yes', 'RestrictAddressFamilies=AF_UNIX',
+  // systemd --pipe supplies connected stdio sockets. Node must inspect those
+  // inherited handles, but cannot create a socket or establish any connection.
+  'SystemCallFilter=~socket socketpair socketcall connect bind listen accept accept4', 'SystemCallErrorNumber=EPERM',
+  'PrivateDevices=yes', 'PrivateTmp=yes', 'ProtectSystem=strict', 'ProtectHome=yes',
+  'ProtectKernelTunables=yes', 'ProtectKernelModules=yes', 'ProtectKernelLogs=yes', 'ProtectControlGroups=yes',
+  'RestrictSUIDSGID=yes', 'RestrictNamespaces=yes', 'RestrictRealtime=yes', 'LockPersonality=yes',
+  'CapabilityBoundingSet=', 'AmbientCapabilities=', 'UMask=0077', 'WorkingDirectory=/', 'Slice=system.slice',
+  'Environment=NODE_OPTIONS= NODE_PATH=', 'PassEnvironment=',
+])
+const linuxNodeArguments = ['--permission', '--max-old-space-size=64', '--stack-size=512', '--jitless', '--no-addons',
+  '--disable-sigusr1', '--no-warnings', '--input-type=commonjs', '--eval']
+function systemdArguments(unit: string, node: string, code: string, pipe: boolean): string[] {
+  return ['--quiet', '--collect', '--service-type=exec', '--unit=' + unit, ...(pipe ? ['--wait', '--pipe'] : []),
+    ...SYSTEMD_PROPERTIES.map(value => '--property=' + value), ...Object.entries(environment).map(([key, value]) => '--setenv=' + key + '=' + value),
+    '--', node, ...linuxNodeArguments, code]
+}
+function systemctl(args: string[]): ReturnType<typeof spawnSync> {
+  return spawnSync(SYSTEMCTL, args, { cwd: '/', env: environment, encoding: 'buffer', timeout: 2000, killSignal: 'SIGKILL', maxBuffer: 64 * 1024, windowsHide: true })
+}
+function cgroupDirectory(unit: string): string { return '/sys/fs/cgroup/system.slice/' + unit }
+function emptySystemdUnit(unit: string): boolean {
+  try { return /^populated 0$/mu.test(readFileSync(cgroupDirectory(unit) + '/cgroup.events', 'utf8')) }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' }
+}
+function stopSystemdUnit(unit: string): void {
+  // Stop revokes the unit's restart/start job; kill targets every remaining
+  // process rather than only the systemd-run client or its main PID.
+  systemctl(['stop', '--no-block', unit])
+  systemctl(['kill', '--kill-who=all', '--signal=SIGKILL', unit])
+}
+function reapSystemdUnitSync(unit: string): void {
+  stopSystemdUnit(unit)
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const state = systemctl(['show', '--property=ActiveState', '--property=LoadState', unit])
+    const raw = Buffer.isBuffer(state.stdout) ? state.stdout.toString('utf8') : ''
+    if ((/ActiveState=(?:inactive|failed)/u.test(raw) || /LoadState=not-found/u.test(raw)) && emptySystemdUnit(unit)) return
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+  }
+  throw unavailable()
+}
+async function reapSystemdUnit(unit: string): Promise<void> {
+  stopSystemdUnit(unit)
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const state = systemctl(['show', '--property=ActiveState', '--property=LoadState', unit])
+    const raw = Buffer.isBuffer(state.stdout) ? state.stdout.toString('utf8') : ''
+    if ((/ActiveState=(?:inactive|failed)/u.test(raw) || /LoadState=not-found/u.test(raw)) && emptySystemdUnit(unit)) return
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  throw unavailable()
+}
+/** Linux system-manager adapter. Returning metadata requires an actual running
+ * transient unit and kernel cgroup-v2 hard-memory proof on this host. */
+export function createLinuxSystemdAgentDiceScriptRunner(): AgentDiceScriptRunner {
+  if (runtimeProcess.platform !== 'linux' || !runtimeProcess.allowedNodeEnvironmentFlags.has('--permission')) throw unavailable()
+  let node: string, proof: string
+  const probe = 'bl-agent-dice-probe-' + randomUUID() + '.service'
+  try {
+    node = realpathSync(runtimeProcess.execPath)
+    if (!node.startsWith('/') || /[\u0000-\u001f\u007f]/u.test(node) || !readFileSync('/sys/fs/cgroup/cgroup.controllers', 'utf8').split(/\s+/u).includes('memory')) throw unavailable()
+    const started = spawnSync(SYSTEMD_RUN, systemdArguments(probe, node,
+      `if (!process.permission || ['fs.read','fs.write','child','worker','addons','wasi','inspector'].some(k=>process.permission.has(k))) process.exit(1);setInterval(()=>{},1000)`, false),
+      { cwd: '/', env: environment, stdio: ['ignore', 'pipe', 'pipe'], timeout: 1000, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 })
+    if (started.error || started.status !== 0 || started.signal) throw unavailable()
+    const shown = systemctl(['show', probe, '--property=ActiveState', '--property=MainPID', '--property=ControlGroup',
+      '--property=MemoryMax', '--property=MemorySwapMax', '--property=LimitCPU', '--property=RuntimeMaxUSec', '--property=PrivateNetwork',
+      '--property=NoNewPrivileges', '--property=DynamicUser', '--property=ProtectSystem', '--property=ProtectHome', '--property=RestrictAddressFamilies',
+      '--property=SystemCallFilter', '--property=KillMode', '--property=KillSignal', '--property=SendSIGKILL'])
+    if (shown.error || shown.status !== 0 || !Buffer.isBuffer(shown.stdout)) throw unavailable()
+    const properties = Object.fromEntries(shown.stdout.toString('utf8').trim().split('\n').map(line => { const at = line.indexOf('='); return [line.slice(0, at), line.slice(at + 1)] }))
+    if (properties.ActiveState !== 'active' || !/^[1-9]\d*$/u.test(properties.MainPID ?? '') || properties.ControlGroup !== '/system.slice/' + probe ||
+        properties.MemoryMax !== '134217728' || properties.MemorySwapMax !== '0' || properties.LimitCPU !== '1' ||
+        !(['1s 500ms', '1500ms'].includes(properties.RuntimeMaxUSec ?? '') || /^1\.5(?:0*)s$/u.test(properties.RuntimeMaxUSec ?? '')) || properties.PrivateNetwork !== 'yes' || properties.NoNewPrivileges !== 'yes' ||
+        properties.DynamicUser !== 'yes' || properties.ProtectSystem !== 'strict' || properties.ProtectHome !== 'yes' || properties.RestrictAddressFamilies !== 'AF_UNIX' ||
+        !properties.SystemCallFilter?.startsWith('~') || !['socket', 'socketpair', 'connect', 'bind', 'listen', 'accept', 'accept4'].every(name => properties.SystemCallFilter!.slice(1).split(/\s+/u).includes(name)) ||
+        properties.KillMode !== 'control-group' || properties.KillSignal !== '9' || properties.SendSIGKILL !== 'yes') throw unavailable()
+    const directory = cgroupDirectory(probe), memoryMax = readFileSync(directory + '/memory.max', 'utf8').trim(), swapMax = readFileSync(directory + '/memory.swap.max', 'utf8').trim()
+    if (memoryMax !== '134217728' || swapMax !== '0' || !/^populated 1$/mu.test(readFileSync(directory + '/cgroup.events', 'utf8'))) throw unavailable()
+    const command = readFileSync('/proc/' + properties.MainPID + '/cmdline', 'utf8').split('\0')
+    if (command[0] !== node || !command.includes('--permission') || !command.includes('--no-addons')) throw unavailable()
+    // Rule definitions include this attestation. The verified PID and transient
+    // cgroup name are invocation evidence, not changes to the runner contract.
+    const stableProperties = Object.fromEntries(Object.keys(properties).sort().filter(key => !['MainPID', 'ControlGroup'].includes(key)).map(key => [key, properties[key]]))
+    proof = JSON.stringify({ boundary: 'linux-systemd-cgroup-v2', kernel: release(), node, nodeVersion: runtimeProcess.version,
+      properties: stableProperties, memoryMax, swapMax })
+  } catch { throw unavailable() }
+  finally { reapSystemdUnitSync(probe) }
+  const executeSync = (input: AgentDiceScriptInput, options: AgentDiceScriptRunOptions = {}): AgentDiceScriptResult => {
+    if (options.signal?.aborted) throw cancelled()
+    const request = prepared(input), unit = 'bl-agent-dice-' + randomUUID() + '.service'
+    try {
+      const result = spawnSync(SYSTEMD_RUN, systemdArguments(unit, node, WORKER, true), { cwd: '/', env: environment, input: request.raw,
+        stdio: ['pipe', 'pipe', 'pipe'], timeout: MAX_WALL_MS, killSignal: 'SIGKILL', maxBuffer: MAX_OUTPUT, windowsHide: true })
+      if (options.signal?.aborted) throw cancelled()
+      const output = result.stdout, error = result.stderr
+      if (result.error || result.status !== 0 || result.signal || !Buffer.isBuffer(output) || !Buffer.isBuffer(error) || !output.byteLength ||
+          output.byteLength > MAX_OUTPUT || error.byteLength > MAX_STDERR || request.raw.byteLength + output.byteLength + error.byteLength > MAX_IO) throw rejected()
+      return resultOf(output, request.draws)
+    } finally { reapSystemdUnitSync(unit) }
+  }
+  const execute = async (input: AgentDiceScriptInput, options: AgentDiceScriptRunOptions = {}): Promise<AgentDiceScriptResult> => {
+    if (options.signal?.aborted) throw cancelled()
+    const request = prepared(input), unit = 'bl-agent-dice-' + randomUUID() + '.service'
+    try {
+      return await new Promise<AgentDiceScriptResult>((resolve, reject) => {
+        let child: ReturnType<typeof spawn>
+        try { child = spawn(SYSTEMD_RUN, systemdArguments(unit, node, WORKER, true), { cwd: '/', env: environment, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }) }
+        catch { reject(unavailable()); return }
+        let outputBytes = 0, errorBytes = 0, stopped: Error | undefined
+        const chunks: Buffer[] = []
+        const stop = (error: Error) => { stopped ??= error; child.stdin?.destroy(); stopSystemdUnit(unit); child.kill('SIGKILL') }
+        const abort = () => stop(cancelled()), timer = setTimeout(() => stop(rejected()), MAX_WALL_MS)
+        options.signal?.addEventListener('abort', abort, { once: true }); if (options.signal?.aborted) abort()
+        child.stdout?.on('data', (data: Buffer) => { outputBytes += data.byteLength; if (outputBytes > MAX_OUTPUT || request.raw.byteLength + outputBytes + errorBytes > MAX_IO) stop(rejected()); else chunks.push(data) })
+        child.stderr?.on('data', (data: Buffer) => { errorBytes += data.byteLength; if (errorBytes > MAX_STDERR || request.raw.byteLength + outputBytes + errorBytes > MAX_IO) stop(rejected()) })
+        child.stdin?.on('error', () => stop(rejected())); child.on('error', () => stop(unavailable()))
+        child.once('close', (code, signal) => {
+          clearTimeout(timer); options.signal?.removeEventListener('abort', abort)
+          if (stopped) { reject(stopped); return }
+          if (code !== 0 || signal || !outputBytes) { reject(rejected()); return }
+          try { resolve(resultOf(Buffer.concat(chunks), request.draws)) } catch { reject(rejected()) }
+        })
+        if (!stopped) child.stdin?.end(request.raw)
+      })
+    } finally { await reapSystemdUnit(unit) }
+  }
+  return Object.freeze({ definitionId: 'agent-dice-systemd:v1:' + createHash('sha256').update(JSON.stringify([node, runtimeProcess.version, SYSTEMD_PROPERTIES])).digest('hex'),
+    limits: AGENT_DICE_SCRIPT_LIMITS, isolation: Object.freeze({ execution: 'separate-process', filesystem: 'deny', network: 'deny', subprocess: 'deny',
+      totalMemory: 'os-hard-total-process', evidence: proof }), execute, executeSync })
 }

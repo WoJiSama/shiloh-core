@@ -19,7 +19,8 @@ export function normalizeDelegatedEntry(value:unknown,now:number):DelegatedMemor
     content:r.content.slice(0,300),
     dueAt:Number(r.dueAt)||0,
     status:r.status==='done'?'done':'active',
-    createdAt:Number(r.createdAt)||now,updatedAt:Number(r.updatedAt)||now
+    createdAt:Number(r.createdAt)||now,updatedAt:Number(r.updatedAt)||now,
+    ...(typeof r.sourceAt==='number'&&Number.isSafeInteger(r.sourceAt)&&r.sourceAt>0?{sourceAt:r.sourceAt}:{})
   }
 }
 

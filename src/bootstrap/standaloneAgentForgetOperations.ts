@@ -3,8 +3,10 @@ import type { AgentBindingSnapshot } from '../contracts/agentBinding.js'
 import type { AgentLocalEmojiRuntime } from '../contracts/agentLocalEmoji.js'
 import type { AgentSemanticMemoryCleanup } from '../contracts/semanticMemory.js'
 import type { AgentConversationMemoryCleanup } from '../contracts/conversationMemory.js'
+import type { AgentGroupMemoryCleanup } from '../contracts/groupMemory.js'
+import type { AgentSourceMemoryCleanup } from '../contracts/sourceMemoryCleanup.js'
 import { AgentConsoleError, type AgentConsoleContext, type AgentConsoleAuthPort } from '../contracts/agentConsole.js'
-import { ForgetOperationConflictError, type ForgetImpact, type ForgetOperationGuard, type ForgetOperationKind, type ForgetOperationReceipt, type ForgetOperationStore } from '../contracts/forgetOperation.js'
+import { ForgetOperationConflictError, type ForgetCleanupOwner, type ForgetCleanupState, type ForgetImpact, type ForgetOperationGuard, type ForgetOperationKind, type ForgetOperationReceipt, type ForgetOperationStore } from '../contracts/forgetOperation.js'
 import { agentBindingToken, agentConversationKey } from '../modules/runtime/domain/agentBindings.js'
 
 type Data = Record<string, unknown>
@@ -76,6 +78,8 @@ export function createStandaloneAgentForgetOperations(options: {
   readonly localEmojiCleanup?: Pick<AgentLocalEmojiRuntime, 'purgeSubject'>
   readonly semanticMemoryCleanup?: AgentSemanticMemoryCleanup
   readonly conversationMemoryCleanup?: AgentConversationMemoryCleanup
+  readonly groupMemoryCleanup?: AgentGroupMemoryCleanup
+  readonly sourceMemoryCleanup?: AgentSourceMemoryCleanup
 }): StandaloneAgentForgetOperations {
   const active = new Set<string>()
   async function owned<T>(action: (operationId: string) => Promise<T>): Promise<T> {
@@ -133,6 +137,116 @@ export function createStandaloneAgentForgetOperations(options: {
     try { await options.store.fail(operationId, { state: 'unknown', errorCode: error instanceof AgentConsoleError ? error.code.toUpperCase() : 'SOURCE_OUTCOME_UNKNOWN' }, lease) }
     catch { /* Revoked requests cannot write a receipt; accepted remains visibly unsettled. */ }
   }
+  const cleanupPorts = {
+    'local-emoji': options.localEmojiCleanup,
+    'semantic-memory': options.semanticMemoryCleanup,
+    'conversation-memory': options.conversationMemoryCleanup,
+    'group-memory': options.groupMemoryCleanup,
+    'source-memory': options.sourceMemoryCleanup,
+  }
+  const ownerPartitions: Record<ForgetCleanupOwner, readonly string[]> = {
+    'local-emoji': ['local-emoji-attributed-sources'],
+    'semantic-memory': ['semantic-memory-sources', 'semantic-memory-vectors'],
+    'conversation-memory': ['conversation-memory-records', 'conversation-memory-summaries', 'conversation-memory-episodes'],
+    'group-memory': ['group-memory-records', 'group-memory-jobs', 'group-memory-entries'],
+    'source-memory': ['history-records', 'person-extraction-batches', 'delegated-memory', 'commitments'],
+  }
+  function ownerImpacts(owner: ForgetCleanupOwner, binding: AgentBindingSnapshot, state: ForgetCleanupState): ForgetImpact[] {
+    const partition = `${owner}:${digest(owner === 'local-emoji' ? binding.agentId : agentConversationKey(binding))}`
+    return ownerPartitions[owner].map(id => impact('partition', id, partition, state))
+  }
+  function counts(...values: unknown[]): void {
+    if (!values.every(value => Number.isSafeInteger(value) && Number(value) >= 0)) fail('unavailable')
+  }
+  async function cleanupOwner(owner: ForgetCleanupOwner, receipt: ForgetOperationReceipt, context: AgentConsoleContext,
+    binding: AgentBindingSnapshot): Promise<{ state: ForgetCleanupState; impacts: readonly ForgetImpact[] }> {
+    const selected = { account: receipt.binding.target.account, agentId: receipt.binding.agentId,
+      subjectId: receipt.subject.userId!, target: receipt.binding.target, through: receipt.createdAt }
+    const lease = { signal: context.signal,
+      isCurrent() { try { current(context, binding); return true } catch { return false } },
+      ensureCurrent: () => authorize(context, 'profiles.delete', binding) }
+    if (owner === 'local-emoji') {
+      const result = await checked(context, 'profiles.delete', binding, () => options.localEmojiCleanup!.purgeSubject(selected, lease))
+      if (!result || result.usage !== 'blocked' || !['completed', 'unknown', 'unsupported'].includes(result.cleanup)) fail('unavailable')
+      counts(result.removedSources, result.removedImages, result.unattributedImages)
+      const impacts = ownerImpacts(owner, binding, result.cleanup)
+      if (result.unattributedImages) impacts.push(impact('partition', 'local-emoji-unattributed', impacts[0]!.partition, 'unsupported'))
+      return { state: result.cleanup, impacts }
+    }
+    if (owner === 'semantic-memory') {
+      const result = await checked(context, 'profiles.delete', binding, () => options.semanticMemoryCleanup!.purgeSubject(selected, lease))
+      if (!result || result.usage !== 'blocked' || !['completed', 'unknown'].includes(result.cleanup)) fail('unavailable')
+      counts(result.removedRows, result.removedVectors, result.removedPartitions)
+      return { state: result.cleanup, impacts: ownerImpacts(owner, binding, result.cleanup) }
+    }
+    if (owner === 'conversation-memory') {
+      const result = await checked(context, 'profiles.delete', binding, () => options.conversationMemoryCleanup!.purgeSubject(selected, lease))
+      if (!result || result.usage !== 'blocked' || !['completed', 'unknown'].includes(result.cleanup)) fail('unavailable')
+      counts(result.removedRecords, result.removedSummaries, result.removedEpisodes, result.removedPartitions)
+      return { state: result.cleanup, impacts: ownerImpacts(owner, binding, result.cleanup) }
+    }
+    if (owner === 'group-memory') {
+      const result = await checked(context, 'profiles.delete', binding, () => options.groupMemoryCleanup!.purgeSubject(selected, lease))
+      if (!result || result.usage !== 'blocked' || !['completed', 'unknown'].includes(result.cleanup)) fail('unavailable')
+      counts(result.removedRecords, result.removedJobs, result.removedEntries, result.removedPartitions)
+      return { state: result.cleanup, impacts: ownerImpacts(owner, binding, result.cleanup) }
+    }
+    const result = await checked(context, 'profiles.delete', binding, () => options.sourceMemoryCleanup!.purgeSubject(selected, lease))
+    if (!result || result.usage !== 'blocked' || !Array.isArray(result.partitions) || result.partitions.length !== ownerPartitions[owner].length) fail('unavailable')
+    const byId = new Map(result.partitions.map(item => [item.id, item]))
+    if (byId.size !== result.partitions.length) fail('unavailable')
+    const impacts = ownerImpacts(owner, binding, 'unknown').map(item => {
+      const row = byId.get(item.id)
+      if (!row || !['completed', 'unknown'].includes(row.cleanup)) fail('unavailable')
+      counts(row.removedRecords, row.removedPartitions)
+      return { ...item, state: row.cleanup }
+    })
+    return { state: impacts.some(item => item.state === 'unknown') ? 'unknown' : 'completed', impacts }
+  }
+  async function runCleanup(receipt: ForgetOperationReceipt, context: AgentConsoleContext, binding: AgentBindingSnapshot,
+    lease: ForgetOperationGuard): Promise<ForgetOperationReceipt> {
+    let result = await options.store.resumeCleanup(receipt.operationId, lease)
+    for (const owner of result.cleanupPlan!.owners) {
+      if (['completed', 'unsupported'].includes(owner.state)) continue
+      let outcome: { state: ForgetCleanupState; impacts: readonly ForgetImpact[] }
+      try {
+        if (!cleanupPorts[owner.owner]) fail('unavailable')
+        outcome = await cleanupOwner(owner.owner, result, context, binding)
+      } catch {
+        // Storage failures do not prevent other owners from cleaning their partitions.
+        // A lost lease still aborts the operation before any completion is published.
+        await authorize(context, 'profiles.delete', binding)
+        outcome = { state: 'unknown', impacts: ownerImpacts(owner.owner, binding, 'unknown') }
+      }
+      const impacts = new Map(result.impacts.map(item => [JSON.stringify([item.kind, item.partition, item.id]), item]))
+      for (const item of outcome.impacts) {
+        const key = JSON.stringify([item.kind, item.partition, item.id]), previous = impacts.get(key)
+        if (!previous || !['completed', 'unsupported'].includes(previous.state)) impacts.set(key, item)
+      }
+      result = await checked(context, 'profiles.delete', binding, () => options.store.update(result.operationId,
+        { cleanupOwner: { owner: owner.owner, state: outcome.state }, impacts: [...impacts.values()] }, lease))
+    }
+    if (result.cleanupPlan!.owners.some(item => !['completed', 'unsupported'].includes(item.state)))
+      return options.store.fail(result.operationId, { state: 'unknown', errorCode: 'CLEANUP_INCOMPLETE' }, lease)
+    return options.store.update(result.operationId, { phase: 'completed', usage: 'blocked', cleanup: 'unsupported' }, lease)
+  }
+  async function resume(receipt: ForgetOperationReceipt, context: AgentConsoleContext, binding: AgentBindingSnapshot,
+    lease: ForgetOperationGuard): Promise<ForgetOperationReceipt> {
+    if (!receipt.cleanupPlan || receipt.kind !== 'person-profile' || active.has(receipt.operationId)) return receipt
+    active.add(receipt.operationId)
+    try {
+      if (!receipt.cleanupPlan.sourceCommitted) {
+        const rows = await checked(context, 'profiles.read', binding, () => options.profiles.list(context))
+        if (rows.some(item => sameBinding(item.binding, binding) && item.profile.userId === receipt.subject.userId)) return receipt
+        receipt = await options.store.markCommitted(receipt.operationId, { impacts: receipt.impacts.map(item =>
+          item.kind === 'person-memory-entry' && item.state === 'pending' ? { ...item, state: 'completed' } : item) }, lease)
+      }
+      if (receipt.phase === 'completed') return receipt
+      return await runCleanup(receipt, context, binding, lease)
+    }
+    catch (error) { await failed(receipt.operationId, error, lease); throw error }
+    finally { active.delete(receipt.operationId) }
+  }
   return {
     async read(operationId, context) {
       const binding = current(context), idValue = token(operationId, 128)
@@ -148,7 +262,7 @@ export function createStandaloneAgentForgetOperations(options: {
         const requestId = requestToken(input.requestId), kind = field === undefined ? 'person-profile' : 'person-entry'
         const requestDigest = digest([kind, userId, field ?? null, input.value ?? null])
         const lease = guard(context, operationName, binding), previous = await existing(requestId, binding, kind, requestDigest, context, operationName)
-        if (previous) return previous as unknown as Data
+        if (previous) return await resume(previous, context, binding, lease) as unknown as Data
         const rows = await checked(context, 'profiles.read', binding, () => options.profiles.list(context))
         const row = rows.find(item => sameBinding(item.binding, binding) && item.profile.userId === userId)
         if (!row) fail('not_found')
@@ -162,63 +276,35 @@ export function createStandaloneAgentForgetOperations(options: {
           }
         }
         if (!selected.length) fail('not_found')
+        const partition = `person-memory:${agentConversationKey(binding)}`
         const receipt = await begin({ operationId, requestId, requestDigest, kind, binding,
-          subject: { userId, ...(selected.length === 1 ? { entryId: id(selected[0]!) } : {}) }, sourceRevision: binding.revision }, lease)
+          subject: { userId, ...(selected.length === 1 ? { entryId: id(selected[0]!) } : {}) }, sourceRevision: binding.revision,
+          ...(field === undefined ? { cleanupOwners: (Object.keys(cleanupPorts) as ForgetCleanupOwner[]).filter(owner => !!cleanupPorts[owner]),
+            impacts: [...selected.map(item => impact('person-memory-entry', id(item), partition, 'pending')), impact('partition', 'source-consumers', partition, 'unsupported')] } : {}) }, lease)
         await authorize(context, operationName, binding)
         if (receipt.operationId !== operationId) return receipt as unknown as Data
         try {
           let profileResult: unknown
           if (field === undefined) {
-            if (!await checked(context, operationName, binding, () => options.profiles.remove(userId, context))) fail('not_found')
+            const sourceContext: AgentConsoleContext = { ...context, profileForget: Object.freeze({ operationId: receipt.operationId,
+              userId, bindingToken: agentBindingToken(binding), through: receipt.createdAt }) }
+            try { await checked(context, operationName, binding, () => options.profiles.remove(userId, sourceContext)) }
+            catch {
+              // Core can delete the source before a downstream owner reports failure.
+              // Only a fresh authorized readback may turn that outcome into a committed source.
+              await authorize(context, operationName, binding)
+            }
           } else profileResult = await checked(context, operationName, binding, () => options.profiles.removeField(userId, field, input.value, context))
           const after = await checked(context, 'profiles.read', binding, () => options.profiles.list(context))
           const remaining = after.find(item => sameBinding(item.binding, binding) && item.profile.userId === userId)
+          if (field === undefined && remaining) fail('unavailable')
           const liveIds = new Set(remaining ? entries(remaining.profile).map(id) : [])
           if (selected.some(item => liveIds.has(id(item)))) fail('unavailable')
-          const partition = `person-memory:${agentConversationKey(binding)}`
           const impacts = [...selected.map(item => impact('person-memory-entry', id(item), partition)), impact('partition', 'source-consumers', partition, 'unsupported')]
-          if (field === undefined && options.localEmojiCleanup) {
-            const cleanup = await checked(context, operationName, binding, () => options.localEmojiCleanup!.purgeSubject({
-              account: binding.target.account, agentId: binding.agentId, subjectId: userId, target: binding.target, through: receipt.createdAt,
-            }, { signal: context.signal,
-              isCurrent() { try { current(context, binding); return true } catch { return false } },
-              ensureCurrent: () => authorize(context, operationName, binding),
-            }))
-            if (cleanup.usage !== 'blocked' || !['completed', 'unknown', 'unsupported'].includes(cleanup.cleanup) ||
-                ![cleanup.removedSources, cleanup.removedImages, cleanup.unattributedImages].every(value => Number.isSafeInteger(value) && value >= 0)) fail('unavailable')
-            const emojiPartition = `local-emoji:${digest(binding.agentId)}`
-            impacts.push(impact('partition', 'local-emoji-attributed-sources', emojiPartition, cleanup.cleanup))
-            if (cleanup.unattributedImages) impacts.push(impact('partition', 'local-emoji-unattributed', emojiPartition, 'unsupported'))
-          }
-          if (field === undefined && options.semanticMemoryCleanup) {
-            const cleanup = await checked(context, operationName, binding, () => options.semanticMemoryCleanup!.purgeSubject({
-              account: binding.target.account, agentId: binding.agentId, subjectId: userId, target: binding.target, through: receipt.createdAt,
-            }, { signal: context.signal,
-              isCurrent() { try { current(context, binding); return true } catch { return false } },
-              ensureCurrent: () => authorize(context, 'profiles.delete', binding),
-            }))
-            if (!cleanup || typeof cleanup !== 'object' || cleanup.usage !== 'blocked' || !['completed', 'unknown'].includes(cleanup.cleanup) ||
-                ![cleanup.removedRows, cleanup.removedVectors, cleanup.removedPartitions].every(value => Number.isSafeInteger(value) && value >= 0)) fail('unavailable')
-            const semanticPartition = `semantic-memory:${digest(agentConversationKey(binding))}`
-            impacts.push(impact('partition', 'semantic-memory-sources', semanticPartition, cleanup.cleanup),
-              impact('partition', 'semantic-memory-vectors', semanticPartition, cleanup.cleanup))
-          }
-          if (field === undefined && options.conversationMemoryCleanup) {
-            const cleanup = await checked(context, operationName, binding, () => options.conversationMemoryCleanup!.purgeSubject({
-              account: binding.target.account, agentId: binding.agentId, subjectId: userId, target: binding.target, through: receipt.createdAt,
-            }, { signal: context.signal,
-              isCurrent() { try { current(context, binding); return true } catch { return false } },
-              ensureCurrent: () => authorize(context, 'profiles.delete', binding),
-            }))
-            if (!cleanup || typeof cleanup !== 'object' || cleanup.usage !== 'blocked' || !['completed', 'unknown'].includes(cleanup.cleanup) ||
-                ![cleanup.removedRecords, cleanup.removedSummaries, cleanup.removedEpisodes, cleanup.removedPartitions].every(value => Number.isSafeInteger(value) && value >= 0)) fail('unavailable')
-            const conversationPartition = `conversation-memory:${digest(agentConversationKey(binding))}`
-            impacts.push(impact('partition', 'conversation-memory-records', conversationPartition, cleanup.cleanup),
-              impact('partition', 'conversation-memory-summaries', conversationPartition, cleanup.cleanup),
-              impact('partition', 'conversation-memory-episodes', conversationPartition, cleanup.cleanup))
-          }
-          const result = await checked(context, operationName, binding, () => finish(operationId, impacts, lease))
-          return { ok: true, message: '来源删除已确认；其他存储的完整清理证明暂不支持', ...(field === undefined ? {} : { profile: profileResult }), ...result } as unknown as Data
+          const result = field === undefined
+            ? await runCleanup(await options.store.markCommitted(operationId, { impacts }, lease), context, binding, lease)
+            : await checked(context, operationName, binding, () => finish(operationId, impacts, lease))
+          return { ok: true, message: result.phase === 'unknown' ? '来源删除已确认；部分关联清理尚未完成，可继续原请求' : '来源删除已确认；其他存储的完整清理证明暂不支持', ...(field === undefined ? {} : { profile: profileResult }), ...result } as unknown as Data
         } catch (error) { await failed(operationId, error, lease); throw error }
       })
     },

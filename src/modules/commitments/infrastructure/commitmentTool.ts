@@ -149,6 +149,8 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
     if(deliver==='static'&&!staticMessage)return 'deliver=static 需要 static_message（到点要发的固定文字）'
 
     const at=now()
+    const sourceAt=ev.sourceAt??ev._agentToolRequest?.occurredAt??at
+    if(!Number.isSafeInteger(sourceAt)||sourceAt<0)return 'error: 承诺来源时间无效'
     const normalized=normalizeSchedule(opts.schedule_kind,opts.schedule_time,at)
     if('error'in normalized)return normalized.error
 
@@ -163,7 +165,7 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
       static_message:staticMessage||null,
       expiry_at:at+cfg.defaultExpiryDays*86400_000,
       next_run_at:normalized.nextRunAt,status:'active',
-      last_run_at:0,last_result:'',retry_count:0,created_at:at,bot_id:botId,
+      last_run_at:0,last_result:'',retry_count:0,created_at:at,sourceAt,bot_id:botId,
       ...(scope?{scope}:{}),
       ...(ev._agentBinding?{bindingIdentity:agentBindingIdentity(ev._agentBinding)}:{}),
     }

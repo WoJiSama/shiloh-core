@@ -29,6 +29,8 @@ export interface CommitmentData {
   last_result:string
   retry_count:number
   created_at:number
+  /** Original author message time; late registrations keep the original cutoff. */
+  sourceAt?:number
   bot_id:string
   /** Captured ownership for new tasks. Records without scope use the legacy QQ route. */
   scope?:AgentConversationScope
@@ -49,6 +51,8 @@ export interface CommitmentRedisLike {
 }
 export interface CommitmentBotLike { uin?:string|number; sendApi?:(action:string,params:Record<string,unknown>)=>Promise<unknown> }
 export interface CommitmentEvent extends AgentBindingTurn {
+  sourceAt?:number
+  _agentToolRequest?:{readonly occurredAt?:number|undefined}
   group_id?:string|number|undefined
   user_id?:string|number|undefined
   isMaster?:boolean|undefined

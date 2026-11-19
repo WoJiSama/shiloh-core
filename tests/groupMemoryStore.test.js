@@ -86,7 +86,7 @@ test('migration staging merges validated state without writing Redis or losing r
   })
   assert.deepEqual(next, { ...input, entries: [...input.entries, entry(selected, 3)] })
   assert.deepEqual([...f.stored], [[catalogKey, catalogRaw], [stateKey(input.id), stateRaw]])
-  assert.deepEqual([...f.original], [[catalogKey, catalogRaw], [stateKey(input.id), stateRaw]])
+  assert.deepEqual([...f.original], [[catalogKey, catalogRaw], [stateKey(input.id), stateRaw], [`${base}:cleanup`, null]])
   assert.deepEqual(JSON.parse(f.staged.get(stateKey(input.id))), next)
   assert.equal(f.staged.get(catalogKey), catalogRaw)
   next.entries[0].source.text = '修改返回值不会改写暂存序列化结果'
@@ -98,7 +98,7 @@ test('successive staging uses the caller overlay while retaining the original ca
   await stageGroupMemoryUpdate(f.storage, first.target, current => { assert.equal(current, undefined); return first })
   await stageGroupMemoryUpdate(f.storage, second.target, () => second)
   assert.deepEqual(JSON.parse(f.staged.get(catalogKey)), { version: 1, ids: [first.id, second.id] })
-  assert.deepEqual([...f.original], [[catalogKey, null], [stateKey(first.id), null], [stateKey(second.id), null]])
+  assert.deepEqual([...f.original], [[catalogKey, null], [stateKey(first.id), null], [`${base}:cleanup`, null], [stateKey(second.id), null]])
   assert.equal(f.stored.size, 0)
   const count = f.writes.length
   assert.deepEqual(await stageGroupMemoryUpdate(f.storage, first.target, current => current), first)
@@ -106,7 +106,7 @@ test('successive staging uses the caller overlay while retaining the original ca
   const empty = staging()
   assert.equal(await stageGroupMemoryUpdate(empty.storage, first.target, () => undefined), undefined)
   assert.equal(empty.staged.size, 0)
-  assert.deepEqual([...empty.original], [[catalogKey, null], [stateKey(first.id), null]])
+  assert.deepEqual([...empty.original], [[catalogKey, null], [stateKey(first.id), null], [`${base}:cleanup`, null]])
 })
 
 test('staging rejects damaged catalogs, missing or orphaned documents and all capacity overflow before staging writes', async () => {

@@ -43,9 +43,16 @@ export function resolveTurtleSoupConfig(settings:Record<string,unknown>):TurtleS
   }
 }
 
+export interface TurtleSoupStoreGuard {
+  ensureCurrent():Promise<void>
+  isCurrent():boolean
+}
+
 export class TurtleSoupStore {
   readonly dataDir:string
-  constructor({cwd = process.cwd(), baseDir = "data/turtle_soup"}:{cwd?:string;baseDir?:string} = {}) {
+  private readonly guard:TurtleSoupStoreGuard|undefined
+  constructor({cwd = process.cwd(), baseDir = "data/turtle_soup", guard}:{cwd?:string;baseDir?:string;guard?:TurtleSoupStoreGuard} = {}) {
+    this.guard = guard
     this.dataDir = resolveDataDir(cwd, baseDir)
     ensureDir(this.dataDir)
   }
@@ -123,12 +130,15 @@ export class TurtleSoupStore {
   async transaction<Result>(operation:(state:TurtleSoupState)=>Result):Promise<Result> {
     let committed:{outcome:Result}|undefined
     try {
-      return await withFileLock(path.join(this.dataDir,'.state-lock'),()=>{
+      return await withFileLock(path.join(this.dataDir,'.state-lock'),async()=>{
+        await this.guard?.ensureCurrent()
+        if(this.guard&&!this.guard.isCurrent())throw new Error('海龟汤操作权限已失效')
         const recovery=this.journal()
         if(recovery)this.materialize(recovery.revision,recovery.state)
         const state=this.readState(),result=operation(state)
         if(result&&typeof (result as {then?:unknown}).then==='function')throw new Error('海龟汤事务回调必须同步完成')
         const normalized=this.decodeState(state),revision=randomUUID(),outcome=structuredClone(result)
+        if(this.guard&&!this.guard.isCurrent())throw new Error('海龟汤操作权限已失效')
         try {writeAtomicJson(path.join(this.dataDir,'transaction-journal.json'),{revision,state:normalized})}
         catch(error){
           // A directory fsync/close may fail after rename already published it.

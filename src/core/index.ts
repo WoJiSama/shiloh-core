@@ -34,7 +34,10 @@ export type { PersonProfileExtractor, PersonProfileExtractionMessage, PersonProf
 export type { TextPersonMemoryConfig } from '../contracts/textPersonMemory.js'
 export type { MidtermMemoryConfig, EpisodicMemoryConfig, ConversationSummaryModel, ConversationSummaryInput,
   AgentConversationMemoryCleanup, AgentConversationMemoryPurgeSubject, AgentConversationMemoryCleanupGuard, AgentConversationMemoryCleanupReceipt } from '../contracts/conversationMemory.js'
-export type { GroupMemoryConfig, GroupMemoryModel, GroupMemoryModelInput, GroupMemoryProposal } from '../contracts/groupMemory.js'
+export type { GroupMemoryConfig, GroupMemoryModel, GroupMemoryModelInput, GroupMemoryProposal,
+  AgentGroupMemoryCleanup, AgentGroupMemoryCleanupGuard, AgentGroupMemoryCleanupReceipt, AgentGroupMemoryPurgeSubject } from '../contracts/groupMemory.js'
+export type { AgentSourceMemoryCleanup, AgentSourceMemoryCleanupGuard, AgentSourceMemoryCleanupReceipt,
+  AgentSourceMemoryPartitionCleanupReceipt, AgentSourceMemoryPurgeSubject } from '../contracts/sourceMemoryCleanup.js'
 export type { AgentSemanticMemoryConfig, AgentSemanticMemoryBackend, AgentSemanticMemoryRecall, AgentSemanticMemoryQuerySource,
   AgentSemanticMemoryCleanup, AgentSemanticMemoryCleanupGuard, AgentSemanticMemoryPurgeSubject, AgentSemanticMemoryCleanupReceipt } from '../contracts/semanticMemory.js'
 export type { AgentHistoryConfig, AgentHistoryRecall, AgentHistoryRequestSource } from '../contracts/agentHistory.js'
@@ -78,6 +81,7 @@ export type {
   MessageResource, OutgoingPart, SendMessageAction, MessageBundlePart, MessageBundleItem, SendMessageBundleAction,
 } from '../contracts/platformMessage.js'
 export type { SimulationSection } from '../contracts/simulation.js'
+export type { AgentGroupGameContext, AgentGroupGameHandler, AgentGroupGamePrivateRelayRequest, AgentGroupGameRelayGuard, AgentGroupGameSendGuard } from '../contracts/agentGames.js'
 
 export type { AgentFileBytes, AgentFileRequest, AgentFileListing, ConversationFileEntry, ConversationFileCatalog, FileReadGuard, MessageFileReadOptions, ConversationFileReadOptions } from '../contracts/agentFiles.js'
 export type { AgentVideoInput, AgentMessageVideo, MessageVideoReadOptions } from '../contracts/agentVideo.js'
@@ -99,7 +103,7 @@ export { createAgentDiceState, type AgentDiceStateRedis, type AgentDiceStateGuar
   type AgentDiceStateSnapshot, type AgentDiceStateClaim, type AgentDiceEffectReceipt } from '../modules/dice/infrastructure/agentDiceState.js'
 export { resolveAgentDiceAuthorization, type AgentDiceAuthorizationPermission, type AgentDiceAuthorizationGrant,
   type AgentDiceAuthorizationEvidence, type AgentDiceAuthorizationInput } from '../modules/dice/infrastructure/agentDiceAuthorization.js'
-export { captureAgentDiceScriptRunner, validateAgentDiceScriptRunner, type AgentDiceScriptRunner,
+export { captureAgentDiceScriptRunner, validateAgentDiceScriptRunner, createLinuxSystemdAgentDiceScriptRunner, type AgentDiceScriptRunner,
   type AgentDiceScriptInput, type AgentDiceScriptResult } from '../modules/dice/infrastructure/agentDiceScriptProcess.js'
 export type { AgentVideoCard, SendVideoCardAction, AgentVideoSearchProvider } from '../contracts/agentVideoCard.js'
 export type { AgentBilibiliQualityConfig, AgentBilibiliQualityRequest, AgentPreparedBilibiliQuality, AgentBilibiliQualityProvider } from '../contracts/agentBilibiliQuality.js'

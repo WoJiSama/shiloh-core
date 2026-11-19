@@ -27,6 +27,7 @@ export function createStandaloneAgentConsoleManagement(options: {
     }, fail) : { signal: context.signal, isCurrent, ensureCurrent() { context.ensureCurrent(); if (!isCurrent()) fail() } }
     return {
       ...parent, ...(context.binding ? { binding: context.binding } : {}),
+      ...(context.profileForget ? { profileForget: context.profileForget } : {}),
       async authorize(operation, binding, guard) {
         const checkParent = captureSynchronousGuardCheck(parent, fail), checkChild = captureSynchronousGuardCheck(guard, fail)
         const scoped = checkParent && checkChild ? createSynchronousGuard(context.signal, () => {

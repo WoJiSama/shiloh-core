@@ -4,10 +4,11 @@ import { readFile } from 'node:fs/promises'
 import { createOneBotConnection, verifyOneBotLogin } from '../adapters/oneBotConnection.js'
 import { createAgentQzoneLedger } from '../modules/runtime/infrastructure/agentQzoneLedger.js'
 import { sideLLMCall } from '../adapters/sideLLM.js'
-import { createAgentRuntime } from '../core/index.js'
+import { createAgentRuntime, createLinuxSystemdAgentDiceScriptRunner } from '../core/index.js'
 import { openStandaloneTorrent } from './standaloneTorrent.js'
 import { openStandaloneGroupLog } from './standaloneGroupLog.js'
 import { createStandaloneDiceRuntime } from './standaloneDice.js'
+import { createStandaloneGroupGames } from './standaloneGames.js'
 import type { AgentRuntimeOptions } from '../core/index.js'
 import { awaitModelRequestAuthority, isModelRequestCurrent, type ExecutionOptions } from '../contracts/modelExecution.js'
 import type { ChatRequestData, ChatResponse } from '../contracts/modelGateway.js'
@@ -26,6 +27,8 @@ import { createTokenLedger } from '../modules/models/infrastructure/tokenLedger.
 import { createAgentWebTools } from '../modules/tools/infrastructure/agentWebTools.js'
 import { createAgentRepositoryTools } from '../modules/tools/infrastructure/agentRepositoryTools.js'
 import { createAgentModrinthTools } from '../modules/tools/infrastructure/agentModrinthTools.js'
+import { createAgentDeltaForceTools } from '../modules/games/infrastructure/agentDeltaForceTools.js'
+import { createAgentDeltaForceReportRenderer } from '../modules/games/infrastructure/agentDeltaForceReportRenderer.js'
 import { createAgentModrinthCardRenderer } from '../modules/media/infrastructure/agentModrinthCardRenderer.js'
 import { agentImageBackends, createAgentImageTools } from '../modules/tools/infrastructure/agentImageTools.js'
 import { createAgentImageSearchTools } from '../modules/content/infrastructure/agentImageSearchTools.js'
@@ -311,7 +314,7 @@ export async function main(argv: string[]): Promise<void> {
     }) : []
     const hostSecrets = [reviewBackend?.apiKey, config.execution.chatAiConfig?.chatApiKey, config.vision?.apiKey,
       config.tools.localEmoji.analysis?.apiKey, config.tools.localEmoji.embedding?.apiKey, config.tools.localEmoji.tools?.apiKey,
-      config.tools.search?.apiKey, config.tools.github?.token, config.tools.modrinth?.translation.apiKey, config.personMemoryExtraction?.apiKey, config.midtermSummary?.apiKey, config.groupMemoryExtraction?.apiKey,
+      config.tools.search?.apiKey, config.tools.deltaForce?.apiKey, config.tools.github?.token, config.tools.modrinth?.translation.apiKey, config.personMemoryExtraction?.apiKey, config.midtermSummary?.apiKey, config.groupMemoryExtraction?.apiKey,
       ...[config.tools.images?.generation, config.tools.images?.edit].flatMap(value => agentImageBackends(value).map(backend => backend.apiKey)),
       config.tools.rendering?.mindMap?.apiKey,
       config.semanticMemory.embedding?.apiKey, config.semanticMemory.rerank?.apiKey, config.tools.voice?.accessToken, config.tools.voice?.authorization,
@@ -547,6 +550,8 @@ export async function main(argv: string[]): Promise<void> {
         ...(config.tools.excel?.enabled ? [createAgentExcelTool({ secrets: hostSecrets, allowsText: text => config.forbiddenWords.blockOutput === false || !words.findForbiddenWord(text, config.forbiddenWords) })] : []),
         ...(createAgentWebTools({ ...config.tools, secrets: hostSecrets, diagnostics }).builtIn ?? []),
         ...(createAgentRepositoryTools({ ...config.tools, secrets: hostSecrets }).builtIn ?? []),
+        ...(createAgentDeltaForceTools({ ...config.tools, secrets: hostSecrets, allowsText: allowsMediaText,
+          renderReport: createAgentDeltaForceReportRenderer().render }).builtIn ?? []),
         ...(createAgentModrinthTools({ ...config.tools, secrets: hostSecrets, renderCard: createAgentModrinthCardRenderer().render }).builtIn ?? []),
         ...(createAgentImageTools({ ...config.tools.images, secrets: hostSecrets }).builtIn ?? []),
         ...(createAgentRenderingTools({ ...config.tools, secrets: hostSecrets,
@@ -554,8 +559,11 @@ export async function main(argv: string[]): Promise<void> {
           allowsText: text => config.forbiddenWords.blockOutput === false || !words.findForbiddenWord(text, config.forbiddenWords),
         }).builtIn ?? []),
     ]
+    const diceScriptRunner = config.diceEngineConfig?.rulePackages.some(pack => pack.kind !== 'yaml')
+      ? createLinuxSystemdAgentDiceScriptRunner() : undefined
     const diceRuntime = await createStandaloneDiceRuntime(config.diceEngineConfig,
-      () => !executionSignal.aborted && storage?.isCurrent() === true && config.isConfigCurrent())
+      () => !executionSignal.aborted && storage?.isCurrent() === true && config.isConfigCurrent(),
+      diceScriptRunner ? { scriptRunner: diceScriptRunner } : {})
     const managementBindings = createAgentManagementBindings(() => config.listBindings())
     host = createAgentRuntime({
       storage: storage.storage, adapters, logger: safeLogger, diagnostics,
@@ -573,6 +581,15 @@ export async function main(argv: string[]): Promise<void> {
       allowsToolInput: allowsSecretText,
       resolvePersona: config.resolvePersona,
       getSection: () => config.simulation,
+      createGroupGames: ({ authorizeBackground }) => createStandaloneGroupGames({
+        config: config.games, dataDir: config.dataDir, execution: config.execution,
+        executionSignal,
+        isCurrent: () => !executionSignal.aborted && storage?.isCurrent() === true && config.isConfigCurrent(),
+        allowsText: text => allowsSecretText(text) && !words.findForbiddenWord(text, config.forbiddenWords),
+        execute: (request, execution, options) => diagnostics.run(diagnostics.scope(), 'turtle_soup_model',
+          () => executor.YTapi(request, execution, undefined, undefined, options), 'model'),
+        recordTokens: input => ledger.record({ ...input, usage: input.usage }), authorizeBackground, logger: safeLogger,
+      }),
       memorySystem: config.memorySystem,
       midtermMemory: config.midtermMemory,
       episodicMemory: config.episodicMemory,
@@ -675,6 +692,8 @@ export async function main(argv: string[]): Promise<void> {
           localEmojiCleanup: localEmoji,
           semanticMemoryCleanup: host.semanticMemoryCleanup,
           conversationMemoryCleanup: host.conversationMemoryCleanup,
+          groupMemoryCleanup: host.groupMemoryCleanup,
+          sourceMemoryCleanup: host.sourceMemoryCleanup,
           characters: { describeGroup: runtime.describeGroup, controlCharacter: runtime.controlCharacter } })
         : undefined
       const installed = createStandaloneAgentConsoleServices({ bindings, auth: consoleAuth, runtime, ledger, ...management, ...(forgetting ? { forgetting } : {}),

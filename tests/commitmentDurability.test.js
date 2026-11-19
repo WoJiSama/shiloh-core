@@ -1,9 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {createCommitmentRuntime} from '../dist/backend/modules/commitments/infrastructure/commitmentTool.js'
-import {createCommitmentStore, COMMITMENT_LEASE_MS} from '../dist/backend/modules/commitments/infrastructure/commitmentStore.js'
+import {importBilibiliHost as load} from './helpers/bilibiliQualitySource.mjs'
+const {createCommitmentRuntime}=await load('modules/commitments/infrastructure/commitmentTool.js')
+const {createCommitmentStore, COMMITMENT_LEASE_MS}=await load('modules/commitments/infrastructure/commitmentStore.js')
 import {commitmentRedis} from './helpers/commitmentRedis.js'
-import {createAgentBindingDirectory} from '../dist/backend/modules/runtime/domain/agentBindings.js'
+const {createAgentBindingDirectory}=await load('modules/runtime/domain/agentBindings.js')
 const prefix='bl-chat:commitment:'
 const at=Date.parse('2026-11-11T12:00:00+08:00')
 const event={group_id:'20',user_id:'10',self_id:'200',sender:{nickname:'tester'}}

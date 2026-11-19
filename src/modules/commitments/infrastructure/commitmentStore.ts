@@ -1,15 +1,20 @@
 // 承诺账本 redis 存储:pending:list(按 next_run_at 排序)+ detail:{id},锁模式对齐 ReminderTool。
-import {randomUUID} from 'node:crypto'
+import {createHash,randomUUID} from 'node:crypto'
 import type {CommitmentData,CommitmentRedisLike} from '../../../contracts/commitments.js'
 import type {AgentDeferredActionData} from '../../../contracts/agentDeferredAction.js'
 import {agentConversationKey,decodeAgentConversationKey} from '../../runtime/domain/agentBindings.js'
 import {assertDeferredGrant,decodeAgentDeferredAction} from './agentDeferredActionData.js'
+import type {AgentSourceMemoryCleanupGuard,AgentSourceMemoryPurgeSubject} from '../../../contracts/sourceMemoryCleanup.js'
+import {conversationCleanupAllows,parseConversationCleanup,type ConversationCleanupSelector} from '../../memory/infrastructure/conversationMemoryCleanup.js'
+import {cleanupExpected,createSubjectMemoryCleanup} from '../../memory/infrastructure/subjectMemoryCleanup.js'
 
 const REDIS_KEY_PREFIX='bl-chat:commitment:'
 export const COMMITMENT_PENDING_KEY=`${REDIS_KEY_PREFIX}pending:list`
 const FAILLOG_KEY=`${REDIS_KEY_PREFIX}faillog`
 const FAILLOG_LIMIT=20
 export const COMMITMENT_LOCK_KEY=`${REDIS_KEY_PREFIX}lock`
+export const COMMITMENT_CLEANUP_KEY=`${REDIS_KEY_PREFIX}cleanup:v1`
+const cleanupIdKey=(id:string)=>`${REDIS_KEY_PREFIX}cleanup:id:${createHash('sha256').update(id).digest('hex')}`
 const LOCK_TIMEOUT=15000
 const LOCK_ACQUIRE_TIMEOUT=1500
 
@@ -44,6 +49,7 @@ export function decodeCommitment(data:string):CommitmentData {
   const scope=typeof r.scopeKey==='string'?decodeAgentConversationKey(r.scopeKey):null
   const bindingIdentity=r.bindingIdentity
   const importedReminder=r.importedReminder===true
+  if(r.sourceAt!==undefined&&(!Number.isSafeInteger(r.sourceAt)||Number(r.sourceAt)<0))throw new Error('承诺来源时间损坏')
   const deferredAction=r.deferredAction===undefined?undefined:decodeAgentDeferredAction(r.deferredAction)
   const scopeMatches=scope?.target.account.id===r.bot_id && (scope?.target.kind==='group' ? scope.target.id===r.group_id :
     importedReminder&&scope?.target.kind==='private'&&scope.target.id===r.creator_id&&r.group_id==='')
@@ -69,6 +75,7 @@ export function decodeCommitment(data:string):CommitmentData {
     next_run_at:Number(r.next_run_at)||0,status:status as CommitmentData['status'],
     last_run_at:Number(r.last_run_at)||0,last_result:String(r.last_result||''),retry_count:Number(r.retry_count)||0,
     created_at:Number(r.created_at)||0,bot_id:String(r.bot_id||''),revision:Number(r.revision)||0,
+    ...(r.sourceAt===undefined?{}:{sourceAt:Number(r.sourceAt)}),
     ...(scope?{scope}:{}),
     ...(typeof bindingIdentity==='string'?{bindingIdentity}:{}),
     ...(typeof r.run_id==='string'&&r.run_id?{run_id:r.run_id,lease_until:Number(r.lease_until)||0,execution_state:r.execution_state==='executing'?'executing' as const:'claimed' as const}:{})
@@ -84,6 +91,9 @@ export function encodeCommitment(commitment:CommitmentData):string {
 export const COMMITMENT_LEASE_MS=120_000
 const WRITE_STATE=`-- commitment-state-v2
 if redis.call("GET", KEYS[1]) ~= ARGV[1] then return 0 end
+if (redis.call('GET',KEYS[4]) or false)~=(ARGV[5]=='1' and ARGV[6] or false) then return 0 end
+if redis.call('EXISTS',KEYS[5])==1 then return -1 end
+if (redis.call('GET',KEYS[2]) or false)~=(ARGV[7]=='1' and ARGV[8] or false) then return 0 end
 redis.call("SET", KEYS[2], ARGV[2])
 if tonumber(ARGV[4]) > 0 then redis.call("EXPIRE", KEYS[2], ARGV[4]) end
 redis.call("SET", KEYS[3], ARGV[3])
@@ -91,7 +101,19 @@ return 1`
 const WRITE_FAILURES=`-- commitment-failures-cas-v1
 if redis.call('GET',KEYS[1])~=ARGV[1] then return -1 end
 if (redis.call('GET',KEYS[2]) or '')~=ARGV[2] then return 0 end
+if #KEYS>2 and (redis.call('GET',KEYS[3]) or false)~=(ARGV[4]=='1' and ARGV[5] or false) then return 0 end
+if #KEYS>3 and redis.call('EXISTS',KEYS[4])==1 then return -2 end
 redis.call('SET',KEYS[2],ARGV[3]); return 1`
+const READ_STATE=`-- commitment-cleanup-read-v1
+return {redis.call('GET',KEYS[1]) or false,redis.call('GET',KEYS[2]) or false,redis.call('GET',KEYS[3]) or false}`
+const PURGE_STATE=`-- commitment-cleanup-purge-v1
+if redis.call('GET',KEYS[1])~=ARGV[1] then return -1 end
+for i=1,4 do if (redis.call('GET',KEYS[i+1]) or false)~=(ARGV[2*i]=='1' and ARGV[2*i+1] or false) then return 0 end end
+redis.call('SET',KEYS[6],'1')
+redis.call('DEL',KEYS[2])
+redis.call('SET',KEYS[3],ARGV[10])
+if ARGV[11]=='1' then redis.call('SET',KEYS[4],ARGV[12]) end
+return 1`
 
 export interface CommitmentFailure {
   id?:string;intent?:string;group_id?:string;reason?:string;at?:number
@@ -119,24 +141,46 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
     await ensureCurrent?.()
     return decodeCommitmentPendingList(raw)
   }
+  async function snapshot(id:string,ensureCurrent?:()=>Promise<void>){
+    await ensureCurrent?.()
+    const result=await redis.eval(READ_STATE,{keys:[commitmentDetailKey(id),COMMITMENT_CLEANUP_KEY,cleanupIdKey(id)],arguments:[]})
+    await ensureCurrent?.()
+    if(!Array.isArray(result)||result.length!==3||result.some(value=>value!==null&&typeof value!=='string'))throw new Error('承诺清理屏障不可用')
+    return {raw:result[0] as string|null,fenceRaw:result[1] as string|null,retired:result[2]!==null,fences:parseConversationCleanup(result[1] as string|null)}
+  }
+  const sourceAt=(c:CommitmentData)=>c.deferredAction?.grant.source.at??c.sourceAt??c.created_at
+  const permitted=(c:CommitmentData,fences:ReturnType<typeof parseConversationCleanup>)=>!c.scope||conversationCleanupAllows(c.scope,{authorId:c.creator_id,at:sourceAt(c)},fences)
+  function sameSource(left:CommitmentData,right:CommitmentData):boolean{
+    return left.creator_id===right.creator_id&&left.created_at===right.created_at&&sourceAt(left)===sourceAt(right)&&left.bot_id===right.bot_id&&
+      (left.scope?agentConversationKey(left.scope):'')===(right.scope?agentConversationKey(right.scope):'')&&left.bindingIdentity===right.bindingIdentity
+  }
   async function getCommitment(id:string,ensureCurrent?:()=>Promise<void>):Promise<CommitmentData|null>{
-    await ensureCurrent?.()
-    const data=await redis.get(commitmentDetailKey(id))
-    await ensureCurrent?.()
-    if(!data)return null
+    const saved=await snapshot(id,ensureCurrent)
+    if(!saved.raw||saved.retired)return null
     // A corrupt record must not become an apparently missing task that gets overwritten.
-    return decodeCommitment(data)
+    const c=decodeCommitment(saved.raw)
+    return permitted(c,saved.fences)?c:null
   }
   async function persist(c:CommitmentData,token:string,isCurrent?:()=>boolean,ensureCurrent?:()=>Promise<void>):Promise<boolean>{
-    const list=(await getPendingList(ensureCurrent)).filter(item=>item.id!==c.id)
-    if(c.status==='active')list.push({id:c.id,next_run_at:c.run_id?c.lease_until||0:c.next_run_at})
-    list.sort((a,b)=>a.next_run_at-b.next_run_at)
-    const data=encodeCommitment(c)
-    await ensureCurrent?.()
-    if(isCurrent?.()===false)return false
-    const saved=await redis.eval(WRITE_STATE,{keys:[COMMITMENT_LOCK_KEY,commitmentDetailKey(c.id),COMMITMENT_PENDING_KEY],arguments:[token,data,JSON.stringify(list),c.status==='active'||c.deferredAction?'0':'86400']})
-    if(Number(saved)!==1)throw new Error('承诺锁已失效，拒绝旧执行写入')
-    return true
+    for(let attempt=0;attempt<16;attempt++){
+      const snapshotValue=await snapshot(c.id,ensureCurrent)
+      if(snapshotValue.retired||!permitted(c,snapshotValue.fences))return false
+      if(snapshotValue.raw&&!sameSource(decodeCommitment(snapshotValue.raw),c))throw new Error('承诺来源不可改变')
+      const list=(await getPendingList(ensureCurrent)).filter(item=>item.id!==c.id)
+      if(c.status==='active')list.push({id:c.id,next_run_at:c.run_id?c.lease_until||0:c.next_run_at})
+      list.sort((a,b)=>a.next_run_at-b.next_run_at)
+      const data=encodeCommitment(c)
+      decodeCommitment(data)
+      await ensureCurrent?.()
+      if(isCurrent?.()===false)return false
+      const saved=await redis.eval(WRITE_STATE,{keys:[COMMITMENT_LOCK_KEY,commitmentDetailKey(c.id),COMMITMENT_PENDING_KEY,COMMITMENT_CLEANUP_KEY,cleanupIdKey(c.id)],
+        arguments:[token,data,JSON.stringify(list),c.status==='active'||c.deferredAction?'0':'86400',...cleanupExpected(snapshotValue.fenceRaw),...cleanupExpected(snapshotValue.raw)]})
+      if(Number(saved)===1)return true
+      if(Number(saved)===-1)return false
+      await ensureCurrent?.()
+      if(await redis.get(COMMITMENT_LOCK_KEY)!==token)throw new Error('承诺锁已失效，拒绝旧执行写入')
+    }
+    throw new Error('承诺清理屏障正在更新')
   }
   const withoutRun=(c:CommitmentData):CommitmentData=>{
     const {run_id:_run,lease_until:_lease,execution_state:_state,...rest}=c
@@ -194,12 +238,11 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
           const reason='上次执行中断且结果未知，已停止自动重发'
           await persist({...withoutRun(c),status:'unknown',last_result:reason,next_run_at:0,revision:(c.revision||0)+1,
             ...(c.deferredAction?.state==='executing'?{deferredAction:{...c.deferredAction,state:'unknown',settledAt:at,resultCode:'interrupted'}}:{})},token)
-          await appendFailLogUnlocked({id:c.id,intent:c.intent,group_id:c.group_id,reason,at})
+          await appendFailLogUnlocked({id:c.id,intent:c.intent,group_id:c.group_id,reason,at},token)
           continue
         }
         const claimed:CommitmentData={...c,run_id:randomUUID(),lease_until:at+COMMITMENT_LEASE_MS,execution_state:'claimed',revision:(c.revision||0)+1}
-        await persist(claimed,token)
-        out.push(claimed)
+        if(await persist(claimed,token))out.push(claimed)
         if(out.length>=limit)break
       }
       return out
@@ -233,8 +276,7 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
       const current=await getCommitment(c.id)
       if(!current||current.status!=='active'||!c.run_id||current.run_id!==c.run_id)return false
       // Preserve concurrent renewal fields. Only the owner of this run may settle it.
-      await persist({...withoutRun(c),...(current.deferredAction?{deferredAction:current.deferredAction}:{}),expiry_at:current.expiry_at,renewal_asked_at:current.renewal_asked_at||0,revision:(current.revision||0)+1},token)
-      return true
+      return await persist({...withoutRun(c),...(current.deferredAction?{deferredAction:current.deferredAction}:{}),expiry_at:current.expiry_at,renewal_asked_at:current.renewal_asked_at||0,revision:(current.revision||0)+1},token)
     })
   }
   /** A cancellation fence shared by local workers using this same storage port. */
@@ -322,17 +364,24 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
     if(!Array.isArray(entries))throw new Error('承诺失败日志损坏，停止修改')
     return {raw,entries}
   }
-  async function appendFailLogUnlocked(entry:CommitmentFailure){
-    // Only this store can attach provenance, and only from the original detail.
-    const task=entry.id?await getCommitment(entry.id):null
-    const {id,intent,group_id,reason,at}=entry
-    const proven=task?.scope&&task.bindingIdentity&&task.id===id&&task.group_id===group_id&&task.intent===intent
-    const next={id,intent,group_id,reason,at,failureId:randomUUID(),
-      ...(proven?{scopeKey:agentConversationKey(task.scope!),bindingIdentity:task.bindingIdentity}:{})}
-    const current=await readFailureDocument()
-    await redis.set(FAILLOG_KEY,JSON.stringify([next,...current.entries].slice(0,FAILLOG_LIMIT)))
+  async function appendFailLogUnlocked(entry:CommitmentFailure,token:string){
+    for(let attempt=0;attempt<16;attempt++){
+      const saved=entry.id?await snapshot(entry.id):{raw:null,fenceRaw:await redis.get(COMMITMENT_CLEANUP_KEY),retired:false,fences:parseConversationCleanup(null)}
+      const task=saved.raw?decodeCommitment(saved.raw):null
+      if(saved.retired||task&&!permitted(task,saved.fences))return
+      const {id,intent,group_id,reason,at}=entry
+      const proven=task?.scope&&task.bindingIdentity&&task.id===id&&task.group_id===group_id&&(intent===undefined||task.intent===intent)
+      const next={id,intent,group_id,reason,at,failureId:randomUUID(),
+        ...(proven?{scopeKey:agentConversationKey(task.scope!),bindingIdentity:task.bindingIdentity,creator_id:task.creator_id,sourceAt:sourceAt(task)}:{})}
+      const current=await readFailureDocument()
+      const result=await redis.eval(WRITE_FAILURES,{keys:[COMMITMENT_LOCK_KEY,FAILLOG_KEY,COMMITMENT_CLEANUP_KEY,...(id?[cleanupIdKey(id)]:[])],
+        arguments:[token,current.raw??'',JSON.stringify([next,...current.entries].slice(0,FAILLOG_LIMIT)),...cleanupExpected(saved.fenceRaw)]})
+      if(Number(result)===1||Number(result)===-2)return
+      if(Number(result)===-1)throw new Error('承诺锁已失效，失败日志未写入')
+    }
+    throw new Error('承诺失败日志正在更新')
   }
-  async function appendFailLog(entry:CommitmentFailure){await withLock(()=>appendFailLogUnlocked(entry))}
+  async function appendFailLog(entry:CommitmentFailure){await withLock(token=>appendFailLogUnlocked(entry,token))}
   /** Delete only exact rows captured by an authorized request, preserving new rows. */
   async function clearManagementFailLog(selected:readonly unknown[],ensureCurrent:()=>Promise<void>):Promise<boolean>{
     if(!selected.length)return false
@@ -357,6 +406,74 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
     },ensureCurrent)
   }
   async function clearFailLog(){await withLock(async()=>{await redis.del(FAILLOG_KEY)})}
+  async function purgeSubject(input:AgentSourceMemoryPurgeSubject,guard:AgentSourceMemoryCleanupGuard){
+    const cleanup=createSubjectMemoryCleanup(redis,COMMITMENT_CLEANUP_KEY,'commitments')
+    return cleanup.purge(input,guard,async(selector,authorize,counts)=>{
+      const selected=(c:CommitmentData)=>!!c.scope&&!conversationCleanupAllows(c.scope,{authorId:c.creator_id,at:sourceAt(c)},{version:1,entries:[selector]})
+      const selectedFailure=(value:unknown)=>{
+        const row=record(value),scope=typeof row.scopeKey==='string'?decodeAgentConversationKey(row.scopeKey):null
+        return !!scope&&typeof row.bindingIdentity==='string'&&typeof row.creator_id==='string'&&Number.isSafeInteger(row.sourceAt)&&Number(row.sourceAt)>=0&&
+          !conversationCleanupAllows(scope,{authorId:row.creator_id,at:Number(row.sourceAt)},{version:1,entries:[selector]})
+      }
+      async function keys(){
+        if(!redis.scanIterator)throw new Error('承诺历史分区目录不可用')
+        await authorize()
+        const seen=new Set<string>()
+        for await(const batch of await redis.scanIterator({MATCH:commitmentDetailKey('*'),COUNT:100})){
+          await authorize()
+          for(const key of Array.isArray(batch)?batch:[batch])if(key.startsWith(commitmentDetailKey('')))seen.add(key)
+          if(seen.size>100_000)throw new Error('承诺历史分区超过清理上限')
+        }
+        return [...seen]
+      }
+      for(const key of await keys()){
+        const id=key.slice(commitmentDetailKey('').length)
+        await withLock(async token=>{
+          for(let attempt=0;attempt<16;attempt++){
+            const saved=await snapshot(id,authorize)
+            if(!saved.raw)return
+            const current=decodeCommitment(saved.raw)
+            if(current.id!==id)throw new Error('承诺详情身份不符')
+            if(!selected(current))return
+            const pendingRaw=await redis.get(COMMITMENT_PENDING_KEY),pending=decodeCommitmentPendingList(pendingRaw).filter(item=>item.id!==id)
+            const failures=await readFailureDocument(authorize),retained=failures.entries.filter(value=>record(value).id!==id&&!selectedFailure(value))
+            await authorize()
+            const result=await redis.eval(PURGE_STATE,{keys:[COMMITMENT_LOCK_KEY,key,COMMITMENT_PENDING_KEY,FAILLOG_KEY,COMMITMENT_CLEANUP_KEY,cleanupIdKey(id)],
+              arguments:[token,...cleanupExpected(saved.raw),...cleanupExpected(pendingRaw),...cleanupExpected(failures.raw),...cleanupExpected(saved.fenceRaw),JSON.stringify(pending),failures.raw===null?'0':'1',JSON.stringify(retained)]})
+            if(Number(result)===-1)throw new Error('承诺锁已失效，来源未清理')
+            if(Number(result)!==1)continue
+            counts.removedRecords+=1+failures.entries.length-retained.length;counts.removedPartitions++
+            for(const listener of invalidationListeners.get(redis)?.get(id)||[])listener()
+            await authorize()
+            return
+          }
+          throw new Error('承诺来源清理冲突')
+        },authorize)
+      }
+      // A completed task's detail can expire before its provenance-bearing failure row.
+      await withLock(async token=>{
+        for(let attempt=0;attempt<16;attempt++){
+          const failures=await readFailureDocument(authorize),retained=failures.entries.filter(value=>!selectedFailure(value))
+          if(retained.length===failures.entries.length)return
+          const fenceRaw=await redis.get(COMMITMENT_CLEANUP_KEY)
+          await authorize()
+          const result=await redis.eval(WRITE_FAILURES,{keys:[COMMITMENT_LOCK_KEY,FAILLOG_KEY,COMMITMENT_CLEANUP_KEY],
+            arguments:[token,failures.raw??'',JSON.stringify(retained),...cleanupExpected(fenceRaw)]})
+          if(Number(result)===-1)throw new Error('承诺锁已失效，失败来源未清理')
+          if(Number(result)!==1)continue
+          counts.removedRecords+=failures.entries.length-retained.length
+          await authorize();return
+        }
+        throw new Error('承诺失败来源清理冲突')
+      },authorize)
+      for(const key of await keys()){
+        const saved=await snapshot(key.slice(commitmentDetailKey('').length),authorize)
+        if(saved.raw&&selected(decodeCommitment(saved.raw)))throw new Error('承诺原始存储未清理')
+      }
+      const failures=await readFailureDocument(authorize)
+      if(failures.entries.some(selectedFailure))throw new Error('承诺失败日志原始存储未清理')
+    })
+  }
   // One-time legacy repair: old versions could remove a due ID before executing it.
   async function recoverLegacyIndex(){
     if(!redis.scanIterator)return
@@ -369,11 +486,11 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
         if(c?.status==='active'){
           // Its old side effect cannot be established: expose uncertainty rather than silently replay.
           await persist({...withoutRun(c),status:'unknown',next_run_at:0,last_result:'旧版本任务离开队列且执行结果未知，需核实后重新托付'},token)
-          await appendFailLogUnlocked({id:c.id,intent:c.intent,group_id:c.group_id,reason:'旧版本任务执行结果未知，禁止自动重发',at:Date.now()})
+          await appendFailLogUnlocked({id:c.id,intent:c.intent,group_id:c.group_id,reason:'旧版本任务执行结果未知，禁止自动重发',at:Date.now()},token)
         }
        })
       }
     }
   }
-  return {createCommitment,getCommitment,cancelCommitment,takeDueCommitments,commitRunOutcome,requeueForRetry,listActiveCommitments,appendFailLog,readFailLog,clearFailLog,updateActive,refreshClaim,releaseUnstartedClaim,expireClaim,recoverLegacyIndex,onInvalidated,isClaimCurrent,updateDeferredActionClaim,listDeferredActions,listManagementCommitments,readManagementFailLog,clearManagementFailLog}
+  return {createCommitment,getCommitment,cancelCommitment,takeDueCommitments,commitRunOutcome,requeueForRetry,listActiveCommitments,appendFailLog,readFailLog,clearFailLog,updateActive,refreshClaim,releaseUnstartedClaim,expireClaim,recoverLegacyIndex,onInvalidated,isClaimCurrent,updateDeferredActionClaim,listDeferredActions,listManagementCommitments,readManagementFailLog,clearManagementFailLog,purgeSubject}
 }

@@ -51,6 +51,150 @@ test('profile forget returns a durable safe receipt and request retry is idempot
   assert.equal(f.calls.profile, 1)
 })
 
+test('one failed owner does not block the other owners and same request resumes only unfinished cleanup after restart', async () => {
+  const calls = { emoji: [], semantic: [], conversation: [] }, fixedTime = 1_795_075_800_000
+  const cleanup = {
+    localEmojiCleanup: { async purgeSubject(input) {
+      calls.emoji.push(structuredClone(input))
+      if (calls.emoji.length === 1) throw Error('emoji storage unavailable')
+      return { usage: 'blocked', cleanup: 'completed', removedSources: 1, removedImages: 1, unattributedImages: 0 }
+    } },
+    semanticMemoryCleanup: { async purgeSubject(input) {
+      calls.semantic.push(structuredClone(input))
+      return { usage: 'blocked', cleanup: 'completed', removedRows: 1, removedVectors: 1, removedPartitions: 1 }
+    } },
+    conversationMemoryCleanup: { async purgeSubject(input) {
+      calls.conversation.push(structuredClone(input))
+      return { usage: 'blocked', cleanup: 'completed', removedRecords: 1, removedSummaries: 1, removedEpisodes: 1, removedPartitions: 1 }
+    } },
+  }
+  const f = fixture(cleanup), begin = f.store.begin
+  f.store.begin = (input, guard) => begin({ ...input, now: fixedTime }, guard)
+  const first = await f.ops.profile({ userId: 'u1', requestId: 'resume-owners' }, f.context)
+  assert.equal(first.phase, 'unknown'); assert.equal(first.usage, 'blocked')
+  assert.equal(calls.emoji.length, 1); assert.equal(calls.semantic.length, 1); assert.equal(calls.conversation.length, 1)
+  assert.equal(first.cleanupPlan.sourceCommitted, true)
+  assert.ok(first.impacts.some(row => row.id === 'semantic-memory-sources' && row.state === 'completed'))
+  assert.ok(first.impacts.some(row => row.id === 'conversation-memory-records' && row.state === 'completed'))
+  const restarted = createStandaloneAgentForgetOperations({ store: f.store, bindings: { resolve: () => binding },
+    auth: f.auth, profiles: f.profiles, characters: f.characters, ...cleanup })
+  const result = await restarted.profile({ userId: 'u1', requestId: 'resume-owners' }, f.context)
+  assert.equal(result.operationId, first.operationId); assert.equal(result.createdAt, fixedTime)
+  assert.equal(result.phase, 'completed'); assert.equal(result.cleanup, 'unsupported')
+  assert.equal(calls.emoji.length, 2); assert.equal(calls.semantic.length, 1); assert.equal(calls.conversation.length, 1)
+  assert.deepEqual(calls.emoji[1], calls.emoji[0]); assert.equal(calls.emoji[1].through, fixedTime)
+  assert.equal(f.calls.profile, 1)
+})
+
+test('interrupted committed cleanup resumes without a profile read or source mutation', async () => {
+  let purges = 0
+  const f = fixture({ semanticMemoryCleanup: { async purgeSubject() {
+    purges++; return { usage: 'blocked', cleanup: 'completed', removedRows: 0, removedVectors: 0, removedPartitions: 0 }
+  } } })
+  const receipt = await f.store.begin({ requestId: 'interrupted-cleanup', requestDigest: (await import('node:crypto')).createHash('sha256')
+    .update(JSON.stringify(['person-profile', 'u1', null, null])).digest('hex'), kind: 'person-profile', binding,
+    subject: { userId: 'u1' }, cleanupOwners: ['semantic-memory'] })
+  await f.store.markCommitted(receipt.operationId)
+  f.profiles.list = async () => { throw Error('source must not be read again') }
+  const result = await f.ops.profile({ userId: 'u1', requestId: 'interrupted-cleanup' }, f.context)
+  assert.equal(result.phase, 'completed'); assert.equal(purges, 1); assert.equal(f.calls.profile, 0)
+})
+
+test('interruption between source deletion and receipt commit is recovered by authorized absence readback without replay', async () => {
+  let purges = 0
+  const f = fixture({ semanticMemoryCleanup: { async purgeSubject() {
+    purges++; return { usage: 'blocked', cleanup: 'completed', removedRows: 0, removedVectors: 0, removedPartitions: 0 }
+  } } }), commit = f.store.markCommitted
+  f.store.markCommitted = async () => { throw Error('receipt connection interrupted') }
+  await assert.rejects(f.ops.profile({ userId: 'u1', requestId: 'source-commit-window' }, f.context), /receipt connection interrupted/u)
+  const before = await f.store.readByRequestId('source-commit-window')
+  assert.equal(before.cleanupPlan.sourceCommitted, false); assert.equal(before.usage, 'unknown')
+  assert.equal(purges, 0); assert.equal(f.calls.profile, 1)
+  f.store.markCommitted = commit
+  const receipt = await f.ops.profile({ userId: 'u1', requestId: 'source-commit-window' }, f.context)
+  assert.equal(receipt.operationId, before.operationId); assert.equal(receipt.phase, 'completed')
+  assert.equal(receipt.cleanupPlan.sourceCommitted, true); assert.equal(purges, 1); assert.equal(f.calls.profile, 1)
+  assert.ok(receipt.impacts.some(row => row.kind === 'person-memory-entry' && row.state === 'completed'))
+})
+
+test('a failed final receipt write can resume settlement without rerunning completed owners', async () => {
+  let purges = 0
+  const f = fixture({ semanticMemoryCleanup: { async purgeSubject() {
+    purges++; return { usage: 'blocked', cleanup: 'completed', removedRows: 0, removedVectors: 0, removedPartitions: 0 }
+  } } }), update = f.store.update
+  f.store.update = async (id, patch, guard) => {
+    if (patch.phase === 'completed') throw Error('final receipt unavailable')
+    return update(id, patch, guard)
+  }
+  await assert.rejects(f.ops.profile({ userId: 'u1', requestId: 'final-receipt-retry' }, f.context), /final receipt unavailable/u)
+  const pending = await f.store.readByRequestId('final-receipt-retry')
+  assert.equal(pending.phase, 'unknown'); assert.equal(pending.cleanupPlan.owners[0].state, 'completed')
+  f.store.update = update
+  const receipt = await f.ops.profile({ userId: 'u1', requestId: 'final-receipt-retry' }, f.context)
+  assert.equal(receipt.phase, 'completed'); assert.equal(f.calls.profile, 1); assert.equal(purges, 1)
+})
+
+test('Core source removal can throw after deletion and its readback still commits a recoverable cleanup plan', async () => {
+  let emojiCalls = 0, conversationCalls = 0
+  const f = fixture({ localEmojiCleanup: { async purgeSubject() {
+    emojiCalls++; return { usage: 'blocked', cleanup: 'completed', removedSources: 0, removedImages: 0, unattributedImages: 0 }
+  } }, conversationMemoryCleanup: { async purgeSubject() {
+    conversationCalls++; return { usage: 'blocked', cleanup: 'completed', removedRecords: 0, removedSummaries: 0, removedEpisodes: 0, removedPartitions: 0 }
+  } } })
+  const remove = f.profiles.remove
+  f.profiles.remove = async (...args) => { await remove(...args); throw Error('Core downstream owner unknown') }
+  const receipt = await f.ops.profile({ userId: 'u1', requestId: 'core-source-deleted' }, f.context)
+  assert.equal(receipt.phase, 'completed'); assert.equal(receipt.cleanupPlan.sourceCommitted, true)
+  assert.equal(f.calls.profile, 1); assert.equal(emojiCalls, 1); assert.equal(conversationCalls, 1)
+  await f.ops.profile({ userId: 'u1', requestId: 'core-source-deleted' }, f.context)
+  assert.equal(f.calls.profile, 1); assert.equal(emojiCalls, 1); assert.equal(conversationCalls, 1)
+})
+
+test('whole-person forget tracks group learning and independent source store partitions with the exact original selector', async () => {
+  const seen = [], f = fixture({
+    groupMemoryCleanup: { async purgeSubject(input, guard) {
+      await guard.ensureCurrent(); seen.push(structuredClone(input))
+      return { usage: 'blocked', cleanup: 'completed', removedRecords: 2, removedJobs: 1, removedEntries: 1, removedPartitions: 1 }
+    } },
+    sourceMemoryCleanup: { async purgeSubject(input, guard) {
+      await guard.ensureCurrent(); seen.push(structuredClone(input))
+      return { usage: 'blocked', partitions: [
+        { id: 'history-records', cleanup: 'completed', removedRecords: 1, removedPartitions: 1 },
+        { id: 'person-extraction-batches', cleanup: 'unknown', removedRecords: 0, removedPartitions: 0 },
+        { id: 'delegated-memory', cleanup: 'completed', removedRecords: 1, removedPartitions: 1 },
+        { id: 'commitments', cleanup: 'completed', removedRecords: 0, removedPartitions: 0 },
+      ] }
+    } },
+  })
+  const receipt = await f.ops.profile({ userId: 'u1', requestId: 'all-source-stores' }, f.context)
+  assert.deepEqual(seen, [0, 1].map(() => ({ account: binding.target.account, agentId: binding.agentId, subjectId: 'u1', target: binding.target, through: receipt.createdAt })))
+  assert.deepEqual(receipt.impacts.filter(row => row.id.startsWith('group-memory-')).map(row => [row.id, row.state]), [
+    ['group-memory-records', 'completed'], ['group-memory-jobs', 'completed'], ['group-memory-entries', 'completed'],
+  ])
+  assert.deepEqual(receipt.impacts.filter(row => ['history-records', 'person-extraction-batches', 'delegated-memory', 'commitments'].includes(row.id)).map(row => [row.id, row.state]), [
+    ['history-records', 'completed'], ['person-extraction-batches', 'unknown'], ['delegated-memory', 'completed'], ['commitments', 'completed'],
+  ])
+  assert.equal(receipt.phase, 'unknown'); assert.equal(receipt.cleanup, 'unknown')
+  assert.equal(receipt.cleanupPlan.owners.find(row => row.owner === 'group-memory').state, 'completed')
+  assert.equal(receipt.cleanupPlan.owners.find(row => row.owner === 'source-memory').state, 'unknown')
+  assert.ok(receipt.impacts.some(row => row.id === 'source-consumers' && row.state === 'unsupported'))
+})
+
+test('field deletion excludes new group/source owners and missing original owners remain resumable', async () => {
+  const unavailable = { async purgeSubject() { throw Error('must not run for field') } }
+  const field = fixture({ groupMemoryCleanup: unavailable, sourceMemoryCleanup: unavailable })
+  const receipt = await field.ops.profile({ userId: 'u1', field: 'entries', value: 'entry-1', requestId: 'new-owners-field' }, field.context)
+  assert.equal(receipt.cleanupPlan, undefined)
+  const f = fixture({ localEmojiCleanup: { async purgeSubject() { throw Error('temporarily unavailable') } } })
+  const first = await f.ops.profile({ userId: 'u1', requestId: 'original-owner-absent' }, f.context)
+  const restarted = createStandaloneAgentForgetOperations({ store: f.store, bindings: { resolve: () => binding },
+    auth: f.auth, profiles: f.profiles, characters: f.characters,
+    semanticMemoryCleanup: { async purgeSubject() { throw Error('new owner must not be added to the old plan') } } })
+  const again = await restarted.profile({ userId: 'u1', requestId: 'original-owner-absent' }, f.context)
+  assert.equal(again.phase, 'unknown'); assert.equal(again.operationId, first.operationId)
+  assert.deepEqual(again.cleanupPlan.owners, [{ owner: 'local-emoji', state: 'unknown' }]); assert.equal(f.calls.profile, 1)
+})
+
 test('whole-person forget reports only proven emoji source cleanup and retries do not purge again', async () => {
   const purges = [], f = fixture({ localEmojiCleanup: { async purgeSubject(input, guard) {
     assert.equal(guard.isCurrent(), true); await guard.ensureCurrent()
@@ -92,7 +236,7 @@ test('uncertain emoji deletion remains uncertain without claiming complete downs
   } } })
   const result = await f.ops.profile({ userId: 'u1', requestId: 'emoji-unknown' }, f.context)
   assert.ok(result.impacts.some(row => row.id === 'local-emoji-attributed-sources' && row.state === 'unknown'))
-  assert.equal(result.cleanup, 'unsupported')
+  assert.equal(result.cleanup, 'unknown'); assert.equal(result.phase, 'unknown')
 })
 
 test('quarantined old emoji without attributable sources remains unsupported in the durable receipt', async () => {
@@ -108,10 +252,11 @@ test('quarantined old emoji without attributable sources remains unsupported in 
 test('failed emoji owner leaves a durable unknown operation and does not replay the source deletion', async () => {
   let purges = 0
   const f = fixture({ localEmojiCleanup: { async purgeSubject() { purges++; throw Error('storage unavailable') } } })
-  await assert.rejects(f.ops.profile({ userId: 'u1', requestId: 'emoji-owner-failed' }, f.context), /storage unavailable/)
+  const first = await f.ops.profile({ userId: 'u1', requestId: 'emoji-owner-failed' }, f.context)
+  assert.equal(first.phase, 'unknown'); assert.equal(first.usage, 'blocked')
   const receipt = await f.ops.profile({ userId: 'u1', requestId: 'emoji-owner-failed' }, f.context)
   assert.equal(receipt.phase, 'unknown'); assert.equal(receipt.cleanup, 'unknown')
-  assert.equal(purges, 1); assert.equal(f.calls.profile, 1)
+  assert.equal(purges, 2); assert.equal(f.calls.profile, 1)
 })
 
 test('emoji owner cannot publish a completion receipt after authorization changes during cleanup', async () => {
@@ -167,7 +312,7 @@ test('semantic cleanup uncertainty persists for both partitions without claiming
   } } })
   const result = await f.ops.profile({ userId: 'u1', requestId: 'semantic-unknown' }, f.context)
   assert.deepEqual(result.impacts.filter(row => row.id.startsWith('semantic-memory-')).map(row => row.state), ['unknown', 'unknown'])
-  assert.equal(result.cleanup, 'unsupported')
+  assert.equal(result.cleanup, 'unknown'); assert.equal(result.phase, 'unknown')
   assert.deepEqual((await f.ops.read(result.operationId, f.context)).impacts, result.impacts)
 })
 
@@ -181,22 +326,23 @@ test('malformed semantic cleanup receipts cannot publish completed impacts', asy
     let purges = 0
     const f = fixture({ semanticMemoryCleanup: { async purgeSubject() { purges++; return receipt } } })
     const requestId = 'semantic-invalid-' + index
-    await assert.rejects(f.ops.profile({ userId: 'u1', requestId }, f.context), error => error.code === 'unavailable')
+    assert.equal((await f.ops.profile({ userId: 'u1', requestId }, f.context)).phase, 'unknown')
     const recorded = await f.store.readByRequestId(requestId)
     assert.equal(recorded.phase, 'unknown'); assert.equal(recorded.cleanup, 'unknown')
-    assert.equal(recorded.impacts.some(row => row.id.startsWith('semantic-memory-')), false)
+    assert.ok(recorded.impacts.filter(row => row.id.startsWith('semantic-memory-')).every(row => row.state === 'unknown'))
     assert.equal((await f.ops.profile({ userId: 'u1', requestId }, f.context)).operationId, recorded.operationId)
-    assert.equal(purges, 1); assert.equal(f.calls.profile, 1)
+    assert.equal(purges, 2); assert.equal(f.calls.profile, 1)
   }
 })
 
 test('a failed semantic cleanup owner leaves an unknown receipt without replaying deletion', async () => {
   let purges = 0
   const f = fixture({ semanticMemoryCleanup: { async purgeSubject() { purges++; throw Error('semantic unavailable') } } })
-  await assert.rejects(f.ops.profile({ userId: 'u1', requestId: 'semantic-owner-failed' }, f.context), /semantic unavailable/u)
+  const first = await f.ops.profile({ userId: 'u1', requestId: 'semantic-owner-failed' }, f.context)
+  assert.equal(first.phase, 'unknown'); assert.equal(first.usage, 'blocked')
   const result = await f.ops.profile({ userId: 'u1', requestId: 'semantic-owner-failed' }, f.context)
   assert.equal(result.phase, 'unknown'); assert.equal(result.cleanup, 'unknown')
-  assert.equal(purges, 1); assert.equal(f.calls.profile, 1)
+  assert.equal(purges, 2); assert.equal(f.calls.profile, 1)
 })
 
 test('semantic cleanup cannot publish completion after delete permission or binding lease is revoked', async () => {
@@ -295,7 +441,7 @@ test('conversation cleanup uncertainty persists for all three partitions without
   } } })
   const result = await f.ops.profile({ userId: 'u1', requestId: 'conversation-unknown' }, f.context)
   assert.deepEqual(result.impacts.filter(row => row.id.startsWith('conversation-memory-')).map(row => row.state), ['unknown', 'unknown', 'unknown'])
-  assert.equal(result.cleanup, 'unsupported')
+  assert.equal(result.cleanup, 'unknown'); assert.equal(result.phase, 'unknown')
   assert.deepEqual((await f.ops.read(result.operationId, f.context)).impacts, result.impacts)
 })
 
@@ -309,22 +455,23 @@ test('malformed conversation cleanup receipts cannot publish completed impacts',
     let purges = 0
     const f = fixture({ conversationMemoryCleanup: { async purgeSubject() { purges++; return receipt } } })
     const requestId = 'conversation-invalid-' + index
-    await assert.rejects(f.ops.profile({ userId: 'u1', requestId }, f.context), error => error.code === 'unavailable')
+    assert.equal((await f.ops.profile({ userId: 'u1', requestId }, f.context)).phase, 'unknown')
     const recorded = await f.store.readByRequestId(requestId)
     assert.equal(recorded.phase, 'unknown'); assert.equal(recorded.cleanup, 'unknown')
-    assert.equal(recorded.impacts.some(row => row.id.startsWith('conversation-memory-')), false)
+    assert.ok(recorded.impacts.filter(row => row.id.startsWith('conversation-memory-')).every(row => row.state === 'unknown'))
     assert.equal((await f.ops.profile({ userId: 'u1', requestId }, f.context)).operationId, recorded.operationId)
-    assert.equal(purges, 1); assert.equal(f.calls.profile, 1)
+    assert.equal(purges, 2); assert.equal(f.calls.profile, 1)
   }
 })
 
 test('a failed conversation cleanup owner leaves an unknown receipt without replaying deletion', async () => {
   let purges = 0
   const f = fixture({ conversationMemoryCleanup: { async purgeSubject() { purges++; throw Error('conversation unavailable') } } })
-  await assert.rejects(f.ops.profile({ userId: 'u1', requestId: 'conversation-owner-failed' }, f.context), /conversation unavailable/u)
+  const first = await f.ops.profile({ userId: 'u1', requestId: 'conversation-owner-failed' }, f.context)
+  assert.equal(first.phase, 'unknown'); assert.equal(first.usage, 'blocked')
   const result = await f.ops.profile({ userId: 'u1', requestId: 'conversation-owner-failed' }, f.context)
   assert.equal(result.phase, 'unknown'); assert.equal(result.cleanup, 'unknown')
-  assert.equal(purges, 1); assert.equal(f.calls.profile, 1)
+  assert.equal(purges, 2); assert.equal(f.calls.profile, 1)
 })
 
 test('conversation cleanup cannot publish completion after delete permission or binding lease is revoked', async () => {

@@ -1,5 +1,7 @@
 # 角色与会话绑定
 
+> 当前收尾入口见文末「2026-11-19 当前收尾与下一步」。文中前段包含旧插件兼容说明，历史验证批次保留各自范围；本轮源码专项通过不代表最终安装包或生产已发布。
+
 在插件的 `config` 目录创建 `agent-bindings.yaml`。`agents` 定义运行角色和它使用的人设 ID，`connections` 声明平台账号，`bindings` 将一个账号下的群聊或私聊交给一个角色。
 
 ```yaml
@@ -89,7 +91,7 @@ QQ 私聊近期记录按接收账号和对方 QQ 分区。普通私聊回合和�
 
 ## 独立 QQ 宿主
 
-独立进程通过 OneBot v11 的正向或反向 WebSocket 处理显式绑定的 QQ 群和好友私聊。群聊默认复用仿真，可选配附图识别、联网搜索与网页文字读取，也可为指定会话启用点名和引用触发的文字回复，以及固定文字提醒和委托记忆。好友私聊支持角色文本对话。普通聊天的 smart 触发、会话追踪、识图、其余插件工具和群管理由 TRSS-Yunzai 入口提供。部署时同一个 QQ 账号下的同一会话由一个入口负责回复。
+独立进程通过 OneBot v11 的正向或反向 WebSocket 处理显式绑定的 QQ 群和好友私聊。群聊默认使用仿真，也可显式切换普通文字触发模式；已接入的附图、搜索、文件、图片、媒体和 QQ 动作由各自独立提供器与权限策略装配。普通文字群和好友私聊的通用工具须另有会话授权，见下文。旧 TRSS-Yunzai 与旧控制台已从生产移除，冻结配置及数据备份独立保留；新增接续不再依赖旧入口运行。仍在迁移或待真实验收的范围见当前收尾点。
 
 在现有示例的 `agent-bindings.yaml` 同目录新建 `agent-host.yaml`。以下 `qq-main` 对应示例里的连接，`persona` 定义 `default` 人设，其余人设从同目录的 `persona-library.yaml` 读取。
 
@@ -359,7 +361,7 @@ tools:
 
 `web` 提供 `webParserTool`，仅提取公开 HTTP(S) 网页的静态文字。拒绝 URL 内置凭据、凭据查询参数、私网及保留地址；DNS 解析、实际连接及每次重定向均受地址检查，连接固定到已核验的公网地址。每次最多 15 秒、3 次跳转、2 MiB 响应和 8000 字正文，不接受压缩响应，支持回合取消。此工具不运行浏览器 JavaScript，也不提供登录、截图或本机文件读取。
 
-工具仅在已绑定群的仿真回合装配，私聊和群文字模式继续使用各自原有工具范围。`simulation.toolPolicy` 的全局与按群禁用、`legacy` 模式和显式追加规则继续生效；例如 `simulation.toolPolicy.denyTools: [searchInformationTool, webParserTool]` 可在 `open` 模式禁用两项工具。自主目标和承诺唤醒仍须经过原有自主执行权限检查。Core 在执行前、异步结果返回后及网页每次跳转前复核角色绑定、持久化活动版本和来源权限。换绑、撤回或停止会取消在途调用；其他进程的活动撤销在下一次授权复核时发现，已发出的请求无法保证撤回。
+工具在已绑定群仿真按原策略装配；普通文字群/好友私聊另须 `textGroups[].tools` / `privateChat.allowTools` 显式授权。`simulation.toolPolicy` 的全局与按群禁用、`legacy` 模式和显式追加规则继续生效；例如 `simulation.toolPolicy.denyTools: [searchInformationTool, webParserTool]` 可在 `open` 模式禁用两项工具。自主目标和承诺唤醒仍须经过原有自主执行权限检查。Core 在执行前、异步结果返回后及网页每次跳转前复核角色绑定、持久化活动版本和来源权限。换绑、撤回或停止会取消在途调用；其他进程的活动撤销在下一次授权复核时发现，已发出的请求无法保证撤回。
 
 ### GitHub 仓库查询
 
@@ -374,7 +376,7 @@ tools:
 
 `githubRepoTool` 只接收 `https://github.com/owner/repository` 仓库根地址，可带 `.git` 或末尾斜线；不接受文件/issue 路径、查询参数、片段或 URL 凭据。工具固定读取 `api.github.com` 的公开仓库基本信息，以及最多 5 条最近提交、100 条分支样本和 5 位贡献者样本。可选请求未取得会明确标注；本页分支与贡献者不代表总数，开放 issues 数包含 PR。返回资料附来源与北京时间，不构成指令或事实核实。
 
-工具只在群仿真装配，沿用现有工具策略和真人执行权限，未扩展私聊、群文字或自主执行能力。可通过 `simulation.toolPolicy.denyTools: [githubRepoTool]` 禁用；移除配置或设 `enabled: false` 并重启也可停用。每次实际 GET 前后复核来源和当前绑定，取消或任一次授权拒绝停止后续请求。总期限 15 秒、每个响应最多 1 MiB，无自动重试、重定向或跨域凭据传递；只将仓库标识和可选 GitHub 鉴权送到固定 API，不附聊天历史、QQ 身份或其他服务凭据。输入及完整成功响应检查已知宿主秘密，错误正文不进入日志或模型。
+工具在群仿真沿现有策略和真人执行权限装配，普通文字群/好友私聊须另有会话工具名单授权；不扩展自主执行能力。可通过 `simulation.toolPolicy.denyTools: [githubRepoTool]` 禁用；移除配置或设 `enabled: false` 并重启也可停用。每次实际 GET 前后复核来源和当前绑定，取消或任一次授权拒绝停止后续请求。总期限 15 秒、每个响应最多 1 MiB，无自动重试、重定向或跨域凭据传递；只将仓库标识和可选 GitHub 鉴权送到固定 API，不附聊天历史、QQ 身份或其他服务凭据。输入及完整成功响应检查已知宿主秘密，错误正文不进入日志或模型。
 
 移除 `tools.search` 或将 `tools.web.enabled` 设为 `false` 并重启，即可关闭对应能力。`tools`、`search` 和 `web` 拒绝未知字段及无效类型。正常启动和 `--check` 会检查已配置搜索服务的凭据；迁移预览只校验配置格式，不要求这些凭据，也不调用搜索或网页服务。
 
@@ -398,7 +400,7 @@ tools:
 
 工具总期限 90 秒，每次查询/翻译最多 15 秒、响应最多 1 MiB，不自动重试或重定向。合并发送沿用本会话配额、词策略、净化与确认预算，一批计一次发送。最多 12 节点、总文字 32000 字符、单图 2 MiB、总图 12 MiB。图文同时附完整文字，需净化改写时拒绝整批，避免图片保留旧文字。有效消息 ID 才算送达，未知停止本回合后续发送；失败或未知均不补发，实际交付前重核账号、连接、绑定和来源权限。
 
-只在群仿真装配并服从真人主体和普通工具策略，不扩展私聊、群文字或自主工具面。设 `tools.modrinth.enabled: false` 并重启，或用 `simulation.toolPolicy.denyTools: [modrinthTool]` 停用。
+群仿真及另获会话工具名单授权的普通文字群/好友私聊均服从真人主体和普通工具策略，不扩展自主工具面。设 `tools.modrinth.enabled: false` 并重启，或用 `simulation.toolPolicy.denyTools: [modrinthTool]` 停用。
 
 ### MCP 工具
 
@@ -490,7 +492,7 @@ tools:
       apiKeyEnv: BL_AGENT_MINDMAP_KEY
 ```
 
-两者默认关闭，工具名沿用 `textImageTool` 与 `aiMindMapTool`，按普通群仿真工具策略装配，不扩大好友私聊、群文字、自主或承诺工具面。文字图片不调用模型；思维导图仅向显式后端发送本次 `prompt` 和固定排版要求，不读取旧插件 YAML、不继承主模型；有效 token 用量记入当前会话账本。预检校验配置与凭据，不调用模型或启动浏览器。移除配置并重启可停用。
+两者默认关闭，工具名沿用 `textImageTool` 与 `aiMindMapTool`，群仿真按原工具策略装配，普通文字群/好友私聊须另有会话工具名单授权，不扩大自主或承诺工具面。文字图片不调用模型；思维导图仅向显式后端发送本次 `prompt` 和固定排版要求，不读取旧插件 YAML、不继承主模型；有效 token 用量记入当前会话账本。预检校验配置与凭据，不调用模型或启动浏览器。移除配置并重启可停用。
 
 文字图片保留 chat、document、knowledge 三套完整模板、上海时区日夜主题、代码高亮、表格、知识步骤/清单/事实卡及 KaTeX 数学排版。Markdown、代码和公式会把显式 chat 升为 document，显式 knowledge 优先。chat 按 Unicode 码点截至5000，另外两种截至12000；输入最多48000个UTF-16代码单元。昵称、头像省略时不显示身份。仅 chat 读取可选公共头像，逐跳校验公网并固定连接地址，15秒内限量下载；不可用时省略头像。头像先解码、缩放成PNG再嵌入，文档正文不能加载外部图片或HTML。宿主出站文字规则和已知凭据检查在文字转图前执行。
 
@@ -523,7 +525,7 @@ tools:
     nativeFormats: []
 ```
 
-默认关闭。群仿真真人回合按原工具策略提供显式 `fileTextTool`；公开宿主从 `bl-chat-agent/files` 导入 `createAgentFileTextTool`。复用上节同一 `readFile` 来源选择、撤回/隐私/绑定复核及临时资料隔离，不自动读取文件入站，不扩大好友私聊或群文字工具面。Excel 单元格与公式查询仍用 `excelWorkbookTool`；通用文件工具只返回文档文本。
+默认关闭。群仿真真人回合按原工具策略提供显式 `fileTextTool`；公开宿主从 `bl-chat-agent/files` 导入 `createAgentFileTextTool`。复用上节同一 `readFile` 来源选择、撤回/隐私/绑定复核及临时资料隔离，不自动读取文件入站；普通文字群/好友私聊另须会话工具名单授权，群目录端口仍只授予群会话。Excel 单元格与公式查询仍用 `excelWorkbookTool`；通用文件工具只返回文档文本。
 
 保留文本/代码/JSON/CSV、HTML/XML/Markdown、PDF、DOCX、PPTX/POTX、Excel（含旧表格与XLSB）、OpenDocument及EPUB解析。扫描PDF不自动OCR。DOC、RTF、图片OCR和DXF须由宿主在 `nativeFormats` 显式授权 `doc`、`rtf`、`ocr`、`dxf`，并安装对应固定程序：macOS的textutil，其他系统的antiword/unrtf，以及tesseract、drawingtotext。未启用或缺程序明确报告，不把损坏二进制当文字返回。原生能力使用固定命令和参数，模型不能配置程序、路径或环境。
 
@@ -725,7 +727,7 @@ Core并行读取原作品详情和分页（各2MiB、共用7秒期限），仅�
 
 ### Core Pixiv搜索与选图下载
 
-`pixivSearchTool`和`pixivDownloadTool`由主模型针对当前真人群仿真请求选择，保留原工具策略，不扩大好友私聊、群文字、自主或承诺工具面。搜索、热门与画师识别、列表绘制、五分钟选择、下载和中立计划归Core，QQ只转换当前账号/群的图片卡及完整合并转发。独立公共入口为`bl-chat-agent/pixiv`。
+`pixivSearchTool`和`pixivDownloadTool`由主模型针对当前真人请求选择，保留原工具策略；普通文字群/好友私聊另须会话工具名单授权，实际媒体交付仍需对应平台端口，不扩大自主或承诺工具面。搜索、热门与画师识别、列表绘制、五分钟选择、下载和中立计划归Core，QQ只转换当前账号/群的图片卡及完整合并转发。独立公共入口为`bl-chat-agent/pixiv`。
 
 ```yaml
 tools:
@@ -979,7 +981,7 @@ textGroups:
     conversationId: '111111'
 ```
 
-配置中的群在被 `@` 或收到对当前账号已确认回复的引用时，生成一条引用当前消息的文字回复。模型收到当前文字、角色人设、同一群友的近期已确认收发，以及最多四条适用于当前群的结构化人物事实。每个会话保留最多 6 轮，最后一次确认后 1 小时过期。命令、附件正文和群友引用的原文不进入该文字回合。回复检查当前绑定、引用来源、文本规则及投递回执。换绑或保存宿主配置后，旧的文字收件和上下文停止使用。
+配置中的群在被 `@` 或收到对当前账号已确认回复的引用时，生成一条引用当前消息的文字回复。模型收到当前文字、角色人设、同一群友的近期已确认收发，以及最多四条适用于当前群的结构化人物事实。每个会话保留最多 6 轮，最后一次确认后 1 小时过期。命令、附件字节和群友引用的原文不直接进入文字历史；显式授权工具可在当前回合按原消息重新核验后读取来源。回复检查当前绑定、引用来源、文本规则及投递回执。换绑或保存宿主配置后，旧的文字收件和上下文停止使用。
 
 群文字模式期间暂停本群仿真唤醒，仿真状态继续保存在原会话分区。原有定时文字承诺可继续按原归属投递，依赖仿真唤醒的承诺须由仿真模式执行。群消息撤回同时清除该群文字上下文，并使仍在生成的旧回复失效。文字回合使用与仿真相同的 YAML 预算配置和 Redis 群级覆盖，对同群文字模型调用施加 `simulation.turn.minSendGapMs` 间隔。迁移后的文字回合次数单独记账，模型金额与同一会话的仿真共用账本。要停用当前会话的模型处理，可移除该会话的角色绑定。
 
@@ -992,9 +994,13 @@ textGroups:
     tools: [commitmentTool, delegateMemoryTool]
 ```
 
-`commitmentTool` 支持一次性或每天的固定文字提醒，以及查看、取消和续期本人登记的提醒。调度使用北京时间，到点在原群点名创建人。`delegateMemoryTool` 保存本条消息里的原话并支持本人查询、删除。两项工具均复用独立宿主的既有账本，按原账号、会话及角色定位记录。每回合最多执行一项工具，账号、群和发言者由入站事件确定。
+`commitmentTool` 支持一次性或每天的固定文字提醒，以及查看、取消和续期本人登记的提醒。调度使用北京时间，到点在原群点名创建人。`delegateMemoryTool` 保存本条消息里的原话并支持本人查询、删除。两项工具均复用独立宿主的既有账本，按原账号、会话及角色定位记录。这两项账本工具每回合最多执行一项，账号、群和发言者由入站事件确定；下述通用查询工具使用各自有界续轮。
 
-工具确认由本地执行结果生成并直接回复群里。工具正文不加入后续模型上下文。写入前先持久化尝试标记。进程在执行后、发送前退出时，可在原绑定下恢复已落盘的确认，只有尝试标记时会提示结果待核实。恢复期间不会再次执行该工具。撤回或换绑使未发送的旧回复失效。已经提交的托付和记忆由原账本管理，用户可通过相应工具取消或删除。
+工具确认由本地执行结果生成并直接回复群里。工具正文不加入后续模型上下文。写入前先持久化尝试标记。进程在执行后、发送前退出时，可在原绑定下恢复已落盘的确认，只有尝试标记时保留结果未知，不自动补执行或另发待核实通知。恢复期间不会再次执行该工具。撤回或换绑使未发送的旧回复失效。已经提交的托付和记忆由原账本管理，用户可通过相应工具取消或删除。
+
+通用工具同样在 `textGroups[].tools` 中逐名授权，再与实际注册表及 `simulation.toolPolicy` / `simulation.extraTools` 取交集；deny 优先，自定义 `mcp_...` 别名还须原策略显式放通。已支持搜索/网页、表情/Bing 找图、本地表情、图片生成编辑、文字图片/思维导图、Excel/文件只读、音乐/语音、GitHub/Modrinth、Pixiv、三角洲和群视频分析。配置某名称不会自动创建提供器或读取旧插件凭据，群文件目录及群视频端口仍只授予群会话。
+
+通用查询每回合最多三轮，执行前先取得原持久动作槽；一次媒体成功即结束，不再追加确认文字。文字结果及其派生回复不写入后续文字历史、人物学习、情节或工具结果回执。复用群仿真的 schema 校验、动态定义撤销、取消、秘密检查和 unknown 封口；每次外部请求、来源读取及排队发送均复核完整账号、会话、Agent、真人与原消息。敏感 QQ 动作和群成员管理继续走既有专门入口及权限。
 
 ### 启用好友私聊
 
@@ -1005,9 +1011,11 @@ privateChat:
   enabled: true
 ```
 
-好友准入由 `agent-bindings.yaml` 中 `kind: private` 的会话声明。处理 OneBot 上报的好友文字。临时会话不参与，`#` 命令仅接收下述本人记忆操作。附件及引用原文不随私聊文字入队。模型请求使用当前角色人设、好友文字、同一会话的近期对话和最多四条本好友在本会话自述的结构化事实。回复通过 OneBot `send_private_msg` 发给原好友。 [OneBot v11 私聊事件](https://github.com/botuniverse/onebot-11/blob/master/event/message.md#私聊消息) [OneBot v11 私聊发送](https://github.com/botuniverse/onebot-11/blob/master/api/public.md#send_private_msg-发送私聊消息)
+好友准入由 `agent-bindings.yaml` 中 `kind: private` 的会话声明。处理 OneBot 上报的好友文字。临时会话不参与，`#` 命令仅接收下述本人记忆操作。附件字节及引用原文不随私聊文字入队；已显式授权的工具可按当前或引用原消息重新核验读取。模型请求使用当前角色人设、好友文字、同一会话的近期对话和最多四条本好友在本会话自述的结构化事实。回复通过 OneBot `send_private_msg` 发给原好友。 [OneBot v11 私聊事件](https://github.com/botuniverse/onebot-11/blob/master/event/message.md#私聊消息) [OneBot v11 私聊发送](https://github.com/botuniverse/onebot-11/blob/master/api/public.md#send_private_msg-发送私聊消息)
 
 近期对话按完整会话地址、角色绑定版本、人设版本及人物记忆失效水位核对，每段最多保留 6 轮已确认收发，最后一次确认后 1 小时过期。好友撤回会清空该会话的近期上下文，让匹配的结构化事实及尚未发送的旧回复失效。直接召回结果只进入本轮模型请求。私聊收件按接收账号排队，换绑使已排队的旧消息和未发送的旧回复失效。重启后可处理仍在有效期内且尚未尝试发送的收件。已有投递尝试的收件按去重记录跳过重发。迁入的一次性提醒支持到期投递和本人查看、取消，工具结果直接返回当前好友会话。 [OneBot v11 好友消息撤回](https://github.com/botuniverse/onebot-11/blob/master/event/notice.md#好友消息撤回)
+
+私聊通用工具通过 `privateChat.allowTools` 显式列名，缺省为 `[]`；仍与已装配提供器和原工具策略取交集，继承上述临时资料和撤权边界。群专有成员、目录、视频或 QQ 敏感端口不会因列名而授予好友。冻结旧私聊 `allowTools` 为空，旧 `allowEmojiTool: true` 是独立的旧入口开关，不据此把所有工具开放给好友；当前生产维持原空名单。
 
 ### 本人记忆管理
 
@@ -1060,7 +1068,7 @@ Core 校验入站消息的账号、发言者命名空间和绑定，附带引文
 
 自定义模型端口的签名为 `YTapi(request, config, signal?, isCurrent?, ensureCurrent?)`。宿主必须在每一次实际提供方请求前等待 `ensureCurrent?.()`，包括参数兼容重试、工具规划器或文字渠道的降级；随后再次检查取消信号和同步 `isCurrent?.()`。异步复核拒绝后停止整个调用，不继续尝试其他后端。此复核会重新检查持久来源、隐私和当前平台访问权限；只在最初调用时检查不足以授权重试。`reviewCharacter`、`reflectCharacter` 和 `judgeSocialPermission` 同样接收第五个异步复核参数。独立 QQ 宿主和旧插件仿真已接通这些检查。
 
-`createAgentRuntime` 接受可选的 `toolRegistry`，类型 `AgentToolRegistry` 从 `bl-chat-agent` 导出。工具接收当前绑定、执行主体、取消信号和复核方法，不接收原生 QQ 事件。实现须在每次外部请求或副作用前检查 `isCurrent()` 并等待 `ensureCurrent?.()`，同时遵守取消信号；Core 始终提供异步复核，完成后上下文立即失效。宿主可从 `bl-chat-agent/web` 导入 `createAgentWebTools`，按搜索和网页配置构建内置工具注册表；内置工具沿用普通工具策略，自定义注册项仍须显式放通且只允许真实用户触发。此注册表接入群仿真，不扩大私聊及群文字模式的能力。
+`createAgentRuntime` 接受可选的 `toolRegistry`，类型 `AgentToolRegistry` 从 `bl-chat-agent` 导出。工具接收当前绑定、执行主体、取消信号和复核方法，不接收原生 QQ 事件。实现须在每次外部请求或副作用前检查 `isCurrent()` 并等待 `ensureCurrent?.()`，同时遵守取消信号；Core 始终提供异步复核，完成后上下文立即失效。宿主可从 `bl-chat-agent/web` 导入 `createAgentWebTools`，按搜索和网页配置构建内置工具注册表；内置工具沿用普通工具策略，自定义注册项仍须显式放通且只允许真实用户触发。此注册表接入群仿真；普通文字群/好友私聊仅接入显式会话名单、实际注册表及原工具策略共同允许的通用子集，来源端口与群专有能力继续分别授权。
 
 `bl-chat-agent/images` 导出 `createAgentImageTools`、`AgentImageBackend` 和 `AgentImageToolsOptions`。可将其 `builtIn` 与其他工具注册表合并注入 Core。`AgentToolContext.readImages(sourceSeq)` 只读取当前回合可见的已核验附图，`sendImage({mime, base64})` 只向绑定会话提交受配额和回执约束的图片；两者为可选端口，工具完成后不能继续调用。`AgentTool.timeoutMs` 可声明 1–240000 毫秒，缺省仍为 45000 毫秒。
 
@@ -1089,6 +1097,8 @@ Core 校验入站消息的账号、发言者命名空间和绑定，附带引文
 CI 在独立包安装后运行 `tests/agentPackageConsumer.test.js`：重新生成 npm 打包文件，在仓库外的临时项目按发布锁离线安装，严格编译只使用公共导出的 TypeScript 宿主，以测试 Redis 和合成平台消息完成一次确认投递，并检查篡改产物会阻止 CLI 启动。这是包安装和接口集成验证，真实 QQ 与模型联调仍须另行验收。
 
 ## 验证范围与继续点
+
+以下为逐批历史验证快照，发布日期和证据只适用于对应批次；当前实现、未验收边界及接续顺序以文末最新收尾点为准。
 
 2026-11-15 的工作区构建生成 `.release/agent-IbFPhv`，后端构建、TypeScript 检查、Core 依赖边界和差异空白检查通过。迁移策略、群记忆存储与管理、Core 接入和独立宿主的定向测试共 61 项通过；发布包在仓库外安装后的公共 API、类型声明、启动一致性及群记忆配置与运行测试共 11 项通过，均无跳过。发布包包含当时工作区的未提交实现，其内容以发布清单记录的文件哈希为准。
 
@@ -1668,7 +1678,7 @@ NjuGVo 实际 npm 归档为 `/tmp/bl-console-perf-archive-NjuGVo-XcZVkK/bl-chat-
 
 ### 2026-11-19：找图工具与排障、遗忘回执补齐
 
-新一轮按当前源码审计，旧表情搜索和 Bing 找图尚未接入独立宿主；冻结旧生产配置没有显式 extraTools 白名单，仿真工具策略为 open，未禁用这两个工具。本批保留 `emojiSearchTool`、`bingImageSearchTool` 的名称与关键词、数量语义。独立宿主以 `tools.imageSearch.emoji.enabled` 和 `tools.imageSearch.bing.enabled` 分别显式启用，缺省关闭；不借用图片生成模型、主模型密钥或插件目录。公共入口为 `bl-chat-agent/image-search`。
+新一轮按当前源码审计，旧表情搜索和 Bing 找图尚未接入独立宿主；冻结旧生产配置的仿真工具策略为 open，显式 extraTools 含七项其他工具，未禁用这两个工具；这两个名称不在额外列表中，沿内置普通工具策略接续。本批保留 `emojiSearchTool`、`bingImageSearchTool` 的名称与关键词、数量语义。独立宿主以 `tools.imageSearch.emoji.enabled` 和 `tools.imageSearch.bing.enabled` 分别显式启用，缺省关闭；不借用图片生成模型、主模型密钥或插件目录。公共入口为 `bl-chat-agent/image-search`。
 
 表情源仍为堆糖关键词分页，图片源先搜图神器壁纸再补 Bing；模型只能提供关键词及一至十张数量，不能指定 URL、账号或会话。固定元数据端点经完整公网 DNS 校验、选定地址连接及有界流读取，不跟随元数据重定向；下载另复核每跳公共目标、取消和真实图片字节。单图最多 2MiB、合计 12MiB，候选和分页另设上限；URL、聊天来源和图片字节不回传模型。完整入站来源、绑定、账号、权限与宿主配置在异步边界重核，单图或多图合并只向当前目标尝试一次，unknown 不自动补搜或重发；实际返回少于请求时明确说明数量。真实上游可用性与 QQ 显示须用各自外部证据判断。
 
@@ -1788,4 +1798,39 @@ store 的 catalog、state 和水位在声明全部 KEYS 的原子读取及 CAS �
 本批源码首次完整 CLI 揭示空摘要的可选代次等值判断缺陷：无摘要、无水位时 `undefined === undefined` 成立，随后读取缺失摘要导致首次生成失败。已改为显式检查摘要存在，新 Core 专项已覆盖首次生成；原失败为 `/tmp/bl-conversation-forget-cli-source-diagnostic-20261119.log`。同时修复清理后旧重试状态停滞及旧失败污染新代次预算，未通过禁用摘要或放宽业务期限掩盖问题。最终源码完整 CLI 同例已通过，见 `/tmp/bl-conversation-forget-cli-source-final-20261119.log`：实际删除旧群和其它场景中本人的原文、旧摘要和混合情节，逐项保留另一人的原文、退役清空的旧群 state/catalog，关闭功能后的清理和重启不调用摘要或主模型。该 CLI 使用隔离 Redis、本地 HTTP 与替身 OneBot，不替代真实 QQ 客户端验收。最终 backend 构建二千六百六十一个文件通过；固定独立安装及生产交付，以本节后续实际证据为准；整体独立 Core/QQ 目标保持进行中。
 
 
-下一实际分区为 `agent:group-memory:v1:state:<完整target摘要>`：同一状态含多个 Agent 的滚动 records、待办 job.messages、派生 fact 及共享教学来源；现有 facts 只登记单条 proposal.source，不能证明整批模型上下文没有包含另一位发言者。下一切片须按原 Agent 和来源清理本人旧原文的全部副本及受污染聚合，保留其他 Agent/人物和截止点后来源；普通 update 与 staging 写入都须观察持久屏障。共享教学有独立来源人格且可能跨 Agent 复用，不能按单 Agent 整键删除。该分区当前尚未提供主动清理证明，继续 unsupported；此处是只读定位，未提前扩大本批实现或执行生产删除。
+上述 group-memory 待办现已由下一批源码实现及专项覆盖，范围和真实未验收界限更新如下；旧批次的“下一分区”定位不再作为当前阻断。
+
+
+## 2026-11-19 当前收尾与下一步
+
+本节是当前 canonical 接续点。本轮源码已完成下列实现和专项核对，最终集中类型检查、构建、独立安装包、提交合并与生产交付尚须由本轮发布回执确认。线上旧 `trss-yunzai` / `bl-console` 服务及 `/opt/trss-yunzai` 已删除，独立备份继续保留，不能再把“旧服务停用留存”写作当前部署状态。
+
+人物与来源清理已扩展到实际持久分区。group-memory 以完整账号、Agent、目标及截止时间定位本人 records，并保守失效可能受污染的 job 与 aggregate；共享教学按原来源角色逐项核验，不整键删除其他 Agent 的资料。清理选择器最多 4096 项、2 MiB，普通更新、staging 与 CAS 都观察同一持久水位。只有复核原始 JSON 已清除后才报告 completed；无法确认则 unknown，迟到旧来源不能重新写回。self 清理保留其他人物及截止点后来源。
+
+source-memory 已分别清理 `history-records`、`person-extraction-batches`、`delegated-memory` 与 `commitments`。委托记忆和承诺保存可信原消息 `sourceAt`，避免旧请求在遗忘后迟到创建而复活。遗忘回执持久保存 `sourceCommitted`、分区状态与原 cutoff；恢复只继续已提交来源隐私的可信计划，沿用原 `createdAt`，不重设截止点或重复执行已完成 owner。Core、控制台 wrapper 和 CLI 已接入实际 owner；总来源消费者尚有 unsupported 时不能汇总为“全部资料物理清除”，已发送或已交给外部服务的内容也不在该保证内。
+
+清理证据：group/self 相关源码专项 74/74，group 真实 Redis 新专项 12/12，self 两项使用 Map fake；source cleanup 真实 Redis 7/7，历史回归 21/21，文字 9 项及风格 10 项通过。Core/console/forget 86/86、commitment 及管理 111/111（含真实 Redis 7 项）、前端 33/33 与前端类型检查通过。各专项日志保留在本轮 `/tmp/bl-...20261119...`，不把 fake 或合成平台证据改称真实生产验收。
+
+普通文字通用工具接线源码专项 11/11、原 QQ 动作/群视频/好友互动/失败说明邻接回归 69/69。生产目前没有 `textGroups`，新增它会改变本群处理模式，不能为开放工具而自动添加；`privateChat.allowTools` 为空，继续保持。现有仿真沿其 open/deny/extra 策略及已经配置的提供器接续，不因新文字入口自动启用语音、MCP、独立视频分析或未声明的思维导图后端。
+
+冻结实际配置 `legacy-config-data.tar.gz` 内 `config/message.yaml` 的根为 `pluginSettings`，所选 provider 为 oneapi，`enabled/useTools/deltaForceSystem.enabled` 均 true，`oneapi_tools` 与仿真 extraTools 均包含 `deltaForceTool`，旧 API 地址与凭据均存在。因此本轮补入中立三角洲工具，直接复用原只读 client、格式化和报表/价格曲线构建器，不读取 cwd 旧配置或传原生 QQ 事件。公开出口为 `bl-chat-agent/delta-force`；源码专项 10/10。实际第三方 API 可用性、模型选用及 QQ 报表显示仍待生产测试。
+
+最小接续只增加已有仿真入口实际需要的 `tools.deltaForce`：`enabled`、`apiBaseUrl`、`apiKeyEnv`、`timeoutMs`、`objectCacheEnabled`、`objectCacheRefreshMinutes`。凭据引用 `BL_AGENT_DELTAFORCE_API_KEY`，不写入 YAML 或文档。候选 env 与 continuation policy 已在生产 staging 以 0600 生成，最终停服事务统一备份并应用，当前不表示已切换生产。
+
+Linux JS/Seal runner 已通过真实 Linux / Node 24.16.0 / systemd 257 / cgroup v2 的 14/14 conformance。独立 native Buffer 压测核实 kernel `memory.max=134217728`、`memory.swap.max=0`，实测 cgroup 达 128 MiB 后 `oom-kill` / status 9 并回收。旧 Daggerheart 97009 字节规则包已按原 SHA256 加载、检查命令注册并执行 dh/dhalias/dd/ddr/test/cook，保存自身希望值及名片 draft；这些是冻结来源在隔离 runner 的证据，尚未证明最终包与生产已发布。三份机器回执位于 staging `runner-source/linux-*-conformance.json`。Darwin 仍只诊断且拒绝声明隔离资格；runner 由可信 Linux bootstrap 注入，不由 YAML 选择。`playerBindings` 仅给本群真实发送者自身 player/card，Core 仍复核新鲜成员，不授予代理、暗骰或 admin 权限。接续名单覆盖当前已绑定且旧骰娘未显式关闭的群，保留 builtin；旧关闭群不获该 grant。
+
+最后一次冻结配置核对确认海龟汤 `miniGames.enabled` 与嵌套 `turtleSoup.enabled` 均 true，Uma `umaRace.enabled` true；前序把错误层级读取的 null 当未启用不成立。冻结海龟汤有 11 题、7 条已结束 play、0 session；Uma 有 7 位持久玩家及 7 只角色，历史 player-races 合计 443，进程内 room 不可由归档证明。外部 worker 保持旧 false。游戏配置与状态准备已完成如下，运行接线和最终发布仍分别等待回执，不宣称全量 QQ 能力已经验收。
+
+
+games 配置源码专项7/7：顶层仅 turtleSoup/umaRace/operatorIds，两游戏默认关闭，各字段严格有界，拒绝自定义baseDir或任意文件路径。Turtle复用原有效配置resolver，Uma用DEFAULT_CONFIG及实际RACE_SIZE=8，保留旧有效奖励5/3/2/1。宿主只传dataDir/games作为根，实际状态按完整平台、namespace、账号与Agent隔离；同scope的Uma积分跨群共享。冻结无可信主人声明，operatorIds保持[]；本群admin/owner可按原规则取消，但不能由群角色获得全局改分能力。
+
+`candidate-games-policy.json`与`legacy-games-manifest.json`已在staging以0600生成，前者已实际送入新配置parser通过，后者逐文件登记原字节SHA256及安全计数。`legacy-games/data/turtle_soup`五份JSON及`legacy-games/data/uma_race/points.json`只从不可变冻结档提取，当前严格decoder均通过（含25候选），未写生产data或认领旧活跃会话。发布时只有主线能基于真实旧账号、Agent和完整会话映射导入选定scope；不能把裸群号资料复制给所有角色或伪造旧人格版本。
+
+Uma运行适配已冻结源码，公开工厂createAgentUmaRaceHandler与agentUmaRaceDataDir。专项10/10验证原19类命令、真实冻结结构fixture、scope隔离、显式改分授权、原来源背景timer、三阶段并发只结算一次及撤权/取消阻断；原manager持久化4/4含跨独立进程原子修改，strict通过。海龟汤独立adapter专项11/11、原Manager/Generator/ModelHost完整源码回归79/79及strict通过；原开局source用于deadline重新授权，MVP/补货保留实际触发命令来源，撤权/stop后迟到模型拒写，无来源不发不改。私发unknown封口且不在新请求或重启后重放。这些是源码与隔离文件/替身模型证据，真实QQ、最终包和生产迁移仍由本轮发布回执确认。
+
+
+游戏启停由显式 `games.turtleSoup.enabled` / `games.umaRace.enabled` 决定，独立于普通聊天开关。Core将有完整绑定的游戏候选纳入有序控制收件，保留原source全文、parts、引用和原时间，不经过普通文字前缀拦截或trim；活动游戏中的自然问答可继续处理，普通模型保持静默。关闭普通聊天不扩大游戏权限：绑定、实例租约、原消息指纹、真实成员、人物隐私、取消及排队发送复核继续生效。Core新集成专项6/6已通过，包括关闭普通聊天时保留原source和私发授权，以及实际Turtle/Uma handler的帮助命令入站；没有调用真实模型或真实QQ。
+
+独立宿主通过createStandaloneGroupGames仅装配显式启用的两个handler。海龟汤只使用固定主chat后端，generation/review只能覆写chatApiModel，不修改URL/key；useTools=false且forceChatBackend=true，合并宿主、原context与本次调用signal，45秒上限，每次实际provider dispatch及兼容重试前重新ensureCurrent。输入和输出均经过宿主秘密与禁词合并检查，provider错误只返回固定失败说明；返回usage同时记global/api和完整simulationAddressKey会话scope的turtle-soup，不以裸群号记账。Uma改分还要求真实qq/global的source.sender.id在显式operatorIds中，群admin/owner不提升；未注入renderReport时沿用原文字报表。宿主退休会取消在途模型并封闭两游戏的排队出站，背景动作必须重取原来源授权。
+
+宿主工厂及模型边界源码专项9/9、Delta专项10/10通过（`/tmp/bl-standalone-games-and-delta-source-20261119.log`）。覆盖固定主后端和模型覆写、禁工具、逐重试新鲜授权、双scope记账、45秒及三种原signal取消、秘密/禁词/工具响应/空响应/provider异常拒绝、真实Turtle问答链、QQ/global显式改分和完整Uma文字结果。首轮Uma全程fixture遗漏背景重授导致原开局授权被正确拒绝，补入原source映射后通过，未放宽产品边界；这些不代表付费模型或真实QQ已经验收。

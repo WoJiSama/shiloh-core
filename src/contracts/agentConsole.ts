@@ -1,4 +1,5 @@
 import type { AgentBindingSnapshot, ConversationAddress } from './agentBinding.js'
+import type { AgentProfileForgetCutoff } from './agentManagement.js'
 
 export type AgentConsoleJson = null | boolean | number | string | readonly AgentConsoleJson[] | { readonly [key: string]: AgentConsoleJson }
 export type AgentConsoleMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
@@ -29,6 +30,8 @@ export interface AgentConsoleContext extends AgentConsoleGuard {
   /** A current, complete host binding, including account, connection, agent, persona and revision.
    * Conversation services derive storage/native targets from this field, never a legacy bare group/body alias. */
   readonly binding?: AgentBindingSnapshot
+  /** Host-only receipt metadata. Console routes must never accept it in request bodies. */
+  readonly profileForget?: AgentProfileForgetCutoff
 }
 
 export interface AgentConsoleAuthState {

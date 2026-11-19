@@ -183,7 +183,7 @@ function erase(row: Profile, entry?: Entry) {
           })
         })
         forgetting.capture(result, { scopeKey: row.scopeKey, bindingToken: row.bindingToken,
-          isCurrent: () => alive && !!sceneFor(row) })
+          isCurrent: () => alive && !!sceneFor(row), canResume: () => canWrite('profiles.delete', row.scopeKey) })
         if (ticket === sequence) {
           busy.value = false
           await load()
@@ -310,7 +310,7 @@ onBeforeUnmount(() => {
         v-model:page="page"
         :page-size="10"
         :item-count="filtered.length" /></PageState
-    ><ForgetReceipt :receipt="forgetting.receipt.value" :error="forgetting.error.value" :loading="forgetting.loading.value" @refresh="forgetting.refresh()" />
+    ><ForgetReceipt :receipt="forgetting.receipt.value" :error="forgetting.error.value" :loading="forgetting.loading.value" :resumable="forgetting.canResume.value" @refresh="forgetting.refresh()" @resume="forgetting.resume()" />
     <NAlert v-if="uncertain" type="warning">操作结果未知，已锁定删除；请先重新读取并核对。</NAlert>
   </div>
 </template>

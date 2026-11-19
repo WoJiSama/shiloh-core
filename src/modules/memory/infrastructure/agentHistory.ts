@@ -441,5 +441,5 @@ export function createAgentHistory(ports: {
     })().catch(() => { ports.logger.warn('[Agent] 历史来源清理暂时未完成') }).finally(() => { sweep = undefined })
     return sweep
   }
-  return { capture, read, readStyleSources, invalidate, tick, async stop() { lifecycle.abort(); for (const request of requests) request.controller.abort(); await sweep } }
+  return { capture, read, readStyleSources, invalidate, tick, purgeSubject: store.purgeSubject, async stop() { lifecycle.abort(); for (const request of requests) request.controller.abort(); await sweep } }
 }

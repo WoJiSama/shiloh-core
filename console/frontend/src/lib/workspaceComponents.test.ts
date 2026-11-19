@@ -558,6 +558,38 @@ describe('destructive confirmation source identity', () => {
   )
 })
 describe('actual source-scoped person memory', () => {
+  it('continues unfinished whole-person cleanup with the original request after its profile row is gone', async () => {
+    const selected = scene(), receipt = { operationId: 'operation-retry', requestId: 'original-request', kind: 'person-profile',
+      subject: { userId: 'user-1' }, phase: 'unknown', usage: 'blocked', cleanup: 'unknown',
+      cleanupPlan: { version: 1, sourceCommitted: true, owners: [{ owner: 'local-emoji', state: 'unknown' }] },
+      impacts: [{ kind: 'partition', id: 'local-emoji-attributed-sources', partition: 'local-emoji:partition', state: 'unknown' }] }
+    let deleted = false, continued = false
+    const finished = { ...receipt, phase: 'completed', cleanup: 'unsupported',
+      cleanupPlan: { ...receipt.cleanupPlan, owners: [{ owner: 'local-emoji', state: 'completed' }] },
+      impacts: [{ ...receipt.impacts[0], state: 'completed' }] }
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (options?.method === 'POST') {
+        if (deleted) { continued = true; return finished }
+        deleted = true; return receipt
+      }
+      if (path.startsWith('/api/forgetting/')) return continued ? finished : receipt
+      return { profiles: deleted ? [] : [profile()] }
+    })
+    const wrapper = page(StandaloneProfiles, { conversationScopes: [selected] })
+    await flushPromises()
+    await wrapper.findAllComponents(NButton).find(button => button.text() === '清空当前来源记录')!.trigger('click')
+    await warning.mock.calls[0]![0].onPositiveClick()
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('清空当前来源记录')
+    await wrapper.findAllComponents(NButton).find(button => button.text() === '继续未完成清理')!.trigger('click')
+    await flushPromises()
+    const request = vi.mocked(api).mock.calls.filter(([, options]) => options?.method === 'POST')[1]!
+    expect(request[0]).toBe('/api/person-profiles/delete')
+    expect(JSON.parse(String(request[1]!.body))).toEqual({ userId: 'user-1', requestId: 'original-request',
+      scopeKey: selected.scopeKey, bindingToken: selected.bindingToken })
+    expect(wrapper.text()).toContain('本地表情（已登记来源） · 已处理')
+    expect(wrapper.text()).not.toContain('继续未完成清理')
+  })
   it('reads the durable forget receipt using the deleted entry exact scope and shows its impact', async () => {
     const selected = scene(), receipt = { operationId: 'operation-1', phase: 'completed', usage: 'blocked', cleanup: 'unsupported',
       impacts: [{ kind: 'person-memory-entry', id: 'entry-1', partition: 'person-memory', state: 'completed' },

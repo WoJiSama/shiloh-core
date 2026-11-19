@@ -3,7 +3,8 @@ import {commitmentRedis} from './helpers/commitmentRedis.js'
 // 覆盖 create/list/cancel 权限、仿真群闸、tick 静态直发/agent 唤醒/顺延/重试/到期收档。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {createCommitmentRuntime} from '../dist/backend/modules/commitments/infrastructure/commitmentTool.js'
+import {importBilibiliHost as load} from './helpers/bilibiliQualitySource.mjs'
+const {createCommitmentRuntime}=await load('modules/commitments/infrastructure/commitmentTool.js')
 
 const prefix='bl-chat:commitment:'
 function setup({ simGroups=['20'] } = {}) {

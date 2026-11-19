@@ -11,6 +11,7 @@ import type { SendRequesterBilibiliAuthAction } from './agentBilibiliAuth.js'
 import type { SendVideoCardAction } from './agentVideoCard.js'
 import type { SendInteractionAction, InteractionReceipt } from './agentInteraction.js'
 import type { AgentDicePrivateRelayRequest, AgentDiceRelayGuard } from './agentDice.js'
+import type { AgentGroupGamePrivateRelayRequest, AgentGroupGameRelayGuard } from './agentGames.js'
 
 export type MessageResource =
   | { readonly kind: 'url'; readonly value: string }
@@ -91,6 +92,8 @@ export interface MessageActionPort {
   send(action: SendMessageAction, options?: MessageActionOptions): Promise<DeliveryReceipt>
   /** Explicit private dice delivery retains and revalidates its original group and human source. */
   sendDicePrivate?(request: AgentDicePrivateRelayRequest, guard: AgentDiceRelayGuard): Promise<DeliveryReceipt>
+  /** A game-specific private result retains its verified original group authority. */
+  sendGamePrivate?(request: AgentGroupGamePrivateRelayRequest, guard: AgentGroupGameRelayGuard): Promise<DeliveryReceipt>
   /** One fixed-conversation platform interaction, using its own non-message confirmation. */
   interact?(action: SendInteractionAction, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<InteractionReceipt>
   /** Deterministic Bilibili authorization notices to the proven original sender only. */

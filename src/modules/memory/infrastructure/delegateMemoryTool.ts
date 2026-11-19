@@ -13,6 +13,7 @@ interface DelegatedEvent extends AgentBindingTurn {
   user_id?:string|number|undefined
   isMaster?:boolean|undefined
   sender?:{nickname?:string|undefined;card?:string|undefined}|undefined
+  _agentToolRequest?:{occurredAt?:number}
 }
 
 function event(value:unknown):DelegatedEvent {
@@ -96,7 +97,8 @@ export function createDelegateMemoryRuntime(ports:DelegatedMemoryPorts) {
       id:typeof scope==='string'?`dlg_${at}_${ownerId}_${uuid.slice(0,6)}`:`dlg_${at}_${uuid}`,
       owner:ownerId,ownerName:String(ev.sender?.card||ev.sender?.nickname||ownerId),
       content:content.slice(0,300),dueAt,status:'active',
-      createdAt:at,updatedAt:at
+      createdAt:at,updatedAt:at,
+      ...(typeof ev._agentToolRequest?.occurredAt==='number'&&Number.isSafeInteger(ev._agentToolRequest.occurredAt)&&ev._agentToolRequest.occurredAt>0?{sourceAt:ev._agentToolRequest.occurredAt}:{})
     }
     const capError=await store.update(scope,entries=>{
       const error=checkDelegatedCaps(entries,ownerId,cfg)

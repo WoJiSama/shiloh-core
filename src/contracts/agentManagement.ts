@@ -7,8 +7,17 @@ export interface AgentManagementGuard {
   ensureCurrent(): void
 }
 
+/** Issued by the trusted forget-operation owner, never decoded from an HTTP/model payload. */
+export interface AgentProfileForgetCutoff {
+  readonly operationId: string
+  readonly userId: string
+  readonly bindingToken: string
+  readonly through: number
+}
+
 export interface AgentManagementContext extends AgentManagementGuard {
   readonly binding?: AgentBindingSnapshot
+  readonly profileForget?: AgentProfileForgetCutoff
   /** Re-evaluated by management modules before storage access and mutation. */
   authorize(operation: string, binding: AgentBindingSnapshot, guard: AgentManagementGuard):
     Promise<'allowed' | 'denied' | 'unavailable'>

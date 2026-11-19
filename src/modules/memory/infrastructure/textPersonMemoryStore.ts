@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto'
 import type { AgentBindingSnapshot } from '../../../contracts/agentBinding.js'
 import type { TextPersonMemoryBatch } from '../../../contracts/textPersonMemory.js'
 import { agentBindingToken, agentConversationKey, conversationAddressKey, decodeAgentConversationKey, isConversationAddress, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
+import type { AgentSourceMemoryCleanupGuard, AgentSourceMemoryPurgeSubject } from '../../../contracts/sourceMemoryCleanup.js'
+import { conversationCleanupAllows, conversationCleanupMatchesScope, parseConversationCleanup } from './conversationMemoryCleanup.js'
+import { createSubjectMemoryCleanup } from './subjectMemoryCleanup.js'
 
 interface TextPersonMemoryRedis {
   get(key: string): Promise<string | null>
@@ -10,6 +13,7 @@ interface TextPersonMemoryRedis {
 
 const PREFIX = 'agent:person-memory:text:v1'
 const CATALOG_KEY = `${PREFIX}:catalog`
+const CLEANUP_KEY = `${PREFIX}:cleanup`
 const MAX_BATCHES = 200
 const MAX_MESSAGES = 60
 const MAX_BATCH_CHARS = 2_000_000
@@ -20,20 +24,22 @@ const batchKey = (id: string) => `${PREFIX}:batch:${id}`
 
 // Every Redis key is supplied through KEYS so the Agent storage can namespace
 // and fence both reads and commits with its host lease.
-const READ_PAIR = `return {redis.call('GET', KEYS[1]) or false, redis.call('GET', KEYS[2]) or false}`
+const READ_PAIR = `return {redis.call('GET', KEYS[1]) or false, redis.call('GET', KEYS[2]) or false, redis.call('GET', KEYS[3]) or false}`
 const READ_LIST = `
 local catalog = redis.call('GET', KEYS[1])
 if (catalog or false) ~= (ARGV[1] == '1' and ARGV[2] or false) then return false end
-local result = {}
-for i = 2, #KEYS do result[i - 1] = redis.call('GET', KEYS[i]) or false end
+local result = {redis.call('GET', KEYS[2]) or false}
+for i = 3, #KEYS do result[i - 1] = redis.call('GET', KEYS[i]) or false end
 return result`
 const COMPARE_AND_SET = `
 local catalog = redis.call('GET', KEYS[1])
 local batch = redis.call('GET', KEYS[2])
+local cleanup = redis.call('GET', KEYS[3])
 if (catalog or false) ~= (ARGV[1] == '1' and ARGV[2] or false)
-  or (batch or false) ~= (ARGV[3] == '1' and ARGV[4] or false) then return 0 end
-redis.call('SET', KEYS[1], ARGV[5])
-if ARGV[6] == '1' then redis.call('SET', KEYS[2], ARGV[7]) else redis.call('DEL', KEYS[2]) end
+  or (batch or false) ~= (ARGV[3] == '1' and ARGV[4] or false)
+  or (cleanup or false) ~= (ARGV[5] == '1' and ARGV[6] or false) then return 0 end
+redis.call('SET', KEYS[1], ARGV[7])
+if ARGV[8] == '1' then redis.call('SET', KEYS[2], ARGV[9]) else redis.call('DEL', KEYS[2]) end
 return 1`
 
 function fail(): never { throw new Error(FAILURE) }
@@ -113,21 +119,58 @@ function parseBatch(value: string | null, id: string): TextPersonMemoryBatch | u
 }
 
 export function createTextPersonMemoryStore(redis: TextPersonMemoryRedis) {
+  const cleanup = createSubjectMemoryCleanup(redis, CLEANUP_KEY, 'person-extraction-batches')
+  function filtered(batch: TextPersonMemoryBatch | undefined, fences: ReturnType<typeof parseConversationCleanup>): TextPersonMemoryBatch | undefined {
+    if (!batch) return undefined
+    const messages = batch.messages.filter(message => conversationCleanupAllows(batch.binding, { authorId: batch.subjectId, at: message.at }, fences))
+    const removed = new Set(batch.messages.filter(message => !messages.includes(message)).map(message => message.messageId))
+    const { result, ...rest } = batch
+    const next = { ...rest, messages, ...(result && !result.messageIds.some(id => removed.has(id)) ? { result } : {}) }
+    if (!messages.length && !next.result && fences.entries.some(entry => conversationCleanupMatchesScope(batch.binding, entry) &&
+      !conversationCleanupAllows(batch.binding, { authorId: batch.subjectId, at: 0 }, { version: 1, entries: [entry] }))) return undefined
+    return next
+  }
+  function needsCleanup(batch: TextPersonMemoryBatch, fences: ReturnType<typeof parseConversationCleanup>) {
+    const next = filtered(batch, fences)
+    return !next || next.messages.length !== batch.messages.length || Boolean(next.result) !== Boolean(batch.result)
+  }
+  async function snapshot(id: string) {
+    const values = await redis.eval(READ_PAIR, { keys: [CATALOG_KEY, batchKey(id), CLEANUP_KEY], arguments: [] })
+    if (!Array.isArray(values) || values.length !== 3) fail()
+    const catalogRaw = raw(values[0]), batchRaw = raw(values[1]), cleanupRaw = raw(values[2])
+    const catalog = parseCatalog(catalogRaw), batch = parseBatch(batchRaw, id)
+    if (catalog.includes(id) !== Boolean(batch)) fail()
+    return { catalogRaw, batchRaw, cleanupRaw, catalog, batch, fences: parseConversationCleanup(cleanupRaw) }
+  }
+  async function commit(id: string, saved: Awaited<ReturnType<typeof snapshot>>, next: TextPersonMemoryBatch | undefined) {
+    const nextCatalog = next ? saved.catalog.includes(id) ? saved.catalog : [...saved.catalog, id] : saved.catalog.filter(value => value !== id)
+    if (nextCatalog.length > MAX_BATCHES) fail()
+    const result = await redis.eval(COMPARE_AND_SET, { keys: [CATALOG_KEY, batchKey(id), CLEANUP_KEY],
+      arguments: [...expected(saved.catalogRaw), ...expected(saved.batchRaw), ...expected(saved.cleanupRaw), JSON.stringify({ version: 1, ids: nextCatalog }), ...expected(next ? JSON.stringify(next) : null)] })
+    if (result !== 0 && result !== 1) fail()
+    return result === 1
+  }
+  async function rawList() {
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const catalog = raw(await redis.get(CATALOG_KEY)), ids = parseCatalog(catalog)
+      const values = await redis.eval(READ_LIST, { keys: [CATALOG_KEY, CLEANUP_KEY, ...ids.map(batchKey)], arguments: expected(catalog) })
+      if (values === null) continue
+      if (!Array.isArray(values) || values.length !== ids.length + 1) fail()
+      const fences = parseConversationCleanup(raw(values[0]))
+      const batches = ids.map((id, i) => { const batch = parseBatch(raw(values[i + 1]), id); if (!batch) fail(); return batch })
+      return { batches, fences }
+    }
+    return fail()
+  }
   return {
+    async filterMessages(batch: TextPersonMemoryBatch, messages: TextPersonMemoryBatch['messages']) {
+      const fences = parseConversationCleanup(raw(await redis.get(CLEANUP_KEY)))
+      return messages.filter(message => conversationCleanupAllows(batch.binding, { authorId: batch.subjectId, at: message.at }, fences))
+    },
     async list(): Promise<TextPersonMemoryBatch[]> {
       try {
-        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-          const catalog = raw(await redis.get(CATALOG_KEY))
-          const ids = parseCatalog(catalog)
-          const snapshot = await redis.eval(READ_LIST, { keys: [CATALOG_KEY, ...ids.map(batchKey)], arguments: expected(catalog) })
-          if (snapshot === null) continue
-          if (!Array.isArray(snapshot) || snapshot.length !== ids.length) fail()
-          return ids.map((id, index) => {
-            const batch = parseBatch(raw(snapshot[index]), id)
-            if (!batch) fail()
-            return batch
-          })
-        }
+        const saved = await rawList()
+        return saved.batches.flatMap(batch => { const next = filtered(batch, saved.fences); return next ? [next] : [] })
       } catch { fail() }
       return fail()
     },
@@ -136,15 +179,11 @@ export function createTextPersonMemoryStore(redis: TextPersonMemoryRedis) {
         if (!ID_PATTERN.test(id)) fail()
         for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
           if (isCurrent?.() === false) return false
-          const snapshot = await redis.eval(READ_PAIR, { keys: [CATALOG_KEY, batchKey(id)], arguments: [] })
-          if (!Array.isArray(snapshot) || snapshot.length !== 2) fail()
-          const catalogRaw = raw(snapshot[0]), batchRaw = raw(snapshot[1])
-          const catalog = parseCatalog(catalogRaw), current = parseBatch(batchRaw, id)
-          if (catalog.includes(id) !== Boolean(current)) fail()
+          const saved = await snapshot(id), { batch: current, batchRaw } = saved
           if (isCurrent?.() === false) return false
-          const candidate = change(current === undefined ? undefined : structuredClone(current))
-          const nextRaw = candidate === undefined ? null : JSON.stringify(candidate)
-          const next = parseBatch(nextRaw, id)
+          const candidate = change(structuredClone(filtered(current, saved.fences)))
+          const next = filtered(parseBatch(candidate === undefined ? null : JSON.stringify(candidate), id), saved.fences)
+          const nextRaw = next === undefined ? null : JSON.stringify(next)
           if (current && next && identity(current) !== identity(next)) fail()
           if (current && next && next.messages.some(message => {
             const previous = current.messages.find(value => value.messageId === message.messageId)
@@ -152,17 +191,34 @@ export function createTextPersonMemoryStore(redis: TextPersonMemoryRedis) {
           })) fail()
           if (isCurrent?.() === false) return false
           if (nextRaw === batchRaw || !current && !next) return true
-          const nextCatalog = next ? catalog.includes(id) ? catalog : [...catalog, id] : catalog.filter(value => value !== id)
-          if (nextCatalog.length > MAX_BATCHES) fail()
-          const arguments_ = [...expected(catalogRaw), ...expected(batchRaw), JSON.stringify({ version: 1, ids: nextCatalog }), ...expected(nextRaw)]
           // No await may separate the final scope check from the atomic commit.
           if (isCurrent?.() === false) return false
-          const committed = await redis.eval(COMPARE_AND_SET, { keys: [CATALOG_KEY, batchKey(id)], arguments: arguments_ })
-          if (committed === 1) return true
-          if (committed !== 0) fail()
+          if (await commit(id, saved, next)) return true
         }
       } catch { fail() }
       return fail()
+    },
+    purgeSubject(input: AgentSourceMemoryPurgeSubject, guard: AgentSourceMemoryCleanupGuard) {
+      return cleanup.purge(input, guard, async (selector, authorize, counts) => {
+        const all = await rawList(); await authorize()
+        for (const batch of all.batches) {
+          if (!conversationCleanupMatchesScope(batch.binding, selector)) continue
+          let settled = false
+          for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+            const saved = await snapshot(batch.id); await authorize()
+            const next = filtered(saved.batch, saved.fences)
+            if (!saved.batch || !needsCleanup(saved.batch, saved.fences)) { settled = true; break }
+            await authorize()
+            if (!await commit(batch.id, saved, next)) continue
+            counts.removedRecords += (saved.batch?.messages.length ?? 0) - (next?.messages.length ?? 0) + (saved.batch?.result && !next?.result ? 1 : 0)
+            if (saved.batch && !next) counts.removedPartitions++
+            settled = true; break
+          }
+          if (!settled) fail()
+        }
+        const verified = await rawList(); await authorize()
+        if (verified.batches.some(batch => conversationCleanupMatchesScope(batch.binding, selector) && needsCleanup(batch, verified.fences))) fail()
+      })
     },
   }
 }

@@ -9,12 +9,15 @@ export interface DelegatedMemoryEntry {
   status:'active'|'done'
   createdAt:number
   updatedAt:number
+  /** Original verified request time; legacy records use their original creation time. */
+  sourceAt?:number
 }
 export interface DelegatedMemoryConfigSection { maxPerGroup?:number; maxPerOwner?:number }
 export interface DelegatedMemoryRedisLike {
   get(key:string):Promise<string|null>
   set(key:string,value:string):Promise<unknown>
   eval?(script:string,options:{keys:string[];arguments:string[]}):Promise<unknown>
+  scanIterator?(options:{MATCH:string;COUNT:number}):AsyncIterable<string|string[]>|Promise<AsyncIterable<string|string[]>>
 }
 export interface DelegatedMemoryPorts {
   redis:DelegatedMemoryRedisLike

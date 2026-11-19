@@ -8,11 +8,13 @@ import {createAgentDiceBuiltin,type AgentDiceBuiltinConfig} from '../modules/dic
 import {resolveAgentDiceAuthorization,type AgentDiceAuthorizationGrant,type AgentDiceAuthorizationPermission} from '../modules/dice/infrastructure/agentDiceAuthorization.js'
 import type {AgentDiceEngineConfig} from '../modules/dice/infrastructure/agentDiceEngine.js'
 import {createAgentDiceRulePackages} from '../modules/dice/infrastructure/agentDiceRulePackages.js'
+import {AGENT_DICE_SCRIPT_SOURCE_MAX_BYTES,type AgentDiceScriptRunner} from '../modules/dice/infrastructure/agentDiceScriptProcess.js'
 import {DICE_RULE_MAX_PACKAGE_BYTES,validateDiceRulePack} from '../modules/dice/infrastructure/DiceRuleSchema.js'
 import type {AgentDiceStateGuard} from '../modules/dice/infrastructure/agentDiceState.js'
 
 export interface StandaloneDiceRulePackage {
-  readonly kind:'yaml'
+  readonly kind:'yaml'|'js'|'seal'
+  readonly trustedPackage?:{readonly id:string;readonly revision:string;readonly sourceHash:string}
   readonly source:string
   readonly revision:string
   readonly sourceHash:string
@@ -24,6 +26,8 @@ export interface StandaloneDiceEngineConfig {
   readonly builtin:AgentDiceBuiltinConfig
   readonly rulePackages:readonly StandaloneDiceRulePackage[]
   readonly grants:readonly AgentDiceAuthorizationGrant[]
+  /** Explicitly opens only ordinary own-player/card access in these exact bindings. */
+  readonly playerBindings:readonly AgentBindingSnapshot[]
 }
 export interface StandaloneDiceRuntime {
   readonly diceEngine:AgentDiceEngineConfig|undefined
@@ -122,20 +126,26 @@ function grant(value:unknown,configured:ReadonlySet<string>):AgentDiceAuthorizat
   return result
 }
 function rulePackage(value:unknown):{input:StandaloneDiceRulePackage;id:string;aliases:readonly string[]} {
-  const raw=own(value,['kind','source','revision','sourceHash'])
-  if(raw.kind!=='yaml'||typeof raw.source!=='string'||!raw.source||Buffer.byteLength(raw.source)>DICE_RULE_MAX_PACKAGE_BYTES||typeof raw.revision!=='string'||!raw.revision.trim()||raw.revision.length>256||typeof raw.sourceHash!=='string'||!/^[a-f0-9]{64}$/u.test(raw.sourceHash)||sha(raw.source)!==raw.sourceHash)throw invalid()
-  const result=validateDiceRulePack(YAML.parse(raw.source,{maxAliasCount:50}))
-  if(!result.ok)throw invalid()
-  return {input:freeze({kind:'yaml',source:raw.source,revision:raw.revision,sourceHash:raw.sourceHash}),id:result.pack.id,aliases:[result.pack.id,...(result.pack.aliases??[])]}
+  const raw=own(value,['kind','source','revision','sourceHash','trustedPackage'])
+  if(!['yaml','js','seal'].includes(String(raw.kind))||typeof raw.source!=='string'||!raw.source||Buffer.byteLength(raw.source)>(raw.kind==='yaml'?DICE_RULE_MAX_PACKAGE_BYTES:AGENT_DICE_SCRIPT_SOURCE_MAX_BYTES)||typeof raw.revision!=='string'||!raw.revision.trim()||raw.revision.length>256||typeof raw.sourceHash!=='string'||!/^[a-f0-9]{64}$/u.test(raw.sourceHash)||sha(raw.source)!==raw.sourceHash)throw invalid()
+  if(raw.kind==='yaml'){
+    if(raw.trustedPackage!==undefined)throw invalid()
+    const result=validateDiceRulePack(YAML.parse(raw.source,{maxAliasCount:50}))
+    if(!result.ok)throw invalid()
+    return {input:freeze({kind:'yaml',source:raw.source,revision:raw.revision,sourceHash:raw.sourceHash}),id:result.pack.id,aliases:[result.pack.id,...(result.pack.aliases??[])]}
+  }
+  const trusted=own(raw.trustedPackage,['id','revision','sourceHash'])
+  if(typeof trusted.id!=='string'||!/^[a-z][a-z0-9_-]{1,47}$/u.test(trusted.id)||trusted.revision!==raw.revision||trusted.sourceHash!==raw.sourceHash)throw invalid()
+  return {input:freeze({kind:raw.kind as 'js'|'seal',source:raw.source,revision:raw.revision,sourceHash:raw.sourceHash,trustedPackage:{id:trusted.id,revision:raw.revision,sourceHash:raw.sourceHash}}),id:trusted.id,aliases:[trusted.id]}
 }
 
-/** Pure configuration capture: inline YAML and explicit grants only; no I/O or compilation. */
+/** Pure configuration capture: exact inline content trust and explicit binding/actor grants; no I/O or compilation. */
 export function readStandaloneDiceEngine(value:unknown,bindings:readonly AgentBindingSnapshot[]):StandaloneDiceEngineConfig|undefined {
   if(value===undefined)return undefined
   const dice=own(value,['enabled','maxDiceCount','maxDiceSides','maxRounds','engine'])
   if(dice.enabled!==undefined&&typeof dice.enabled!=='boolean')throw invalid()
   if(dice.engine===undefined)return undefined
-  const raw=own(dice.engine,['enabled','revision','deliveryTimeoutMs','builtin','rulePackages','grants'])
+  const raw=own(dice.engine,['enabled','revision','deliveryTimeoutMs','builtin','rulePackages','grants','playerBindings'])
   if(typeof raw.enabled!=='boolean')throw invalid()
   const enabled=dice.enabled===true&&raw.enabled
   const revision=raw.revision===undefined?undefined:id(raw.revision)
@@ -162,20 +172,24 @@ export function readStandaloneDiceEngine(value:unknown,bindings:readonly AgentBi
     if(grantKeys.has(key))throw invalid()
     grantKeys.add(key)
   }
-  if(enabled&&!grants.length)throw invalid()
-  const result:StandaloneDiceEngineConfig=freeze({enabled,...(revision===undefined?{}:{revision}),...(deliveryTimeoutMs===undefined?{}:{deliveryTimeoutMs}),builtin,rulePackages:packages.map(pack=>pack.input),grants})
+  const playerBindings=(raw.playerBindings===undefined?[]:list(raw.playerBindings)).map(value=>binding(value,true)),playerKeys=new Set<string>()
+  for(const item of playerBindings){const key=bindingKey(item);if(!configured.has(key)||playerKeys.has(key))throw invalid();playerKeys.add(key)}
+  if(enabled&&!grants.length&&!playerBindings.length)throw invalid()
+  const result:StandaloneDiceEngineConfig=freeze({enabled,...(revision===undefined?{}:{revision}),...(deliveryTimeoutMs===undefined?{}:{deliveryTimeoutMs}),builtin,rulePackages:packages.map(pack=>pack.input),grants,playerBindings})
   ownedConfigs.add(result)
   return result
 }
 
-/** Startup repeats the YAML compiler's hash/schema/set checks before exposing the engine. */
-export async function createStandaloneDiceRuntime(config:StandaloneDiceEngineConfig|undefined,isCurrent:()=>boolean):Promise<StandaloneDiceRuntime> {
+/** Startup repeats compiler checks; executable packages require a separately injected trusted runner. */
+export async function createStandaloneDiceRuntime(config:StandaloneDiceEngineConfig|undefined,isCurrent:()=>boolean,options:{readonly scriptRunner?:AgentDiceScriptRunner}={}):Promise<StandaloneDiceRuntime> {
   if(typeof isCurrent!=='function'||config!==undefined&&!ownedConfigs.has(config))throw invalid()
   const current=()=>{try{return isCurrent()===true}catch{return false}}
   if(!current())throw invalid()
-  const packages=config===undefined?undefined:await createAgentDiceRulePackages(config.rulePackages)
+  const suppliedOptions=own(options,['scriptRunner'])
+  const packages=config===undefined?undefined:await createAgentDiceRulePackages(config.rulePackages,suppliedOptions.scriptRunner===undefined?{}:{scriptRunner:suppliedOptions.scriptRunner as AgentDiceScriptRunner})
   if(!current())throw invalid()
   const diceEngine:AgentDiceEngineConfig|undefined=config===undefined?undefined:freeze({enabled:config.enabled,...(config.revision===undefined?{}:{revision:config.revision}),...(config.deliveryTimeoutMs===undefined?{}:{deliveryTimeoutMs:config.deliveryTimeoutMs}),builtin:config.builtin,rulePackages:packages!.packages})
+  const playerBindings=new Set(config?.playerBindings.map(bindingKey)??[])
   const grants=new Map(config?.grants.map(grant=>[JSON.stringify([bindingKey(grant.binding),grant.actorId]),grant])??[])
   return Object.freeze({diceEngine,async readDiceGrant(request:{readonly binding:AgentBindingSnapshot;readonly source:IncomingMessage},guard:AgentDiceStateGuard):Promise<AgentDiceAuthorizationGrant|undefined>{
     if(!config?.enabled)return undefined
@@ -184,7 +198,8 @@ export async function createStandaloneDiceRuntime(config:StandaloneDiceEngineCon
       if(!allowed())return undefined
       const raw=own(request,['binding','source']),owner=binding(raw.binding,true),source=freeze(copy(raw.source)) as IncomingMessage
       const sender=account(own(source,['version','conversation','sender','senderName','messageId','occurredAt','text','parts','mentions','directedToAccount','quote','binding']).sender)
-      const captured=grants.get(JSON.stringify([bindingKey(owner),sender.id]))
+      const exact=grants.get(JSON.stringify([bindingKey(owner),sender.id]))
+      const captured=exact??(playerBindings.has(bindingKey(owner))?freeze({binding:owner,actorId:sender.id,revision:'player-binding:'+sha(JSON.stringify([bindingKey(owner),config.revision??''])),permissions:['player','card'] as const}):undefined)
       if(!captured||bindingKey(captured.binding)!==bindingKey(owner)||!validSource(captured,source))return undefined
       await guard.ensureCurrent?.()
       return allowed()&&validSource(captured,source)?captured:undefined

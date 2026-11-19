@@ -193,7 +193,10 @@ export function createGroupMemoryManagement(ports: {
         await operation.role()
         for (const [id, owner] of owners) if ((await epoch(binding, owner)).revision !== revisions.get(id)) return { status: 'cancelled' } as const
         await operation.check()
-        return { status: 'listed', entries } as const
+        const fresh = state && await store.filterState(state)
+        if (!operation.current()) return { status: 'cancelled' } as const
+        const live = new Set((fresh ? selected(fresh, binding.agentId) : []).map(({ entry }) => JSON.stringify(entry)))
+        return { status: 'listed', entries: entries.filter(entry => live.has(JSON.stringify(entry))) } as const
       })
     },
     delete(input: { id: string }, context: GroupMemoryManagementContext): Promise<GroupMemoryManagementDeletion> { return remove(input, context) },

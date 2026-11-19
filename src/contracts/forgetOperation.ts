@@ -30,6 +30,18 @@ export interface ForgetOperationSubject {
   readonly memoryId?: string
 }
 
+export type ForgetCleanupOwner = 'local-emoji' | 'semantic-memory' | 'conversation-memory' | 'group-memory' | 'source-memory'
+export interface ForgetCleanupOwnerProgress {
+  readonly owner: ForgetCleanupOwner
+  readonly state: ForgetCleanupState
+}
+/** Metadata only. The receipt's binding and createdAt fix the original selector and cutoff. */
+export interface ForgetCleanupPlan {
+  readonly version: 1
+  readonly sourceCommitted: boolean
+  readonly owners: readonly ForgetCleanupOwnerProgress[]
+}
+
 export interface ForgetOperationReceipt {
   readonly version: 1
   readonly operationId: string
@@ -47,6 +59,7 @@ export interface ForgetOperationReceipt {
   readonly updatedAt: number
   readonly sourceRevision?: string
   readonly errorCode?: string
+  readonly cleanupPlan?: ForgetCleanupPlan
 }
 
 export interface ForgetOperationStorage {
@@ -72,6 +85,8 @@ export interface ForgetOperationStore {
     readonly binding: AgentBindingSnapshot
     readonly subject: ForgetOperationSubject
     readonly sourceRevision?: string
+    readonly cleanupOwners?: readonly ForgetCleanupOwner[]
+    readonly impacts?: readonly ForgetImpact[]
     readonly now?: number
   }, guard?: ForgetOperationGuard): Promise<ForgetOperationReceipt>
   read(operationId: string, guard?: ForgetOperationGuard): Promise<ForgetOperationReceipt | undefined>
@@ -83,8 +98,11 @@ export interface ForgetOperationStore {
     readonly impacts?: readonly ForgetImpact[]
     readonly sourceRevision?: string
     readonly errorCode?: string
+    readonly cleanupOwner?: ForgetCleanupOwnerProgress
     readonly now?: number
   }, guard?: ForgetOperationGuard): Promise<ForgetOperationReceipt>
+  /** Resumes only the original cleanup plan after a durably confirmed source mutation. */
+  resumeCleanup(operationId: string, guard?: ForgetOperationGuard): Promise<ForgetOperationReceipt>
   markCommitted(operationId: string, input?: {
     readonly impacts?: readonly ForgetImpact[]
     readonly sourceRevision?: string

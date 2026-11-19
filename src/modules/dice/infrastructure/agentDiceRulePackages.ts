@@ -4,7 +4,7 @@ import YAML from 'yaml'
 import type {DiceRulePack} from '../../../contracts/diceRuleSchema.js'
 import type {ExpressionOptions} from './DiceRuleExpression.js'
 import {validateDiceRulePack,DICE_RULE_MAX_PACKAGE_BYTES} from './DiceRuleSchema.js'
-import {executeAgentDiceScript,executeAgentDiceScriptSync,toAgentDiceScriptJson,captureAgentDiceScriptRunner,type AgentDiceScriptRunner} from './agentDiceScriptProcess.js'
+import {executeAgentDiceScript,executeAgentDiceScriptSync,toAgentDiceScriptJson,captureAgentDiceScriptRunner,AGENT_DICE_SCRIPT_SOURCE_MAX_BYTES,type AgentDiceScriptRunner} from './agentDiceScriptProcess.js'
 
 export interface AgentDiceTrustedPackage {readonly id:string;readonly revision:string;readonly sourceHash:string}
 export interface AgentDiceRulePackageInput {
@@ -67,7 +67,7 @@ function trust(input:AgentDiceRulePackageInput,id:string):void {
 /** Content-only, asynchronous compilation. Scripts always cross the OS process boundary. */
 export async function compileAgentDiceRulePackage(supplied:AgentDiceRulePackageInput,options:AgentDiceRulePackageOptions={}):Promise<AgentDiceCompiledRulePackage> {
   const raw=own(supplied,['kind','source','revision','sourceHash','trustedPackage'])
-  if(typeof raw.kind!=='string'||!['yaml','js','seal'].includes(raw.kind)||typeof raw.source!=='string'||!raw.source||Buffer.byteLength(raw.source)>DICE_RULE_MAX_PACKAGE_BYTES||
+  if(typeof raw.kind!=='string'||!['yaml','js','seal'].includes(raw.kind)||typeof raw.source!=='string'||!raw.source||Buffer.byteLength(raw.source)>(raw.kind==='yaml'?DICE_RULE_MAX_PACKAGE_BYTES:AGENT_DICE_SCRIPT_SOURCE_MAX_BYTES)||
     typeof raw.revision!=='string'||!raw.revision.trim()||raw.revision.length>256||typeof raw.sourceHash!=='string'||!/^[a-f0-9]{64}$/u.test(raw.sourceHash)||sha(raw.source)!==raw.sourceHash)throw new Error('规则包来源无效')
   const record=raw.trustedPackage===undefined?undefined:own(raw.trustedPackage,['id','revision','sourceHash'])
   const input:AgentDiceRulePackageInput=Object.freeze({kind:raw.kind as AgentDiceRulePackageInput['kind'],source:raw.source,revision:raw.revision,sourceHash:raw.sourceHash,

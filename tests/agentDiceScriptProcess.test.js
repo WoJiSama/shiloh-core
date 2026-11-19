@@ -285,7 +285,7 @@ test('validation is bounded, closed and does not run caller code or leak source 
   const cyclic = {}; cyclic.self = cyclic
   const sparse = []; sparse.length = 1
   for (const request of [
-    input({ source: '' }), input({ source: 'x'.repeat(65537) }), input({ operation: 'other' }), input({ kind: 'yaml' }),
+    input({ source: '' }), input({ source: 'x'.repeat(128 * 1024 + 1) }), input({ operation: 'other' }), input({ kind: 'yaml' }),
     input({ at: '1' }), input({ at: -1 }), input({ at: NaN }), input({ randomValues: [1] }), input({ randomValues: [-0.1] }),
     input({ randomValues: [NaN] }), input({ randomValues: sparse }), input({ randomValues: Array(32769).fill(0.5) }),
     input({ input: cyclic }), input({ input: new Date() }), input({ input: { x: 'a'.repeat(1024 * 1024) } }),
@@ -296,6 +296,15 @@ test('validation is bounded, closed and does not run caller code or leak source 
   assert.equal(getters, 0); assert.equal(traps, 0)
   await assert.rejects(executeAgentDiceScript(input({ source: `throw new Error(${JSON.stringify(privateError)});` })), error =>
     error.message === '骰子脚本执行未确认' && !error.message.includes(privateError))
+})
+
+test('public script validation permits 128KiB sources while preserving the complete 1MiB input budget', async () => {
+  let calls=0
+  const runner=contractDouble({execute:async()=>{calls++;return {value:true,consumedRandom:0}}})
+  assert.equal((await runScript(input({source:'x'.repeat(128*1024)}),{runner})).value,true)
+  await assert.rejects(runScript(input({source:'x'.repeat(128*1024+1)}),{runner}))
+  await assert.rejects(runScript(input({source:'x'.repeat(128*1024),input:{text:'x'.repeat(1024*1024)}}),{runner}))
+  assert.equal(calls,1,'oversized requests are rejected before a runner is called')
 })
 
 test('an unverified platform fails closed rather than executing in an unprotected VM', async () => {

@@ -1,4 +1,4 @@
-import type { AgentBindingSnapshot, ConversationAddress } from './agentBinding.js'
+import type { AgentBindingSnapshot, ConversationAddress, PlatformAccountRef } from './agentBinding.js'
 import type { PersonaScope } from './persona.js'
 import type { PersonProfileExtractionContext } from './personProfileExtraction.js'
 
@@ -62,6 +62,8 @@ export interface GroupMemoryEntry {
   ownerId?: string
   file?: { name: string; reference?: string }
   tags: string[]
+  /** Generation of every input used to derive this entry, captured before extraction. */
+  cleanupToken?: string
 }
 
 export interface GroupMemoryJob {
@@ -71,6 +73,7 @@ export interface GroupMemoryJob {
   attempts: number
   retryAt: number
   invalidatedAt: number
+  cleanupToken?: string
 }
 
 /** Automatic group facts remain Agent-owned; explicit human teaching belongs to the conversation. */
@@ -113,3 +116,30 @@ export interface GroupMemoryModelInput {
 }
 
 export type GroupMemoryModel = (input: GroupMemoryModelInput, context: PersonProfileExtractionContext) => Promise<readonly GroupMemoryProposal[]>
+
+/** Cleanup authority comes from the host, never a model or a live scene binding. */
+export interface AgentGroupMemoryCleanupGuard {
+  readonly signal: AbortSignal
+  isCurrent(): boolean
+  ensureCurrent(): void | Promise<void>
+}
+export interface AgentGroupMemoryPurgeSubject {
+  readonly account: PlatformAccountRef
+  readonly agentId: string
+  readonly subjectId: string
+  /** Omission includes old, disabled and unbound scopes under this account and Agent. */
+  readonly target?: ConversationAddress
+  /** Inclusive source cutoff, frozen across retries. */
+  readonly through: number
+}
+export interface AgentGroupMemoryCleanupReceipt {
+  readonly usage: 'blocked'
+  readonly cleanup: 'completed' | 'unknown'
+  readonly removedRecords: number
+  readonly removedJobs: number
+  readonly removedEntries: number
+  readonly removedPartitions: number
+}
+export interface AgentGroupMemoryCleanup {
+  purgeSubject(input: AgentGroupMemoryPurgeSubject, guard: AgentGroupMemoryCleanupGuard): Promise<AgentGroupMemoryCleanupReceipt>
+}

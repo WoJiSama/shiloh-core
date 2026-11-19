@@ -260,7 +260,10 @@ export function createSimSessionStore(ports: SimSessionStorePorts): SimSessionSt
     const snapshots = new Map<string, Awaited<ReturnType<typeof personMemory.getRedactions>>>()
     const out: unknown[] = []
     for (const raw of memories) {
-      const memory = record(raw), userId = String(memory.aboutUser || '')
+      const memory = record(raw), provenance = record(memory.memorySource)
+      // Self notes may carry a real source without an aboutUser label. Their
+      // author's revocation still applies to that copied or derived content.
+      const userId = String(memory.aboutUser || provenance.authorId || '')
       if (!memory.memorySource && sceneState.invalidatedAt > 0 && (Number(memory.createdAt) || 0) <= sceneState.invalidatedAt) continue
       const memoryIdentity = record(memory.memoryIdentity)
       if (memoryIdentity.botId && (memoryIdentity.botId !== identity.botId || memoryIdentity.personaId !== identity.personaId)) continue
@@ -592,11 +595,11 @@ export function createSimSessionStore(ports: SimSessionStorePorts): SimSessionSt
       try {
         const raw = await redis.get(selfKey(SELF_MEMORIES_KEY))
         const parsed = raw ? JSON.parse(raw) : []
-        return Array.isArray(parsed) ? parsed : []
+        return await allowedMemories(Array.isArray(parsed) ? parsed : [])
       } catch { return [] }
     },
     async saveSelfMemories(memories) {
-      await redis.set(selfKey(SELF_MEMORIES_KEY), JSON.stringify(Array.isArray(memories) ? memories : []))
+      await redis.set(selfKey(SELF_MEMORIES_KEY), JSON.stringify(await allowedMemories(Array.isArray(memories) ? memories : [])))
     },
     async loadMood() {
       try {

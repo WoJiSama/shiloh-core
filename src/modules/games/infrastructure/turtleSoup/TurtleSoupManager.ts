@@ -2,7 +2,7 @@ import { claimGameGroup, claimGameGroups, ownsGameGroup, releaseGameGroup } from
 // 海龟汤会话管理:命令处理、开局选汤、问答调度、揭晓收局与超时sweeper。
 // 会话内存缓存+落盘恢复;时间驱动统一走sweep(),重启后靠时间戳继续判定,无僵尸局。
 import type {TurtleSoupConfig, TurtleSoupEvent, TurtleSoupLogger, TurtleSoupPuzzle, TurtleSoupSession, TurtleSoupHost, TurtleSoupFeedbackCategory, TurtleSoupGuessEntry} from '../../../../contracts/turtleSoup.js'
-import {TurtleSoupStore, readTurtleSoupConfig} from './TurtleSoupStore.js'
+import {TurtleSoupStore, readTurtleSoupConfig, type TurtleSoupStoreGuard} from './TurtleSoupStore.js'
 import type {TurtleSoupGenerator, GenerateOutcome} from './TurtleSoupGenerator.js'
 import {buildMvpBrief, canManualStart, guessCooldownRemainingMs, isParticipant, joiningOutcome, playingTimedOut, revealTimedOut, selectPuzzleId, takeHint, buildCatchUpText, buildStatusText, buildRevealText, buildRecapText, formatDuration, formatCountdown, stripAsideSegments, isAsideOnlyText, SOUP_COMMAND, surrenderPlayer, looksLikeSoupQuestion, isRepeatedQuestion, choosingTimedOut, chooseWindowMs, puzzlePlayStats, soupCandidatesFor, selectPuzzleMenu, puzzleFamilyId, nicknameOf, canServePuzzle} from '../../domain/turtleSoup/turtleSoupRules.js'
 import {literalSoupSimilarity, looksLikeSolutionLeak, normalizeSoupText} from '../../domain/turtleSoup/turtleSoupSimilarity.js'
@@ -21,6 +21,9 @@ export interface TurtleSoupManagerPorts {
   sweepIntervalMs?:number
   isOtherGameActive?:(groupId:string)=>boolean
   sendPrivate?:(userId:string,message:string,groupId?:string)=>Promise<unknown>
+  store?:TurtleSoupStore
+  guard?:TurtleSoupStoreGuard
+  runBackground?:(task:()=>Promise<void>,groupId:string)=>Promise<void>
 }
 
 const HELP_TEXT = [
@@ -60,7 +63,7 @@ export class TurtleSoupManager {
 
   constructor(ports:TurtleSoupManagerPorts) {
     this.ports = ports
-    this.store = new TurtleSoupStore({cwd: ports.cwd ?? process.cwd(), baseDir: this.config().baseDir})
+    this.store = ports.store ?? new TurtleSoupStore({cwd: ports.cwd ?? process.cwd(), baseDir: this.config().baseDir})
     this.sessions = new Map(Object.entries(this.store.readSessions().sessions))
     const plays = this.store.readPlays().plays
     for (const session of this.sessions.values()) {
@@ -90,6 +93,7 @@ export class TurtleSoupManager {
   }
 
   stop() {
+    for (const controllers of this.hostControllers.values()) for (const controller of controllers) controller.abort(new Error('海龟汤已停止'))
     for (const groupId of this.sessions.keys()) releaseGameGroup(groupId, this, this.ports.cwd)
     if (this.sweeperTimer) { clearInterval(this.sweeperTimer); this.sweeperTimer = null }
   }
@@ -145,14 +149,30 @@ export class TurtleSoupManager {
   // 群内状态操作串行化;模型调用与私聊交付在锁外,换汤/结束不被网络请求阻塞。
   private async inGroup<T>(groupId:string, action:() => Promise<T>):Promise<T> {
     const previous = this.groupQueues.get(groupId) ?? Promise.resolve()
-    const next = previous.catch(() => {}).then(action)
+    const next = previous.catch(() => {}).then(async () => {
+      await this.ports.guard?.ensureCurrent()
+      try {
+        const result = await action()
+        await this.ports.guard?.ensureCurrent()
+        return result
+      } catch (error) {
+        if (this.ports.guard) {
+          const saved = this.store.readSessions().sessions[groupId]
+          if (saved) this.sessions.set(groupId, saved)
+          else this.sessions.delete(groupId)
+          releaseGameGroup(groupId, this, this.ports.cwd)
+          if (saved && saved.phase !== 'reveal') claimGameGroup(groupId, 'turtleSoup', this, this.ports.cwd)
+        }
+        throw error
+      }
+    })
     this.groupQueues.set(groupId, next)
     try { return await next } finally { if (this.groupQueues.get(groupId) === next) this.groupQueues.delete(groupId) }
   }
 
   private requestIsCurrent(session:TurtleSoupSession, revision:number, userId?:string):boolean {
     const current = this.sessions.get(session.groupId)
-    return current === session && current.phase === 'playing' && current.sessionId === session.sessionId && current.playId === session.playId && (current.revision ?? 0) === revision && (!userId || isParticipant(current, userId))
+    return (!this.ports.guard || this.ports.guard.isCurrent()) && current === session && current.phase === 'playing' && current.sessionId === session.sessionId && current.playId === session.playId && (current.revision ?? 0) === revision && (!userId || isParticipant(current, userId))
   }
 
   private async persist(session:TurtleSoupSession) {
@@ -356,7 +376,8 @@ export class TurtleSoupManager {
     Object.assign(session, next)
     delete session.choosing
     // 消费了一条鲜汤,后台补货(失败不影响本局)
-    void this.ports.generator.ensureFreshPool().catch(error => {
+    const refill = async () => { await this.ports.generator.ensureFreshPool() }
+    void (this.ports.runBackground ? this.ports.runBackground(refill, session.groupId) : refill()).catch(error => {
       this.ports.logger?.warn?.(`[海龟汤] 后台补货失败: ${error instanceof Error ? error.message : String(error)}`)
     })
     const idle = formatDuration(this.config().idleTimeoutMinutes * 60_000)
@@ -747,14 +768,16 @@ export class TurtleSoupManager {
     this.invalidateRequests(session)
     const brief = buildMvpBrief(session, winnerId, puzzle)
     if (playId && brief.players.length && (brief.totalQuestions || brief.totalGuesses)) {
-      const task = this.hostCall(signal => this.ports.host.selectMvp({brief, signal})).then(async mvp => {
+      const award = async () => {
+        const mvp = await this.hostCall(signal => this.ports.host.selectMvp({brief, signal}))
         if (!mvp || !brief.players.some(player => player.userId === mvp.userId)) return
         await this.store.transaction(state => {
           const play = state.plays.find(item => item.playId === playId && item.endedAt !== undefined)
           if (play) play.mvp = mvp
         })
         await this.broadcast(session.groupId, `🏅【${puzzle.title}】本局MVP:${nicknameOf(session, mvp.userId)}\n颁奖词:${mvp.reason.slice(0, 120)}`)
-      }).catch(error => this.ports.logger?.warn?.(`[海龟汤] MVP评选失败: ${error instanceof Error ? error.message : String(error)}`))
+      }
+      const task = (this.ports.runBackground ? this.ports.runBackground(award, session.groupId) : award()).catch(error => this.ports.logger?.warn?.(`[海龟汤] MVP评选失败: ${error instanceof Error ? error.message : String(error)}`))
       this.backgroundTasks.add(task)
       void task.finally(() => this.backgroundTasks.delete(task))
     }
@@ -768,13 +791,13 @@ export class TurtleSoupManager {
 
   // —— 超时sweeper ——
 
-  async sweep():Promise<void> {
+  async sweep(onlyGroupId?:string):Promise<void> {
     if (this.sweeping) return
     this.sweeping = true
     try {
       const nowMs = this.now()
       const config = this.config()
-      for (const groupId of [...this.sessions.keys()]) {
+      for (const groupId of [...this.sessions.keys()].filter(id => onlyGroupId === undefined || id === onlyGroupId)) {
         const message = await this.inGroup(groupId, async () => {
           const session = this.sessions.get(groupId)
           if (!session) return null

@@ -20,8 +20,10 @@ import { decodeHostConfig } from '../modules/host/infrastructure/hostConfig.js'
 import type { ForbiddenConfig } from '../modules/conversation/domain/forbiddenWordGuard.js'
 import { resolveConfiguredAgentPersona } from '../modules/runtime/application/agentPersona.js'
 import { conversationAddressKey, createAgentBindingDirectory } from '../modules/runtime/domain/agentBindings.js'
-import { groupTextToolNames, type GroupTextToolName } from '../modules/conversation/infrastructure/groupTextTools.js'
+import { groupTextToolNames, isTextRegistryToolName, type GroupTextToolName } from '../modules/conversation/infrastructure/groupTextTools.js'
 import { readStandaloneVoiceConfig } from './standaloneVoiceConfig.js'
+import { readStandaloneDeltaForceConfig } from './standaloneDeltaForce.js'
+import { readStandaloneGamesConfig } from './standaloneGamesConfig.js'
 import type { PersonaGuardConfig } from '../contracts/persona.js'
 import type { AgentMusicConfig } from '../modules/media/infrastructure/agentMusicProvider.js'
 import { validateMusicExtractionConfig } from '../modules/media/domain/musicExtractionConfig.js'
@@ -264,7 +266,8 @@ function readMcp(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: boo
 
 function readTools(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: boolean, directory: string) {
   const config = value === undefined ? {} : object(value)
-  if (Object.keys(config).some(key => !['search', 'web', 'images', 'imageSearch', 'localEmoji', 'mcp', 'github', 'modrinth', 'rendering', 'excel', 'files', 'voice', 'music', 'pixiv', 'videoAnalysis', 'videoSearch', 'magnetSearch', 'interactions', 'qqActions', 'deferredActions'].includes(key))) throw new Error('tools 含不支持的工具配置')
+  if (Object.keys(config).some(key => !['search', 'web', 'images', 'imageSearch', 'localEmoji', 'mcp', 'github', 'modrinth', 'rendering', 'excel', 'files', 'voice', 'music', 'pixiv', 'videoAnalysis', 'videoSearch', 'magnetSearch', 'deltaForce', 'interactions', 'qqActions', 'deferredActions'].includes(key))) throw new Error('tools 含不支持的工具配置')
+  const deltaForce = readStandaloneDeltaForceConfig(config.deltaForce, env, requireCredentials)
   const localEmoji = readStandaloneLocalEmojiConfig(config.localEmoji, env, requireCredentials)
   const qqActions = readStandaloneQqActionsConfig(config.qqActions)
   const deferredActions = readStandaloneDeferredActionsConfig(config.deferredActions)
@@ -429,7 +432,7 @@ function readTools(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: b
     if (!Object.keys(images).length) images = undefined
   }
   const mcp = config.mcp === undefined ? undefined : readMcp(config.mcp, env, requireCredentials, directory)
-  return { qqActions, deferredActions, localEmoji, ...(search ? { search } : {}), ...(web ? { web } : {}), ...(images ? { images } : {}), ...(imageSearch ? { imageSearch } : {}), ...(mcp ? { mcp } : {}), ...(github ? { github } : {}), ...(modrinth ? { modrinth } : {}), ...(rendering ? { rendering } : {}), ...(excel ? { excel } : {}), ...(files ? { files } : {}), ...(voice ? { voice } : {}), ...(music ? { music } : {}), ...(pixiv.enabled ? { pixiv } : {}), ...(videoAnalysis ? { videoAnalysis } : {}), ...(videoSearch.enabled ? { videoSearch } : {}), ...(magnetSearch.enabled ? { magnetSearch } : {}), ...(interactions ? { interactions } : {}) }
+  return { qqActions, deferredActions, localEmoji, ...(deltaForce ? { deltaForce } : {}), ...(search ? { search } : {}), ...(web ? { web } : {}), ...(images ? { images } : {}), ...(imageSearch ? { imageSearch } : {}), ...(mcp ? { mcp } : {}), ...(github ? { github } : {}), ...(modrinth ? { modrinth } : {}), ...(rendering ? { rendering } : {}), ...(excel ? { excel } : {}), ...(files ? { files } : {}), ...(voice ? { voice } : {}), ...(music ? { music } : {}), ...(pixiv.enabled ? { pixiv } : {}), ...(videoAnalysis ? { videoAnalysis } : {}), ...(videoSearch.enabled ? { videoSearch } : {}), ...(magnetSearch.enabled ? { magnetSearch } : {}), ...(interactions ? { interactions } : {}) }
 }
 
 function parseSource(source: string, label: string): Record<string, unknown> {
@@ -518,6 +521,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   if (raw.version !== 1 || typeof raw.instance !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(raw.instance)) throw new Error('独立宿主配置需要 version: 1 和有效的 instance')
   const instance = raw.instance
   const dataDir = path.resolve(directory, typeof raw.dataDir === 'string' && raw.dataDir ? raw.dataDir : `data/${instance}`)
+  const games = readStandaloneGamesConfig(raw.games, { dataDir })
   const logging = raw.logging === undefined ? {} : object(raw.logging)
   if (Object.keys(logging).some(key => !['maxFileBytes', 'maxFiles', 'retentionDays'].includes(key)) ||
       (['maxFileBytes', 'maxFiles', 'retentionDays'] as const).some((key, index) => logging[key] !== undefined &&
@@ -585,9 +589,9 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     throw new Error('独立宿主的 privateChat 仅支持 enabled 和 allowTools，允许的好友由会话绑定声明')
   }
   const privateAllowTools = privateChat.allowTools === undefined ? [] : privateChat.allowTools
-  if (!Array.isArray(privateAllowTools) || privateAllowTools.some(tool => tool !== 'likeTool' && tool !== 'recallTool') ||
-      new Set(privateAllowTools).size !== privateAllowTools.length) throw new Error('privateChat.allowTools 只接受 likeTool、recallTool，工具名不能重复')
-  const privateTextTools: readonly ('likeTool' | 'recallTool')[] = Object.freeze([...privateAllowTools])
+  if (!Array.isArray(privateAllowTools) || privateAllowTools.some(tool => tool !== 'likeTool' && tool !== 'recallTool' && !isTextRegistryToolName(tool)) ||
+      new Set(privateAllowTools).size !== privateAllowTools.length) throw new Error('privateChat.allowTools 只接受已支持的好友或通用工具，工具名不能重复')
+  const privateTextTools: readonly string[] = Object.freeze([...privateAllowTools])
   if (raw.systemContent !== undefined && typeof raw.systemContent !== 'string') throw new Error('systemContent 必须是文本')
   const systemContent = typeof raw.systemContent === 'string' ? raw.systemContent : ''
   const rawBindings = parseSource(input.sources.bindings, 'agent-bindings.yaml')
@@ -663,7 +667,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
       const key = conversationAddressKey(target)
       if (textGroups.has(key) || !bindings.resolve(target)) throw new Error('textGroups 的会话必须已声明角色绑定且不能重复')
       const tools = item.tools === undefined ? [] : item.tools
-      if (!Array.isArray(tools) || tools.some(tool => !groupTextToolNames.some(name => name === tool)) || new Set(tools).size !== tools.length) {
+      if (!Array.isArray(tools) || tools.some(tool => !groupTextToolNames.some(name => name === tool) && !isTextRegistryToolName(tool)) || new Set(tools).size !== tools.length) {
         throw new Error(`textGroups.tools 只接受 ${groupTextToolNames.join('、')}，工具名不能重复`)
       }
       textGroups.set(key, Object.freeze([...tools]) as readonly GroupTextToolName[])
@@ -710,7 +714,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     return Object.freeze({ id, name: personaName, personaId, personaName })
   }))
   return { candidate, config: {
-    instance, dataDir, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords,
+    instance, dataDir, games, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords,
     workspaceAgents,
     loadedBindings: Object.freeze([...bindings.listBindings()]),
     listBindings: () => readBindings()?.listBindings() ?? [],

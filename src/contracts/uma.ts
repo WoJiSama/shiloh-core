@@ -7,7 +7,17 @@ export interface UmaProficiencyGain {actionKey:string;label:string;gain:number;b
 export interface UmaProficiencyEntry {userId?:string;umaName?:string;nickname?:string;gains:UmaProficiencyGain[]}
 export interface UmaReport {type?:string;title?:string;subtitle?:string;scene?:string;generatedAt?:string;prompt?:string;ranking?:UmaReportRank[];highlights?:string[];awards?:string[];proficiencyGains?:UmaProficiencyEntry[]}
 export interface UmaConfig {enabled:boolean;minPlayers:number;maxPlayers:number;lobbySeconds:number;raceStageSeconds:number;cooldownSeconds:number;winPoints:number;secondPoints:number;thirdPoints:number;participationPoints:number;rankLimit:number;baseDir:string;affixRerollCost?:number}
-export interface UmaManagerPorts {sendSmartReply(event:UmaEvent,message:unknown,options?:{kind?:string}):Promise<unknown>;renderReport?(event:UmaEvent,report:UmaReport):Promise<unknown>}
+export interface UmaManagerGuard {assertCurrent():void;ensureCurrent():Promise<void>}
+export interface UmaManagerPorts {
+ sendSmartReply(event:UmaEvent,message:unknown,options?:{kind?:string}):Promise<unknown>
+ renderReport?(event:UmaEvent,report:UmaReport):Promise<unknown>
+ /** Trusted host checks, never interpreted from user text or a native event. */
+ guard?:UmaManagerGuard
+ withEvent?<T>(event:UmaEvent,work:()=>Promise<T>):Promise<T>
+ canCancel?(event:UmaEvent):boolean
+ canAdjustPoints?(event:UmaEvent):boolean
+}
+export interface UmaManagerOptions {cwd?:string;logger?:UmaLogger;config?:UmaConfig;getDataDir?:(config:UmaConfig)=>string}
 export interface UmaTrait {key:string;label:string;description:string;fit?:Record<string,number>;tagFit?:Record<string,number>;riskAdjust?:number;luckBonus?:number;pattern?:RegExp}
 export interface UmaPet {total?:number;createdAt?:string;name:string;personality:string;attributes:Record<string,number>;trait?:UmaTrait;affix?:UmaAffix|null;proficiency?:Record<string,number>;adoptedAt?:string;updatedAt?:string}
 export interface UmaPlayerRecord {podiums?:number;userId:string;nickname:string;points:number;wins:number;races:number;uma?:UmaPet;updatedAt?:string;lastRaceAt?:string;trainingPity?:Record<string,Record<string,number>>}

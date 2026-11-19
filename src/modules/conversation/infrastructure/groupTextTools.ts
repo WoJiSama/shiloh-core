@@ -13,13 +13,20 @@ export const groupTextInteractionToolNames = ['pokeTool', 'likeTool', 'reactionT
 export const groupTextQqActionToolNames = ['sendGiftTool', 'grabRedBagTool', 'qqZoneTool'] as const
 export const groupTextScopedToolNames = [...groupTextVideoToolNames, 'searchMagnetTool', ...groupTextInteractionToolNames, ...groupTextQqActionToolNames] as const
 export const groupTextToolNames = ['commitmentTool', 'delegateMemoryTool', 'groupKnowledgeTool', ...groupTextScopedToolNames] as const
-export type GroupTextToolName = typeof groupTextToolNames[number]
+export const textRegistryToolNames = ['searchInformationTool', 'webParserTool', 'emojiSearchTool', 'bingImageSearchTool', 'sendLocalEmojiTool',
+  'bananaTool', 'googleImageEditTool', 'textImageTool', 'aiMindMapTool', 'excelWorkbookTool', 'fileTextTool', 'searchMusicTool', 'voiceTool',
+  'githubRepoTool', 'modrinthTool', 'deltaForceTool', 'pixivSearchTool', 'pixivDownloadTool', 'videoAnalysisTool'] as const
+export function isTextRegistryToolName(value: unknown): value is string {
+  return typeof value === 'string' && (textRegistryToolNames.some(name => name === value) || /^mcp_[A-Za-z0-9_-]{1,60}$/u.test(value))
+}
+export type GroupTextToolName = string
 
 export interface GroupTextToolContext {
   binding: AgentBindingSnapshot
   speakerId: string
   userText: string
   requestMessageId?: string
+  requestAt?: number
   signal?: AbortSignal
   isCurrent(): boolean
   /** Rechecks asynchronous source/binding fences after waits before external I/O. */
@@ -55,7 +62,7 @@ export function createGroupTextTools(options: {
 }) {
   const instances: Partial<Record<GroupTextToolName, AbstractTool>> = { commitmentTool: options.commitment, delegateMemoryTool: options.memory,
     ...(options.knowledge ? { groupKnowledgeTool: options.knowledge } : {}) }
-  const tools = new Map(groupTextToolNames.flatMap(name => {
+  const tools = new Map<string, { instance: AbstractTool; parameters: ToolParameters; definition: ChatTool }>(groupTextToolNames.flatMap(name => {
     const instance = instances[name]
     if (!instance) return []
     const parameters = propertiesFor(name, instance.parameters)
@@ -157,6 +164,7 @@ export function createGroupTextTools(options: {
       group_id: context.binding.target.id, user_id: context.speakerId, self_id: context.binding.target.account.id,
       _agentBinding: context.binding, _isAgentBindingCurrent: context.isCurrent,
       _ensureAgentToolCurrent: ensureContextCurrent,
+      _agentToolRequest: { occurredAt: context.requestAt },
     }
     if (!context.isCurrent()) return undefined
 

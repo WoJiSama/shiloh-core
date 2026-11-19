@@ -55,7 +55,7 @@ export function createTextPersonMemory(ports: {
   async function allowed(batch: TextPersonMemoryBatch, messages: readonly TextPersonMemoryMessage[]) {
     const state = await ports.memory.getRedactions({ identity: identityOf(batch), subjectId: batch.subjectId })
     const visible: TextPersonMemoryMessage[] = []
-    for (const message of messages) {
+    for (const message of await store.filterMessages(batch, [...messages])) {
       if (!await ports.isRecalled(batch.binding.target, message.messageId) &&
           !isPersonMemoryRedacted(sourceOf(batch, message), message.text, state)) visible.push(message)
     }
@@ -233,7 +233,7 @@ export function createTextPersonMemory(ports: {
     return sweep
   }
 
-  return { enqueue, tick, invalidate,
+  return { enqueue, tick, invalidate, purgeSubject: store.purgeSubject,
     async stop() {
       stopped = true
       for (const task of tasks.values()) task.controller.abort()

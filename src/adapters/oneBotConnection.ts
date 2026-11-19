@@ -1139,6 +1139,10 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         const guard = qqActionGuard(input)
         return guard ? sendDicePrivate(action, guard) : Promise.resolve({ state: 'failed', code: 'qq_action_cancelled' })
       },
+      sendGamePrivate(action, input) {
+        const guard = qqActionGuard(input)
+        return guard ? sendDicePrivate(action, guard) : Promise.resolve({ state: 'failed', code: 'qq_action_cancelled' })
+      },
       sendRequesterBilibiliAuth(action, guard) {
         try {
           const input = guard ?? {}

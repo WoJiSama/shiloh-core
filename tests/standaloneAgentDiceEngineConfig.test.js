@@ -87,7 +87,7 @@ test('YAML bytes, hash, revision and schema are checked synchronously before sta
   for(const input of invalid){const f=fixture();f.dice.engine.rulePackages=[input];assert.throws(()=>configured(f))}
 })
 
-test('standalone packages never accept executable kinds, paths, URLs or runner/native authority fields',()=>{
+test('standalone packages refuse untrusted executable kinds, paths, URLs and runner/native authority fields',()=>{
   const first=yamlInput()
   for(const input of [{...first,kind:'js'},{...first,kind:'seal'},{...first,kind:'file'},
     {...first,path:'/tmp/rules.yaml'},{...first,url:'https://example.test/rules.yaml'},{...first,trustedPackage:{id:'heart-rules',revision:first.revision,sourceHash:first.sourceHash}},
@@ -233,4 +233,47 @@ test('startup requires a reader-owned immutable configuration and current epoch 
   await assert.rejects(create(config,()=>++checks===1),/骰子/u)
   await assert.rejects(create(config,()=>{throw Error('unavailable')}),/骰子/u)
   assert.throws(()=>{config.grants[0].permissions.push('master')},TypeError)
+})
+
+test('explicit player bindings grant only the current ordinary actor own player/card access and preserve exact grants',async()=>{
+  const f=fixture(),binding=f.bindings[0]
+  f.dice.engine.playerBindings=[clone(binding)]
+  const config=configured(f),runtime=await create(config,()=>true)
+  frozen(config.playerBindings)
+  const ordinary=await runtime.readDiceGrant({binding,source:source(binding,'carol')},guard())
+  assert.equal(ordinary.actorId,'carol');assert.deepEqual(ordinary.permissions,['player','card']);assert.equal(ordinary.subjects,undefined)
+  assert.deepEqual((await runtime.readDiceGrant({binding,source:source(binding)},guard())).permissions,['player','admin','delegate','hidden'])
+  for(const change of [r=>{r.binding.revision='stale'},r=>{r.source.sender.namespace='other'},r=>{r.source.conversation.id='other'},r=>{r.source.sender.id=binding.target.account.id},r=>{delete r.source.messageId}]){
+    const request={binding:clone(binding),source:source(binding,'carol')};change(request)
+    assert.equal(await runtime.readDiceGrant(request,guard()),undefined)
+  }
+  const open=fixture();open.dice.engine.grants=[];open.dice.engine.playerBindings=[clone(open.bindings[0])]
+  assert.equal(configured(open).enabled,true)
+  for(const change of [x=>x.dice.engine.playerBindings.push(clone(x.bindings[0])),x=>{x.dice.engine.playerBindings[0].revision='stale'},x=>{x.dice.engine.playerBindings[0].target.kind='private'}]){
+    const invalid=fixture();invalid.dice.engine.playerBindings=[clone(invalid.bindings[0])];change(invalid);assert.throws(()=>configured(invalid))
+  }
+})
+
+test('executable standalone packages require exact explicit content trust and a separately injected runner',async()=>{
+  for(const kind of ['js','seal']){
+    const f=fixture(),source=kind==='js'?`module.exports=${JSON.stringify(pack())}`:"const ext=seal.ext.new('fixture','test','1');seal.ext.register(ext);"
+    const input={kind,source,sourceHash:sha(source),revision:'script-one',trustedPackage:{id:'heart-rules',sourceHash:sha(source),revision:'script-one'}}
+    f.dice.engine.rulePackages=[input]
+    const config=configured(f);assert.equal(config.rulePackages[0].kind,kind);frozen(config)
+    await assert.rejects(create(config,()=>true),/隔离环境/u)
+    for(const field of ['id','revision','sourceHash']){
+      const invalid=clone(input);invalid.trustedPackage[field]=field==='id'?'*':'wrong';f.dice.engine.rulePackages=[invalid];assert.throws(()=>configured(f))
+    }
+    f.dice.engine.rulePackages=[input];f.dice.engine.scriptRunner={};assert.throws(()=>configured(f),'runner cannot come from application config')
+  }
+})
+
+test('standalone executable sources accept 128KiB while rejecting one excess byte and keeping the YAML boundary',async()=>{
+  const f=fixture()
+  const make=source=>({kind:'seal',source,sourceHash:sha(source),revision:'large-one',trustedPackage:{id:'daggerheart',sourceHash:sha(source),revision:'large-one'}})
+  f.dice.engine.rulePackages=[make('x'.repeat(128*1024))]
+  const config=configured(f);assert.equal(Buffer.byteLength(config.rulePackages[0].source),128*1024)
+  await assert.rejects(create(config,()=>true),/隔离环境/u)
+  f.dice.engine.rulePackages=[make('x'.repeat(128*1024+1))];assert.throws(()=>configured(f))
+  f.dice.engine.rulePackages=[yamlInput('x'.repeat(64*1024+1))];assert.throws(()=>configured(f))
 })
