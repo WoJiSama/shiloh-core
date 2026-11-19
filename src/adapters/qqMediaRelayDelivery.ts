@@ -146,7 +146,9 @@ export function createQqMediaRelayDeliveryPort(options: {
       bindingKey = JSON.stringify(binding(row.binding, targetKey, connectionId))
       mode = row.mode
       plan = validateAgentMediaRelayPlan(row.plan, allowsText ? { allowsText } : {})
-      if (mode === 'direct-video' && plan.items.some(item => item.parts.some(part => part.kind !== 'video'))) return failed('invalid_direct_video')
+      // Direct video keeps the proven plain-message form (text, cover image and video
+      // segments in one native message); forward wraps whole items as fake nodes.
+      if (mode === 'direct-video' && plan.items.some(item => item.parts.some(part => part.kind !== 'video' && part.kind !== 'text' && part.kind !== 'image'))) return failed('invalid_direct_video')
       if (plan.items.some(item => item.parts.some(part => part.kind === 'video' && !part.thumbnail))) return failed('video_thumbnail_missing')
     } catch { return failed('invalid_media_relay') }
     const cancel = new AbortController(), deadline = new AbortController()
