@@ -42,8 +42,9 @@ const TRACKERS = ['udp://tracker.opentrackr.org:1337/announce', 'udp://open.stea
   'http://tracker.opentrackr.org:1337/announce', 'https://tracker.tamersunion.org/announce', 'http://tracker.dler.org:6969/announce', 'https://tracker.gbitt.info/announce', 'http://open.acgnxtracker.com/announce']
 const bounded = (value: number | undefined, maximum: number) => value === undefined ? maximum : Number.isSafeInteger(value) && value > 0 ? Math.min(value, maximum) : (() => { throw torrentFailure() })()
 const missing = (error: unknown) => !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
+// Every private job starts with an empty routing table; aria2 has no default DHT bootstrap.
 const COMMON_ARIA = ['--no-conf=true', '--daemon=false', '--enable-rpc=false', '--seed-time=0', '--seed-ratio=0', '--enable-dht=true', '--enable-dht6=false',
-  '--bt-enable-lpd=false', '--enable-peer-exchange=false', '--file-allocation=none', '--summary-interval=0', '--console-log-level=error', '--download-result=hide', '--disk-cache=0']
+  '--dht-entry-point=dht.transmissionbt.com:6881', '--bt-enable-lpd=false', '--enable-peer-exchange=false', '--file-allocation=none', '--summary-interval=0', '--console-log-level=error', '--download-result=hide', '--disk-cache=0']
 
 /** Core-owned native P2P on a trusted host. JS DNS checks apply to HTTPS caches, not aria2 peers/DHT. */
 export function createAgentTorrentProvider(options: AgentTorrentProviderOptions = {}): AgentTorrentProvider {

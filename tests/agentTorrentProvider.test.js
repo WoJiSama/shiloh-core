@@ -177,7 +177,7 @@ test('neither same-size corrupt payload nor malformed ZIP can produce ready byte
   })
 })
 
-test('cache failure tries canonical DHT and then only fixed trackers before payload', async t => {
+test('cache failure bootstraps DHT for both metadata attempts and payload using only trusted native discovery', async t => {
   let first = true
   const f = await fixture(t, { cache: false, command: async call => {
     if (call.args.includes('--bt-metadata-only=true') && first) { first = false; throw new Error('synthetic no DHT metadata') }
@@ -186,7 +186,15 @@ test('cache failure tries canonical DHT and then only fixed trackers before payl
   const attempts = f.commands.filter(call => call.args.includes('--bt-metadata-only=true'))
   assert.equal(attempts.length, 2)
   for (const attempt of attempts) assert.equal(attempt.args.at(-1), `magnet:?xt=urn:btih:${f.hash}`)
-  assert.equal(attempts[0].args.some(arg => arg.startsWith('--bt-tracker=')), false); assert.ok(attempts[1].args.find(arg => arg.startsWith('--bt-tracker=')).includes('tracker.opentrackr.org')); await f.clean()
+  assert.equal(attempts[0].args.some(arg => arg.startsWith('--bt-tracker=')), false); assert.ok(attempts[1].args.find(arg => arg.startsWith('--bt-tracker=')).includes('tracker.opentrackr.org'))
+  const native = f.commands.filter(call => call.command === 'aria2c')
+  assert.equal(native.length, 3)
+  for (const [index, stage] of ['DHT-only metadata', 'tracker-assisted metadata', 'payload'].entries()) await t.test(stage, () => {
+    assert.deepEqual(native[index].args.filter(arg => arg.startsWith('--dht-entry-point=')), ['--dht-entry-point=dht.transmissionbt.com:6881'])
+    assert.ok(native[index].args.includes('--enable-dht=true'))
+    assert.ok(native[index].args.includes('--enable-dht6=false'))
+  })
+  await f.clean()
 })
 
 test('only a trusted host proxy option reaches native HTTP tracker arguments and never enters results', async t => {
