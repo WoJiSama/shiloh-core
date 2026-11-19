@@ -114,7 +114,9 @@ describe('character controls in simulation detail', () => {
     expect(mutations()).toEqual([])
     await warning.mock.calls[0]![0].onPositiveClick()
     await flushPromises()
-    expect(mutations()).toEqual([{ group: '10086', action: 'character', operation: 'delete-memory', id: 'm1' }])
+    const mutation = mutations()[0]
+    expect(mutation).toMatchObject({ group: '10086', action: 'character', operation: 'delete-memory', id: 'm1' })
+    expect(mutation.requestId).toMatch(/^[0-9a-f-]{36}$/u)
     expect(document.body.textContent).toContain('还没有带来源的角色记忆')
     vi.mocked(api).mockRejectedValueOnce(new Error('角色存储暂时不可用'))
     await button('暂停自主行动').trigger('click')

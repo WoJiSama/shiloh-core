@@ -11,6 +11,8 @@ import {
   type WorkspaceConversation
 } from '../lib/workspaceModel'
 import PageState from './PageState.vue'
+import ForgetReceipt from './ForgetReceipt.vue'
+import { forgetRequestId, useForgetReceipt } from '../lib/forgetReceipt'
 
 const props = defineProps<{
   conversation: WorkspaceConversation
@@ -69,6 +71,7 @@ const view = ref<Scene | null>(null),
   actionPage = ref(1)
 const dialog = useDialog()
 const message = useMessage()
+const forgetting = useForgetReceipt()
 let alive = true,
   sequence = 0,
   controller: AbortController | undefined
@@ -178,7 +181,7 @@ async function mutate(body: Record<string, unknown>) {
   acting.value = true
   error.value = ''
   try {
-    await api('/api/simulation/group', {
+    const result = await api('/api/simulation/group', {
       method: 'POST',
       body: JSON.stringify({
         scopeKey: selected.scopeKey,
@@ -186,6 +189,9 @@ async function mutate(body: Record<string, unknown>) {
         ...body
       })
     })
+    forgetting.capture(result, { scopeKey: selected.scopeKey, bindingToken: selected.bindingToken,
+      isCurrent: () => alive && props.conversation.scopeKey === selected.scopeKey &&
+        props.conversation.bindingToken === selected.bindingToken })
     if (ticket === sequence) {
       acting.value = false
       await load()
@@ -202,7 +208,8 @@ async function mutate(body: Record<string, unknown>) {
   }
 }
 function control(operation: string, id?: string) {
-  return mutate({ action: 'character', operation, ...(id ? { id } : {}) })
+  return mutate({ action: 'character', operation, ...(id ? { id } : {}),
+    ...(operation === 'delete-memory' ? { requestId: forgetRequestId() } : {}) })
 }
 function confirmControl(operation: string, id: string, title: string) {
   const selected = props.conversation,
@@ -234,6 +241,7 @@ watch(
       consoleRestart.state.reloadGeneration
     ]),
   () => {
+    forgetting.reset()
     acting.value = false
     uncertain.value = false
     memoryPage.value = 1
@@ -277,6 +285,7 @@ onBeforeUnmount(() => {
     >
     <PageState v-else :loading="loading" :error="error" @retry="reread"
       ><div v-if="view" class="page-stack scene-content">
+        <ForgetReceipt :receipt="forgetting.receipt.value" :error="forgetting.error.value" :loading="forgetting.loading.value" @refresh="forgetting.refresh()" />
         <template v-if="section === 'conversations'"
           ><div class="tag-list">
             <NTag size="small">{{ view.active ? '允许参与' : '已关闭参与' }}</NTag

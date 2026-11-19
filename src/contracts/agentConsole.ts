@@ -161,6 +161,7 @@ export const AGENT_CONSOLE_SERVICES: readonly AgentConsoleService[] = Object.fre
   ['GET', '/api/person-profiles', 'profiles.read'],
   ['POST', '/api/person-profiles/delete', 'profiles.delete', 'conversation'],
   ['POST', '/api/person-profiles/delete-field', 'profiles.delete-field', 'conversation'],
+  ['GET', '/api/forgetting/:operationId', 'forgetting.read', 'conversation'],
   ['GET', '/api/trusteeship/overview', 'trusteeship.read'],
   ['POST', '/api/trusteeship/commitment-cancel', 'commitments.cancel', 'conversation'],
   ['POST', '/api/trusteeship/delegated-delete', 'delegated.delete', 'conversation'],

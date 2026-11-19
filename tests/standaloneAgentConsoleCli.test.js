@@ -11,6 +11,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { createClient } from '@redis/client'
 import { WebSocketServer } from 'ws'
+import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
+
+const { createForgetOperationStore } = await load('modules/runtime/infrastructure/forgetOperationStore.js')
 
 // Real packaged CLI, HTTP, Redis and OneBot transport; every endpoint is local.
 // No human messages, provider completions or native outbound QQ actions are used.
@@ -170,6 +173,16 @@ test('packaged standalone console checks without writes, serves authenticated AP
     assert.equal(item.binding.source, 'configured'); assert.equal(item.binding.agentId, 'daily')
   }
   const select = item => ({ scopeKey: item.scopeKey, bindingToken: item.bindingToken })
+  const receiptStore = createForgetOperationStore({ redis: f.reader, prefix: `${f.prefix}agent:forget-operation:v1` })
+  const created = await receiptStore.begin({ requestId: 'isolated-console-receipt', kind: 'person-profile', binding: first.binding, subject: { userId: 'fixture-person' } })
+  const terminal = await receiptStore.fail(created.operationId, { state: 'unknown', errorCode: 'ISOLATED_RECEIPT_FIXTURE' })
+  const receiptRoute = item => `/api/forgetting/${created.operationId}?${new URLSearchParams(select(item))}`
+  const receipt = await f.request(receiptRoute(first))
+  assert.equal(receipt.status, 200); assert.equal(receipt.data.operationId, terminal.operationId)
+  assert.equal(receipt.data.phase, 'unknown'); assert.equal(receipt.data.usage, 'unknown')
+  assert.equal((await f.request(receiptRoute(first), { token: false })).status, 401)
+  assert.equal((await f.request(receiptRoute(second))).status, 409)
+  assert.equal((await f.request(`/api/forgetting/00000000-0000-4000-8000-000000000000?${new URLSearchParams(select(first))}`)).status, 404)
   const detail = item => f.request('/api/simulation/group?' + new URLSearchParams(select(item)))
   const overview = await f.request('/api/simulation/overview')
   assert.equal(overview.status, 200); assert.equal(overview.data.enabled, false); assert.equal(overview.data.groups.length, 2)

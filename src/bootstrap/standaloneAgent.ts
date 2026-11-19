@@ -64,11 +64,13 @@ import { createStandaloneAgentConsoleRuntime } from './standaloneAgentConsoleRun
 import { createStandaloneAgentConsolePersistence } from './standaloneAgentConsolePersistence.js'
 import { inspectStandaloneAgentConfigTransaction, recoverStandaloneAgentConfigTransaction } from './standaloneAgentConfigSources.js'
 import { createStandaloneAgentConsoleManagement } from './standaloneAgentConsoleManagement.js'
+import { createStandaloneAgentForgetOperations } from './standaloneAgentForgetOperations.js'
 import { createStandaloneAgentWorkspace } from './standaloneAgentWorkspace.js'
 import { AGENT_CONSOLE_SERVICES, type AgentConsoleService } from '../contracts/agentConsole.js'
 import { createAgentManagementBindings } from '../modules/runtime/infrastructure/agentManagementBindings.js'
 import type { AgentManagementBindings } from '../contracts/agentManagement.js'
 import { conversationAddressKey } from '../modules/runtime/domain/agentBindings.js'
+import { createForgetOperationStore } from '../modules/runtime/infrastructure/forgetOperationStore.js'
 
 const logger = {
   info: (message: string) => console.info(message),
@@ -234,6 +236,7 @@ export async function main(argv: string[]): Promise<void> {
   const words = createForbiddenWordGuard(safeLogger)
   try {
     storage = await openAgentRedis({ url: config.redisUrl, instance: config.instance, onLost: () => fail('[Agent] Redis 执行租约丢失，停止处理') })
+    const forgetOperationsStore = createForgetOperationStore({ redis: storage.storage })
     // Console authentication outlives execution retirement, while the process keeps its Redis lease.
     const consoleAuthority = { signal: termination.signal,
       isCurrent: () => !termination.signal.aborted && storage?.isCurrent() === true }
@@ -634,7 +637,14 @@ export async function main(argv: string[]): Promise<void> {
       })
       const runtime = createStandaloneAgentConsoleRuntime({ runtime: host.runtime, bindings, auth: consoleAuth })
       const management = host.management && createStandaloneAgentConsoleManagement({ management: host.management, auth: consoleAuth })
-      const installed = createStandaloneAgentConsoleServices({ bindings, auth: consoleAuth, runtime, ledger, ...management,
+      const profilePort = management?.profiles
+      const forgetting = profilePort?.list && profilePort.remove && profilePort.removeField
+        ? createStandaloneAgentForgetOperations({ store: forgetOperationsStore, bindings,
+          auth: consoleAuth,
+          profiles: { list: profilePort.list, remove: profilePort.remove, removeField: profilePort.removeField },
+          characters: { describeGroup: runtime.describeGroup, controlCharacter: runtime.controlCharacter } })
+        : undefined
+      const installed = createStandaloneAgentConsoleServices({ bindings, auth: consoleAuth, runtime, ledger, ...management, ...(forgetting ? { forgetting } : {}),
         config: persistence.config, persona: persistence.persona, providers: persistence.providers,
         assignments: persistence.assignments, configuration: persistence.configuration, configState: persistence.state, commits: persistence.commits })
       // The workspace describes this process's loaded configuration, including after execution retires.

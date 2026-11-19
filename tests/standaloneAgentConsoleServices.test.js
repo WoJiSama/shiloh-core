@@ -75,6 +75,26 @@ test('all existing simulation mutations dispatch the full binding key and guard 
   assert.equal(calls.length, 9)
 })
 
+test('forget mutations and receipt reads preserve request IDs and the exact selected binding', async () => {
+  const calls = [], receipt = { version: 1, operationId: 'operation-1', phase: 'completed', usage: 'blocked', cleanup: 'completed', impacts: [] }
+  const f = fixture({
+    profiles: { remove: async () => { throw new Error('receipt owner must handle deletion') } },
+    runtime: { controlCharacter: async () => { throw new Error('receipt owner must handle deletion') } },
+    forgetting: Object.fromEntries(['profile', 'character', 'read'].map(method => [method, async (...args) => {
+      args.at(-1).ensureCurrent(); calls.push({ method, args }); return receipt
+    }]))
+  })
+  const selected = f.bindings[1]
+  assert.deepEqual(await f.call('profiles.delete', { selected, body: { userId: 'person-1', requestId: 'request-1' } }), receipt)
+  assert.deepEqual(calls.at(-1).args[0], { userId: 'person-1', requestId: 'request-1' })
+  assert.deepEqual(await f.call('simulation.group-write', { selected, body: { action: 'character', operation: 'delete-memory', id: 'memory-1', requestId: 'request-2' } }), receipt)
+  assert.deepEqual(calls.at(-1).args[0], { scopeKey: agentConversationKey(selected), memoryId: 'memory-1', requestId: 'request-2' })
+  assert.deepEqual(await f.call('forgetting.read', { selected, params: { operationId: 'operation-1' } }), receipt)
+  assert.equal(calls.at(-1).args[0], 'operation-1')
+  for (const call of calls) assert.deepEqual(call.args.at(-1).binding, selected)
+  await assert.rejects(f.call('forgetting.read', { params: { operationId: 'operation-1' } }), { code: 'conflict' })
+})
+
 test('simulation views keep current scoped rows, permission filtering and explicit full selectors across equal group IDs', async () => {
   let f
   const runtime = { async overview() { return { enabled: true, groups: f.bindings.map(item => ({ groupId: simulationAddressKey(item.target), active: true })).concat({ groupId: '310901', active: true }) } },

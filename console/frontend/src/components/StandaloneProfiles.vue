@@ -12,6 +12,8 @@ import {
 } from '../lib/workspaceModel'
 import PageHeader from './PageHeader.vue'
 import PageState from './PageState.vue'
+import ForgetReceipt from './ForgetReceipt.vue'
+import { forgetRequestId, useForgetReceipt } from '../lib/forgetReceipt'
 interface Scene {
   kind: 'group' | 'private'
   id: string
@@ -40,6 +42,7 @@ const rows = ref<Profile[] | null>(null),
   page = ref(1),
   busy = ref(false),
   uncertain = ref(false)
+const forgetting = useForgetReceipt()
 const dialog = useDialog()
 const message = useMessage()
 let alive = true,
@@ -169,15 +172,18 @@ function erase(row: Profile, entry?: Entry) {
       busy.value = true
       error.value = ''
       try {
-        await api(entry ? '/api/person-profiles/delete-field' : '/api/person-profiles/delete', {
+        const result = await api(entry ? '/api/person-profiles/delete-field' : '/api/person-profiles/delete', {
           method: 'POST',
           body: JSON.stringify({
             userId: row.userId,
             scopeKey: row.scopeKey,
             bindingToken: row.bindingToken,
+            requestId: forgetRequestId(),
             ...(entry ? { field: 'entries', value: entry.id } : {})
           })
         })
+        forgetting.capture(result, { scopeKey: row.scopeKey, bindingToken: row.bindingToken,
+          isCurrent: () => alive && !!sceneFor(row) })
         if (ticket === sequence) {
           busy.value = false
           await load()
@@ -207,6 +213,7 @@ const time = (at: number) => new Date(at).toLocaleString('zh-CN', { hour12: fals
 watch(
   sourceVersion,
   () => {
+    forgetting.reset()
     busy.value = false
     uncertain.value = false
     rows.value = null
@@ -303,6 +310,7 @@ onBeforeUnmount(() => {
         v-model:page="page"
         :page-size="10"
         :item-count="filtered.length" /></PageState
-    ><NAlert v-if="uncertain" type="warning">操作结果未知，已锁定删除；请先重新读取并核对。</NAlert>
+    ><ForgetReceipt :receipt="forgetting.receipt.value" :error="forgetting.error.value" :loading="forgetting.loading.value" @refresh="forgetting.refresh()" />
+    <NAlert v-if="uncertain" type="warning">操作结果未知，已锁定删除；请先重新读取并核对。</NAlert>
   </div>
 </template>

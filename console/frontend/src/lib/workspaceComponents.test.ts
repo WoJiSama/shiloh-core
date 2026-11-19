@@ -558,6 +558,50 @@ describe('destructive confirmation source identity', () => {
   )
 })
 describe('actual source-scoped person memory', () => {
+  it('reads the durable forget receipt using the deleted entry exact scope and shows its impact', async () => {
+    const selected = scene(), receipt = { operationId: 'operation-1', phase: 'completed', usage: 'blocked', cleanup: 'completed',
+      impacts: [{ kind: 'person-memory-entry', id: 'entry-1', partition: 'person-memory', state: 'completed' }] }
+    let deleted = false
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (options?.method === 'POST') { deleted = true; return receipt }
+      if (path.startsWith('/api/forgetting/')) return receipt
+      return { profiles: deleted ? [] : [profile()] }
+    })
+    const wrapper = page(StandaloneProfiles, { conversationScopes: [selected] })
+    await flushPromises()
+    await wrapper.findAllComponents(NButton).find(button => button.text() === '删除此条')!.trigger('click')
+    await warning.mock.calls[0]![0].onPositiveClick()
+    await flushPromises()
+    const path = vi.mocked(api).mock.calls.find(([path]) => path.startsWith('/api/forgetting/'))![0]
+    const query = new URL(path, 'http://localhost').searchParams
+    expect(query.get('scopeKey')).toBe(selected.scopeKey)
+    expect(query.get('bindingToken')).toBe(selected.bindingToken)
+    expect(wrapper.text()).toContain('已停止使用')
+    expect(wrapper.text()).toContain('人物记忆 entry-1')
+    await wrapper.setProps({ conversationScopes: [] })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('operation-1')
+  })
+  it('shows a role forget receipt on the current robot scene and clears it after switching bindings', async () => {
+    const selected = scene(), receipt = { operationId: 'operation-role', phase: 'unknown', usage: 'blocked', cleanup: 'unsupported',
+      impacts: [{ kind: 'character-memory', id: 'm1', partition: 'character', state: 'completed' }] }
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (options?.method === 'POST' || path.startsWith('/api/forgetting/')) return receipt
+      return result(selected, { character: { paused: false, memories: [{ id: 'm1', content: '一条记忆', kind: 'interest', createdAt: 1 }], goals: [], receipts: [] } })
+    })
+    const wrapper = page(RobotScene, { conversation: selected, section: 'self' })
+    await flushPromises()
+    await wrapper.findAllComponents(NButton).find(button => button.text() === '删除')!.trigger('click')
+    await warning.mock.calls[0]![0].onPositiveClick()
+    await flushPromises()
+    const payload = JSON.parse(String(vi.mocked(api).mock.calls.find(([, options]) => options?.method === 'POST')![1]!.body))
+    expect(payload.requestId).toMatch(/^[0-9a-f-]{36}$/u)
+    expect(wrapper.text()).toContain('当前范围未提供清理证明')
+    expect(wrapper.text()).toContain('角色记忆 m1')
+    await wrapper.setProps({ conversation: scene('bob', '19002222') })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('operation-role')
+  })
   it.each(['删除此条', '清空当前来源记录'])(
     'explains an invalidated profile %s confirmation after refreshing the same source',
     async (action) => {
@@ -601,13 +645,15 @@ describe('actual source-scoped person memory', () => {
     await warning.mock.calls[0]![0].onPositiveClick()
     await flushPromises()
     const mutation = vi.mocked(api).mock.calls.find(([, options]) => options?.method === 'POST')!
-    expect(JSON.parse(String(mutation[1]!.body))).toEqual({
+    const payload = JSON.parse(String(mutation[1]!.body))
+    expect(payload).toMatchObject({
       userId: 'person-1',
       scopeKey: scene().scopeKey,
       bindingToken: scene().bindingToken,
       field: 'entries',
       value: 'entry-1'
     })
+    expect(payload.requestId).toMatch(/^[0-9a-f-]{36}$/u)
   })
   it('revokes displayed profile entries and pending confirmations when the exact source is removed', async () => {
     vi.mocked(api).mockResolvedValue({ profiles: [profile()] })

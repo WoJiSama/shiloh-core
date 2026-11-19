@@ -4,6 +4,8 @@ import { NAlert, NButton, NCheckbox, NDataTable, NDrawer, NDrawerContent, NInput
 import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
 import { api } from '../lib/api'
+import ForgetReceiptView from '../components/ForgetReceipt.vue'
+import { forgetRequestId, useForgetReceipt } from '../lib/forgetReceipt'
 
 type CharacterOperation = 'pause' | 'resume' | 'cancel-goal' | 'pause-goal' | 'resume-goal' | 'delete-memory'
 type ActivityOperation = 'work-archive' | 'work-restore' | 'work-delete' | 'subscription-pause' | 'subscription-resume' | 'subscription-remove' | 'shared-approve' | 'shared-delete' | 'reflection-reset'
@@ -24,6 +26,8 @@ interface CharacterView {
   receipts: { id: string; toolName: string; status: string; summary: string; at: number; goalId?: string }[]
 }
 interface GroupRow {
+  scopeKey?: string
+  bindingToken?: string
   groupId: string
   conversation?: { id: string; kind: string; account: { id: string; platform: string; namespace: string } }
   active: boolean
@@ -67,6 +71,7 @@ const characterBusy = ref(false)
 const characterMessage = ref('')
 const activityBusy = ref(false)
 const activityMessage = ref('')
+const forgetting = useForgetReceipt()
 let detailRequest = 0
 let timer: number | null = null
 
@@ -86,7 +91,9 @@ onMounted(() => {
   void load()
   timer = window.setInterval(() => void load(), 30000)
 })
-onBeforeUnmount(() => { if (timer) window.clearInterval(timer) })
+onBeforeUnmount(() => {
+  if (timer) window.clearInterval(timer)
+})
 
 async function toggle(row: GroupRow) {
   try {
@@ -130,6 +137,7 @@ async function doResetGroup(groupId: string) {
   }
 }
 async function openDetail(groupId: string) {
+  if (detailId.value !== groupId) forgetting.reset()
   const request = ++detailRequest
   const result = await api<GroupRow>(`/api/simulation/group?group=${encodeURIComponent(groupId)}`)
   if (request !== detailRequest) return
@@ -164,12 +172,15 @@ async function controlCharacter(operation: CharacterOperation, id?: string) {
   characterBusy.value = true
   characterMessage.value = ''
   try {
-    const result = await api<{ message: string }>('/api/simulation/group', {
-      method: 'POST', body: JSON.stringify({ group, action: 'character', operation, ...(id ? { id } : {}) })
+    const selected = detail.value
+    const result = await api<{ message?: string }>('/api/simulation/group', {
+      method: 'POST', body: JSON.stringify({ group, action: 'character', operation, ...(id ? { id } : {}), ...(operation === 'delete-memory' ? { requestId: forgetRequestId() } : {}) })
     })
     if (detailId.value !== group || request !== detailRequest) return
+    forgetting.capture(result, { scopeKey: selected?.scopeKey || group,
+      bindingToken: selected?.bindingToken, isCurrent: () => detailId.value === group })
     await openDetail(group)
-    if (detailId.value === group) characterMessage.value = result.message
+    if (detailId.value === group) characterMessage.value = result.message || '角色管理操作已提交'
   } catch (e: any) {
     if (detailId.value === group) characterMessage.value = e?.message || '角色管理操作失败'
   } finally {
@@ -342,6 +353,7 @@ const detailTitle = computed(() => `${detail.value ? conversationLabel(detail.va
               <small>{{ characterTime(detail.character.decision.at) }}</small>
             </div>
             <div v-if="characterMessage" class="msg" role="status">{{ characterMessage }}</div>
+            <ForgetReceiptView :receipt="forgetting.receipt.value" :error="forgetting.error.value" :loading="forgetting.loading.value" @refresh="forgetting.refresh()" />
             <h4 class="character-heading">自主目标</h4>
             <div v-if="!detail.character.goals.length" class="empty">还没有自主目标，有合适的兴趣和线索时会逐步形成。</div>
             <div v-for="goal in detail.character.goals" :key="goal.id" class="character-card">

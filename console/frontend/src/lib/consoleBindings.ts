@@ -71,6 +71,7 @@ function classify(path: string, options: RequestInit) {
     scoped:
       ((method === 'GET' || method === 'PUT') && !!admin) ||
       (method === 'GET' && url.pathname === '/api/simulation/group') ||
+      (method === 'GET' && /^\/api\/forgetting\/[^/]+$/u.test(url.pathname)) ||
       (method === 'POST' && writePaths.has(url.pathname)),
     overview: method === 'GET' && overviewPaths.has(url.pathname),
     routeGroup: admin ? decodeURIComponent(admin[1]) : undefined

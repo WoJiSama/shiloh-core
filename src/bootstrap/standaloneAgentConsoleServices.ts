@@ -7,6 +7,7 @@ import { agentBindingToken, agentConversationKey, decodeAgentConversationKey, is
 import { createSynchronousGuard } from '../modules/runtime/domain/synchronousGuard.js'
 import { decodeSimulationAddressKey } from '../modules/simulation/infrastructure/simulationAddress.js'
 import { PERSON_MEMORY_CATEGORIES } from '../modules/memory/domain/personMemory.js'
+import type { StandaloneAgentForgetOperations } from './standaloneAgentForgetOperations.js'
 
 type Data = Record<string, unknown>
 type Awaitable<T> = T | Promise<T>
@@ -88,6 +89,8 @@ export interface StandaloneAgentConsoleServicesPorts {
     remove?(userId: string, context: AgentConsoleContext): Awaitable<boolean>
     removeField?(userId: string, field: string, value: string | undefined, context: AgentConsoleContext): Awaitable<unknown>
   }
+  /** Durable, source-owned forget receipts. Existing mutation ports remain as a compatibility fallback. */
+  readonly forgetting?: Partial<StandaloneAgentForgetOperations>
   readonly trusteeship?: {
     /** Commitment/delegated rows must include scopeKey (or binding/conversation), preserving their original IDs. */
     overview?(context: AgentConsoleContext): Awaitable<Data>
@@ -244,7 +247,7 @@ export function createStandaloneAgentConsoleServices(ports: StandaloneAgentConso
   if (runtime && groupMutations.some(Boolean)) install('simulation.group-write', async (request, context) => {
     const body = data(request.body), selected = group(context); aliases(body, selected.binding)
     const action = identifier(body.action, 64)
-    let operation: (() => Awaitable<string>) | undefined, detail = false
+    let operation: (() => Awaitable<string>) | undefined, detail = false, forgettingDelete = false
     if (action === 'enable' || action === 'disable' || action === 'reset') {
       fields(body, ['group', 'groupId', 'action'])
       const method = action === 'enable' ? runtime.enableGroup : action === 'disable' ? runtime.disableGroup : runtime.resetGroup
@@ -263,7 +266,7 @@ export function createStandaloneAgentConsoleServices(ports: StandaloneAgentConso
       const method = action === 'budget' ? runtime.setGroupBudget : runtime.setGroupTurnsCap
       if (method) operation = () => method.call(runtime, selected.key, cap, context)
     } else if (action === 'character' || action === 'activity') {
-      fields(body, ['group', 'groupId', 'action', 'operation', 'id', ...(action === 'activity' ? ['payload'] : [])])
+      fields(body, ['group', 'groupId', 'action', 'operation', 'id', 'requestId', ...(action === 'activity' ? ['payload'] : [])])
       const value = identifier(body.operation, 64)
       if (action === 'character' ? !characterOperations.has(value) : !activityOperations.has(value)) return fail('invalid_request')
       const needsId = action === 'character' ? value !== 'pause' && value !== 'resume' : value !== 'reflection-reset'
@@ -274,10 +277,20 @@ export function createStandaloneAgentConsoleServices(ports: StandaloneAgentConso
         payload = data(body.payload); fields(payload, ['revision']); number(payload.revision, 1, Number.MAX_SAFE_INTEGER, true)
       } else if (body.payload !== undefined) return fail('invalid_request')
       if (action === 'character' && runtime.controlCharacter) operation = () => runtime.controlCharacter!(selected.key, value as CharacterOperation, id, context)
+      if (action === 'character' && value === 'delete-memory' && id && ports.forgetting?.character) {
+        forgettingDelete = true
+        operation = async () => {
+          const result = await ports.forgetting!.character!({ scopeKey: selected.key, memoryId: id, ...(body.requestId === undefined ? {} : { requestId: identifier(body.requestId, 256) }) }, context)
+          return JSON.stringify(result)
+        }
+      }
       if (action === 'activity' && runtime.controlActivity) operation = () => runtime.controlActivity!(selected.key, value as CharacterActivityOperation, id, payload, context)
     } else return fail('invalid_request')
     if (!operation) return fail('unavailable')
     const result = await invoke(context, operation)
+    if (forgettingDelete) {
+      try { return json(JSON.parse(result)) } catch { return fail('unavailable') }
+    }
     return json(detail ? { ok: true, detail: result } : { ok: true, message: result })
   })
   if (runtime?.setDefaultBudget) install('simulation.budget-default', async (request, context) => {
@@ -385,8 +398,17 @@ export function createStandaloneAgentConsoleServices(ports: StandaloneAgentConso
     if (operation === 'profiles.delete' ? !profiles?.remove : !profiles?.removeField) continue
     install(operation, async (request, context) => {
       scoped(context); const body = data(request.body)
-      fields(body, operation === 'profiles.delete' ? ['userId'] : ['userId', 'field', 'value'])
+      fields(body, operation === 'profiles.delete' ? ['userId', 'requestId'] : ['userId', 'field', 'value', 'requestId'])
       const userId = identifier(body.userId, 128)
+      const requestId = body.requestId === undefined ? undefined : identifier(body.requestId, 256)
+      if (ports.forgetting?.profile) {
+        if (operation === 'profiles.delete') return json(await invoke(context, () => ports.forgetting!.profile!({ userId, ...(requestId ? { requestId } : {}) }, context)))
+        const field = identifier(body.field, 32)
+        if (!['entries', 'interests', 'taboos', 'traits', 'facts', ...PERSON_MEMORY_CATEGORIES].includes(field)) return fail('invalid_request')
+        const value = body.value === undefined ? undefined : text(body.value, 4000)
+        if (field === 'entries' && value === undefined) return fail('invalid_request')
+        return json(await invoke(context, () => ports.forgetting!.profile!({ userId, field, ...(value === undefined ? {} : { value }), ...(requestId ? { requestId } : {}) }, context)))
+      }
       if (operation === 'profiles.delete') {
         const removed = await invoke(context, () => profiles!.remove!(userId, context))
         if (!removed) return fail('not_found')
@@ -399,6 +421,10 @@ export function createStandaloneAgentConsoleServices(ports: StandaloneAgentConso
       return json({ ok: true, profile: await invoke(context, () => profiles!.removeField!(userId, field, value, context)) })
     })
   }
+  if (ports.forgetting?.read) install('forgetting.read', async (request, context) => {
+    const selected = scoped(context), operationId = identifier(request.params.operationId, 128)
+    return json(await invoke(context, () => ports.forgetting!.read!(operationId, { ...context, binding: selected.binding })))
+  })
   const trusteeship = ports.trusteeship
   if (trusteeship?.overview) install('trusteeship.read', async (_request, context) => {
     const view = await invoke(context, () => trusteeship.overview!(context))

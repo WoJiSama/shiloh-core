@@ -86,6 +86,10 @@ describe('complete console conversation selectors', () => {
     const query = new URL(read.path, 'http://localhost').searchParams
     expect(query.get('scopeKey')).toBe(item.scopeKey)
     expect(query.get('bindingToken')).toBe(item.bindingToken)
+    const receipt = await client.prepare(`/api/forgetting/operation-1?${new URLSearchParams({ scopeKey: item.scopeKey, bindingToken: 'displayed-token' })}`)
+    const receiptQuery = new URL(receipt.path, 'http://localhost').searchParams
+    expect(receiptQuery.get('scopeKey')).toBe(item.scopeKey)
+    expect(receiptQuery.get('bindingToken')).toBe('displayed-token')
     const admin = await client.prepare(`/api/groups/${encodeURIComponent(item.scopeKey)}/admin`, {
       method: 'PUT',
       body: '{"baseRevision":"draft-1"}'
