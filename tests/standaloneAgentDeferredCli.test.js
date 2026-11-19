@@ -170,7 +170,11 @@ async function fixture(t, { enabled = true, grant = true, unknown = false } = {}
       assertHealthy(); return (await records())[0]
     },
     async beyondDue() { await waitFor(() => Date.now() >= dueAt + 1300, 'scheduler passes due time'); assertHealthy() },
-    async revoke() { raw.tools.deferredActions.enabled = false; configText = JSON.stringify(raw); await writeFile(configFile, configText) },
+    async revoke() {
+      assert.ok(Date.now() < dueAt, 'configuration is revoked before the scheduled deadline')
+      raw.tools.deferredActions.enabled = false; configText = JSON.stringify(raw); await writeFile(configFile, configText)
+      assert.ok(Date.now() < dueAt, 'revoked configuration is saved before the scheduled deadline')
+    },
     recall() { sources.delete(String(SOURCE)); websocket.send(JSON.stringify({ post_type: 'notice', notice_type: 'group_recall', self_id: BOT, group_id: GROUP,
       user_id: USER, operator_id: USER, message_id: SOURCE, time: Math.floor(Date.now() / 1000) })) },
     async replay() { websocket.send(JSON.stringify(source)); await delay(1200); assertHealthy() },
@@ -213,8 +217,21 @@ test('actual CLI unknown native extra remains fenced without fixed body across h
 
 for (const fence of ['configuration', 'recall']) test(`actual CLI ${fence} revocation before due time prevents native extra and fixed body`, { timeout: 60_000 }, async t => {
   const f = await fixture(t); await f.start(); await f.run()
-  if (fence === 'configuration') await f.revoke(); else f.recall()
-  await f.terminal('cancelled'); await f.beyondDue()
+  if (fence === 'configuration') {
+    const registered = await f.records(), modelCalls = f.models.length
+    await f.revoke(); await f.beyondDue()
+    assert.deepEqual(f.pokes, []); assert.deepEqual(f.texts, [])
+    assert.deepEqual(await f.records(), registered, 'a stale host cannot settle a pending task after its configuration changes')
+    // Host configuration changes retire execution. Only a fresh process may
+    // reconcile the saved task against the now-disabled delegation policy.
+    await f.stop(); await f.restart()
+    const saved = await f.terminal('cancelled')
+    assert.equal(saved.deferredAction.state, 'pending'); assert.equal(saved.deferredAction.attemptedAt, 0)
+    await f.replay(); await f.beyondDue()
+    assert.equal((await f.records())[0].status, 'cancelled'); assert.equal(f.models.length, modelCalls)
+  } else {
+    f.recall(); await f.terminal('cancelled'); await f.beyondDue()
+  }
   assert.deepEqual(f.pokes, []); assert.deepEqual(f.texts, [])
   await f.stop(); await f.clean()
 })
