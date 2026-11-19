@@ -20,6 +20,7 @@ const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwM
 const botId = 19000002, groupId = 310002, userId = 330029
 const mainKey = 'standalone-images-main-private-key'
 const imageKey = 'standalone-images-provider-private-key'
+const imageFallbackKey = 'standalone-images-fallback-private-key'
 const oneBotToken = 'standalone-images-onebot-private-token'
 const prompt = '画一把蓝色雨伞'
 const target = { account: { platform: 'qq', namespace: 'global', id: String(botId) }, kind: 'group', id: String(groupId) }
@@ -44,9 +45,9 @@ function call(name, input) {
     function: { name, arguments: JSON.stringify(input) } }] }
 }
 
-async function exerciseImageHost(t, { receipt = 'sent', edit = false } = {}) {
+async function exerciseImageHost(t, { receipt = 'sent', edit = false, candidates = false } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'standalone-agent-images-'))
-  const instance = `images-${edit ? 'edit' : 'generation'}-${receipt}`
+  const instance = `images-${edit ? 'edit' : 'generation'}-${receipt}${candidates ? '-candidates' : ''}`
   const prefix = `bl-agent:${instance}:`
   const socketPath = path.join(directory, 'redis.sock')
   const redis = spawn('redis-server', ['--port', '0', '--unixsocket', socketPath, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
@@ -68,7 +69,7 @@ async function exerciseImageHost(t, { receipt = 'sent', edit = false } = {}) {
       for await (const chunk of request) chunks.push(chunk)
       const bytes = Buffer.concat(chunks)
       response.setHeader('Content-Type', 'application/json')
-      if (request.url === '/image/v1/images/generations' || request.url === '/image/v1/images/edits') {
+      if (request.url === '/image/v1/images/generations' || request.url === '/image/v1/images/edits' || request.url === '/image-first/v1/images/generations') {
         let body, image
         if (request.headers['content-type']?.startsWith('multipart/form-data;')) {
           const form = await new Response(bytes, { headers: { 'content-type': request.headers['content-type'] } }).formData()
@@ -77,6 +78,7 @@ async function exerciseImageHost(t, { receipt = 'sent', edit = false } = {}) {
           body = Object.fromEntries([...form.entries()].filter(([, value]) => typeof value === 'string'))
         } else body = JSON.parse(bytes.toString())
         providerRequests.push({ path: request.url, auth: request.headers.authorization, body, image })
+        if (request.url === '/image-first/v1/images/generations') { response.writeHead(429).end(JSON.stringify({ error: { message: 'request explicitly rejected' } })); return }
         response.end(JSON.stringify({ data: [{ b64_json: png }], usage: { input_tokens: 33, output_tokens: 11, total_tokens: 44 } }))
         return
       }
@@ -94,7 +96,7 @@ async function exerciseImageHost(t, { receipt = 'sent', edit = false } = {}) {
             const visible = body.messages.filter(row => row.role === 'user').map(row => String(row.content)).join('\n')
             sourceSeq = Number([...visible.matchAll(/^#(\d+)[^\n]*图片工具验收[^\n]*$/gmu)].at(-1)?.[1] ?? 0)
           }
-          response.end(completion(call(toolName, { prompt, ...(edit ? { sourceSeq } : {}) })))
+          response.end(completion(call(toolName, { prompt, ...(edit ? { sourceSeq } : {}), ...(candidates ? { provider: '画图渠道' } : {}) })))
         }
         return
       }
@@ -153,7 +155,12 @@ async function exerciseImageHost(t, { receipt = 'sent', edit = false } = {}) {
   const config = {
     version: 1, instance,
     model: { baseUrl: `http://127.0.0.1:${port}/main/v1`, name: 'standalone-images-main', apiKeyEnv: 'TEST_AGENT_IMAGES_MAIN_KEY' },
-    tools: { images: { [edit ? 'edit' : 'generation']: { baseUrl: imageBaseUrl, name: 'standalone-images-provider',
+    tools: { images: { [edit ? 'edit' : 'generation']: candidates ? [
+      { baseUrl: `http://127.0.0.1:${port}/image-first/v1`, name: 'friendly-channel', model: 'first-upstream-image', aliases: ['画图渠道'],
+        apiKeyEnv: 'TEST_AGENT_IMAGES_PROVIDER_KEY', size: '1024x1024', quality: 'high' },
+      { baseUrl: imageBaseUrl, name: 'friendly-channel', model: 'successful-upstream-image',
+        apiKeyEnv: 'TEST_AGENT_IMAGES_FALLBACK_KEY', size: '1024x1024', quality: 'high' },
+    ] : { baseUrl: imageBaseUrl, name: 'standalone-images-provider',
       apiKeyEnv: 'TEST_AGENT_IMAGES_PROVIDER_KEY', size: '1024x1024', quality: 'high' } } },
     memorySystem: { enabled: false }, midtermMemory: { enabled: false }, episodicMemory: { enabled: false }, groupMemory: { enabled: false },
     connections: [{ id: 'qq-images', url: `ws://127.0.0.1:${port}/onebot`, accessTokenEnv: 'TEST_AGENT_IMAGES_ONEBOT_TOKEN' }],
@@ -169,7 +176,7 @@ async function exerciseImageHost(t, { receipt = 'sent', edit = false } = {}) {
   await writeFile(configFile, JSON.stringify(config))
   child = spawn(process.execPath, [entry, '--config', configFile], { cwd: directory,
     env: { ...process.env, BL_AGENT_REDIS_URL: `unix://${socketPath}`, TEST_AGENT_IMAGES_MAIN_KEY: mainKey,
-      TEST_AGENT_IMAGES_PROVIDER_KEY: imageKey, TEST_AGENT_IMAGES_ONEBOT_TOKEN: oneBotToken },
+      TEST_AGENT_IMAGES_PROVIDER_KEY: imageKey, TEST_AGENT_IMAGES_FALLBACK_KEY: imageFallbackKey, TEST_AGENT_IMAGES_ONEBOT_TOKEN: oneBotToken },
   })
   exited = once(child, 'exit')
   for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { log += chunk })
@@ -185,12 +192,18 @@ async function exerciseImageHost(t, { receipt = 'sent', edit = false } = {}) {
 
   assert.deepEqual(fixtureErrors, [])
   assert.deepEqual(unexpected, [])
-  assert.equal(providerRequests.length, 1, 'unknown delivery must not regenerate or resend')
+  assert.equal(providerRequests.length, candidates ? 2 : 1, 'only a definite provider rejection permits another candidate')
   assert.equal(deliveries.length, 1, 'silent finish must not add text or duplicate images')
-  const provider = providerRequests[0]
+  if (candidates) {
+    assert.equal(providerRequests[0].path, '/image-first/v1/images/generations')
+    assert.equal(providerRequests[0].auth, `Bearer ${imageKey}`)
+    assert.equal(providerRequests[0].body.model, 'first-upstream-image')
+  }
+  const provider = providerRequests.at(-1)
   assert.equal(provider.path, `/image/v1/images/${edit ? 'edits' : 'generations'}`)
-  assert.equal(provider.auth, `Bearer ${imageKey}`)
-  assert.deepEqual(provider.body, { model: 'standalone-images-provider', prompt, n: edit ? '1' : 1,
+  assert.equal(provider.auth, `Bearer ${candidates ? imageFallbackKey : imageKey}`)
+  const usageModel = candidates ? 'successful-upstream-image' : 'standalone-images-provider'
+  assert.deepEqual(provider.body, { model: usageModel, prompt, n: edit ? '1' : 1,
     response_format: 'b64_json', size: '1024x1024', quality: 'high' })
   if (edit) {
     assert.ok(sourceSeq > 0)
@@ -217,11 +230,11 @@ async function exerciseImageHost(t, { receipt = 'sent', edit = false } = {}) {
   const ledgerText = (await Promise.all((await readdir(ledgerDir)).map(file => readFile(path.join(ledgerDir, file), 'utf8')))).join('')
   const rows = ledgerText.trim().split('\n').map(line => JSON.parse(line))
   assert.deepEqual(rows.filter(row => row.stage === 'agent-tool').map(row => [row.scope, row.model, row.u.total]),
-    [[address, 'standalone-images-provider', 44]])
-  assert.deepEqual(rows.filter(row => row.stage === 'api' && row.model === 'standalone-images-provider').map(row => [row.scope, row.u.total]),
+    [[address, usageModel, 44]])
+  assert.deepEqual(rows.filter(row => row.stage === 'api' && row.model === usageModel).map(row => [row.scope, row.u.total]),
     [['global', 44]])
   for (const value of [log, ledgerText, JSON.stringify(deliveries), ...mainRequests.map(request => JSON.stringify(request.body)), JSON.stringify(provider.body)]) {
-    for (const secret of [mainKey, imageKey, oneBotToken]) assert.ok(!value.includes(secret))
+    for (const secret of [mainKey, imageKey, imageFallbackKey, oneBotToken]) assert.ok(!value.includes(secret))
   }
   assert.ok(!JSON.stringify(provider.body).includes('GROUP-ONLY'))
 }
@@ -237,3 +250,7 @@ test('standalone bananaTool keeps a QQ response without a message ID unknown and
 test('standalone googleImageEditTool reads a visible sourceSeq original through OneBot without vision and sends edited bytes', {
   skip: !redisAvailable, timeout: 30_000,
 }, async t => exerciseImageHost(t, { edit: true }))
+
+test('standalone image candidates preserve aliases and upstream models through an explicit rejection and one confirmed QQ delivery', {
+  skip: !redisAvailable, timeout: 30_000,
+}, async t => exerciseImageHost(t, { candidates: true }))

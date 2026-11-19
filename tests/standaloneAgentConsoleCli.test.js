@@ -146,7 +146,7 @@ test('packaged standalone console checks without writes, serves authenticated AP
   const asset = page.text.match(/<script[^>]+src="([^"]+)"/u)?.[1]
   assert.ok(asset, 'the default packaged frontend references its compiled entry')
   assert.equal((await f.request(asset, { token: false })).status, 200)
-  for (const route of ['/api/bindings', '/api/workspace', '/api/simulation/overview', '/api/tokens/summary']) {
+  for (const route of ['/api/bindings', '/api/workspace', '/api/pipeline/jobs', '/api/simulation/overview', '/api/tokens/summary']) {
     assert.equal((await f.request(route, { token: false })).status, 401)
   }
   assert.deepEqual((await f.request('/api/auth/state')).data, { hasUser: false, username: null, tokenWorks: true, via: 'token' })
@@ -161,11 +161,14 @@ test('packaged standalone console checks without writes, serves authenticated AP
   assert.deepEqual(new Set(workspace.data.connections.map(row => row.account.id)), new Set(accounts))
   assert.ok(workspace.data.connections.every(row => row.state === 'connected' && row.conversationCount === 1))
   const capability = operation => workspace.data.capabilities.find(row => row.operation === operation)
-  for (const operation of ['workspace.read', 'profiles.read', 'trusteeship.read', 'config-state.read', 'profiles.delete', 'commitments.cancel']) {
+  for (const operation of ['workspace.read', 'pipeline.read', 'profiles.read', 'trusteeship.read', 'config-state.read', 'profiles.delete', 'commitments.cancel']) {
     assert.equal(capability(operation)?.status, 'available', operation)
   }
   assert.equal(capability('accounts.add')?.status, 'unavailable', 'a catalogue declaration is not an installed account handler')
   assert.equal(workspace.data.cognition.status, 'planned')
+  const pipeline = await f.request('/api/pipeline/jobs')
+  assert.equal(pipeline.status, 200); assert.equal(pipeline.data.mode, 'standalone'); assert.deepEqual(pipeline.data.jobs, [])
+  assert.equal(pipeline.data.processEpoch, workspace.data.configState.processEpoch)
   assert.equal((await f.request('/api/person-profiles')).status, 200)
   assert.equal((await f.request('/api/trusteeship/overview')).status, 200)
   for (const item of entries) {
@@ -226,6 +229,8 @@ test('packaged standalone console checks without writes, serves authenticated AP
   assert.notEqual(retiredWorkspace.data.configState.storedRevision, workspace.data.configState.storedRevision)
   assert.deepEqual(retiredWorkspace.data.agents[0].conversations, workspace.data.agents[0].conversations, 'retired workspace keeps its loaded binding versions')
   assert.equal(retiredWorkspace.data.capabilities.find(row => row.operation === 'profiles.read').status, 'restart-required')
+  assert.equal(retiredWorkspace.data.capabilities.find(row => row.operation === 'pipeline.read').status, 'available')
+  assert.equal((await f.request('/api/pipeline/jobs')).status, 200, 'durable task observations remain available after execution retirement')
   assert.equal((await f.request('/api/person-profiles')).status, 409)
   assert.equal((await f.request('/api/trusteeship/overview')).status, 409)
   await f.stop(); await f.start()

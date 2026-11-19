@@ -43,8 +43,33 @@ export interface AgentMediaOutboxSession {
   close(state: 'completed' | 'failed' | 'cancelled' | 'unknown'): Promise<void>
   abandon(): void
 }
+export interface AgentMediaOutboxReadStorage {
+  get(key: string): Promise<string | null>
+  scanIterator(options: { MATCH: string; COUNT: number }): AsyncIterable<string | string[]>
+}
+export interface AgentMediaOutboxObservation {
+  readonly id: string
+  readonly binding: AgentBindingSnapshot
+  readonly provider: AgentMediaShare['provider']
+  readonly state: AgentMediaOutboxRecord['state']
+  readonly createdAt: number
+  readonly updatedAt: number
+  /** Scheduling lifetime, not the Redis retention deadline. */
+  readonly expiresAt: number
+  readonly prepareAttempts: number
+  readonly prepareFailures: number
+  readonly nextAttemptAt: number
+  readonly effects: readonly {
+    readonly effect: MediaOutboxEffect
+    readonly state: 'pending' | 'sent' | 'failed' | 'unknown'
+    readonly beganAt: number
+    readonly finishedAt?: number
+  }[]
+}
 const PREFIX = 'agent:media-outbox:v1:', ACTIVE = `${PREFIX}active`, LANES = `${PREFIX}lanes`, SEQUENCE = `${PREFIX}sequence`
-const RETENTION = 7 * 86400, LIFETIME = 24 * 60 * 60 * 1000, MAX_BYTES = 16384
+export const AGENT_MEDIA_OUTBOX_RETENTION_SECONDS = 7 * 86400
+export const AGENT_MEDIA_OUTBOX_LIFETIME_MS = 24 * 60 * 60 * 1000
+const RETENTION = AGENT_MEDIA_OUTBOX_RETENTION_SECONDS, LIFETIME = AGENT_MEDIA_OUTBOX_LIFETIME_MS, MAX_BYTES = 16384
 const effects = new Set<MediaOutboxEffect>(['forward', 'forwardRetry', 'directIntro', 'directVideo', 'link'])
 const terminal = new Set(['completed', 'failed', 'cancelled', 'unknown'])
 const states = new Set(['queued', 'preparing', 'sending', ...terminal])
@@ -156,6 +181,64 @@ function parse(raw: string): AgentMediaOutboxRecord {
       createdAt: value.createdAt, updatedAt: value.updatedAt, expiresAt: value.expiresAt, prepareAttempts: value.prepareAttempts,
       prepareFailures: value.prepareFailures, nextAttemptAt: value.nextAttemptAt, effects: rows })
   } catch { throw failure() }
+}
+
+/** Read only the persisted evidence, including terminal jobs retained after leaving the active index.
+ * The caller must authorize and revalidate every complete binding before exposing these observations. */
+export function createAgentMediaOutboxReader(storage: AgentMediaOutboxReadStorage) {
+  return Object.freeze({
+    async read(options: { maxScanned?: number; limit?: number; signal?: AbortSignal; guard?: { ensureCurrent(): void } } = {}): Promise<{
+      readonly records: readonly AgentMediaOutboxObservation[]
+      readonly scanTruncated: boolean
+    }> {
+      const maxScanned = options.maxScanned ?? 1000, limit = options.limit ?? 1000
+      if (![maxScanned, limit].every(value => Number.isSafeInteger(value) && value >= 1 && value <= 2000)) throw failure()
+      let guardFailure: { error: unknown } | undefined
+      const check = () => {
+        try { options.signal?.throwIfAborted(); options.guard?.ensureCurrent() }
+        catch (error) { guardFailure = { error }; throw error }
+      }
+      const seen = new Set<string>(), records: AgentMediaOutboxObservation[] = []
+      let scanned = 0, batches = 0, scanTruncated = false
+      check()
+      try {
+        for await (const batch of storage.scanIterator({ MATCH: `${PREFIX}job:*`, COUNT: 100 })) {
+          check()
+          // A sparse MATCH or repeated keys must not make one console request scan indefinitely.
+          if (++batches > Math.min(maxScanned, 64)) { scanTruncated = true; break }
+          const keys = Array.isArray(batch) ? batch : [batch]
+          for (const key of keys) {
+            check()
+            if (++scanned > maxScanned) { scanTruncated = true; break }
+            if (typeof key !== 'string' || !/^agent:media-outbox:v1:job:[a-f\d]{64}$/u.test(key) || seen.has(key)) continue
+            seen.add(key)
+            let raw: string | null
+            try { raw = await storage.get(key) } catch { check(); throw failure() }
+            check()
+            if (raw === null) continue
+            let record: AgentMediaOutboxRecord
+            try { record = parse(raw) } catch { continue }
+            if (recordKey(record.id) !== key) continue
+            records.push(freeze({ id: record.id, binding: record.binding, provider: record.source.share.provider,
+              state: record.state, createdAt: record.createdAt, updatedAt: record.updatedAt, expiresAt: record.expiresAt,
+              prepareAttempts: record.prepareAttempts, prepareFailures: record.prepareFailures, nextAttemptAt: record.nextAttemptAt,
+              effects: record.effects.map(({ effect, state, beganAt, finishedAt }) => ({ effect, state, beganAt,
+                ...(finishedAt === undefined ? {} : { finishedAt }) })) }))
+          }
+          if (scanTruncated) break
+          check()
+        }
+      } catch (error) {
+        if (guardFailure && guardFailure.error === error) throw error
+        check()
+        // Guard errors retain their owning console semantics; storage errors never expose backend details.
+        throw failure()
+      }
+      check()
+      records.sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
+      return Object.freeze({ records: Object.freeze(records.slice(0, limit)), scanTruncated: scanTruncated || records.length > limit })
+    },
+  })
 }
 const preflight = `
 local function requireTypes(expected)

@@ -260,7 +260,7 @@ export function createStandaloneAgentConsole(options: AgentConsolePorts & { fron
     }
     // These host-owned read views describe the loaded/stored versions after execution retirement.
     // They retain the real request/session/host guard and never execute Core management commands.
-    const stateRequest = req.method === 'GET' && ['/api/config-state', '/api/workspace', '/api/observe/summary'].includes(url.pathname)
+    const stateRequest = req.method === 'GET' && ['/api/config-state', '/api/workspace', '/api/observe/summary', '/api/pipeline/jobs'].includes(url.pathname)
     const executionCurrent = () => { try { return !options.execution || !options.execution.signal.aborted && options.execution.isCurrent() === true } catch { return false } }
     const actorCurrent = () => baseActorCurrent() && (stateRequest || executionCurrent())
     const responseAuthority: AgentConsoleGuard = currentGuard(guard.signal, baseActorCurrent)

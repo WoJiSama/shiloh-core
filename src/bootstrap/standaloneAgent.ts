@@ -27,7 +27,7 @@ import { createAgentWebTools } from '../modules/tools/infrastructure/agentWebToo
 import { createAgentRepositoryTools } from '../modules/tools/infrastructure/agentRepositoryTools.js'
 import { createAgentModrinthTools } from '../modules/tools/infrastructure/agentModrinthTools.js'
 import { createAgentModrinthCardRenderer } from '../modules/media/infrastructure/agentModrinthCardRenderer.js'
-import { createAgentImageTools } from '../modules/tools/infrastructure/agentImageTools.js'
+import { agentImageBackends, createAgentImageTools } from '../modules/tools/infrastructure/agentImageTools.js'
 import { createAgentExcelTool } from '../modules/content/infrastructure/agentExcelTool.js'
 import { createAgentFileTextTool } from '../modules/content/infrastructure/agentFileTextTool.js'
 import { createAgentVoiceTool } from '../modules/media/infrastructure/agentVoiceTool.js'
@@ -58,6 +58,7 @@ import { createAgentDiagnostics } from '../modules/runtime/infrastructure/agentD
 import { openAgentOperationJournal } from '../modules/runtime/infrastructure/agentOperationJournal.js'
 import { readAgentOperationJournal } from '../modules/runtime/infrastructure/agentOperationJournalReader.js'
 import { createStandaloneAgentObserve } from './standaloneAgentObserve.js'
+import { createStandaloneAgentPipeline } from './standaloneAgentPipeline.js'
 import { createStandaloneAgentConsole } from './standaloneAgentConsole.js'
 import { openStandaloneAgentConsoleAuth } from './standaloneAgentConsoleAuth.js'
 import { createStandaloneAgentConsoleServices } from './standaloneAgentConsoleServices.js'
@@ -306,7 +307,8 @@ export async function main(argv: string[]): Promise<void> {
     }) : []
     const hostSecrets = [reviewBackend?.apiKey, config.execution.chatAiConfig?.chatApiKey, config.vision?.apiKey,
       config.tools.search?.apiKey, config.tools.github?.token, config.tools.modrinth?.translation.apiKey, config.personMemoryExtraction?.apiKey, config.midtermSummary?.apiKey, config.groupMemoryExtraction?.apiKey,
-      config.tools.images?.generation?.apiKey, config.tools.images?.edit?.apiKey, config.tools.rendering?.mindMap?.apiKey,
+      ...[config.tools.images?.generation, config.tools.images?.edit].flatMap(value => agentImageBackends(value).map(backend => backend.apiKey)),
+      config.tools.rendering?.mindMap?.apiKey,
       config.semanticMemory.embedding?.apiKey, config.semanticMemory.rerank?.apiKey, config.tools.voice?.accessToken, config.tools.voice?.authorization,
       ...musicSeedSecrets, config.tools.videoAnalysis?.apiKey, config.textTriggerModel?.apiKey,
       config.console.tokenEnv ? process.env[config.console.tokenEnv] : undefined,
@@ -663,6 +665,8 @@ export async function main(argv: string[]): Promise<void> {
       const loadedBindings: AgentManagementBindings = { list: () => config.loadedBindings,
         resolve: target => loadedByAddress.get(conversationAddressKey(target)) }
       const services: AgentConsoleService[] = [...installed]
+      services.push(createStandaloneAgentPipeline({ bindings: loadedBindings, auth: consoleAuth, storage: storage.storage,
+        inboxBindingToken: host.inboxBindingToken, configState: persistence.state }))
       services.push(createStandaloneAgentObserve({ bindings: loadedBindings, auth: consoleAuth,
         read: guard => readAgentOperationJournal({ dataDir: config.dataDir, maxFiles: config.operationLogging.maxFiles, guard, allowsText: allowsSecretText }),
         health: () => journal!.health(), configState: persistence.state }))

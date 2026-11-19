@@ -117,7 +117,7 @@ test('retired execution retains loaded metadata and config state while sealing e
   f.data.config = { ...f.data.config, storedRevision: 'stored-v2', requiresRestart: true, phase: 'restart-required' }
   const result = await f.call()
   assert.deepEqual(result.configState, f.data.config); assert.equal(result.agents[0].conversations[0].binding.revision, 'loaded-v1')
-  for (const row of result.capabilities) assert.equal(row.status, ['workspace.read', 'config-state.read'].includes(row.operation) ? 'available' : row.operation === 'observe.read' ? 'unavailable' : 'restart-required')
+  for (const row of result.capabilities) assert.equal(row.status, ['workspace.read', 'config-state.read'].includes(row.operation) ? 'available' : ['observe.read', 'pipeline.read'].includes(row.operation) ? 'unavailable' : 'restart-required')
   assert.deepEqual(capability(result, 'simulation.group-write').authorizedScopes, [])
   assert.equal(f.calls.some(row => row.operation === 'providers.probe'), false)
 })

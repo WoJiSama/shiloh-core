@@ -376,29 +376,40 @@ function readTools(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: b
     }
     if (input.enabled) web = { enabled: true }
   }
-  let images: { generation?: AgentImageBackend; edit?: AgentImageBackend } | undefined
+  let images: { generation?: AgentImageBackend | readonly AgentImageBackend[]; edit?: AgentImageBackend | readonly AgentImageBackend[] } | undefined
   if (config.images !== undefined) {
     const input = object(config.images)
     if (Object.keys(input).some(key => !['generation', 'edit'].includes(key))) throw new Error('tools.images 仅支持 generation 和 edit')
     images = {}
     for (const operation of ['generation', 'edit'] as const) {
       if (input[operation] === undefined) continue
-      const backend = object(input[operation])
-      if (Object.keys(backend).some(key => !['baseUrl', 'name', 'apiKeyEnv', 'protocol', 'size', 'quality'].includes(key))) throw new Error(`tools.images.${operation} 包含不支持的字段`)
-      if (typeof backend.name !== 'string' || !backend.name.trim() || backend.name.length > 200) throw new Error('图片模型名称无效')
-      if (backend.protocol !== undefined && (typeof backend.protocol !== 'string' || !['images', 'chat'].includes(backend.protocol))) throw new Error('图片协议只接受 images 或 chat')
-      if (backend.size !== undefined && (typeof backend.size !== 'string' || !/^(?:auto|[1-9]\d{0,4}x[1-9]\d{0,4}|[1248]k)$/iu.test(backend.size))) throw new Error('图片尺寸格式无效')
-      if (typeof backend.size === 'string' && backend.size.toLowerCase().includes('x')) {
-        const [width, height] = backend.size.toLowerCase().split('x').map(Number)
-        if (width! > 16_384 || height! > 16_384 || width! * height! > 64 * 1024 * 1024) throw new Error('图片尺寸超过画布上限')
-      }
-      if (backend.quality !== undefined && (typeof backend.quality !== 'string' || !['auto', 'low', 'medium', 'high', 'standard', 'hd'].includes(backend.quality))) throw new Error('图片质量配置无效')
-      const selected = readModel(backend, `tools.images.${operation}`, env, requireCredentials)
-      images[operation] = { baseUrl: selected.apiUrl, name: selected.model, apiKey: selected.apiKey,
-        ...(backend.protocol === undefined ? {} : { protocol: backend.protocol as 'images' | 'chat' }),
-        ...(typeof backend.size === 'string' ? { size: backend.size } : {}),
-        ...(typeof backend.quality === 'string' ? { quality: backend.quality } : {}),
-      }
+      const list = Array.isArray(input[operation]) ? input[operation] : [input[operation]]
+      if (!list.length || list.length > 8) throw new Error(`tools.images.${operation} 须指定 1–8 个有序图片后端`)
+      const decoded = list.map(value => {
+        const backend = object(value)
+        if (Object.keys(backend).some(key => !['baseUrl', 'name', 'model', 'aliases', 'apiKeyEnv', 'protocol', 'size', 'quality'].includes(key))) throw new Error(`tools.images.${operation} 包含不支持的字段`)
+        const text = (value: unknown) => typeof value === 'string' && !!value.trim() && value.length <= 200 && !/[\u0000-\u001f\u007f]/u.test(value)
+        if (!text(backend.name) || backend.model !== undefined && !text(backend.model)) throw new Error('图片渠道或模型名称无效')
+        if (backend.aliases !== undefined && (!Array.isArray(backend.aliases) || backend.aliases.length > 16 || backend.aliases.some(value => !text(value)))) throw new Error('图片渠道别名无效')
+        const aliases = Array.isArray(backend.aliases) ? [...new Set(backend.aliases.map(value => String(value).trim()))] : undefined
+        if (backend.protocol !== undefined && (typeof backend.protocol !== 'string' || !['images', 'chat'].includes(backend.protocol))) throw new Error('图片协议只接受 images 或 chat')
+        if (backend.size !== undefined && (typeof backend.size !== 'string' || !/^(?:auto|[1-9]\d{0,4}x[1-9]\d{0,4}|[1248]k)$/iu.test(backend.size))) throw new Error('图片尺寸格式无效')
+        if (typeof backend.size === 'string' && backend.size.toLowerCase().includes('x')) {
+          const [width, height] = backend.size.toLowerCase().split('x').map(Number)
+          if (width! > 16_384 || height! > 16_384 || width! * height! > 64 * 1024 * 1024) throw new Error('图片尺寸超过画布上限')
+        }
+        if (backend.quality !== undefined && (typeof backend.quality !== 'string' || !['auto', 'low', 'medium', 'high', 'standard', 'hd'].includes(backend.quality))) throw new Error('图片质量配置无效')
+        const selected = readModel({ ...backend, name: backend.model ?? backend.name }, `tools.images.${operation}`, env, requireCredentials)
+        if (selected.apiKey && !/^[\x21-\x7e]{1,8192}$/u.test(selected.apiKey)) throw new Error('图片凭据格式或长度无效')
+        return { baseUrl: selected.apiUrl, name: String(backend.name).trim(), apiKey: selected.apiKey,
+          ...(backend.model === undefined ? {} : { model: selected.model }),
+          ...(aliases === undefined ? {} : { aliases }),
+          ...(backend.protocol === undefined ? {} : { protocol: backend.protocol as 'images' | 'chat' }),
+          ...(typeof backend.size === 'string' ? { size: backend.size } : {}),
+          ...(typeof backend.quality === 'string' ? { quality: backend.quality } : {}),
+        }
+      })
+      images[operation] = Array.isArray(input[operation]) ? Object.freeze(decoded) : decoded[0]!
     }
     if (!Object.keys(images).length) images = undefined
   }

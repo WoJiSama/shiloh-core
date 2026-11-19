@@ -222,7 +222,7 @@ export function createStandaloneAgentWorkspace(options: StandaloneAgentWorkspace
       for (const definition of AGENT_CONSOLE_SERVICES) {
         const base = { operation: definition.operation, scope: definition.scope, effect: definition.method === 'GET' ? 'read' as const : 'write' as const }
         const service = services.get(definition.operation), matching = service?.method === definition.method && service.path === definition.path && service.scope === definition.scope
-        if (configState.requiresRestart && !['workspace.read', 'config-state.read', 'observe.read'].includes(definition.operation) && !definition.operation.startsWith('auth.')) {
+        if (configState.requiresRestart && !['workspace.read', 'config-state.read', 'observe.read', 'pipeline.read'].includes(definition.operation) && !definition.operation.startsWith('auth.')) {
           capabilities.push(Object.freeze({ ...base, status: 'restart-required', reason: 'execution-retired', ...(definition.scope === 'conversation' ? { authorizedScopes: Object.freeze([]) } : {}) }))
         } else if (!matching || !service.handler) {
           capabilities.push(Object.freeze({ ...base, status: 'unavailable', reason: 'handler-unavailable', ...(definition.scope === 'conversation' ? { authorizedScopes: Object.freeze([]) } : {}) }))

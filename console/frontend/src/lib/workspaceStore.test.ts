@@ -345,6 +345,16 @@ describe('workspace capability selection', () => {
     })
   })
 
+  it('keeps installed read-only task observations available while execution is retired', () => {
+    const value = workspace()
+    value.capabilities.push({ operation: 'pipeline.read', scope: 'global', status: 'available', reason: 'authorized', effect: 'read', authorizedScopes: [] })
+    currentWorkspace.data.value = parseWorkspace(value)
+    restartBlocked.value = true
+
+    expect(capability('pipeline.read').status).toBe('available')
+    expect(capability('simulation.group-read').status).toBe('restart-required')
+  })
+
   it('reports an unknown operation as unavailable instead of granting it', () => {
     currentWorkspace.data.value = parseWorkspace(workspace())
 

@@ -81,6 +81,27 @@ test('image backends preserve explicit images or chat protocols and fixed option
   }
 })
 
+test('ordered image candidates preserve channel identity separately from upstream model and bounded aliases', t => {
+  const { read, generation, edit } = fixture(t)
+  const first = { ...generation, name: ' first-channel ', model: ' actual-model ', aliases: [' One ', 'one', ' One '] }
+  const second = { ...generation, name: 'second-channel', model: 'second-model', protocol: 'chat' }
+  const configured = read({ generation: [first, second, { ...first, model: 'fallback-model' }], edit: [edit] }).tools.images
+  assert.deepEqual(configured.generation.map(row => [row.name, row.model, row.protocol]), [
+    ['first-channel', 'actual-model', undefined], ['second-channel', 'second-model', 'chat'], ['first-channel', 'fallback-model', undefined],
+  ])
+  assert.deepEqual(configured.generation[0].aliases, ['One', 'one'])
+  assert.equal(configured.generation[0].apiKey, 'generation-private-key')
+  assert.equal(configured.edit.length, 1)
+  assert.equal(configured.edit[0].name, edit.name)
+  assert.equal(Object.hasOwn(configured.edit[0], 'model'), false)
+  assert.equal(Object.isFrozen(configured.generation), true)
+  assert.equal(read({ generation: Array.from({ length: 8 }, () => generation) }).tools.images.generation.length, 8)
+  const single = read({ generation: first }).tools.images.generation
+  assert.equal(Array.isArray(single), false)
+  assert.equal(single.name, 'first-channel')
+  assert.equal(single.model, 'actual-model')
+})
+
 test('declared image backends require their own credentials while preview can read without keys', t => {
   const { read, generation, edit } = fixture(t)
   const mainOnly = { TEST_MAIN_KEY: 'main-private-key' }
@@ -114,4 +135,18 @@ test('image tool configuration rejects unsafe endpoints and invalid names or env
   }
   for (const name of ['', ' ', null, false, 1]) assert.throws(() => read({ generation: { ...generation, name } }))
   for (const apiKeyEnv of ['', 'bad-name', null, false, 1]) assert.throws(() => read({ generation: { ...generation, apiKeyEnv } }))
+})
+
+test('image candidate arrays reject empty oversized malformed and inline-secret declarations', t => {
+  const { read, generation, env } = fixture(t)
+  const badText = ['', ' ', null, false, 1, 'x'.repeat(201), 'line\nname', 'name\u0000suffix', 'name\u007f']
+  for (const declaration of [[], Array.from({ length: 9 }, () => generation), [null], [generation, []],
+    [generation, { ...generation, apiKey: 'raw-image-private-secret' }],
+    ...badText.map(model => [{ ...generation, model }]),
+    ...badText.map(name => [{ ...generation, name }]),
+    ...[null, false, 'alias', ...badText.map(value => [value]), Array.from({ length: 17 }, () => 'alias')].map(aliases => [{ ...generation, aliases }]),
+  ]) assert.throws(() => read({ generation: declaration }), error => !error.message.includes('raw-image-private-secret'))
+  for (const value of ['line\nkey', 'key\u0000suffix', 'x'.repeat(8193)]) assert.throws(() => read({ generation: [generation] }, undefined, { ...env, TEST_GENERATION_KEY: value }))
+  const preview = read({ generation: [{ ...generation, name: 'channel', model: 'upstream', aliases: ['别名'] }] }, { requireCredentials: false }, {})
+  assert.deepEqual(preview.tools.images.generation.map(row => [row.name, row.model, row.apiKey]), [['channel', 'upstream', '']])
 })

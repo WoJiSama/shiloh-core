@@ -45,6 +45,15 @@ export interface TextInbox {
 
 export type AgentInboxQueue = TextInbox | { readonly account: PlatformAccountRef; readonly kind: 'simulation' | 'privacy' | 'group-log' }
 
+export interface AgentInboxObservation {
+  readonly id: string
+  readonly target: ConversationAddress
+  readonly bindingToken: string
+  readonly queue: AgentInboxQueue['kind']
+  readonly eventKind: 'message' | 'recall' | 'nudge'
+  readonly occurredAt?: number
+}
+
 function queueKey(queue: AgentInboxQueue): string {
   const kind = queue.kind === 'group' ? 'group-text' : queue.kind
   return `agent:inbox:${kind}:${platformAccountKey(queue.account)}`
@@ -203,6 +212,54 @@ function textRecallKey(target: ConversationAddress): string {
 function textHistoryKey(target: ConversationAddress): string {
   const prefix = target.kind === 'private' ? 'private-history' : 'group-text-history'
   return `agent:${prefix}:${conversationAddressKey(target)}`
+}
+
+/** Metadata for entries still awaiting acknowledgement. This is not a completed-event ledger. */
+export function createAgentInboxReader(client: Pick<AgentInboxRedis, 'eval'>) {
+  return {
+    async read(accounts: readonly PlatformAccountRef[], guard: { ensureCurrent(): void }): Promise<{
+      records: readonly AgentInboxObservation[]; scanTruncated: boolean
+    }> {
+      guard.ensureCurrent()
+      if (accounts.length > 256 || accounts.some(account => !isPlatformAccount(account))) throw new Error('平台收件查询账号无效')
+      const unique = [...new Map(accounts.map(account => [platformAccountKey(account), account])).values()]
+      const queues = unique.flatMap(account => (['private', 'group', 'simulation', 'privacy', 'group-log'] as const).map(kind => ({ account, kind })))
+      const records: AgentInboxObservation[] = [], seen = new Set<string>()
+      let scanned = 0, bytes = 0, scanTruncated = queues.length > 100
+      for (const queue of queues.slice(0, 100)) {
+        guard.ensureCurrent()
+        const remaining = Math.min(200, 1000 - scanned)
+        if (remaining < 1 || bytes >= 4 * 1024 * 1024) { scanTruncated = true; break }
+        const batch: unknown = await client.eval(readLegacyBatch, { keys: [queueKey(queue)], arguments: [String(remaining + 1)] })
+        guard.ensureCurrent()
+        if (!Array.isArray(batch) || batch.length > remaining + 1 || batch.some(raw => typeof raw !== 'string')) throw new Error('平台收件队列暂时无法读取')
+        if (batch.length > remaining) scanTruncated = true
+        for (const raw of (batch as string[]).slice(0, remaining)) {
+          scanned++
+          bytes += Buffer.byteLength(raw)
+          if (bytes > 4 * 1024 * 1024) { scanTruncated = true; break }
+          if (Buffer.byteLength(raw) > 64 * 1024) { scanTruncated = true; continue }
+          try {
+            const entry = JSON.parse(raw) as AgentInboxEntry, event = entry?.event, target = inboxEventTarget(event)
+            if (!isConversationAddress(target) || platformAccountKey(target.account) !== platformAccountKey(queue.account) ||
+                !validBindingToken(entry.bindingToken) || !['message', 'recall', 'nudge'].includes(event?.kind) ||
+                queue.kind === 'private' && target.kind !== 'private' || queue.kind === 'group' && target.kind !== 'group' ||
+                ['simulation', 'group-log'].includes(queue.kind) && target.kind === 'private') { scanTruncated = true; continue }
+            const id = createHash('sha256').update(JSON.stringify([queueKey(queue), raw])).digest('hex')
+            if (seen.has(id)) continue
+            seen.add(id)
+            const at = event.kind === 'message' ? event.message.occurredAt : event.kind === 'nudge' ? event.occurredAt : undefined
+            records.push(Object.freeze({ id, target: Object.freeze({ account: Object.freeze({ platform: target.account.platform,
+              namespace: target.account.namespace, id: target.account.id }), kind: target.kind, id: target.id }),
+              bindingToken: entry.bindingToken, queue: queue.kind, eventKind: event.kind,
+              ...(typeof at === 'number' && Number.isSafeInteger(at) && at > 0 ? { occurredAt: at } : {}) }))
+          } catch { scanTruncated = true }
+        }
+      }
+      guard.ensureCurrent()
+      return { records: Object.freeze(records), scanTruncated }
+    },
+  }
 }
 
 /** One consumer per account and mode acknowledges after persisting the event's effects. */

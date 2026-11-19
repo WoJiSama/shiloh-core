@@ -3020,6 +3020,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   return {
     runtime,
     management,
+    /** Expected admission identity for read-only queue observations; does not claim or execute work. */
+    inboxBindingToken(binding: AgentBindingSnapshot, queue: AgentInboxQueue['kind']): string {
+      return queue === 'private' || queue === 'group' ? textBindingToken(binding) : agentBindingToken(binding)
+    },
     start,
     stop,
     async resumePendingWork() {
