@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createForgetOperationStore } from '../dist/backend/modules/runtime/infrastructure/forgetOperationStore.js'
-import { agentConversationKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
-import { createStandaloneAgentForgetOperations } from '../dist/backend/bootstrap/standaloneAgentForgetOperations.js'
-import { createCharacterWorkspace } from '../dist/backend/modules/simulation/infrastructure/characterWorkspace.js'
+import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
+const { createForgetOperationStore } = await load('modules/runtime/infrastructure/forgetOperationStore.js')
+const { agentConversationKey } = await load('modules/runtime/domain/agentBindings.js')
+const { createStandaloneAgentForgetOperations } = await load('bootstrap/standaloneAgentForgetOperations.js')
+const { createCharacterWorkspace } = await load('modules/simulation/infrastructure/characterWorkspace.js')
 
 const binding = {
   source: 'configured', id: 'scope', revision: 'r1', agentId: 'agent', personaId: 'persona', connectionId: 'qq-main',
   target: { kind: 'group', id: '10001', account: { platform: 'qq', namespace: 'global', id: 'robot' } },
 }
-function fixture() {
+function fixture(options = {}, activeBinding = binding) {
   const receipts = new Map(), calls = { profile: 0, character: 0 }, values = new Map()
   const store = createForgetOperationStore({ redis: {
     async get(key) { return values.get(key) ?? null },
@@ -25,7 +26,7 @@ function fixture() {
   } })
   let deleted = false
   const profiles = {
-    async list() { return deleted ? [] : [{ binding, profile: { userId: 'u1', entries: [{ id: 'entry-1', category: 'fact', text: 'secret body' }] } }] },
+    async list() { return deleted ? [] : [{ binding: activeBinding, profile: { userId: 'u1', entries: [{ id: 'entry-1', category: 'fact', text: 'secret body' }] } }] },
     async remove() { calls.profile++; deleted = true; return true },
     async removeField() { calls.profile++; deleted = true; return { userId: 'u1', entries: [] } },
   }
@@ -34,9 +35,9 @@ function fixture() {
     async controlCharacter() { calls.character++; deleted = true; return '角色状态已更新' },
   }
   const auth = { async authorize() { return 'allowed' } }
-  const context = { principal: { id: 'admin', username: 'admin', via: 'session' }, binding, signal: new AbortController().signal,
+  const context = { principal: { id: 'admin', username: 'admin', via: 'session' }, binding: activeBinding, signal: new AbortController().signal,
     isCurrent: () => true, ensureCurrent() {}, }
-  const ops = createStandaloneAgentForgetOperations({ store, bindings: { resolve: () => binding }, auth, profiles, characters })
+  const ops = createStandaloneAgentForgetOperations({ store, bindings: { resolve: () => activeBinding }, auth, profiles, characters, ...options })
   return { ops, context, receipts, calls, store, values, profiles, characters, auth, get deleted() { return deleted } }
 }
 
@@ -48,6 +49,80 @@ test('profile forget returns a durable safe receipt and request retry is idempot
   const duplicate = await f.ops.profile({ userId: 'u1', requestId: 'request-1' }, f.context)
   assert.equal(duplicate.operationId, first.operationId)
   assert.equal(f.calls.profile, 1)
+})
+
+test('whole-person forget reports only proven emoji source cleanup and retries do not purge again', async () => {
+  const purges = [], f = fixture({ localEmojiCleanup: { async purgeSubject(input, guard) {
+    assert.equal(guard.isCurrent(), true); await guard.ensureCurrent()
+    purges.push(structuredClone(input))
+    return { usage: 'blocked', cleanup: 'completed', removedSources: 2, removedImages: 1, unattributedImages: 3 }
+  } } })
+  const result = await f.ops.profile({ userId: 'u1', requestId: 'emoji-whole-person' }, f.context)
+  assert.equal(purges.length, 1)
+  assert.deepEqual(purges[0], { account: binding.target.account, agentId: binding.agentId, subjectId: 'u1', target: binding.target, through: result.createdAt })
+  assert.ok(result.impacts.some(row => row.id === 'local-emoji-attributed-sources' && row.state === 'completed'))
+  assert.ok(result.impacts.some(row => row.id === 'local-emoji-unattributed' && row.state === 'unsupported'))
+  assert.equal(result.cleanup, 'unsupported')
+  assert.deepEqual((await f.ops.read(result.operationId, f.context)).impacts, result.impacts)
+  assert.equal(JSON.stringify(result).includes('secret body'), false)
+  const again = await f.ops.profile({ userId: 'u1', requestId: 'emoji-whole-person' }, f.context)
+  assert.equal(again.operationId, result.operationId); assert.equal(purges.length, 1)
+})
+
+test('deleting one person field does not purge unrelated emoji sources', async () => {
+  let purges = 0
+  const f = fixture({ localEmojiCleanup: { async purgeSubject() { purges++; throw Error('must not purge') } } })
+  const result = await f.ops.profile({ userId: 'u1', field: 'entries', value: 'entry-1', requestId: 'emoji-one-field' }, f.context)
+  assert.equal(purges, 0); assert.equal(result.impacts.some(row => row.id.startsWith('local-emoji-')), false)
+})
+
+test('console deletion of a private scene keeps cleanup restricted to that displayed source', async () => {
+  const privateBinding = { ...binding, target: { ...binding.target, kind: 'private', id: 'u1' } }, purges = []
+  const f = fixture({ localEmojiCleanup: { async purgeSubject(input) {
+    purges.push(input)
+    return { usage: 'blocked', cleanup: 'completed', removedSources: 1, removedImages: 1, unattributedImages: 0 }
+  } } }, privateBinding)
+  await f.ops.profile({ userId: 'u1', requestId: 'emoji-private-scene' }, f.context)
+  assert.equal(purges.length, 1); assert.deepEqual(purges[0].target, privateBinding.target)
+})
+
+test('uncertain emoji deletion remains uncertain without claiming complete downstream cleanup', async () => {
+  const f = fixture({ localEmojiCleanup: { async purgeSubject() {
+    return { usage: 'blocked', cleanup: 'unknown', removedSources: 1, removedImages: 0, unattributedImages: 0 }
+  } } })
+  const result = await f.ops.profile({ userId: 'u1', requestId: 'emoji-unknown' }, f.context)
+  assert.ok(result.impacts.some(row => row.id === 'local-emoji-attributed-sources' && row.state === 'unknown'))
+  assert.equal(result.cleanup, 'unsupported')
+})
+
+test('quarantined old emoji without attributable sources remains unsupported in the durable receipt', async () => {
+  const f = fixture({ localEmojiCleanup: { async purgeSubject() {
+    return { usage: 'blocked', cleanup: 'unsupported', removedSources: 0, removedImages: 0, unattributedImages: 1 }
+  } } })
+  const result = await f.ops.profile({ userId: 'u1', requestId: 'emoji-unattributed' }, f.context)
+  assert.equal(result.cleanup, 'unsupported'); assert.equal(result.usage, 'blocked')
+  assert.ok(result.impacts.some(row => row.id === 'local-emoji-attributed-sources' && row.state === 'unsupported'))
+  assert.ok(result.impacts.some(row => row.id === 'local-emoji-unattributed' && row.state === 'unsupported'))
+})
+
+test('failed emoji owner leaves a durable unknown operation and does not replay the source deletion', async () => {
+  let purges = 0
+  const f = fixture({ localEmojiCleanup: { async purgeSubject() { purges++; throw Error('storage unavailable') } } })
+  await assert.rejects(f.ops.profile({ userId: 'u1', requestId: 'emoji-owner-failed' }, f.context), /storage unavailable/)
+  const receipt = await f.ops.profile({ userId: 'u1', requestId: 'emoji-owner-failed' }, f.context)
+  assert.equal(receipt.phase, 'unknown'); assert.equal(receipt.cleanup, 'unknown')
+  assert.equal(purges, 1); assert.equal(f.calls.profile, 1)
+})
+
+test('emoji owner cannot publish a completion receipt after authorization changes during cleanup', async () => {
+  let f
+  f = fixture({ localEmojiCleanup: { async purgeSubject(_input, guard) {
+    await guard.ensureCurrent(); f.auth.authorize = async () => 'denied'
+    return { usage: 'blocked', cleanup: 'completed', removedSources: 1, removedImages: 1, unattributedImages: 0 }
+  } } })
+  await assert.rejects(f.ops.profile({ userId: 'u1', requestId: 'emoji-late-revoke' }, f.context), error => error.code === 'forbidden')
+  const receipt = await f.store.readByRequestId('emoji-late-revoke')
+  assert.notEqual(receipt.phase, 'completed'); assert.equal(receipt.impacts.some(row => row.id === 'local-emoji-attributed-sources'), false)
 })
 
 test('character memory forget reports source and derived partitions without storing content', async () => {

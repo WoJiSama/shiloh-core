@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { AgentBindingSnapshot } from '../contracts/agentBinding.js'
+import type { AgentLocalEmojiRuntime } from '../contracts/agentLocalEmoji.js'
 import { AgentConsoleError, type AgentConsoleContext, type AgentConsoleAuthPort } from '../contracts/agentConsole.js'
 import { ForgetOperationConflictError, type ForgetImpact, type ForgetOperationGuard, type ForgetOperationKind, type ForgetOperationReceipt, type ForgetOperationStore } from '../contracts/forgetOperation.js'
 import { agentBindingToken, agentConversationKey } from '../modules/runtime/domain/agentBindings.js'
@@ -70,6 +71,7 @@ export function createStandaloneAgentForgetOperations(options: {
   readonly auth: Pick<AgentConsoleAuthPort, 'authorize'>
   readonly profiles: ProfilePort
   readonly characters: CharacterPort
+  readonly localEmojiCleanup?: Pick<AgentLocalEmojiRuntime, 'purgeSubject'>
 }): StandaloneAgentForgetOperations {
   const active = new Set<string>()
   async function owned<T>(action: (operationId: string) => Promise<T>): Promise<T> {
@@ -171,6 +173,19 @@ export function createStandaloneAgentForgetOperations(options: {
           if (selected.some(item => liveIds.has(id(item)))) fail('unavailable')
           const partition = `person-memory:${agentConversationKey(binding)}`
           const impacts = [...selected.map(item => impact('person-memory-entry', id(item), partition)), impact('partition', 'source-consumers', partition, 'unsupported')]
+          if (field === undefined && options.localEmojiCleanup) {
+            const cleanup = await checked(context, operationName, binding, () => options.localEmojiCleanup!.purgeSubject({
+              account: binding.target.account, agentId: binding.agentId, subjectId: userId, target: binding.target, through: receipt.createdAt,
+            }, { signal: context.signal,
+              isCurrent() { try { current(context, binding); return true } catch { return false } },
+              ensureCurrent: () => authorize(context, operationName, binding),
+            }))
+            if (cleanup.usage !== 'blocked' || !['completed', 'unknown', 'unsupported'].includes(cleanup.cleanup) ||
+                ![cleanup.removedSources, cleanup.removedImages, cleanup.unattributedImages].every(value => Number.isSafeInteger(value) && value >= 0)) fail('unavailable')
+            const emojiPartition = `local-emoji:${digest(binding.agentId)}`
+            impacts.push(impact('partition', 'local-emoji-attributed-sources', emojiPartition, cleanup.cleanup))
+            if (cleanup.unattributedImages) impacts.push(impact('partition', 'local-emoji-unattributed', emojiPartition, 'unsupported'))
+          }
           const result = await checked(context, operationName, binding, () => finish(operationId, impacts, lease))
           return { ok: true, message: '来源删除已确认；其他存储的完整清理证明暂不支持', ...(field === undefined ? {} : { profile: profileResult }), ...result } as unknown as Data
         } catch (error) { await failed(operationId, error, lease); throw error }

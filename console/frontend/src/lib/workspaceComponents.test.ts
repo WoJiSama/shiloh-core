@@ -559,8 +559,10 @@ describe('destructive confirmation source identity', () => {
 })
 describe('actual source-scoped person memory', () => {
   it('reads the durable forget receipt using the deleted entry exact scope and shows its impact', async () => {
-    const selected = scene(), receipt = { operationId: 'operation-1', phase: 'completed', usage: 'blocked', cleanup: 'completed',
-      impacts: [{ kind: 'person-memory-entry', id: 'entry-1', partition: 'person-memory', state: 'completed' }] }
+    const selected = scene(), receipt = { operationId: 'operation-1', phase: 'completed', usage: 'blocked', cleanup: 'unsupported',
+      impacts: [{ kind: 'person-memory-entry', id: 'entry-1', partition: 'person-memory', state: 'completed' },
+        { kind: 'partition', id: 'local-emoji-attributed-sources', partition: 'local-emoji:partition', state: 'completed' },
+        { kind: 'partition', id: 'local-emoji-unattributed', partition: 'local-emoji:partition', state: 'unsupported' }] }
     let deleted = false
     vi.mocked(api).mockImplementation(async (path, options) => {
       if (options?.method === 'POST') { deleted = true; return receipt }
@@ -578,6 +580,10 @@ describe('actual source-scoped person memory', () => {
     expect(query.get('bindingToken')).toBe(selected.bindingToken)
     expect(wrapper.text()).toContain('已停止使用')
     expect(wrapper.text()).toContain('人物记忆 entry-1')
+    expect(wrapper.text()).toContain('本地表情（已登记来源） · 已处理')
+    expect(wrapper.text()).toContain('历史表情（缺少原始来源） · 未提供清理证明')
+    expect(wrapper.text()).toContain('当前范围未提供清理证明')
+    expect(wrapper.text()).not.toContain('local-emoji-attributed-sources')
     await wrapper.setProps({ conversationScopes: [] })
     await flushPromises()
     expect(wrapper.text()).not.toContain('operation-1')

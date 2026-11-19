@@ -635,6 +635,7 @@ export async function main(argv: string[]): Promise<void> {
       ...(lifeThreadProvider ? { lifeThreadProvider } : {}),
       isLifeThreadsCurrent: () => config.isConfigCurrent() && config.simulation.lifeThreads?.enabled !== false,
       ...(config.tools.localEmoji.enabled ? { collectMessageSticker: (image, context) => localEmoji!.collect(image, context) } : {}),
+      localEmojiCleanup: localEmoji,
       isLocalEmojiCurrent: () => config.isConfigCurrent() && config.tools.localEmoji.enabled,
       autoCollectLocalEmoji: config.tools.localEmoji.enabled && config.tools.localEmoji.config.autoCollect === true,
       ...(personProfileExtract ? { personProfileExtract } : {}),
@@ -671,6 +672,7 @@ export async function main(argv: string[]): Promise<void> {
         ? createStandaloneAgentForgetOperations({ store: forgetOperationsStore, bindings,
           auth: consoleAuth,
           profiles: { list: profilePort.list, remove: profilePort.remove, removeField: profilePort.removeField },
+          localEmojiCleanup: localEmoji,
           characters: { describeGroup: runtime.describeGroup, controlCharacter: runtime.controlCharacter } })
         : undefined
       const installed = createStandaloneAgentConsoleServices({ bindings, auth: consoleAuth, runtime, ledger, ...management, ...(forgetting ? { forgetting } : {}),

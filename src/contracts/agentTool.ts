@@ -39,6 +39,13 @@ export interface AgentToolRequest {
   readonly replyMessageId?: string
 }
 
+/** A selected source can revoke an outbound image or bundle while it is queued. */
+export interface AgentToolDeliveryGuard {
+  readonly signal: AbortSignal
+  isCurrent(): boolean
+  ensureCurrent?(): Promise<void>
+}
+
 export interface AgentToolContext {
   readonly binding: AgentBindingSnapshot
   readonly actor: { readonly kind: 'user' | 'autonomous' | 'commitment'; readonly user?: PlatformUserRef }
@@ -57,7 +64,7 @@ export interface AgentToolContext {
   /** Attribute a provider call to this conversation's existing token ledger. */
   recordUsage?(model: string, usage: unknown): void
   /** Deliver validated inline image bytes through this tool call's existing send permissions and budget. */
-  sendImage?(image: MessageImage): Promise<DeliveryReceipt>
+  sendImage?(image: MessageImage, guard?: AgentToolDeliveryGuard): Promise<DeliveryReceipt>
   /** Upload controlled bytes to this turn's fixed conversation, sharing its send budget and unknown-result fence.
    * Binary producers must apply their output policy before encoding; text bodies are checked by the host. */
   sendFile?(file: AgentFileUpload): Promise<FileDeliveryReceipt>
@@ -80,7 +87,7 @@ export interface AgentToolContext {
   /** Reauthorize a known source in this binding without disclosing its current contents. */
   isSourceAvailable?(source: { readonly messageId: string; readonly author: PlatformUserRef }): Promise<boolean>
   /** Send one bounded bundle to this turn's fixed conversation, using its existing send budget. */
-  sendBundle?(items: readonly MessageBundleItem[]): Promise<DeliveryReceipt>
+  sendBundle?(items: readonly MessageBundleItem[], guard?: AgentToolDeliveryGuard): Promise<DeliveryReceipt>
   /** Read attachments of a message already visible in this turn; bytes never enter the conversation history. */
   readImages?(sourceSeq: number): Promise<readonly { readonly mime: string; readonly base64: string }[]>
   /** Fresh evidence from this binding's group only. */

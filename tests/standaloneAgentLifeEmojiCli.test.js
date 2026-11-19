@@ -149,14 +149,34 @@ async function fixture(t, { emoji = false } = {}) {
   const source = process.env.BL_CHAT_AGENT_SOURCE_TEST === '1'
   const entry = source ? ['--input-type=module', '--eval', `const {importBilibiliHost:load}=await import(${JSON.stringify(sourceLoader)});const {main}=await load('bootstrap/standaloneAgent.js');await main(process.argv.slice(1));`, '--']
     : [path.join(release, 'scripts/start-agent.mjs')]
-  child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, ...entry, '--config', configFile], { cwd: directory,
-    env: { ...process.env, BL_AGENT_REDIS_URL: `unix://${socketPath}`, LIFE_EMOJI_MODEL_KEY: KEY, LIFE_EMOJI_QQ_TOKEN: TOKEN,
-      LIFE_EMOJI_AUDIT_ORIGIN: `http://127.0.0.1:${port}`, LIFE_EMOJI_AUDIT_TRACE: '1' } })
-  exited = once(child, 'exit'); for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => { log += bytes })
-  await waitFor(() => { if (child.exitCode !== null) assert.fail('CLI exited early: ' + log); return peer && log.includes('已启动') }, 'CLI readiness')
+  async function start() {
+    peer = undefined
+    const logStart = log.length
+    child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, ...entry, '--config', configFile], { cwd: directory,
+      env: { ...process.env, BL_AGENT_REDIS_URL: `unix://${socketPath}`, LIFE_EMOJI_MODEL_KEY: KEY, LIFE_EMOJI_QQ_TOKEN: TOKEN,
+        LIFE_EMOJI_AUDIT_ORIGIN: `http://127.0.0.1:${port}`, LIFE_EMOJI_AUDIT_TRACE: '1' } })
+    exited = once(child, 'exit'); for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => { log += bytes })
+    await waitFor(() => { if (child.exitCode !== null) assert.fail('CLI exited early: ' + log); return peer && log.slice(logStart).includes('已启动') }, 'CLI readiness')
+  }
+  await start()
   return { directory, dataDir, reader, prefix, image, base64, external, models, emojiModels, results, deliveries, reads, errors,
     async items() { return (await readFile(path.join(dataDir, 'emoji', 'agents', hash('daily'), 'emoji-packs.ndjson'), 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) },
     async lifeThreads() { const keys = await reader.keys(prefix + '*:life-threads'); return keys.length ? JSON.parse(await reader.get(keys[0])) : [] },
+    async recall(group, messageId) {
+      peer.send(JSON.stringify({ post_type: 'notice', notice_type: 'group_recall', self_id: BOT, group_id: group,
+        user_id: USER, operator_id: USER, message_id: Number(messageId), time: Math.floor(Date.now() / 1000) }))
+    },
+    async privacy(group, text) {
+      turn = { group, script: [] }; epoch++
+      const original = { post_type: 'message', message_type: 'group', sub_type: 'normal', self_id: BOT, group_id: group, user_id: USER,
+        message_id: 98600 + epoch, time: Math.floor(Date.now() / 1000), sender: { user_id: USER, nickname: '生活线表情验收员' },
+        message: [{ type: 'text', data: { text } }] }
+      sources.set(String(original.message_id), original); peer.send(JSON.stringify(original))
+    },
+    async restart() {
+      child.kill('SIGTERM'); assert.deepEqual(await exited, [0, null], log)
+      await start()
+    },
     async run(next) {
       turn = { group: GROUP, ...next }; finished = false; epoch++
       const scope = scopeFor(turn.group), before = JSON.parse(await reader.get(prefix + simulationSessionKey(scope)) || 'null')
@@ -205,6 +225,32 @@ test('standalone CLI proves a QQ image, collects through VLM and embeddings, the
   assert.match(f.results.find(row => row.tool_call_id === `${uncertain.epoch}-0`).content, /unknown|未知/u)
   assert.match(f.results.find(row => row.tool_call_id === `${uncertain.epoch}-1`).content, /结果未知.*禁止重复|表情包冷却中/u)
   assert.equal((await f.items())[0].usedCount, 1); assert.equal(f.emojiModels.length, 3)
+  await f.close()
+})
+
+test('standalone CLI keeps another source after recall, removes the last source durably, then honors person forgetting', { timeout: 90000 }, async t => {
+  const f = await fixture(t, { emoji: true })
+  const first = await f.run({ image: true, script: [] })
+  await waitFor(async () => { try { return (await f.items()).length === 1 } catch { return false } }, 'first source committed')
+  const second = await f.run({ group: OTHER_GROUP, image: true, script: [{ name: 'simCollectSticker' }] })
+  assert.match(f.results.find(row => row.tool_call_id === `${second.epoch}-0`).content, /"ok":true/u)
+  const [item] = await f.items(), imageFile = path.join(f.dataDir, 'emoji', 'agents', hash('daily'), item.file)
+  await f.recall(GROUP, first.messageId)
+  await f.run({ group: OTHER_GROUP, script: [{ name: 'sendLocalEmojiTool', args: { tags: ['开心'], leadText: '仍有来源' } }] })
+  assert.equal(f.deliveries.length, 1); assert.equal((await f.items()).length, 1)
+  await f.recall(OTHER_GROUP, second.messageId)
+  await waitFor(async () => (await f.items()).length === 0, 'last recalled source removed')
+  await waitFor(() => stat(imageFile).then(() => false, error => error.code === 'ENOENT' ? true : Promise.reject(error)), 'last recalled image physically removed')
+  await f.restart()
+  await f.run({ script: [{ name: 'sendLocalEmojiTool', args: { tags: ['开心'] } }] })
+  assert.equal(f.deliveries.length, 1); assert.equal((await f.items()).length, 0)
+  await f.run({ image: true, script: [{ name: 'simCollectSticker' }] })
+  await waitFor(async () => (await f.items()).length === 1, 'new verified source collected after recall')
+  await f.privacy(GROUP, '#清空我的记忆')
+  await waitFor(async () => (await f.items()).length === 0, 'person privacy command removes completed collection')
+  await waitFor(() => f.deliveries.some(row => row.action === 'send_group_msg'), 'privacy confirmation follows cleanup')
+  assert.equal(await stat(imageFile).then(() => true, error => error.code === 'ENOENT' ? false : Promise.reject(error)), false)
+  assert.equal(f.emojiModels.length, 6)
   await f.close()
 })
 

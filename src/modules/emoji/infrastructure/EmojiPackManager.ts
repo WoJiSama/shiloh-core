@@ -169,7 +169,7 @@ export class EmojiPackManager {
     if (this.ports.storage) {
       const items = await this.ports.storage.loadItems()
       this.ports.assertCurrent?.()
-      for (const item of items) this.normalizeItem(item)
+      for (const item of items) if (this.ports.storage.allowsMaintenance?.(item) !== false) this.normalizeItem(item)
       this.cache = { mtimeMs: 0, items, loaded: true }
       return items
     }
@@ -408,6 +408,7 @@ export class EmojiPackManager {
         if (removedHash) {
           const removeIdx = items.findIndex(i => i.hash === removedHash)
           if (removeIdx >= 0) {
+            if (this.ports.storage?.allowsMaintenance?.(items[removeIdx]!) === false) return { added: false, reason: "full" }
             const removed = items.splice(removeIdx, 1)[0]!
             const removedAbs = path.join(this.storeDir, path.basename(removed.file))
             if (this.ports.storage) await this.ports.storage.removeImage(path.basename(removed.file))
@@ -682,6 +683,7 @@ confidence 是你对上述两项判定整体的把握程度（0~1 小数，1 为
     if (!cfg?.toolsAiUrl || !cfg?.toolsAiApikey || String(cfg.toolsAiApikey).includes("sk-xxx")) {
       throw new Error("toolsAiConfig 未配置")
     }
+    items = items.filter(item => this.ports.storage?.allowsMaintenance?.(item) !== false)
     if (!items.length) return null
 
     // 按 1/(usedCount+1) 加权抽样最多 20 张候选
@@ -753,7 +755,7 @@ ${list}
     const now = Date.now()
     const poolSize = Math.max(1, Number(this.config.staleCandidatePoolSize) || 20)
     const candidates = items
-      .filter(item => !item.isBanned && this.isStaleForPrune(item, now))
+      .filter(item => this.ports.storage?.allowsMaintenance?.(item) !== false && !item.isBanned && this.isStaleForPrune(item, now))
       .sort((a, b) => {
         const usageDiff = (a.usedCount || 0) - (b.usedCount || 0)
         if (usageDiff !== 0) return usageDiff
@@ -774,7 +776,7 @@ ${list}
       const hash = this.pickStaleLowUsageHash(items)
       if (!hash) break
       const idx = items.findIndex(item => item.hash === hash)
-      if (idx < 0) break
+      if (idx < 0 || this.ports.storage?.allowsMaintenance?.(items[idx]!) === false) break
       const removed = items.splice(idx, 1)[0]!
       const abs = path.join(this.storeDir, path.basename(removed.file))
       if (this.ports.storage) await this.ports.storage.removeImage(path.basename(removed.file))
@@ -1321,6 +1323,7 @@ ${list}
 
     // 1. 记录指向的文件不存在 → 标记 noFileFlag
     for (const item of items) {
+      if (this.ports.storage?.allowsMaintenance?.(item) === false) continue
       const abs = path.join(this.storeDir, path.basename(item.file))
       const exists = this.ports.storage ? this.ports.storage.fileAvailable(path.basename(item.file)) : fs.existsSync(abs)
       if (!exists && !item.noFileFlag) {
@@ -1347,7 +1350,7 @@ ${list}
         const hashFromName = path.basename(f, ext)
         if (!/^[0-9a-f]{64}$/i.test(hashFromName)) continue
         if (items.length >= (this.config.maxItems || 200)) break
-        items.push({
+        const recovered: EmojiItem = {
           hash: hashFromName.toLowerCase(),
           file: `emoji_files/${f}`,
           tags: [],
@@ -1359,7 +1362,9 @@ ${list}
           registeredAt: new Date().toISOString(),
           source: "maintenance",
           isBanned: false
-        })
+        }
+        if (this.ports.storage?.allowsMaintenance?.(recovered) === false) continue
+        items.push(recovered)
         changed = true
         report.orphanRegistered++
         this.logInfo(`维护：补登孤立文件 ${hashFromName.slice(0, 8)}`)
@@ -1373,6 +1378,7 @@ ${list}
     if (this.config.visionTagOnAdd !== false) {
       for (let i = items.length - 1; i >= 0; i--) {
         const item = items[i]!
+        if (this.ports.storage?.allowsMaintenance?.(item) === false) continue
         const hasTag = Array.isArray(item.tags) && item.tags.length > 0
         const hasEmbed = Array.isArray(item.embedding) && item.embedding.length > 0
         if (!hasTag && !hasEmbed) {

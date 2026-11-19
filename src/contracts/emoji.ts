@@ -22,6 +22,8 @@ export interface EmojiStoragePort {
   removeImage(name: string): Promise<void>
   fileAvailable(name: string): boolean
   listImages(): Promise<readonly string[]>
+  /** Explicit hosts can quarantine records from automatic repair, replacement and removal. */
+  allowsMaintenance?(item: Readonly<EmojiItem>): boolean
 }
 export interface EmojiPorts {
   logger?:EmojiLogger|undefined

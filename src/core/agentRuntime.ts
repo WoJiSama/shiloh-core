@@ -117,6 +117,7 @@ import { createAgentGroupLogWorkflow } from '../modules/dice/infrastructure/agen
 import { parseAgentGroupLogCommand } from '../modules/dice/domain/agentGroupLogCommand.js'
 import { createAgentConversationActivity } from '../modules/runtime/infrastructure/agentConversationActivity.js'
 import { createAgentLocalEmojiIngress } from '../modules/emoji/infrastructure/agentLocalEmojiIngress.js'
+import type { AgentLocalEmojiCleanupGuard, AgentLocalEmojiCleanupReceipt, AgentLocalEmojiRuntime } from '../contracts/agentLocalEmoji.js'
 import type { AgentVideoCard, AgentVideoSearchProvider } from '../contracts/agentVideoCard.js'
 import { validateAgentVideoCard } from '../modules/media/infrastructure/agentVideoCard.js'
 import { createAgentVideoSearchStore } from '../modules/media/infrastructure/agentVideoSearchStore.js'
@@ -152,6 +153,8 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   toolRegistry?: AgentToolRegistry
   /** Independent bounded collection of verified human ingress images. */
   autoCollectLocalEmoji?: boolean
+  /** Trusted privacy cleanup remains available when collection and sending are disabled. */
+  localEmojiCleanup?: Pick<AgentLocalEmojiRuntime, 'revokeSource' | 'purgeSubject'>
   memorySystem?: TextPersonMemoryConfig
   midtermMemory?: MidtermMemoryConfig
   episodicMemory?: EpisodicMemoryConfig
@@ -358,6 +361,28 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
   function observeCurrent(check: () => boolean): boolean {
     return options.observeExecutionCurrent ? options.observeExecutionCurrent(check) === true : check()
+  }
+  function localEmojiCleanupGuard(isAuthorized: () => boolean = () => true,
+    ensureAuthorized?: () => void | Promise<void>, parentSignal?: AbortSignal): AgentLocalEmojiCleanupGuard {
+    const signal = AbortSignal.any([toolCancellation.signal, ...(options.signal ? [options.signal] : []), ...(parentSignal ? [parentSignal] : [])])
+    const guard: AgentLocalEmojiCleanupGuard = {
+      signal,
+      isCurrent() { try { return observeCurrent(() => !signal.aborted && isRunning() && isAuthorized()) } catch { return false } },
+      async ensureCurrent() {
+        if (!guard.isCurrent()) throw new Error('本地表情清理权限已失效')
+        await ensureAuthorized?.()
+        if (!guard.isCurrent()) throw new Error('本地表情清理权限已失效')
+      },
+    }
+    return guard
+  }
+  async function completeLocalEmojiCleanup(operation: (guard: AgentLocalEmojiCleanupGuard) => Promise<AgentLocalEmojiCleanupReceipt>,
+    guard = localEmojiCleanupGuard()): Promise<AgentLocalEmojiCleanupReceipt> {
+    await guard.ensureCurrent()
+    const receipt = await operation(guard)
+    await guard.ensureCurrent()
+    if (receipt.usage !== 'blocked' || receipt.cleanup !== 'completed' && receipt.cleanup !== 'unsupported') throw new Error('本地表情清理尚未完成')
+    return receipt
   }
   function conversationEnabled(target: ConversationAddress): boolean {
     return options.getSection().enabled !== false && (target.kind !== 'private' || options.privateChatEnabled === true)
@@ -1775,7 +1800,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       return result
     }
     async function changeProfile<T>(context: AgentManagementContext, operation: 'profiles.delete' | 'profiles.delete-field',
-      action: (guard: AgentManagementContext) => Promise<T>) {
+      action: (guard: AgentManagementContext) => Promise<T>, cleanupSubjectId?: string) {
       return invoke(context, async guard => {
         const binding = guard.binding
         if (!binding) throw new AgentManagementError('invalid_request')
@@ -1793,14 +1818,25 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         // Invalidate existing source consumers before the first storage await. Future turns wait
         // until the real store has committed its tombstones, then re-read the privacy versions.
         const finishAdmission = beginPrivacyAdmission(binding)
-        try { const result = await action(guard); ensureBinding(); return result }
+        const through = options.now?.() ?? Date.now()
+        try {
+          const result = await action(guard); ensureBinding()
+          if (cleanupSubjectId !== undefined && options.localEmojiCleanup) {
+            await completeLocalEmojiCleanup(cleanup => options.localEmojiCleanup!.purgeSubject({
+              account: binding.target.account, agentId: binding.agentId, subjectId: cleanupSubjectId, target: binding.target, through,
+            }, cleanup), localEmojiCleanupGuard(() => {
+              try { ensureBinding(); return true } catch { return false }
+            }, ensureBinding, guard.signal))
+          }
+          ensureBinding(); return result
+        }
         finally { finishAdmission() }
       })
     }
     return {
       profiles: {
         list: context => invoke(context, guard => profiles.list(guard)),
-        remove: (userId, context) => changeProfile(context, 'profiles.delete', guard => profiles.remove(userId, guard)),
+        remove: (userId, context) => changeProfile(context, 'profiles.delete', guard => profiles.remove(userId, guard), userId),
         removeField: (userId, field, value, context) => changeProfile(context, 'profiles.delete-field', guard => profiles.removeField(userId, field, value, guard)),
       },
       trusteeship: {
@@ -2253,6 +2289,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       for (const invalidate of pendingTools.get(conversationAddressKey(target)) ?? []) invalidate()
       // Each workflow revokes its in-memory owners synchronously. A failing ledger cannot prevent sibling fences.
       const results = await Promise.allSettled([
+        ...(options.localEmojiCleanup ? [completeLocalEmojiCleanup(guard =>
+          options.localEmojiCleanup!.revokeSource({ target, messageId: event.messageId }, guard))] : []),
         ...(target.kind === 'group' ? [groupLogs.revokeSource(target, event.messageId), revokeDiceSource(target, event.messageId)] : []),
         ...(mediaRelayConfig.enabled ? [mediaOutbox.cancelSource(target, event.messageId)] : []),
         ...(torrentConfig.enabled ? [torrent.cancelSource(target, event.messageId)] : []),
@@ -2408,6 +2446,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     const state = await inbox.privacyCommandState(target, messageId, raw)
     if (!state) return true
     const originalAgentId = privacyOwner?.agentId ?? (persona && agentBindingToken(persona.binding) === token ? persona.binding.agentId : undefined)
+    let emojiCleanupUnsupported = false
     const purge = async () => {
       if (!originalAgentId || command === 'enable') return
       adapter.invalidateRedPacketSources?.()
@@ -2415,6 +2454,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const subject = { account: target.account, agentId: originalAgentId, subjectId: sender.id,
         ...(kind === 'group' ? { target } : {}) }
       const results = await Promise.allSettled([
+        ...(options.localEmojiCleanup ? [completeLocalEmojiCleanup(guard => options.localEmojiCleanup!.purgeSubject({
+          ...subject, through: incoming.occurredAt,
+        }, guard), localEmojiCleanupGuard(() => true, async () => {
+          if (await inbox.privacyCommandState(target, messageId, raw) !== 'applied') throw new Error('隐私指令尚未提交')
+        })).then(receipt => { emojiCleanupUnsupported = receipt.cleanup === 'unsupported' })] : []),
         groupLogs.purgeSubject({ account: target.account, agentId: originalAgentId, subjectId: sender.id,
           ...(kind === 'group' ? { groupId: target.id } : {}) }),
         diceState.purgeSubject(subject), diceLedger.purgeSubject(subject),
@@ -2449,7 +2493,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     const confirmation = guardPendingSend(conversationAddressKey(target), isCurrent)
     try {
       if (!confirmation.isCurrent() || !await inbox.claimPrivacyConfirmation(target, messageId, raw)) return true
-      const text = sanitizeFinalReplyText(privacyConfirmations[command][kind])
+      const text = sanitizeFinalReplyText(privacyConfirmations[command][kind] +
+        (emojiCleanupUnsupported ? '\n缺少原始来源的旧表情已停用，清理归属仍待核对。' : ''))
       if (text && confirmation.isCurrent()) {
         await controlMessageActions.send({ version: 1, kind: 'message.send', target, binding: persona.binding,
           parts: [{kind: 'text', text}], ...(kind === 'group' ? { replyTo: messageId } : {}) }, { isCurrent: confirmation.isCurrent })

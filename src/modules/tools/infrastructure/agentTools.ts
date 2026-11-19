@@ -3,7 +3,7 @@ import { normalizeAgentInteractionResult, validateAgentInteractionPlan } from '.
 import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest } from '../../../contracts/agentFiles.js'
 import { snapshotAgentFileRequest, validateAgentFileBytes, validateAgentFileListing } from '../../content/infrastructure/agentFileBytes.js'
-import type { AgentTool, AgentToolContext, AgentToolRegistry, AgentToolMessage } from '../../../contracts/agentTool.js'
+import type { AgentTool, AgentToolContext, AgentToolDeliveryGuard, AgentToolRegistry, AgentToolMessage } from '../../../contracts/agentTool.js'
 import type { ConversationMemberSnapshot, ConversationMembersSnapshot, MessageImage } from '../../../contracts/platformConnection.js'
 import { isPlatformAccount, isPlatformIdentifier, samePlatformNamespace } from '../../runtime/domain/agentBindings.js'
 import type { DeliveryReceipt } from '../../../contracts/delivery.js'
@@ -27,6 +27,7 @@ import { validateAgentToolImage } from '../../image/infrastructure/agentToolImag
 import { validateMessageBundle } from '../../messaging/infrastructure/messageBundle.js'
 import { validateAgentToolMessage } from '../../messaging/infrastructure/agentToolMessage.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { abortableAgentWeb } from './agentPublicWeb.js'
 
 const maxChars = 16_000
 const outcome = (status: 'success' | 'error' | 'unknown', content: string) => ({ kind: 'tool_outcome', status, content })
@@ -157,14 +158,46 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
                 } catch { cancel.abort(); throw new Error('工具权限已失效') }
               }
               const ensureMediaKnown = () => { if (mediaDeliveryUnknown) throw new Error('媒体发送结果未知，核实前不重复执行或发送') }
+              const deliverFromSource = async (sourceGuard: AgentToolDeliveryGuard | undefined,
+                send: (current: () => boolean) => Promise<DeliveryReceipt>): Promise<DeliveryReceipt> => {
+                const deliverySignal = AbortSignal.any([signal, ...(sourceGuard ? [sourceGuard.signal] : [])])
+                const current = () => {
+                  try { return !deliverySignal.aborted && scope.isCurrent() && sourceGuard?.isCurrent() !== false }
+                  catch { return false }
+                }
+                const check = () => { if (!current()) throw new Error('发送来源已失效') }
+                const ensure = async () => {
+                  check()
+                  await abortableAgentWeb(ensureCurrent(), deliverySignal); check()
+                  if (sourceGuard?.ensureCurrent) {
+                    await abortableAgentWeb(Promise.resolve().then(() => { check(); return sourceGuard.ensureCurrent!() }), deliverySignal)
+                    check()
+                  }
+                }
+                await ensure(); ensureMediaKnown()
+                let attempted = false, receipt: DeliveryReceipt | undefined
+                try {
+                  const delivered = normalizeDeliveryReceipt(await abortableAgentWeb(Promise.resolve().then(() => {
+                    check(); ensureMediaKnown(); attempted = true
+                    return send(current)
+                  }), deliverySignal))
+                  receipt = delivered
+                  if (delivered.state === 'unknown') mediaDeliveryUnknown = true
+                  await ensure()
+                  return delivered
+                } catch (error) {
+                  // A cancelled queue can still finish later. Fence every later send
+                  // until the host has an explicit failure, including caught errors.
+                  if (attempted && receipt?.state !== 'failed') mediaDeliveryUnknown = true
+                  throw error
+                }
+              }
               const sendImage = scope.sendImage
-                ? async (image: MessageImage) => {
+                ? async (image: MessageImage, sourceGuard?: AgentToolDeliveryGuard) => {
+                  if (signal.aborted || !scope.isCurrent()) throw new Error('工具权限已失效')
                   ensureMediaKnown()
-                  await ensureCurrent()
                   const validated = validateAgentToolImage(image)
-                  const receipt = await scope.sendImage!(validated, () => !signal.aborted && scope.isCurrent())
-                  await ensureCurrent()
-                  return receipt
+                  return deliverFromSource(sourceGuard, current => scope.sendImage!(validated, current))
                 } : undefined
               const sendFile = dataPolicy !== 'ephemeral' && scope.sendFile ? async (file: AgentFileUpload) => {
                 ensureMediaKnown()
@@ -272,14 +305,12 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
                   return images.map(validateAgentToolImage)
                 } : undefined
               const sendBundle = scope.sendBundle
-                ? async (items: readonly MessageBundleItem[]) => {
+                ? async (items: readonly MessageBundleItem[], sourceGuard?: AgentToolDeliveryGuard) => {
+                  if (signal.aborted || !scope.isCurrent()) throw new Error('工具权限已失效')
                   ensureMediaKnown()
                   // Own immutable bytes/text before an asynchronous authorization wait.
                   const validated = validateMessageBundle(items)
-                  await ensureCurrent()
-                  const receipt = await scope.sendBundle!(validated, () => !signal.aborted && scope.isCurrent())
-                  await ensureCurrent()
-                  return receipt
+                  return deliverFromSource(sourceGuard, current => scope.sendBundle!(validated, current))
                 } : undefined
               const readMember = scope.readMember ? async (userId: string) => {
                 if (!isPlatformIdentifier(userId)) throw new Error('成员标识无效')
@@ -351,7 +382,7 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
               const result = await Promise.race([
                 Promise.resolve().then(async () => {
                   await ensureCurrent()
-                  const { readMember: _readMember, listMembers: _listMembers, sendMessage: _sendMessage, sendFile: _sendFile, sendAudio: _sendAudio, sendVideo: _sendVideo, sendMusic: _sendMusic, sendVideoCard: _sendVideoCard, sendMediaRelay: _sendMediaRelay, interact: _interact, isSourceAvailable: _isSourceAvailable, readHistory: _readHistory, readFile: _readFile, readVideo: _readVideo, listFiles: _listFiles, runQqAction: _runQqAction, ...publicScope } = scope
+                  const { readMember: _readMember, listMembers: _listMembers, sendMessage: _sendMessage, sendImage: _sendImage, sendBundle: _sendBundle, readImages: _readImages, sendFile: _sendFile, sendAudio: _sendAudio, sendVideo: _sendVideo, sendMusic: _sendMusic, sendVideoCard: _sendVideoCard, sendMediaRelay: _sendMediaRelay, interact: _interact, isSourceAvailable: _isSourceAvailable, readHistory: _readHistory, readFile: _readFile, readVideo: _readVideo, listFiles: _listFiles, runQqAction: _runQqAction, ...publicScope } = scope
                   const result = await execute(input, { ...publicScope, signal, isCurrent: () => !signal.aborted && scope.isCurrent(), ensureCurrent,
                     ...(sendImage ? { sendImage } : {}),
                     ...(sendFile ? { sendFile } : {}),
