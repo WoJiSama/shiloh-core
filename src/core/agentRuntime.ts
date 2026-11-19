@@ -1507,6 +1507,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     supportsQqAction,
     executeQzone: qqActions.executeQzone,
     ...options,
+    ...(options.observeExecutionCurrent ? { observeCurrent } : {}),
     logger, diagnostics,
     withDiagnosticScope: (scope, operation, fn) => diagnostics.run(scope, operation, fn),
     ...(options.failureNoticeFallback ? { failureNoticeFallback: options.failureNoticeFallback } : {}),
@@ -1532,8 +1533,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const binding = bindingFor(target)?.binding
       if (!binding) throw new Error('视频查询会话不可用')
       const token = agentBindingToken(binding), permission = activity.capture(target)
-      const current = () => isRunning() && allowsConversationAI(target) && permission.isCurrent() && !context.signal.aborted &&
-        context.isCurrent() && options.isVideoSearchCurrent?.() !== false && bindingIsCurrent(target, token)
+      const current = () => observeCurrent(() => isRunning() && allowsConversationAI(target) && permission.isCurrent() && !context.signal.aborted &&
+        context.isCurrent() && options.isVideoSearchCurrent?.() !== false && bindingIsCurrent(target, token))
       const ensure = async () => { if (!current()) throw new Error('视频查询权限已改变'); await context.ensureCurrent?.(); if (!current()) throw new Error('视频查询权限已改变') }
       try {
         await ensure()
@@ -1658,8 +1659,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     async readMessageVideo(target, messageId, guard) {
       const adapter = adapterFor(target)
       if (!adapter?.readMessageVideo || target.kind !== 'group') return undefined
-      const isCurrent = () => !guard.signal.aborted && isRunning() && adapterFor(target) === adapter && adapter.isReady() &&
-        conversationEnabled(target) && !textInboxFor(target) && guard.isCurrent()
+      const isCurrent = () => observeCurrent(() => !guard.signal.aborted && isRunning() && adapterFor(target) === adapter && adapter.isReady() &&
+        conversationEnabled(target) && !textInboxFor(target) && guard.isCurrent())
       const canRead = async () => isCurrent() && await inbox.canReply(target, messageId) && isCurrent()
       const ensureCurrent = async () => { await guard.ensureCurrent?.(); if (!await canRead()) throw new Error('视频来源已失效') }
       if (!await canRead()) return undefined

@@ -155,9 +155,26 @@ async function fixture(t, { enabled = true, logging = false, unknownAt = 0, miss
       await reader.del(receipt(source)); websocket.send(JSON.stringify(source)); await drained(source); await delay(900)
       assert.deepEqual(errors, [])
     },
+    async replayRevoked(source) {
+      await reader.del(receipt(source)); websocket.send(JSON.stringify(source))
+      await this.rejectedDice(source); await delay(900)
+      assert.equal(await reader.exists(receipt(source)), 0)
+      assert.deepEqual(errors, [])
+    },
     async revoke(source) {
-      await waitFor(() => held, 'held fresh source read'); raw.dice.enabled = false; configText = JSON.stringify(raw); await writeFile(file, configText)
-      held(); await drained(source); await delay(300); assert.deepEqual(errors, [])
+      await waitFor(() => held, 'held fresh source read')
+      const queue = prefix + 'agent:inbox:group-log:' + JSON.stringify(['qq', 'global', String(BOT)])
+      const pending = await reader.lRange(queue, 0, -1); assert.equal(pending.length, 1)
+      raw.dice.enabled = false; configText = JSON.stringify(raw); await writeFile(file, configText)
+      held()
+      const digest = hash(JSON.stringify([conversationKey, String(source.message_id)]))
+      await waitFor(async () => await reader.hGet(prefix + 'agent:dice:v1:recalls', digest) === '1', 'revoked dice source fence')
+      await delay(300)
+      // The old host retires after the configuration changes. It fences the
+      // interrupted source but leaves its exact inbox entry for the next host.
+      assert.deepEqual(await reader.lRange(queue, 0, -1), pending)
+      assert.equal(await reader.exists(receipt(source)), 1)
+      assert.deepEqual(errors, [])
     },
     async stop() { child.kill('SIGTERM'); assert.deepEqual(await exited, [0, null], log); assert.deepEqual(errors, []) },
     async clean() {
@@ -222,6 +239,9 @@ for (const missingId of [false, true]) test(`actual CLI stops after an uncertain
 test('actual CLI fences a late source read when host dice authorization is revoked', { timeout: 60000 }, async t => {
   const f = await fixture(t, { revoke: true }); await f.start()
   const source = f.emit('.r 1d6'); await f.revoke(source)
-  assert.deepEqual(f.diceSends, []); assert.equal(f.modelRequests, 0)
+  assert.deepEqual(f.diceSends, []); assert.deepEqual(await f.records(), []); assert.equal(f.modelRequests, 0)
+  await f.stop(); await f.restart(); await f.drained(source)
+  await f.replayRevoked(source)
+  assert.deepEqual(f.diceSends, []); assert.deepEqual(await f.records(), []); assert.equal(f.modelRequests, 0)
   await f.stop(); await f.clean()
 })

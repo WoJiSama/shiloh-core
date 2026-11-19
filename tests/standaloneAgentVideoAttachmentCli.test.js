@@ -156,7 +156,9 @@ async function fixture(t, { unknown = false, attachments = true } = {}) {
     async restart() { log = ''; websocket = undefined; launch(false); await waitFor(() => { if (child.exitCode !== null) assert.fail(`CLI exited early: ${log}`); return log.includes('已启动') && websocket }, 'CLI readiness') },
     async run() {
       websocket.send(JSON.stringify(source))
-      await waitFor(async () => attachments ? (await records()).some(row => row.state === (unknown ? 'unknown' : 'sent')) : actions.some(row => row.action === 'send_group_msg'), 'native video result')
+      // The attachment tool owns a 240-second business deadline. Observe its
+      // native outcome instead of killing an active download after 25 seconds.
+      await waitFor(async () => attachments ? (await records()).some(row => row.state === (unknown ? 'unknown' : 'sent')) : actions.some(row => row.action === 'send_group_msg'), 'native video result', attachments ? 240_000 : 25_000)
       await waitFor(queueEmpty, 'text inbox drained'); assert.deepEqual(errors, [])
     },
     async replay() { websocket.send(JSON.stringify(source)); await delay(1200); await waitFor(queueEmpty, 'replayed text inbox drained'); assert.deepEqual(errors, []) },
@@ -170,7 +172,7 @@ async function fixture(t, { unknown = false, attachments = true } = {}) {
   }
 }
 
-test('actual CLI group text searches then sends one owned anonymous video attachment forward, without extra text and source replay', { timeout: 60000 }, async t => {
+test('actual CLI group text searches then sends one owned anonymous video attachment forward, without extra text and source replay', { timeout: 300000 }, async t => {
   const f = await fixture(t); await f.start(); await f.run()
   assert.equal(f.models.length, 2); assert.equal(f.forwards.length, 1); assert.deepEqual(f.resources.map(row => [row.kind, row.size]), [['image', PNG.length], ['video', MP4.length], ['thumbnail', JPEG.length], ['video', MP4_SECOND.length], ['thumbnail', JPEG.length]])
   assert.equal(f.external.filter(row => row.path.endsWith('/playurl')).length, 1); assert.equal(f.external.find(row => row.path.endsWith('/playurl')).qn, '16')
@@ -178,7 +180,7 @@ test('actual CLI group text searches then sends one owned anonymous video attach
   assert.equal(f.actions.filter(row => row.action.startsWith('send_')).length, 1); await f.stop(); await f.clean()
 })
 
-test('actual CLI uncertain video attachment freezes one native attempt across replay and restart without retry or text fallback', { timeout: 60000 }, async t => {
+test('actual CLI uncertain video attachment freezes one native attempt across replay and restart without retry or text fallback', { timeout: 300000 }, async t => {
   const f = await fixture(t, { unknown: true }); await f.start(); await f.run(); assert.equal((await f.records())[0].state, 'unknown')
   assert.equal(f.forwards.length, 1); const before = { requests: f.external.length, models: f.models.length }; await f.replay(); await f.stop(); await f.restart(); await f.replay()
   assert.equal(f.forwards.length, 1); assert.equal(f.external.length, before.requests); assert.equal(f.models.length, before.models); assert.equal(f.actions.filter(row => row.action.startsWith('send_')).length, 1)

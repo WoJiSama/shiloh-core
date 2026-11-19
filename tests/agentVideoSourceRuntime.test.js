@@ -59,6 +59,28 @@ test('video metadata reload drops arbitrary fields and clamps direct/quoted coun
 })
 
 const redisTest = { skip: !redisAvailable, timeout: 25_000 }
+// Port contract: nested predicates share the entry version; only the outer
+// synchronous exit authorizes work after a source version changes mid-check.
+function executionObservation() {
+  let depth = 0, version = 0, entry = 0, armed = false, revokedInside = false
+  return {
+    get depth() { return depth }, get revokedInside() { return revokedInside },
+    arm() { armed = true },
+    isCurrent() {
+      const accepted = (depth ? entry : version) === 0
+      if (armed && depth) { armed = false; version++; revokedInside = accepted }
+      return accepted
+    },
+    observe(check) {
+      const outer = depth === 0
+      if (outer) entry = version
+      depth++
+      let accepted
+      try { accepted = check() === true } finally { depth-- }
+      return accepted && (!outer || version === entry)
+    },
+  }
+}
 async function fixture(t, settings = {}) {
   const redis = await createAgentRedisFixture(t, 'video-source'), { storage, reader, prefix } = redis
   const config = { version: 1, agents: [{ id: 'role', personaId: 'default' }, { id: 'replacement', personaId: 'default' }],
@@ -71,20 +93,24 @@ async function fixture(t, settings = {}) {
   initial.bootstrapSent = true; initial.botId = account.id; initial.bindingToken = agentBindingToken(binding); initial.personaId = identity.personaId
   initial.wakeConfig.triggers = { ...initial.wakeConfig.triggers, probability: 0, question: false, nameMention: false, anyMessage: false }; initial.nextProactiveCheckAt = now + 86_400_000
   await storage.set(simulationSessionKey(key), JSON.stringify(initial))
-  const originals = new Map(), reads = [], requests = [], sends = [], diagnostics = [], observations = []
+  const originals = new Map(), reads = [], requests = [], sends = [], diagnostics = [], observations = [], effects = []
+  const effect = port => { if (settings.observer) effects.push({ port, depth: settings.observer.depth }) }
   const forwardAuthors = [{ author: { ...account, id: 'ancestor' }, occurredAt: now - 3000 }, { author: { ...account, id: 'leaf' }, occurredAt: now - 2000 }]
   const session = async () => JSON.parse(await storage.get(simulationSessionKey(key)) || 'null')
   const settled = async () => !await reader.exists(prefix + simulationBusyKey(key)) && !await reader.lLen(prefix + `agent:inbox:simulation:${platformAccountKey(account)}`)
   let f
   const registry = { builtIn: [definition(async (_input, context) => {
-    try { assert.deepEqual(await context.readVideo(), video); await settings.afterVideo?.(f, context); return done }
+    try { await settings.beforeVideo?.(f, context); assert.deepEqual(await context.readVideo(), video); await settings.afterVideo?.(f, context); return done }
     finally { completed = true }
   })] }
   const host = createAgentRuntime({ storage, isExecutionCurrent: redis.isCurrent, now: () => now,
+    ...(settings.observer ? { observeExecutionCurrent: check => settings.observer.observe(check),
+      isExecutionCurrent: () => redis.isCurrent() && settings.observer.isCurrent() } : {}),
     adapters: [{ id: 'connection', account, botName: 'fixture', botUserId: account.id, isReady: () => Boolean(accept),
       async start(consume) { accept = consume }, stop() {},
       async readMessage(_target, id, guard) { return guard?.isCurrent?.() !== false && originals.has(id) ? structuredClone(originals.get(id)) : undefined },
       async readMessageVideo(selectedTarget, id, guard) {
+        effect('readMessageVideo')
         reads.push({ target: structuredClone(selectedTarget), id, inspectOnly: guard.inspectOnly === true })
         await guard.ensureCurrent?.()
         const root = originals.get(id)
@@ -104,7 +130,7 @@ async function fixture(t, settings = {}) {
         await guard.ensureCurrent?.()
         return { fingerprint, origin, ...(guard.inspectOnly ? {} : { video }) }
       },
-      actions: { async send(action, guard) { if (!guard.isCurrent()) return { state: 'failed', code: 'stale' }; sends.push(structuredClone(action)); return { state: 'sent', messageId: 'video-answer' } } },
+      actions: { async send(action, guard) { effect('send'); if (!guard.isCurrent()) return { state: 'failed', code: 'stale' }; sends.push(structuredClone(action)); return { state: 'sent', messageId: 'video-answer' } } },
     }],
     logger: { info() {}, warn(...args) { diagnostics.push(args.join(' ')) }, error(...args) { diagnostics.push(args.join(' ')) } },
     getSection: () => ({ enabled: true, reflection: { enabled: false }, rhythm: { enabled: false }, mood: { enabled: false }, personProfile: { enabled: false }, meme: { enabled: false }, userStyle: { enabled: false }, lifeThreads: { enabled: false },
@@ -114,6 +140,7 @@ async function fixture(t, settings = {}) {
     toolRegistry: registry,
     recordToolResult: value => observations.push(value), recordGroupReply: () => observations.push('reply'), recordEpisode: () => observations.push('episode'),
     async YTapi(request, _config, _signal, _current, ensureCurrent) {
+      effect('model')
       attempts++; await settings.beforeModel?.(f, attempts, request); await ensureCurrent?.(); requests.push(structuredClone(request))
       if (requests.length === 1) return call('videoAnalysisTool')
       await settings.duringContinuation?.(f, { signal: _signal, isCurrent: _current, ensureCurrent })
@@ -121,7 +148,7 @@ async function fixture(t, settings = {}) {
       return finish()
     },
   })
-  f = { ...redis, host, target, sender, binding, identity, address, memory, originals, reads, requests, sends, diagnostics, observations, forwardAuthors, session, settled,
+  f = { ...redis, host, target, sender, binding, identity, address, memory, originals, reads, requests, sends, diagnostics, observations, effects, forwardAuthors, session, settled,
     get now() { return now }, get attempts() { return attempts },
     replaceForward() { forwardVersion++ },
     removeVideoDefinition() { registry.builtIn = [] },
@@ -152,6 +179,33 @@ async function fixture(t, settings = {}) {
   await host.start()
   return f
 }
+
+test('Core video observation ends before native reads, model continuation and final delivery', redisTest, async t => {
+  const observer = executionObservation(), f = await fixture(t, { observer })
+  await f.run()
+  assert.equal(f.reads.filter(read => !read.inspectOnly).length, 1)
+  assert.ok(f.reads.some(read => read.inspectOnly), 'final delivery retains a fresh video provenance proof')
+  assert.equal(f.requests.length, 2); assert.equal(f.sends.length, 1)
+  for (const port of ['readMessageVideo', 'model', 'send']) assert.ok(f.effects.some(effect => effect.port === port))
+  assert.ok(f.effects.every(effect => effect.depth === 0), 'no native read, model dispatch or delivery runs inside a configuration observation')
+  await f.assertEphemeral()
+})
+
+test('Core video observation fences a source version changed mid-check before native read or derived continuation', redisTest, async t => {
+  for (const stage of ['before-read', 'after-read']) await t.test(stage, async t => {
+    const observer = executionObservation(), f = await fixture(t, { observer,
+      ...(stage === 'before-read' ? { beforeVideo() { observer.arm() } } : { afterVideo() { observer.arm() } }),
+    })
+    await f.run()
+    assert.equal(observer.revokedInside, true, 'a nested current check saw the entry version while the source changed')
+    assert.equal(observer.depth, 0); assert.equal(observer.isCurrent(), false)
+    assert.equal(f.reads.filter(read => !read.inspectOnly).length, stage === 'before-read' ? 0 : 1)
+    assert.equal(f.requests.length, 1, 'the invalid source cannot dispatch a derived model continuation')
+    assert.equal(f.sends.length, 0)
+    assert.ok(f.effects.every(effect => effect.depth === 0))
+    await f.assertEphemeral()
+  })
+})
 
 test('Core retains pure video metadata, ignores forged quote identity and strips native resources before persistence', redisTest, async t => {
   const f = await fixture(t)

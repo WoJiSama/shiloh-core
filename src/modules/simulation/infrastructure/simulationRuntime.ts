@@ -127,6 +127,8 @@ export interface SimulationRuntimePorts {
   /** 当前 bot 身份（多号时以事件的 self_id 为准） */
   getSelf(selfIdHint?: string | number, account?: PlatformAccountRef): { id: string; name: string; userId?: string }
   isAccountReady?(account: PlatformAccountRef): boolean
+  /** Share one host configuration observation only within a pure synchronous check. */
+  observeCurrent?(check: () => boolean): boolean
   /** Scope a turn to the current privacy state through its final synchronous transport guard. */
   beginMemoryTurn?(binding: AgentBindingSnapshot): Promise<{ isCurrent(): boolean; release(): void; signal: AbortSignal }>
   isMemoryInputAvailable?(account: PlatformAccountRef): boolean
@@ -1284,8 +1286,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const turnState = state
       const queuedWake = durableWake ? state.queuedIngressWake : undefined
       let wakeStarted = false
-      const canRunTurn = () => !stopped && !turnSignal.aborted && activityTurn?.isCurrent() !== false && allowsConversationAI(target) && groupActive(runtimeConfig(), groupId) && ports.isAccountReady?.(target.account) !== false &&
+      const turnCurrent = () => !stopped && !turnSignal.aborted && activityTurn?.isCurrent() !== false && allowsConversationAI(target) && groupActive(runtimeConfig(), groupId) && ports.isAccountReady?.(target.account) !== false &&
         isBindingCurrent() && memoryTurn?.isCurrent() !== false
+      const canRunTurn = () => ports.observeCurrent ? ports.observeCurrent(turnCurrent) === true : turnCurrent()
       const wakeSourceExists = () => reason.seq === undefined || turnState.recent.some(message => message.seq === reason.seq)
       const canCallModel = () => canRunTurn() && wakeSourceExists()
       const beginWake = async <T>(start: () => T): Promise<{ result: T } | null> => {

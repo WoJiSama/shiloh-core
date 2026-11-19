@@ -91,6 +91,28 @@ for (const mode of ['ephemeral', 'autonomous', 'private']) test(`AgentTools does
 })
 
 const redisTest = { skip: !redisAvailable, timeout: 20000 }; let sequence = 0
+// Port contract: nested checks reuse one entry version, while the outer exit
+// rejects an otherwise true predicate if its source changed synchronously.
+function executionObservation() {
+  let depth = 0, version = 0, entry = 0, armed = false, revokedInside = false
+  return {
+    get depth() { return depth }, get revokedInside() { return revokedInside },
+    arm() { armed = true },
+    isCurrent() {
+      const accepted = (depth ? entry : version) === 0
+      if (armed && depth) { armed = false; version++; revokedInside = accepted }
+      return accepted
+    },
+    observe(check) {
+      const outer = depth === 0
+      if (outer) entry = version
+      depth++
+      let accepted
+      try { accepted = check() === true } finally { depth-- }
+      return accepted && (!outer || version === entry)
+    },
+  }
+}
 async function fixture(t, settings = {}) {
   const redis = await createAgentRedisFixture(t, 'video-card-core-integration'), { storage, reader, prefix } = redis
   const account = { platform: 'fixture', namespace: `video-card-core-${++sequence}`, id: 'robot' }, target = { account, kind: 'group', id: 'room' }, sender = { ...account, id: 'human' }, now = Date.now()
@@ -102,7 +124,8 @@ async function fixture(t, settings = {}) {
   await storage.set(simulationSessionKey(key), JSON.stringify(state))
   const source = { version: 1, conversation: target, sender, messageId: 'video-trigger', occurredAt: now, text: '请按明确关键词查询并分享合成视频', parts: [], mentions: [account], directedToAccount: true }
   const selectedSource = { ...source, messageId: 'selected-video-source', text: '之前搜索到的合成视频选择来源', occurredAt: now - 1000, mentions: [], directedToAccount: false }
-  const originals = new Map([[source.messageId, source], [selectedSource.messageId, selectedSource]]), attempts = [], cards = [], texts = [], requests = [], contexts = [], resolutions = [], diagnostics = []
+  const originals = new Map([[source.messageId, source], [selectedSource.messageId, selectedSource]]), attempts = [], cards = [], texts = [], requests = [], contexts = [], resolutions = [], diagnostics = [], effects = []
+  const effect = port => { if (settings.observer) effects.push({ port, depth: settings.observer.depth }) }
   const registry = { builtIn: settings.execute ? [{ name: 'videoRuntimeProbe', description: '验证Core视频发送路径', parameters,
     async execute(_input, context) { contexts.push(context); try { return await settings.execute(context, f) } finally { toolDone = true } },
   }] : [] }
@@ -110,11 +133,14 @@ async function fixture(t, settings = {}) {
     wake: { probability: 0, proactiveProbability: 0, batchWindowMs: 1000 }, turn: { maxToolRounds: 8, maxSendsPerTurn: 3, minSendGapMs: 0 }, toolPolicy: { mode: 'open' } }
   let f
   const host = createAgentRuntime({ storage, isExecutionCurrent: redis.isCurrent, now: () => now, toolRegistry: registry,
+    ...(settings.observer ? { observeExecutionCurrent: check => settings.observer.observe(check),
+      isExecutionCurrent: () => redis.isCurrent() && settings.observer.isCurrent() } : {}),
     adapters: [{ id: 'connection', account, botUserId: account.id, botName: 'fixture', isReady: () => Boolean(accept), async start(consume) { accept = consume }, stop() {},
       async readMessage(_target, id, guard) { return guard?.isCurrent?.() !== false && originals.has(id) ? structuredClone(originals.get(id)) : undefined },
       actions: {
-        async send(action, guard) { if (settings.sendText) return settings.sendText(action, guard, f); assert.equal(guard.isCurrent(), true); texts.push(structuredClone(action)); return { state: 'sent', messageId: `text-${texts.length}` } },
+        async send(action, guard) { effect('send'); if (settings.sendText) return settings.sendText(action, guard, f); assert.equal(guard.isCurrent(), true); texts.push(structuredClone(action)); return { state: 'sent', messageId: `text-${texts.length}` } },
         async sendVideoCard(action, guard) {
+          effect('sendVideoCard')
           attempts.push({ action: structuredClone(action), guard }); assert.ok(guard.signal instanceof AbortSignal)
           if (settings.sendCard) return settings.sendCard(action, guard, f)
           if (!guard.isCurrent() || guard.signal.aborted) return { state: 'failed', code: 'stale' }
@@ -122,12 +148,13 @@ async function fixture(t, settings = {}) {
         },
       },
     }],
-    ...(settings.provider ? { videoSearchProvider: { async resolve(input, context) { resolutions.push({ input, context }); return settings.provider(input, context, f) }, async search() { assert.fail('Core resolver must not bypass the declared resolve operation') } } } : {}),
+    ...(settings.provider ? { videoSearchProvider: { async resolve(input, context) { effect('provider.resolve'); resolutions.push({ input, context }); return settings.provider(input, context, f) }, async search() { assert.fail('Core resolver must not bypass the declared resolve operation') } } } : {}),
     isVideoSearchCurrent: () => configCurrent,
     logger: { info() {}, warn(...args) { diagnostics.push(args.join(' ')) }, error(...args) { diagnostics.push(args.join(' ')) } },
     getSection: () => section, getExecutionConfig: () => ({ providers: 'openai', useTools: true }),
     resolvePersona(address) { const selected = directory.resolve(address); return selected && { binding: selected, persona: { name: '视频验证角色' }, systemContent: '' } },
     async YTapi(request, _config, _signal, _current, ensureCurrent) {
+      effect('model')
       await ensureCurrent?.(); requests.push(structuredClone(request))
       if (requests.length === 1) return settings.execute ? call('videoRuntimeProbe') : call('simShareVideoCard', { query: '合成视频' })
       if (settings.model) { const result = await settings.model(requests.length, request, f); if (result) return result }
@@ -137,7 +164,7 @@ async function fixture(t, settings = {}) {
   t.after(async () => { settings.release?.(); await host.stop() })
   const session = async () => JSON.parse(await storage.get(simulationSessionKey(key)) || 'null')
   const settled = async () => { const current = await session(); return current && !current.queuedIngressWake && !await reader.exists(prefix + simulationBusyKey(key)) && !await reader.lLen(prefix + `agent:inbox:simulation:${platformAccountKey(account)}`) }
-  f = { ...redis, host, account, target, sender, binding, source, selectedSource, originals, attempts, cards, texts, requests, contexts, resolutions, diagnostics, session, settled,
+  f = { ...redis, host, account, target, sender, binding, source, selectedSource, originals, attempts, cards, texts, requests, contexts, resolutions, diagnostics, effects, session, settled,
     invalidateConfig() { configCurrent = false }, rebind() { directory = createAgentBindingDirectory({ ...config, bindings: [{ ...config.bindings[0], agentId: 'replacement' }] }, 'video-integration-rebound') },
     async run({ cancelled = false } = {}) { await accept({ kind: 'message', message: structuredClone(source) }); await waitFor(async () => (terminal || cancelled && requests.length > 0) && await settled(), () => `Core video turn did not drain: ${JSON.stringify({ diagnostics, requests: requests.map(row => row.messages.filter(item => item.role === 'tool')) })}`); await host.runtime.drain() },
     async ledger() { return Promise.all((await reader.keys(prefix + 'shiloh:sim:video-card:v1:*')).map(async key => JSON.parse(await reader.get(key)))) },
@@ -151,6 +178,30 @@ async function fixture(t, settings = {}) {
   }
   return f
 }
+
+test('Core card observation ends before provider resolution and native delivery', redisTest, async t => {
+  const observer = executionObservation(), f = await fixture(t, { observer,
+    async provider(_input, context) { assert.equal(context.isCurrent(), true); await context.ensureCurrent(); return card },
+  })
+  await f.run()
+  assert.equal(f.resolutions.length, 1); assert.equal(f.attempts.length, 1); assert.equal(f.cards.length, 1); assert.equal(f.texts.length, 0)
+  for (const port of ['provider.resolve', 'sendVideoCard', 'model']) assert.ok(f.effects.some(effect => effect.port === port))
+  assert.ok(f.effects.every(effect => effect.depth === 0), 'provider requests, models and native delivery must leave the configuration observation first')
+  assert.ok((await f.ledger()).some(row => row.state === 'sent'))
+})
+
+test('Core card observation rejects a mid-check source version change before a resolved card can dispatch', redisTest, async t => {
+  const observer = executionObservation(); let accepted
+  const f = await fixture(t, { observer, async provider(_input, context) {
+    observer.arm(); accepted = context.isCurrent(); return card
+  } })
+  await f.run({ cancelled: true })
+  assert.equal(observer.revokedInside, true, 'the source changed after an inner predicate accepted its entry version')
+  assert.equal(accepted, false, 'the outer source fence rejects the nested true result')
+  assert.equal(observer.depth, 0); assert.equal(observer.isCurrent(), false)
+  assert.equal(f.resolutions.length, 1); assert.equal(f.attempts.length, 0); assert.equal(f.cards.length, 0); assert.equal(f.texts.length, 0)
+  assert.deepEqual(await f.ledger(), [])
+})
 
 test('Core carries AgentTools source finalizer through a prior queued send before any card can reach the adapter', redisTest, async t => {
   const entered = deferred(), release = deferred(), initiallyAuthorized = deferred(); let outcome, finalChecks = 0

@@ -8,6 +8,7 @@ const repo = fileURLToPath(new URL('../', import.meta.url)), release = path.reso
 const load = name => import(pathToFileURL(path.join(release, 'dist/backend', name)).href)
 const { createAgentVideoSearchTools } = await importBilibiliHost('modules/media/infrastructure/agentVideoSearchTools.js')
 const { createAgentVideoSearchStore } = await importBilibiliHost('modules/media/infrastructure/agentVideoSearchStore.js')
+const { createAgentToolSourceGuard } = await importBilibiliHost('modules/runtime/infrastructure/agentToolSourceGuard.js')
 const { conversationAddressKey } = await load('modules/runtime/domain/agentBindings.js')
 const redisTest = { skip: !redisAvailable, timeout: 20000 }, NOW = 1_800_000_000_000, SECRET = 'VIDEO_HOST_PRIVATE_123456/+='
 const gate = () => { let release; const promise = new Promise(resolve => { release = resolve }); return { promise, release } }
@@ -65,6 +66,94 @@ async function fixture(t, settings = {}) {
     download(input = { index: 1 }, ctx = context()) { return tool('videoDownloadTool').execute(input, ctx) },
     async raw() { const rows = []; for (const key of (await redis.reader.keys(redis.prefix + 'agent:video-search:v1:*')).sort()) rows.push([key, await redis.reader.get(key)]); return JSON.stringify(rows) } }
 }
+function ownedContext(f, context = f.context()) {
+  const reads = [], ensureTurn = context.ensureCurrent
+  const source = { messageId: context.request.messageId, author: structuredClone(context.actor.user) }
+  Object.assign(context, createAgentToolSourceGuard(context, async () => {
+    await ensureTurn()
+    reads.push(structuredClone(source))
+    if (f.knownSources.get(source.messageId) === false) throw Error('owned request source revoked')
+  }))
+  return { context, reads }
+}
+
+test('owned video source proofs authorize matching primary and ticket without duplicate generic reads', redisTest, async t => {
+  for (const delivery of ['card', 'attachment']) await t.test(delivery, async t => {
+    const f = await fixture(t, { attachments: true }), owned = ownedContext(f)
+    assert.equal((await f.search(undefined, owned.context)).status, 'succeeded')
+    const before = owned.reads.length
+    assert.ok(before > 0); assert.deepEqual(f.sourceChecks, [])
+    const result = delivery === 'card' ? await f.share({ index: 1 }, owned.context) : await f.download({ index: 1 }, owned.context)
+    assert.equal(result.status, 'succeeded'); assert.ok(owned.reads.length > before, 'delivery obtains fresh source proofs after search completed')
+    assert.deepEqual(f.sourceChecks, [], 'only the exact branded primary/ticket source can reuse its complete validator')
+    assert.equal(f.cards.length, delivery === 'card' ? 1 : 0); assert.equal(f.relays.length, delivery === 'attachment' ? 1 : 0)
+  })
+})
+
+test('owned video source proof rereads revoke an in-flight attachment before native delivery', redisTest, async t => {
+  const reached = gate(), held = gate(), cleaned = gate(); let released = 0
+  t.after(() => held.release())
+  const f = await fixture(t, { attachments: true, async prepare(_share, context) {
+    reached.release(context); await held.promise
+    return preparedVideo(card().id, { async release() { released++; cleaned.release() } })
+  } }), owned = ownedContext(f)
+  assert.equal((await f.search(undefined, owned.context)).status, 'succeeded')
+  const pending = f.download({ index: 1 }, owned.context), guard = await reached.promise
+  const before = owned.reads.length
+  await guard.ensureCurrent(); assert.ok(owned.reads.length > before)
+  f.knownSources.set(owned.context.request.messageId, false)
+  const lastAuthorized = owned.reads.length
+  await assert.rejects(guard.ensureCurrent()); assert.ok(owned.reads.length > lastAuthorized, 'a prior successful proof never authorizes a later invocation')
+  held.release(); assert.equal((await pending).status, 'failed'); await cleaned.promise
+  assert.equal(f.downloads.length, 1); assert.equal(f.relays.length, 0); assert.equal(f.cards.length, 0); assert.equal(released, 1)
+  assert.deepEqual(f.sourceChecks, [])
+})
+
+test('owned video source proof cannot authorize a different recalled search source', redisTest, async t => {
+  const f = await fixture(t, { attachments: true }), original = ownedContext(f)
+  assert.equal((await f.search(undefined, original.context)).status, 'succeeded')
+  const selected = ownedContext(f, f.context({ actor: { kind: 'user', user: { ...original.context.actor.user, id: 'human-2' } } }))
+  f.knownSources.set(original.context.request.messageId, false)
+  assert.equal((await f.download({ index: 1 }, selected.context)).status, 'failed')
+  assert.ok(selected.reads.length > 0, 'the selecting request remains independently authorized')
+  assert.ok(f.sourceChecks.some(source => source.messageId === original.context.request.messageId && source.author.id === original.context.actor.user.id))
+  assert.ok(f.sourceChecks.every(source => source.messageId !== selected.context.request.messageId))
+  assert.equal(f.downloads.length, 0); assert.equal(f.relays.length, 0); assert.equal(f.cards.length, 0)
+})
+
+test('owned video source proof retains the search generation fence even for its matching ticket source', redisTest, async t => {
+  const reached = gate(), held = gate(), cleaned = gate(); let released = 0
+  t.after(() => held.release())
+  const f = await fixture(t, { attachments: true, async prepare(_share, context) {
+    reached.release(context); await held.promise
+    return preparedVideo(card().id, { async release() { released++; cleaned.release() } })
+  } }), owned = ownedContext(f)
+  assert.equal((await f.search(undefined, owned.context)).status, 'succeeded')
+  const pending = f.download({ index: 1 }, owned.context), guard = await reached.promise
+  const replacement = f.context()
+  assert.equal((await f.search({ keyword: '替换搜索' }, replacement)).status, 'succeeded')
+  assert.equal(f.knownSources.get(owned.context.request.messageId), true, 'the primary source itself is still live')
+  await assert.rejects(guard.ensureCurrent())
+  held.release(); assert.equal((await pending).status, 'failed'); await cleaned.promise
+  assert.equal((await f.store.load(f.binding)).source.messageId, replacement.request.messageId)
+  assert.equal(f.relays.length, 0); assert.equal(f.cards.length, 0); assert.equal(released, 1)
+})
+
+test('owned video source fallback revalidates unbranded, replaced and borrowed validators', redisTest, async t => {
+  for (const mode of ['forged-marker', 'replaced-method', 'borrowed-method']) await t.test(mode, async t => {
+    const f = await fixture(t), owned = ownedContext(f), context = mode === 'replaced-method' ? owned.context : f.context()
+    if (mode === 'forged-marker') context.ensureCurrent = Object.assign(async () => {}, { ownedSource: true, matchesSource: () => true })
+    if (mode === 'replaced-method') context.ensureCurrent = async () => {}
+    if (mode === 'borrowed-method') context.ensureCurrent = owned.context.ensureCurrent
+    f.knownSources.set(context.request.messageId, false)
+    assert.equal((await f.search(undefined, context)).status, 'failed')
+    assert.ok(f.sourceChecks.some(source => source.messageId === context.request.messageId && source.author.id === context.actor.user.id))
+    assert.equal(f.searches.length, 0); assert.equal(f.resolutions.length, 0); assert.equal(f.cards.length, 0)
+    assert.equal(await f.store.load(f.binding), undefined)
+    assert.equal(owned.reads.length > 0, mode === 'borrowed-method', 'a foreign owner cannot lend its identity to the recalled current request')
+  })
+})
+
 test('activation exposes only the two human video tools and closed neutral input schemas', redisTest, async t => {
   assert.deepEqual(createAgentVideoSearchTools({ enabled: false }, {}), { builtIn: [] })
   const f = await fixture(t)

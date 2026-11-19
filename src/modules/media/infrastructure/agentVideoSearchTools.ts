@@ -11,6 +11,7 @@ import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agent
 import { validateAgentVideoCard } from './agentVideoCard.js'
 import { douyinGuard } from './agentDouyinRelayHttp.js'
 import { createAgentVideoSearchStore, type AgentVideoSearchSession, type AgentVideoSearchTicket, type AgentVideoShareAttempt, type AgentVideoShareState } from './agentVideoSearchStore.js'
+import { captureAgentToolSourceGuard } from '../../runtime/infrastructure/agentToolSourceGuard.js'
 
 export interface AgentVideoSearchToolsConfig { readonly enabled: boolean }
 export interface AgentVideoSearchToolsOptions {
@@ -62,16 +63,23 @@ export function createAgentVideoSearchTools(config: AgentVideoSearchToolsConfig,
     try { console.error(`[Agent] tool/${operation} ${outcome} ${code}`) } catch { /* No remaining writable observer. */ }
   }
   const source = (context: AgentToolContext) => ({ messageId: context.request!.messageId, author: context.actor.user! })
-  const guardFor = (context: AgentToolContext, selected: () => AgentVideoSearchTicket | undefined, timeoutMs = 45_000) => douyinGuard({
-    signal: context.signal, isCurrent: () => context.isCurrent(),
-    async ensureCurrent() {
-      await context.ensureCurrent?.()
-      if (!context.isSourceAvailable || !await context.isSourceAvailable(source(context))) throw failure()
-      const original = selected()
-      if (original && (!await context.isSourceAvailable(original.source) || !await store.current(original))) throw failure()
-      if (!context.isCurrent() || context.signal.aborted) throw failure()
-    },
-  }, timeoutMs)
+  const guardFor = (context: AgentToolContext, selected: () => AgentVideoSearchTicket | undefined, timeoutMs = 45_000) => {
+    const owned = captureAgentToolSourceGuard(context)
+    return douyinGuard({
+      signal: context.signal, isCurrent: () => context.isCurrent(),
+      async ensureCurrent() {
+        // The owned validator reads the complete current request on every call.
+        // Only its exact source identity can reuse that validator; a list from
+        // another request still needs its own fresh source authorization.
+        if (owned) await owned()
+        else await context.ensureCurrent?.()
+        if (!context.isSourceAvailable || !owned?.matchesSource(source(context)) && !await context.isSourceAvailable(source(context))) throw failure()
+        const original = selected()
+        if (original && (!owned?.matchesSource(original.source) && !await context.isSourceAvailable(original.source) || !await store.current(original))) throw failure()
+        if (!context.isCurrent() || context.signal.aborted) throw failure()
+      },
+    }, timeoutMs)
+  }
   const list = (items: readonly AgentVideoCard[]) => items.length ? [
     'B站视频搜索结果（按相关度，1 为首选）：',
     ...items.map((card, index) => `${index + 1}. ${card.title} / ${card.author || '未知作者'} / ${card.durationSeconds}秒 [${card.id}]\n${card.pageUrl}`),
