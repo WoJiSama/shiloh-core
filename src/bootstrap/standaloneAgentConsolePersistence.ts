@@ -5,7 +5,7 @@ import YAML from 'yaml'
 import { AgentConsoleError } from '../contracts/agentConsole.js'
 import type { AgentConsoleCommittedResponse, AgentConsoleContext, AgentConsoleJson } from '../contracts/agentConsole.js'
 import type { StandaloneAgentConsoleAssignmentPort, StandaloneAgentConsoleConfigPort, StandaloneAgentConsoleConfigurationPort, StandaloneAgentConsolePersonaPort, StandaloneAgentConsoleProviderPort } from './standaloneAgentConsoleServices.js'
-import { acquireStandaloneAgentConfigLock, inspectStandaloneAgentConfigTransaction, inspectStandaloneAgentSourceSnapshot, isStandaloneAgentSourceSnapshotCurrent } from './standaloneAgentConfigSources.js'
+import { acquireStandaloneAgentConfigLock, inspectStandaloneAgentConfigTransaction, inspectStandaloneAgentSourceSnapshot, isStandaloneAgentSourceSnapshotCurrent, observeStandaloneAgentSourceSnapshot } from './standaloneAgentConfigSources.js'
 import type { ConfigSourceName, ConfigSources, SourceSnapshot } from './standaloneAgentConfigSources.js'
 import { createStandaloneAgentConsoleCommitCoordinator } from './standaloneAgentConsoleCommit.js'
 import { agentBindingToken, agentConversationKey, createAgentBindingDirectory } from '../modules/runtime/domain/agentBindings.js'
@@ -143,6 +143,17 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
       if (!hostCurrent()) { retire('uncertain'); return false }
       if (!isStandaloneAgentSourceSnapshotCurrent(loaded)) { retire('restart-required'); return false }
       return true
+    },
+    observeCurrent(check: () => boolean): boolean {
+      if (retired) return false
+      if (!hostCurrent()) { retire('uncertain'); return false }
+      const result = observeStandaloneAgentSourceSnapshot(loaded, () => {
+        if (!execution.isCurrent()) return false
+        const accepted = check()
+        return accepted === true ? execution.isCurrent() : accepted
+      })
+      if (!result.current) retire('restart-required')
+      return !retired && result.accepted
     },
   })
   function ensure(context: AgentConsoleContext) {

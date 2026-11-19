@@ -7,6 +7,7 @@ import { AgentManagementError, type AgentManagementBindings, type AgentManagemen
 import { createAgentProfileManagement } from '../modules/memory/infrastructure/agentProfileManagement.js'
 import { createAgentTrusteeshipManagement } from '../modules/commitments/infrastructure/agentTrusteeshipManagement.js'
 import { captureSynchronousGuardCheck, createSynchronousGuard } from '../modules/runtime/domain/synchronousGuard.js'
+import { createAgentToolSourceGuard } from '../modules/runtime/infrastructure/agentToolSourceGuard.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest } from '../contracts/agentFiles.js'
 import type { AgentFileUpload, FileDeliveryReceipt } from '../contracts/agentFileDelivery.js'
 import type { AgentAudioBytes, AgentVideoBytes, SendMediaAction } from '../contracts/agentMedia.js'
@@ -133,6 +134,8 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   /** Optional trusted directory for scoped management; never supplied by model or browser input. */
   managementBindings?: AgentManagementBindings
   isExecutionCurrent?(): boolean
+  /** Observe one pure synchronous predicate with fresh configuration fences. */
+  observeExecutionCurrent?(check: () => boolean): boolean
   signal?: AbortSignal
   allowsText?(text: string, direction: 'incoming' | 'outgoing'): boolean
   /** Host credentials, including newly refreshed values, cannot become model-selected tool inputs. */
@@ -350,6 +353,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   function isRunning(): boolean {
     return !stopping && !options.signal?.aborted && options.isExecutionCurrent?.() !== false
   }
+  function observeCurrent(check: () => boolean): boolean {
+    return options.observeExecutionCurrent ? options.observeExecutionCurrent(check) === true : check()
+  }
   function conversationEnabled(target: ConversationAddress): boolean {
     return options.getSection().enabled !== false && (target.kind !== 'private' || options.privateChatEnabled === true)
   }
@@ -500,7 +506,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     active.set(invalidate, { agentId: binding.agentId, targetKey: conversationAddressKey(binding.target), requiresAI })
     memoryTurns.set(key, active)
     return {
-      isCurrent: () => isRunning() && !privacyBlocked(key) && (!requiresAI || allowsConversationAI(binding.target) && aiTurn?.isCurrent() === true) && !controller.signal.aborted,
+      isCurrent: () => observeCurrent(() => isRunning() && !privacyBlocked(key) &&
+        (!requiresAI || allowsConversationAI(binding.target) && aiTurn?.isCurrent() === true) && !controller.signal.aborted),
       signal: AbortSignal.any([controller.signal, ...(aiTurn ? [aiTurn.signal] : [])]),
       release() {
         aiTurn?.release()
@@ -1217,11 +1224,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     }
     return result
   }
-  const qqActionsCurrent = (binding: AgentBindingSnapshot) => isRunning() && options.isQqActionsCurrent?.() !== false &&
+  const qqActionsCurrent = (binding: AgentBindingSnapshot) => observeCurrent(() => isRunning() && options.isQqActionsCurrent?.() !== false &&
     binding.target.kind === 'group' && conversationEnabled(binding.target) && allowsConversationAI(binding.target) &&
-    bindingIsCurrent(binding.target, agentBindingToken(binding)) && adapterFor(binding.target)?.isReady() === true
+    bindingIsCurrent(binding.target, agentBindingToken(binding)) && adapterFor(binding.target)?.isReady() === true)
   const qqActions = createAgentQqActions({
     ...(options.qqActions ? { config: options.qqActions } : {}), storage, adapterFor, isCurrent: qqActionsCurrent,
+    ...(options.observeExecutionCurrent ? { observeCurrent } : {}),
     authorize(name, binding, actor) {
       if (!qqActionsCurrent(binding) || actor.kind === 'commitment') return false
       const config = defaultSimRuntimeConfig(options.getSection())
@@ -1230,7 +1238,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
     async sourceAvailable(binding, source, guard) {
       const target = binding.target, adapter = adapterFor(target)
-      const current = () => guard.isCurrent() && !guard.signal.aborted && qqActionsCurrent(binding) && adapterFor(target) === adapter
+      const current = () => observeCurrent(() => guard.isCurrent() && !guard.signal.aborted && qqActionsCurrent(binding) && adapterFor(target) === adapter)
       try {
         if (!adapter?.readMessage || !current() || !isMessageId(source.messageId) || !isPlatformAccount(source.author) ||
             !samePlatformNamespace(source.author, target.account) || await inbox.isRecalled(target, source.messageId)) return false
@@ -1376,8 +1384,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const target = binding.target
       const expected = agentBindingToken(binding)
       const isCurrent = () => {
-        try { return isRunning() && allowsConversationAI(target) && adapterFor(target)?.isReady() === true && conversationEnabled(target) &&
-          !textInboxFor(target) && incoming._isAgentBindingCurrent?.() === true && bindingIsCurrent(target, expected) }
+        try { return observeCurrent(() => isRunning() && allowsConversationAI(target) && adapterFor(target)?.isReady() === true && conversationEnabled(target) &&
+          !textInboxFor(target) && incoming._isAgentBindingCurrent?.() === true && bindingIsCurrent(target, expected)) }
         catch { return false }
       }
       if (!isCurrent()) return undefined
@@ -1427,7 +1435,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         } : {}),
         ...(actor.kind === 'user' && target.kind === 'group' && adapterFor(target)?.readMessage ? {
           async isSourceAvailable(source: { readonly messageId: string; readonly author: PlatformUserRef }, toolCurrent: () => boolean, signal: AbortSignal): Promise<boolean> {
-            const adapter = adapterFor(target), current = () => !signal.aborted && isCurrent() && toolCurrent() && adapterFor(target) === adapter
+            const adapter = adapterFor(target), current = () => observeCurrent(() => !signal.aborted && isCurrent() && toolCurrent() && adapterFor(target) === adapter)
             try {
               if (!isMessageId(source.messageId) || !isPlatformAccount(source.author) || !samePlatformNamespace(source.author, target.account) || !adapter?.readMessage || !current()) return false
               const messageId = source.messageId, author = { ...source.author }
@@ -1918,9 +1926,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           [...adapters.values()].some(row => samePlatformNamespace(row.account, incoming.sender) &&
             [row.account.id, row.botUserId].includes(incoming.sender.id))) return undefined
       const current = () => {
-        try { const live = bindingFor(target); return !signal.aborted && turnCurrent() &&
+        try { return observeCurrent(() => { const live = bindingFor(target); return !signal.aborted && turnCurrent() &&
           adapterFor(target) === adapter && adapter.isReady() && !!live && textBindingToken(live.binding) === token &&
-          (target.kind !== 'private' || !!peer && privatePeerFor(target, adapter) === peer && incoming.sender.id === peer) }
+          (target.kind !== 'private' || !!peer && privatePeerFor(target, adapter) === peer && incoming.sender.id === peer) }) }
         catch { return false }
       }
       const available = async (source: { readonly messageId: string; readonly author: PlatformUserRef }, expected?: Pick<IncomingMessage, 'text' | 'occurredAt'>) => {
@@ -1980,15 +1988,19 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         await guard?.ensureCurrent?.()
         if (!current() || guard?.signal.aborted || guard?.isCurrent() === false) throw new Error('工具投递来源已失效')
       }
+      const sourceContext = { binding, actor: { kind: 'user' as const, user: incoming.sender }, request, signal, isCurrent: current }
+      const ensureSource = async () => { await ensure(); if (textInteractionQuotes.get(incoming)?.token === token) await ensureInteractionQuote() }
+      // A previously pinned interaction quote can acquire its reply author during validation.
+      const sourceGuard = request.replyMessageId && interactionQuote ? { ...sourceContext, ensureCurrent: ensureSource }
+        : createAgentToolSourceGuard(sourceContext, ensureSource)
       return {
-        binding, actor: { kind: 'user', user: incoming.sender }, botUserId: adapter.botUserId,
+        ...sourceGuard, botUserId: adapter.botUserId,
         ...(target.kind === 'private' && peer ? { privatePeer: Object.freeze({ ...target.account, id: peer }) } : {}),
-        request, signal, isCurrent: current,
         ...(target.kind === 'group' && qqActions.builtIn.some(tool => supportsQqAction(target, tool.name)) ? {
           readMember: async (userId: string) => { await ensureInteraction(); return readGroupMember(target, userId, signal, current) },
           listMembers: async () => { await ensureInteraction(); return readGroupMembers(target, signal, current) },
         } : {}),
-        ensureCurrent: async () => { await ensure(); if (textInteractionQuotes.get(incoming)?.token === token) await ensureInteractionQuote() }, isSourceAvailable: available,
+        isSourceAvailable: available,
         ...(interactionsCurrent() && adapter.actions.interact ? {
           readMember: async (userId: string) => { await ensureInteraction(); return readGroupMember(target, userId, signal, current) },
           listMembers: async () => { await ensureInteraction(); return readGroupMembers(target, signal, current) },
@@ -2161,7 +2173,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const memory = await beginMemoryTurn(binding), key = conversationAddressKey(target), packet = structuredClone(event.packet)
       const previous = automaticQqWork.get(key) ?? Promise.resolve()
       const work = previous.catch(() => {}).then(async () => {
-        const current = () => memory.isCurrent() && qqActionsCurrent(binding) && adapterFor(target) === adapter
+        const current = () => observeCurrent(() => memory.isCurrent() && qqActionsCurrent(binding) && adapterFor(target) === adapter)
         const guard: AgentQqActionGuard = { signal: memory.signal, isCurrent: current, async ensureCurrent() {
           if (!current() || await inbox.isRecalled(target, packet.source.messageId)) throw new Error('红包来源已失效')
           const latest = await groupLogs.capture({ target, agentId: binding.agentId }, packet.source.author.id)
@@ -2811,8 +2823,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
               const expected = agentBindingToken(persona.binding)
               const incoming = event.message
               const memoryTurn = await beginMemoryTurn(persona.binding)
-              const isCurrent = () => isRunning() && conversationEnabled(target) && textInboxFor(target)?.kind === queue.kind &&
-                memoryTurn.isCurrent() && bindingIsCurrent(target, expected)
+              const isCurrent = () => observeCurrent(() => isRunning() && conversationEnabled(target) && textInboxFor(target)?.kind === queue.kind &&
+                memoryTurn.isCurrent() && bindingIsCurrent(target, expected))
               let handedToTrigger = false
               try {
                 if (options.allowsText?.(incoming.text, 'incoming') !== false) {
@@ -2822,7 +2834,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
                   await groupMemory.capture(incoming, persona.binding, isCurrent)
                   if (target.kind === 'group' && incoming.messageId && options.textTrigger !== undefined) {
                     const recallVersion = await inbox.textRecallVersion(target)
-                    const current = () => isCurrent() && options.isTextTriggerCurrent?.() !== false && adapterFor(target) === adapter && adapter.isReady()
+                    const current = () => observeCurrent(() => isCurrent() && options.isTextTriggerCurrent?.() !== false && adapterFor(target) === adapter && adapter.isReady())
                     const sourceCurrent = async () => {
                       if (!current() || !await inbox.canReply(target, incoming.messageId!) || await inbox.textRecallVersion(target) !== recallVersion) return false
                       const { botId, scene } = personMemoryAddress(target), excerpt = incoming.text || '[群聊消息]'

@@ -177,6 +177,8 @@ vision:
 
 适配器按原消息重新读取附图。图片链接限于内置的 QQ CDN 地址，通过 HTTPS 下载，每张最多 2 MiB，一次最多两张。支持从 OneBot 返回的图片段读取 `base64://` 内联数据。仅返回文件名或本地路径的 OneBot 实现无法通过这条链路读图。视觉模型收到图片和固定描述提示，文字主模型收到当轮的描述，视觉调用用量计入群账本。撤回、换绑或人物隐私设置变动会阻止回合继续使用失效的图片来源。 [OneBot v11 图片消息段](https://github.com/botuniverse/onebot-11/blob/master/message/segment.md#图片) [NapCat QQ CDN 地址](https://github.com/NapNeko/NapCatQQ/blob/334c4233e6a4f806e1a706c033dccc0b805360f2/packages/napcat-core/types/constant.ts)
 
+QQ 扩展动作与文字触发的同一次纯同步权限判断，共享一份完整配置观察，并在进入和退出时重新核对源文件及事务 fence。观察不会跨越 `await` 或实际投递；后续来源读取、排队、授权和原生发送仍执行新校验。相同内容的文件替换也会使本次判断失效，启用控制台时仍同步退休旧执行实例；未启用控制台时保留原绑定热读取行为。
+
 两种 WebSocket 连接的单条消息上限为 6 MiB，可容纳两张各 2 MiB 图片的 base64 和消息元数据；图片仍逐张校验原有二进制大小、格式和像素限制。
 
 ### 人物事实学习

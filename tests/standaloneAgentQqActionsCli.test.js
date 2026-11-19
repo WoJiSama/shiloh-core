@@ -28,6 +28,9 @@ const toolFor = kind => kind === 'gift' ? 'sendGiftTool' : kind === 'qzone' ? 'q
 const toolArgs = (kind, confirm) => kind === 'gift' ? { targetQQ: '我', giftType: 'champagne' } : kind === 'qzone' ? { text: POST_TEXT } : confirm === false ? { confirm: false } : {}
 const completion = (kind, confirm) => JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'qq-actions-call', type: 'function',
   function: { name: toolFor(kind), arguments: JSON.stringify(toolArgs(kind, confirm)) } }] } }], usage: { total_tokens: 8 } })
+// Observe the existing 45s business deadline plus durable settlement. This does
+// not extend a tool/provider deadline or permit replay of an uncertain effect.
+const nativeOutcomeObservationMs = 55000
 async function waitFor(probe, label, timeout = 20000) {
   const until = Date.now() + timeout
   while (Date.now() < until) { if (await probe()) return; await delay(25) }
@@ -173,7 +176,7 @@ async function fixture(t, { enabled = true, declared = true, flags = true, grant
           { type: 'at', data: { qq: String(BOT) } }, { type: 'text', data: { text } }] }
       sources.set(String(source.message_id), source); websocket.send(JSON.stringify(source)); return source
     },
-    async run(kind = 'gift', input = {}, outcomeTimeout = 20000) {
+    async run(kind = 'gift', input = {}) {
       if (models.length) await delay(900) // the normal text-group 800ms throttle remains active
       const before = (await records(kind)).length, modelBefore = models.length, textBefore = actions.filter(row => row.action === 'send_group_msg').length
       const readyBefore = (await events()).filter(row => row.operation === 'text_qq_action' && row.code === 'tool_result_ready').length
@@ -181,7 +184,7 @@ async function fixture(t, { enabled = true, declared = true, flags = true, grant
       await waitFor(() => models.length > modelBefore, 'one human model request')
       if (!allowed(toolFor(kind))) await waitFor(() => actions.filter(row => row.action === 'send_group_msg').length > textBefore, 'unavailable capability text')
       else if (input.confirm === false) await waitFor(async () => (await events()).filter(row => row.operation === 'text_qq_action' && row.code === 'tool_result_ready').length > readyBefore, 'local cancellation completes')
-      else await waitFor(async () => (await records(kind)).slice(before).some(row => row.state === (unknown ? 'unknown' : 'confirmed')), 'durable native outcome', outcomeTimeout)
+      else await waitFor(async () => (await records(kind)).slice(before).some(row => row.state === (unknown ? 'unknown' : 'confirmed')), 'durable native outcome', nativeOutcomeObservationMs)
       await drained(message); assert.equal(models.length, modelBefore + 1); assert.deepEqual(errors, []); return message
     },
     async cancelHeldModel() {
@@ -189,7 +192,7 @@ async function fixture(t, { enabled = true, declared = true, flags = true, grant
       if (!held.destroyed) held.end(completion(active, confirm)); await drained(source); await delay(300); assert.deepEqual(errors, [])
     },
     async revokeAfterPassword() {
-      await waitFor(async () => (await records('password')).some(row => row.phase === 'password_confirmed' && row.passwordConfirmed), 'durable confirmed password')
+      await waitFor(async () => (await records('password')).some(row => row.phase === 'password_confirmed' && row.passwordConfirmed), 'durable confirmed password', nativeOutcomeObservationMs)
       raw.tools.qqActions.redPackets.allowPasswordSend = false; configText = JSON.stringify(raw); await writeFile(file, configText)
       await waitFor(async () => (await records('password')).some(row => row.state === 'cancelled'), 'confirmed password cancellation')
       await drained(source); assert.deepEqual(errors, [])
@@ -228,7 +231,7 @@ test('actual QQ actions CLI keeps explicit red-packet grant independent of enabl
 
 test('actual QQ actions CLI performs one gift display, own Qzone publish and two-phase password grab without extra messages', { timeout: 210000 }, async t => {
   const f = await fixture(t); await f.start()
-  for (const kind of ['gift', 'qzone', 'password']) await f.run(kind, {}, 55000) // 45s product deadline plus durable settlement and observation
+  for (const kind of ['gift', 'qzone', 'password']) await f.run(kind)
   assert.deepEqual(f.effects().map(row => row.action), ['send_packet', 'send_qzone_msg', 'send_group_msg', 'grab_red_bag'])
   assert.equal(f.models.length, 3)
   const password = f.effects().find(row => row.action === 'send_group_msg'), grabbed = f.effects().find(row => row.action === 'grab_red_bag')

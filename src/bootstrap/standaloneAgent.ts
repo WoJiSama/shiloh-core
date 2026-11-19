@@ -245,6 +245,7 @@ export async function main(argv: string[]): Promise<void> {
       // Every existing model/tool/sending fence also observes this irreversible process-local retirement.
       // This owner already verifies the complete loaded source snapshot, including host and personas.
       config.isConfigCurrent = () => execution.isCurrent()
+      config.observeConfigCurrent = check => execution.observeCurrent(check)
       execution.signal.addEventListener('abort', () => {
         if (musicTimer) clearInterval(musicTimer)
         // stop() revokes admission, tool cancellation and queued sends synchronously before its drain awaits.
@@ -519,6 +520,7 @@ export async function main(argv: string[]): Promise<void> {
         get custom() { return mcp?.registry.custom ?? [] },
       },
       isExecutionCurrent: () => storage?.isCurrent() === true && config.isConfigCurrent(),
+      observeExecutionCurrent: check => config.observeConfigCurrent(check),
       signal: executionSignal,
       allowsText: (text, direction) => (direction !== 'outgoing' || allowsSecretText(text)) &&
         (direction === 'outgoing' && config.forbiddenWords.blockOutput === false || !words.findForbiddenWord(text, config.forbiddenWords)),

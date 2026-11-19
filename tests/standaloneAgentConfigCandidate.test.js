@@ -41,6 +41,24 @@ test('startup decodes the exact three source bytes it exposes and keeps text gro
   assert.deepEqual((await readdir(f.directory)).sort(), ['agent-bindings.yaml', 'host.yaml', 'persona-library.yaml'])
 })
 
+test('synchronous runtime observations retain live bindings without a console and reject changes during a check', async t => {
+  const f = await fixture(t), config = readStandaloneAgentConfig(f.file, { MAIN_KEY: 'private-key' })
+  const bindingFile = path.join(f.directory, 'agent-bindings.yaml'), changed = bindings({
+    agents: [{ id: 'daily', personaId: 'default' }, { id: 'next', personaId: 'default' }],
+    bindings: [{ connectionId: 'main', kind: 'group', conversationId: target.id, agentId: 'next' }],
+  })
+  await writeFile(bindingFile, JSON.stringify(changed))
+  assert.equal(config.isConfigCurrent(), true)
+  assert.equal(config.observeConfigCurrent(() => config.isConfigCurrent() && config.resolvePersona(target)?.binding.agentId === 'next'), true)
+  assert.equal(config.observeConfigCurrent(() => {
+    fs.writeFileSync(bindingFile, JSON.stringify(bindings()))
+    return config.isConfigCurrent() && config.resolvePersona(target)?.binding.agentId === 'next'
+  }), false)
+  assert.equal(config.resolvePersona(target)?.binding.agentId, 'daily')
+  await writeFile(f.file, f.values.host + '\n')
+  assert.equal(config.observeConfigCurrent(() => config.isConfigCurrent()), false)
+})
+
 test('candidate validation needs no existing files and performs no filesystem or network calls', async t => {
   const f = await fixture(t), validate = createStandaloneAgentCandidateValidator(f.file, { MAIN_KEY: 'private-key' })
   await rm(f.directory, { recursive: true, force: true })

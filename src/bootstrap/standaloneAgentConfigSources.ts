@@ -1,6 +1,7 @@
 import fs, { constants, type BigIntStats } from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import { types } from 'node:util'
 import { AgentConsoleError } from '../contracts/agentConsole.js'
 import { commitConfigTransaction, inspectConfigTransaction, readConfigTransactionGroup, recoverConfigTransaction, tryConfigTransactionLease } from './standaloneAgentConfigTransaction.js'
 import type { ConfigRecoveryHooks, ConfigTransactionHooks, ConfigTransactionInspection, TransactionRoot } from './standaloneAgentConfigTransaction.js'
@@ -21,6 +22,7 @@ interface Pin { readonly name: string; readonly stat: BigIntStats }
 interface Root { readonly hostFile: string; readonly root: string; readonly pins: readonly Pin[] }
 interface Guard { readonly signal: AbortSignal; ensureCurrent(): void }
 const snapshots = new WeakMap<SourceSnapshot, Root>()
+const observations = new WeakMap<Root, SourceSnapshot>()
 const maximum = 2 * 1024 * 1024
 const fail = (code: 'conflict' | 'unavailable' = 'conflict'): never => { throw new AgentConsoleError(code) }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
@@ -127,13 +129,40 @@ export function readStandaloneAgentSourceSnapshot(hostFile: string): SourceSnaps
   try { return lock.read() } finally { lock.release() }
 }
 export function isStandaloneAgentSourceSnapshotCurrent(snapshot: SourceSnapshot): boolean {
-  try { const root = snapshots.get(snapshot); return !!root && readRoot(root).revision === snapshot.revision } catch { return false }
+  try { const root = snapshots.get(snapshot); return !!root && (observations.get(root) ?? readRoot(root)).revision === snapshot.revision } catch { return false }
 }
 /** Observation only. Mutations must acquire the root lock and compare the entire read set. */
 export function inspectStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot): SourceSnapshot {
   const root = snapshots.get(snapshot)
   if (!root) return fail('unavailable')
-  return readRoot(root)
+  return observations.get(root) ?? readRoot(root)
+}
+/** Pure synchronous checks share one complete observation. A second complete read owns
+ * the outer result; no observation survives a return, an await, or an actual effect.
+ * Callers retain their loaded-version policy, including live bindings without a console. */
+export function observeStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot, check: () => boolean): Readonly<{ current: boolean; accepted: boolean }> {
+  const root = snapshots.get(snapshot)
+  const failed = { current: false, accepted: false } as const
+  if (!root) return failed
+  const evaluate = () => {
+    try {
+      const value: unknown = check()
+      if (types.isPromise(value)) {
+        try { void Promise.prototype.then.call(value, undefined, () => {}) } catch { /* Async checks are always rejected. */ }
+      }
+      return value === true
+    } catch { return false }
+  }
+  if (observations.has(root)) return { current: true, accepted: evaluate() }
+  let entry: SourceSnapshot
+  try { entry = readRoot(root) } catch { return failed }
+  observations.set(root, entry)
+  let accepted: boolean
+  try { accepted = evaluate() } finally { observations.delete(root) }
+  try {
+    const current = readRoot(root).revision === entry.revision
+    return { current, accepted: current && accepted }
+  } catch { return failed }
 }
 /** Runtime lock acquisition is bounded and abortable; an abandoned lock is never stolen. */
 export async function acquireStandaloneAgentConfigLock(snapshot: SourceSnapshot, guard: Guard): Promise<StandaloneAgentConfigLock> {

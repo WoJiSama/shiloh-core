@@ -7,6 +7,7 @@ import { giftRedis, account, binding, user, target } from './helpers/agentGiftSo
 const { createAgentQqActions } = await load('modules/runtime/infrastructure/agentQqActions.js')
 const { createAgentDiagnostics } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
 const { createAgentQzoneTools } = await load('modules/tools/infrastructure/agentQzoneTools.js')
+const { createAgentToolSourceGuard } = await load('modules/runtime/infrastructure/agentToolSourceGuard.js')
 const author = user('20000101'), subject = user('30000101')
 const defaultConfig = () => ({ qzone: { enabled: true }, gift: { enabled: true }, redPackets: { enabled: true, allowExplicit: true,
   automatic: { enabled: true, toolConfigured: true } } })
@@ -47,7 +48,9 @@ async function fixture(t, settings = {}) {
     async reviewQqText() { events.push('persona-text'); return settings.personaText !== false },
     async runQqAction(kind, run) {
       events.push('queue:' + kind); await settings.beforeQueue?.(f)
-      return run({ signal: controller.signal, isCurrent: () => current, async ensureCurrent() { events.push('queue-ensure'); assert.equal(current, true) } })
+      return run({ signal: controller.signal, isCurrent: () => current, async ensureCurrent() {
+        events.push('queue-ensure'); await settings.duringQueue?.(f); assert.equal(current, true)
+      } })
     },
   }
   const f = { redis, config, options, context, packet, effects, events, sources, permissions, adapter,
@@ -55,6 +58,9 @@ async function fixture(t, settings = {}) {
     signal: controller.signal, guard: { signal: controller.signal, isCurrent: () => current, async ensureCurrent() { assert.equal(current, true) } },
     restart() { return createAgentQqActions(options) },
   }
+  if (settings.ownedSource) Object.assign(context, createAgentToolSourceGuard(context, async () => {
+    events.push('owned-source'); assert.equal(current && sourceCurrent, true)
+  }))
   f.service = f.restart(); return f
 }
 const tool = (f, name) => { const selected = f.service.builtIn.find(item => item.name === name); assert.ok(selected); return selected }
@@ -79,6 +85,52 @@ test('gift callback uses the original host queue and durable workflow, never a f
   assert.equal(second.status, 'failed'); assert.equal(f.effects.length, 1)
 })
 
+test('configuration observation surrounds only synchronous current predicates, never source reads or effects', async t => {
+  const f = await fixture(t); let observing = false, observations = 0, predicates = 0
+  f.options.observeCurrent = check => {
+    assert.equal(observing, false); observing = true; observations++
+    try { const result = check(); assert.equal(typeof result, 'boolean'); return result }
+    finally { observing = false }
+  }
+  const isCurrent = f.options.isCurrent
+  f.options.isCurrent = selected => { assert.equal(observing, true); predicates++; return isCurrent(selected) }
+  for (const [owner, key] of [[f.options, 'authorize'], [f.options, 'sourceAvailable'], [f.context, 'ensureCurrent'],
+    [f.context, 'runQqAction'], [f.adapter, 'gift']]) {
+    const original = owner[key]
+    owner[key] = async function (...args) {
+      assert.equal(observing, false, key)
+      const result = await original.apply(this, args)
+      assert.equal(observing, false, key); return result
+    }
+  }
+  f.service = f.restart()
+  assert.equal((await tool(f, 'sendGiftTool').execute({}, f.context)).status, 'succeeded')
+  assert.equal(observing, false); assert.ok(observations > 1); assert.equal(predicates, observations)
+  assert.equal(f.effects.length, 1); assert.ok(f.sources.length > 0)
+})
+
+test('configuration observation fails closed and cannot retain authorization across a queue await', async t => {
+  for (const mode of ['false', 'throw', 'async']) {
+    const f = await fixture(t); let observations = 0
+    f.options.observeCurrent = check => {
+      observations++; assert.equal(check(), true)
+      if (mode === 'throw') throw Error('configuration observation unavailable')
+      return mode === 'async' ? Promise.resolve(true) : false
+    }
+    f.service = f.restart()
+    assert.equal((await tool(f, 'sendGiftTool').execute({}, f.context)).status, 'failed', mode)
+    assert.ok(observations > 0, mode); assert.deepEqual(f.effects, [], mode)
+  }
+  const gate = deferred(); let reached = false, observations = 0
+  const f = await fixture(t, { async duringQueue() { reached = true; await gate.promise } })
+  t.after(() => gate.resolve())
+  f.options.observeCurrent = check => { observations++; return check() }; f.service = f.restart()
+  const pending = tool(f, 'sendGiftTool').execute({}, f.context)
+  await waitFor(() => reached); const before = observations
+  f.config.gift.enabled = false; gate.resolve()
+  assert.equal((await pending).status, 'failed'); assert.ok(observations > before); assert.deepEqual(f.effects, [])
+})
+
 test('missing queue, authorization, current source or adapter identity prevents gift dispatch', async t => {
   for (const phase of ['queue', 'authorize', 'source', 'adapter']) {
     const f = await fixture(t)
@@ -101,6 +153,42 @@ test('queue wait cannot survive configuration, binding, adapter or source revoca
     else f.withdraw()
     gate.resolve(); assert.notEqual((await pending).status, 'succeeded'); assert.deepEqual(f.effects, [])
   }
+})
+
+test('owned human source is fresh after the final queue and authorization await before native dispatch', async t => {
+  for (const phase of ['queue', 'authorize']) {
+    let reached = false
+    const gate = deferred(), f = await fixture(t, { ownedSource: true, async duringQueue() {
+      if (phase === 'queue' && f.events.includes('gift-provider')) { reached = true; await gate.promise }
+    } })
+    t.after(() => gate.resolve())
+    const authorize = f.options.authorize
+    f.options.authorize = async (...args) => {
+      const allowed = await authorize(...args)
+      if (phase === 'authorize' && f.events.includes('gift-provider')) { reached = true; await gate.promise }
+      return allowed
+    }
+    const pending = tool(f, 'sendGiftTool').execute({}, f.context)
+    await waitFor(() => reached); f.withdraw(); gate.resolve()
+    assert.notEqual((await pending).status, 'succeeded', phase); assert.deepEqual(f.effects, [], phase)
+  }
+})
+
+test('owned source bypass applies only to its human source; foreign and wallet sources retain independent checks', async t => {
+  const owned = await fixture(t, { ownedSource: true })
+  assert.equal((await tool(owned, 'sendGiftTool').execute({}, { ...owned.context })).status, 'succeeded')
+  assert.ok(owned.events.filter(event => event === 'owned-source').length > 1); assert.deepEqual(owned.sources, [])
+  const foreign = await fixture(t, { ownedSource: true })
+  foreign.context.ensureCurrent = async () => { foreign.events.push('foreign-source') }
+  foreign.withdraw()
+  assert.equal((await tool(foreign, 'sendGiftTool').execute({}, foreign.context)).status, 'failed')
+  assert.deepEqual(foreign.effects, []); assert.ok(foreign.sources.some(source => source.messageId === 'human-1'))
+  const packet = await fixture(t, { ownedSource: true })
+  packet.context.request.text = '请抢这个红包'; packet.context.request.replyMessageId = packet.packet.source.messageId
+  Object.assign(packet.context, createAgentToolSourceGuard(packet.context, async () => { packet.events.push('owned-source') }))
+  assert.equal((await tool(packet, 'grabRedBagTool').execute({}, packet.context)).status, 'succeeded')
+  assert.ok(packet.sources.some(source => source.messageId === packet.packet.source.messageId))
+  assert.ok(packet.sources.every(source => source.messageId !== 'human-1'))
 })
 
 test('own qzone publish/delete share queue, persona plus host policy, ownership ledger and terminal writes', async t => {

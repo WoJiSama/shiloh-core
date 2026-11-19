@@ -9,6 +9,7 @@ import { createAgentQzoneTools } from '../../tools/infrastructure/agentQzoneTool
 import { validateAgentQzoneBinding, validateAgentQzoneOperation } from '../../tools/infrastructure/agentQzoneValidation.js'
 import { createAgentRedPacketTools } from '../../tools/infrastructure/agentRedPacketTools.js'
 import { platformAccountKey } from '../domain/agentBindings.js'
+import { captureAgentToolSourceGuard, type AgentToolSourceProof } from './agentToolSourceGuard.js'
 import type { AgentDiagnostics } from './agentDiagnostics.js'
 import { createAgentGiftWorkflow } from './agentGiftWorkflow.js'
 import { createAgentQzoneLedger } from './agentQzoneLedger.js'
@@ -27,6 +28,8 @@ export interface AgentQqActionsOptions {
   readonly storage: AgentRedPacketStorage
   adapterFor(target: ConversationAddress): PlatformConnectionAdapter | undefined
   isCurrent(binding: AgentBindingSnapshot): boolean
+  /** The observation ends before any source read, authorization await or effect. */
+  observeCurrent?(check: () => boolean): boolean
   authorize(name: AgentQqActionToolName, binding: AgentBindingSnapshot, actor: AgentToolContext['actor']): boolean | Promise<boolean>
   sourceAvailable(binding: AgentBindingSnapshot, source: Source, guard: AgentQqActionGuard): Promise<boolean>
   affinity?(binding: AgentBindingSnapshot, userId: string): number
@@ -51,7 +54,7 @@ export function createAgentQqActions(options: AgentQqActionsOptions) {
     try { options.diagnostics?.emit({ stage: 'delivery', operation: 'qq_action', outcome: 'failed', code: `qq_${kind.replace('-', '_')}_unavailable` }) } catch { /* Diagnostics cannot authorize an effect. */ }
   }
   function capture(bindingInput: AgentBindingSnapshot, kind: Kind, tool: AgentQqActionToolName,
-    actor: AgentToolContext['actor'], outer: AgentQqActionGuard, context?: AgentToolContext, simulation = false) {
+    actor: AgentToolContext['actor'], outer: AgentQqActionGuard, context?: AgentToolContext, simulation = false, ensureOwnedSource?: AgentToolSourceProof) {
     const binding = validateAgentQzoneBinding(bindingInput), snapshot = JSON.stringify(binding), policy = JSON.stringify(config())
     const identity = context && JSON.stringify([context.binding, context.actor, context.request])
     const adapter = options.adapterFor(binding.target)
@@ -62,17 +65,18 @@ export function createAgentQqActions(options: AgentQqActionsOptions) {
       ? [adapter.redPackets?.read, adapter.redPackets?.recent, adapter.redPackets?.revalidate, adapter.redPackets?.sendPassword, adapter.redPackets?.grab] : [port]
     return (queue: AgentQqActionGuard = outer) => {
       const signal = AbortSignal.any([outer.signal, queue.signal])
+      const evaluateCurrent = () => !signal.aborted && outer.isCurrent() === true && queue.isCurrent() === true && options.isCurrent(binding) === true &&
+        JSON.stringify(validateAgentQzoneBinding(bindingInput)) === snapshot && JSON.stringify(config()) === policy && enabled(kind, simulation) &&
+        (!context || JSON.stringify([context.binding, context.actor, context.request]) === identity) &&
+        options.adapterFor(binding.target) === adapter && adapter.isReady() === true && adapter.id === binding.connectionId &&
+        platformAccountKey(adapter.account) === platformAccountKey(binding.target.account) &&
+        (kind === 'gift' ? adapter.gift : kind === 'qzone' ? adapter.qzone : adapter.redPackets) === port &&
+        (kind === 'qzone' ? [adapter.qzone?.execute] : kind === 'red-packet'
+          ? [adapter.redPackets?.read, adapter.redPackets?.recent, adapter.redPackets?.revalidate, adapter.redPackets?.sendPassword, adapter.redPackets?.grab] : [adapter.gift])
+          .every((method, index) => method === methods[index])
       const current = () => {
         try {
-          return !signal.aborted && outer.isCurrent() === true && queue.isCurrent() === true && options.isCurrent(binding) === true &&
-            JSON.stringify(validateAgentQzoneBinding(bindingInput)) === snapshot && JSON.stringify(config()) === policy && enabled(kind, simulation) &&
-            (!context || JSON.stringify([context.binding, context.actor, context.request]) === identity) &&
-            options.adapterFor(binding.target) === adapter && adapter.isReady() === true && adapter.id === binding.connectionId &&
-            platformAccountKey(adapter.account) === platformAccountKey(binding.target.account) &&
-            (kind === 'gift' ? adapter.gift : kind === 'qzone' ? adapter.qzone : adapter.redPackets) === port &&
-            (kind === 'qzone' ? [adapter.qzone?.execute] : kind === 'red-packet'
-              ? [adapter.redPackets?.read, adapter.redPackets?.recent, adapter.redPackets?.revalidate, adapter.redPackets?.sendPassword, adapter.redPackets?.grab] : [adapter.gift])
-              .every((method, index) => method === methods[index])
+          return options.observeCurrent ? options.observeCurrent(evaluateCurrent) === true : evaluateCurrent()
         } catch { return false }
       }
       const base = async () => {
@@ -83,15 +87,23 @@ export function createAgentQqActions(options: AgentQqActionsOptions) {
         if (!current() || await options.authorize(tool, binding, actor) !== true || !current()) throw unavailable()
       }
       const sourceGuard: AgentQqActionGuard = Object.freeze({ signal, isCurrent: current, ensureCurrent: base })
-      const sourceAvailable = async (source: Source) => {
+      const sourceAvailable = async (source: Source): Promise<boolean> => {
+        if (ensureOwnedSource?.matchesSource(source)) { await ensure(); return true }
         await base()
         if (await options.sourceAvailable(binding, source, sourceGuard) !== true) return false
         await base(); return true
       }
-      const ensure = async () => {
+      const ensure = async (): Promise<void> => {
         await base()
         if (context) {
           if (context.actor.kind !== 'user' || !context.actor.user || !context.request || typeof context.ensureCurrent !== 'function') throw unavailable()
+          // Queue and authorization callbacks may revoke the source after base's first read.
+          // The owned validator reads it again, without the generic source guard's recursion.
+          if (ensureOwnedSource) {
+            await ensureOwnedSource()
+            if (!current()) throw unavailable()
+            return
+          }
           if (!await sourceAvailable({ messageId: context.request.messageId, author: context.actor.user })) throw unavailable()
         }
         await base()
@@ -99,15 +111,17 @@ export function createAgentQqActions(options: AgentQqActionsOptions) {
       return { binding, adapter, guard: Object.freeze({ signal, isCurrent: current, ensureCurrent: ensure }), sourceAvailable }
     }
   }
-  function outer(context: AgentToolContext): AgentQqActionGuard {
+  function outer(context: AgentToolContext): { guard: AgentQqActionGuard; ensureOwnedSource?: AgentToolSourceProof } {
     if (typeof context.ensureCurrent !== 'function' || typeof context.runQqAction !== 'function') throw unavailable()
-    return { signal: context.signal, isCurrent: () => context.isCurrent(), ensureCurrent: () => context.ensureCurrent!() }
+    const owned = captureAgentToolSourceGuard(context)
+    return { guard: { signal: context.signal, isCurrent: () => context.isCurrent(), ensureCurrent: owned ?? (() => context.ensureCurrent!()) },
+      ...(owned ? { ensureOwnedSource: owned } : {}) }
   }
   async function executeGift(plan: AgentGiftPlan, context: AgentToolContext): Promise<AgentGiftResult> {
     let entered = false
     try {
       const parent = outer(context)
-      const enter = capture(context.binding, 'gift', 'sendGiftTool', context.actor, parent, context)
+      const enter = capture(context.binding, 'gift', 'sendGiftTool', context.actor, parent.guard, context, false, parent.ensureOwnedSource)
       return await context.runQqAction!('gift', async queue => {
         const scope = enter(queue)
         await scope.guard.ensureCurrent(); entered = true
@@ -122,7 +136,7 @@ export function createAgentQqActions(options: AgentQqActionsOptions) {
     try {
       const operation = validateAgentQzoneOperation(operationInput); kind = operation.kind
       const simulation = !['publish', 'delete'].includes(kind), parent = outer(context)
-      const enter = capture(context.binding, 'qzone', simulation ? 'simQzoneInteract' : 'qqZoneTool', context.actor, parent, context, simulation)
+      const enter = capture(context.binding, 'qzone', simulation ? 'simQzoneInteract' : 'qqZoneTool', context.actor, parent.guard, context, simulation, parent.ensureOwnedSource)
       return await context.runQqAction!('qzone', async queue => {
         const scope = enter(queue)
         await scope.guard.ensureCurrent()
@@ -156,7 +170,7 @@ export function createAgentQqActions(options: AgentQqActionsOptions) {
     let entered = false
     try {
       const parent = outer(context)
-      const enter = capture(context.binding, 'red-packet', 'grabRedBagTool', context.actor, parent, context)
+      const enter = capture(context.binding, 'red-packet', 'grabRedBagTool', context.actor, parent.guard, context, false, parent.ensureOwnedSource)
       return await context.runQqAction!('red-packet', async queue => {
         const scope = enter(queue)
         await scope.guard.ensureCurrent()

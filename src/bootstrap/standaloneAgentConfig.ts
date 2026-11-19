@@ -40,7 +40,7 @@ import { resolveAgentTextTriggerConfig } from '../modules/conversation/infrastru
 import { readStandaloneAgentConsoleConfig } from './standaloneAgentConsoleConfig.js'
 import type { ConfigSources, SourceSnapshot } from './standaloneAgentConfigSources.js'
 import type { ConsoleModelSlot, ConsoleModelView, ValidatedConsoleCandidate } from './standaloneAgentConsolePersistence.js'
-import { inspectStandaloneAgentSourceSnapshot, readStandaloneAgentSourceSnapshot } from './standaloneAgentConfigSources.js'
+import { inspectStandaloneAgentSourceSnapshot, observeStandaloneAgentSourceSnapshot, readStandaloneAgentSourceSnapshot } from './standaloneAgentConfigSources.js'
 import type { AgentConsoleJson } from '../contracts/agentConsole.js'
 
 function object(value: unknown): Record<string, unknown> {
@@ -751,5 +751,10 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
       } catch { return undefined }
     } })
   if (inspectStandaloneAgentSourceSnapshot(sourceSnapshot).revision !== sourceSnapshot.revision) throw new Error('检查期间宿主配置已改变，请重试')
-  return { ...config, sourceSnapshot }
+  return { ...config, sourceSnapshot,
+    observeConfigCurrent(check: () => boolean): boolean {
+      const result = observeStandaloneAgentSourceSnapshot(sourceSnapshot, check)
+      return result.current && result.accepted
+    },
+  }
 }

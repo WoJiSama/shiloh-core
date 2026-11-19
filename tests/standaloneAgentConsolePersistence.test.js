@@ -123,6 +123,31 @@ test('host dice save returns its canonical view, retires execution immediately a
   assert.equal(f.owned.execution.isCurrent(), false)
 })
 
+test('a synchronous execution observation retires immediately when a callback replaces loaded configuration', async t => {
+  const f = await fixture(t), original = fs.readFileSync(f.hostFile, 'utf8'), replacement = path.join(f.root, 'replacement')
+  assert.equal(f.owned.execution.observeCurrent(() => f.owned.execution.isCurrent()), true)
+  assert.equal(f.owned.execution.observeCurrent(() => {
+    fs.writeFileSync(replacement, original)
+    fs.renameSync(replacement, f.hostFile)
+    return f.owned.execution.isCurrent()
+  }), false)
+  assert.equal(f.owned.execution.signal.aborted, true)
+  assert.equal(f.owned.execution.isCurrent(), false)
+  const view = await f.request('/api/config-state')
+  assert.equal(view.status, 200)
+  assert.equal(view.data.phase, 'restart-required')
+})
+
+test('execution observations reject async checks and recheck host authority without caching it', async t => {
+  const f = await fixture(t)
+  assert.equal(f.owned.execution.observeCurrent(() => Promise.reject(new Error('async check'))), false)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(f.owned.execution.signal.aborted, false)
+  assert.equal(f.owned.execution.observeCurrent(() => { f.control.lease = false; return true }), false)
+  assert.equal(f.owned.execution.signal.aborted, true)
+  assert.equal(f.owned.execution.isCurrent(), false)
+})
+
 test('root persona and reply guard save targets the host only and exposes no plugin-only fields', async t => {
   const f = await fixture(t), before = await f.files(), view = (await f.request('/api/config/persona')).data
   assert.equal(Object.keys(fieldsOf(view)).some(key => /globalStyleLearning|userProfiles|groupProfiles/u.test(key)), false)
