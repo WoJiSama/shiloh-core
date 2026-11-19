@@ -89,6 +89,19 @@ test('empty wallpaper results can fall back to one Bing lookup without repeat re
   assert.equal(f.queries.length, 2); assert.equal(f.sends.length, 1)
 })
 
+test('Bing accepts only valid bounded JSON from its actual text/plain metadata endpoint', async () => {
+  const response = { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' }, body: JSON.stringify({ results: [{ imageUrl: urls(1)[0] }] }) }
+  const f = setup({ metadata(url) { return url.hostname === 'wallpaper.soutushenqi.com' ? json({ data: [] }) : response } })
+  assert.equal((await f.run({ query: '山水风景', count: 1 }, 'bingImageSearchTool')).status, 'succeeded')
+  assert.equal(f.sends.length, 1); assert.equal(f.queries.length, 2)
+  const invalid = setup({ metadata(url) { return url.hostname === 'wallpaper.soutushenqi.com' ? json({ data: [] }) : { ...response, body: '<html>not JSON</html>' } } })
+  assert.equal((await invalid.run({ query: '山水风景', count: 1 }, 'bingImageSearchTool')).status, 'failed')
+  assert.equal(invalid.downloads.length, 0); assert.equal(invalid.sends.length, 0)
+  const wrongProvider = setup({ metadata() { return { ...response, body: JSON.stringify({ data: { object_list: [{ photo: { path: urls(1)[0] } }] } }) } } })
+  assert.equal((await wrongProvider.run()).status, 'failed')
+  assert.equal(wrongProvider.downloads.length, 0); assert.equal(wrongProvider.sends.length, 0)
+})
+
 test('Duitang stops after ten pages and limits candidate downloads independently of upstream result counts', async () => {
   const f = setup({ metadata(url) { const page = Number(url.searchParams.get('start')) / 24; return emoji([`https://images.example.test/page-${page}.png`]) }, download() { return { status: 500, headers: {}, body: '' } } })
   assert.equal((await f.run({ keyword: '猫', count: 10 })).status, 'failed')

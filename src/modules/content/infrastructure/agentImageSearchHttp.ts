@@ -94,7 +94,10 @@ export function createImageSearchJsonReader(dependencies: AgentImageSearchHttpDe
       response = received
       await ensureAgentWebCurrent(guard)
       const type = (received.headers['content-type'] ?? '').split(';', 1)[0]!.trim().toLowerCase()
-      if (type !== 'application/json' && !type.endsWith('+json')) throw imageSearchFailure()
+      // This fixed Bing endpoint serves JSON as text/plain. Keep the complete
+      // JSON, byte, schema and secret checks below; no other provider gains it.
+      const bingPlainJson = type === 'text/plain' && url.origin + url.pathname === 'https://cn.bing.com/images/vsasync'
+      if (type !== 'application/json' && !type.endsWith('+json') && !bingPlainJson) throw imageSearchFailure()
       const bytes = await readImageSearchBody(received, guard, policy.maxBytes)
       const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
       if (!allows(text)) throw imageSearchFailure()
