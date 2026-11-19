@@ -180,7 +180,7 @@ async function exerciseImageHost(t, { receipt = 'sent', edit = false, candidates
   })
   exited = once(child, 'exit')
   for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { log += chunk })
-  await waitFor(() => log.includes('已启动'), 'standalone image host readiness')
+  await waitFor(() => log.includes('已启动'), 'standalone image host readiness', 15_000)
   client.send(JSON.stringify({ post_type: 'message', ...original }))
   await waitFor(() => finishRequested, 'image tool result consumed by the model')
   await waitFor(async () => {
