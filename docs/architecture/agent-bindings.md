@@ -1699,3 +1699,13 @@ NjuGVo 实际 npm 归档为 `/tmp/bl-console-perf-archive-NjuGVo-XcZVkK/bl-chat-
 源码定向已覆盖真实审核/打标/向量、满库成功替换与失败不删旧图、角色隔离、取消及迟到结果、历史截断、源身份伪造、引用来源与小数序号拒绝。独立 CLI 两例使用隔离 Redis、本地模型和替身 OneBot，实际走自动建库、显式同图去重、配文合并与 QQ 表情字段、未知不重发，以及完整 B 站 transport → 搜索 → 定时季度/热评同步 → 弃番。首次 CLI 追番等待超时未复现，保留原失败日志；同例未延长十五秒工具等待，后续两例完整通过。安装包、真实外部 B 站访问、历史库迁移和生产部署以后续回读为准。
 
 旧运行目录保持删除。只读核对找到两份九月一日的同一历史档案，索引二百条、图片一百九十八个，其中一百九十四条精确匹配、六条缺文件、四个孤立文件；已知十一月十八日冻结包没有表情库，不能称作下线前最终快照。离线迁移工具 `scripts/migrate-agent-emoji.mjs` 只写新的候选目录，核对档案索引 SHA、图片实际 SHA/解码/大小和路径，缺图明确不可用、重复 hash 整组排除、孤立文件不补登，保留禁用与使用统计，清除未证明模型一致的旧向量。来源明确为历史档案，不能补造原消息或传播给其他 Agent；实际生产分配与可用数量以候选/交付回执为准。
+
+本批实现提交 `11236f69b2b706b576eb26183d0f2b40ba6006a9` 已推送开发分支并快进合并远端 main。最终 backend 二千六百五十二个文件构建、集中 strict 类型及架构边界检查通过；构建后十六文件一百四十项定向回归全部通过。最终 `.release/agent-iFlkVr` 生成真实 npm 归档，在仓库外解包后使用包内锁文件执行 `npm ci --omit=dev`，严格 NodeNext 公共消费者实际导入并执行 `/local-emoji` 的 runtime/ingress 及 `/life-threads` 提供器。安装目录十二文件一百二十五项全部通过，fail/cancel/skip 均为零，六百九十四个发布文件在测试前后逐项 SHA-256 相同。两例 CLI 的模型、图片和 OneBot 为本地替身，Redis 与独立宿主实际运行；不以此证明真实 QQ 客户端表情显示。证据为 `/tmp/bl-core-life-emoji-installed-20261119.json` 与 `/tmp/bl-life-emoji-installed-tests-20261119.log`。
+
+历史档案在服务器内核验并迁入 shiloh 的独立分区，其他两个 Agent 不复制该库。档案 SHA-256 为 `e1654b317707d5106ca8bcaeae0af44e5493aeba0f99c142f8391edcb1c91f87`，原索引为 `6b2f0a736f579e87512da1a2d35b40b21cdc5f681fd2aefb103457dc668ba20a`。实际迁移保留二百条记录，复制并完整解码一百九十四张可用图片（54035587 字节），六条缺图标记不可用，四个孤立文件不导入；非法记录、损坏图片、hash 不符及重复 hash 均为零。二百条旧向量全部清空，档案来源及逐条出处保存在 `legacy-provenance.json`，不补造原消息身份。这是九月档案恢复，不是下线前最终表情库的恢复。迁移回执为服务器 `/opt/bl-chat-agent/staging/core-life-emoji-20261119/emoji-migration-receipt.json`。
+
+同一最终 release 在生产服务器使用真实 QQ 绑定与短期 current guard 只读访问 B 站：搜索解析成功约 951ms，同步成功约 1138ms，读取到第十三集与四条资料；SPI、搜索、季度及热评共五次 HTTP 均为 200，总耗时约 2089ms。配置前后哈希一致，没有 QQ 发送、付费模型调用或业务存储写入，不输出 cookie 或资料正文。安全结果为服务器同目录 `live-life-thread-read.json`。这证明实际上游网络和解析可用，不证明追番资料的长期质量或真实群内交互。
+
+生产 current、实际进程目录及发布清单均为该实现提交，六百九十四个发布文件全部核验。配置只通过 owner 的完整事务增加 localEmoji 设置；环境文件保留原始字节前缀，只追加三个表情模型凭据变量，绑定与人设内容及元数据保持不变，原图片生成三渠道、编辑两渠道及两个找图开关继续解析成功。回读 Core active、NRestarts=0、qq-main connected、三位本人和二十个绑定，配置 active、loaded/stored revision 相同、无需重启且事务 clean。前端及认证接口为 200，未认证任务接口为 401，日志未降级、failed=0；任务读取返回四条并明确标记有界扫描截断。两个旧 unit 仍为 not-found，`/opt/trss-yunzai` 不存在。回执和验证为服务器同目录 `deployment-receipt.json`、`verification.json`，备份为 `/opt/bl-chat-agent/backups/life-emoji-2026-11-19T09-41-19Z`。部署验证没有主动发送真实 QQ 消息或调用付费模型。
+
+本批工程、独立安装、历史档案恢复、真实 B 站读取与生产加载分别验证完成，整体 Core/QQ 迁移目标继续进行中。下一实现切片优先补收藏完成后的持久来源关联、重复图片的多来源登记、撤回及人物遗忘清理，并阻止删除中断或维护补登使失效图片复活；尚无证明的完整遗忘分区继续保持 unsupported。真实 QQ 自动收藏、精选与客户端展示、第二连接权限、各外部模型和长期成长质量仍需分别验收，不能以本批安装或部署通过替代。
