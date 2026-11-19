@@ -10,11 +10,19 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { createClient } from '@redis/client'
 import { WebSocketServer } from 'ws'
-import { createConversationMemoryStore } from '../dist/backend/modules/memory/infrastructure/conversationMemoryStore.js'
-import { simulationAddressKey } from '../dist/backend/modules/simulation/infrastructure/simulationAddress.js'
+import { agentHostModuleUrl, importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
+
+const [{ createConversationMemoryStore }, { simulationAddressKey }] = await Promise.all([
+  load('modules/memory/infrastructure/conversationMemoryStore.js'), load('modules/simulation/infrastructure/simulationAddress.js'),
+])
 
 const repo = fileURLToPath(new URL('../', import.meta.url))
 const entry = path.join(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo, 'scripts/start-agent.mjs')
+const sourceLoader = new URL('./helpers/bilibiliQualitySource.mjs', import.meta.url).href
+function cliArgs(args) {
+  return process.env.BL_CHAT_AGENT_SOURCE_TEST === '1' ? ['--import', sourceLoader, '--input-type=module', '-e',
+    `const {main}=await import(${JSON.stringify(agentHostModuleUrl('bootstrap/standaloneAgent.js').href)}); await main(process.argv.slice(1))`, '--', ...args] : [entry, ...args]
+}
 const redisAvailable = spawnSync('redis-server', ['--version'], { stdio: 'ignore' }).status === 0
 const botId = 19000021, groupId = 310201, userId = 330039
 const mainKey = 'standalone-summary-main-private-key'
@@ -42,7 +50,7 @@ function completion(content, usage = { prompt_tokens: 12, completion_tokens: 3, 
   return JSON.stringify({ choices: [{ message: { content } }], usage })
 }
 
-async function fixture(t, { instance, backend = true, enabled = true }) {
+async function fixture(t, { instance, backend = true, enabled = true, cleanup = false, startupTimeoutMs = 8000 }) {
   const directory = await mkdtemp(path.join(tmpdir(), 'standalone-conversation-memory-'))
   const socketPath = path.join(directory, 'redis.sock')
   const redis = spawn('redis-server', ['--port', '0', '--unixsocket', socketPath, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
@@ -119,7 +127,7 @@ async function fixture(t, { instance, backend = true, enabled = true }) {
     ...(backend ? { midtermSummary: { baseUrl: `http://127.0.0.1:${port}/summary/v1`, name: 'standalone-summary-backend', apiKeyEnv: 'TEST_SUMMARY_BACKEND_KEY' } } : {}),
     midtermMemory: { enabled, minMessages: 4, debounceMs: 5000, maxSummaryChars: 500 },
     episodicMemory: { enabled: true, proactiveEnabled: true },
-    textGroups: [{ connectionId: 'qq-summary', conversationId: String(groupId) }],
+    textGroups: [groupId, ...(cleanup ? [groupId + 1] : [])].map(id => ({ connectionId: 'qq-summary', conversationId: String(id) })),
     connections: [{ id: 'qq-summary', url: `ws://127.0.0.1:${port}/onebot`, accessTokenEnv: 'TEST_SUMMARY_ONEBOT_TOKEN' }],
     simulation: { wake: { probability: 0, proactiveProbability: 0 }, reflection: { enabled: false },
       rhythm: { enabled: false }, personProfile: { enabled: false }, turn: { minSendGapMs: 0 }, budget: { dailyCostCny: 0 } },
@@ -127,7 +135,7 @@ async function fixture(t, { instance, backend = true, enabled = true }) {
   await writeFile(path.join(directory, 'agent-bindings.yaml'), JSON.stringify({
     version: 1, agents: [{ id: 'daily', personaId: 'default' }],
     connections: [{ id: 'qq-summary', platform: 'qq', namespace: 'global', accountId: String(botId) }],
-    bindings: [{ connectionId: 'qq-summary', kind: 'group', conversationId: String(groupId), agentId: 'daily' }],
+    bindings: [groupId, ...(cleanup ? [groupId + 1] : [])].map(id => ({ connectionId: 'qq-summary', kind: 'group', conversationId: String(id), agentId: 'daily' })),
   }))
   const configFile = path.join(directory, 'agent-host.yaml')
   await writeFile(configFile, JSON.stringify(config))
@@ -139,27 +147,55 @@ async function fixture(t, { instance, backend = true, enabled = true }) {
     eval: (script, options) => reader.eval(script, { keys: options.keys.map(key => prefix + key), arguments: options.arguments }),
   })
   async function state() { return (await memory.list()).find(row => row.scope.target.id === String(groupId)) }
+  async function rawStates() {
+    const keys = await reader.keys(`${prefix}agent:conversation-memory:v1:state:*`)
+    const values = await Promise.all(keys.map(async key => JSON.parse(await reader.get(key))))
+    return values.sort((left, right) => left.id.localeCompare(right.id))
+  }
   async function start() {
     epoch++; log = ''; websocket = undefined
-    child = spawn(process.execPath, [entry, '--config', configFile], { cwd: directory, env })
+    child = spawn(process.execPath, cliArgs(['--config', configFile]), { cwd: directory, env })
     childExit = once(child, 'exit')
     for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { log += chunk; completeLog += chunk })
-    await waitFor(() => {
-      if (child.exitCode !== null) assert.fail(`standalone exited before readiness: ${log}`)
-      return log.includes('已启动') && websocket
-    }, `conversation-memory process ${epoch} readiness`)
+    try {
+      await waitFor(() => {
+        if (child.exitCode !== null) assert.fail(`standalone exited before readiness: ${log}`)
+        return log.includes('已启动') && websocket
+      }, `conversation-memory process ${epoch} readiness`, startupTimeoutMs)
+    } catch (error) { assert.fail(`${error.message}; process exit=${child.exitCode}; output=${log}`) }
   }
   async function stop() {
     child.kill('SIGTERM')
     assert.deepEqual(await childExit, [0, null], completeLog)
     child = undefined; childExit = undefined
   }
-  function send(text, messageId, { directed = false, authorId = userId } = {}) {
+  function send(text, messageId, { directed = false, authorId = userId, group = groupId } = {}) {
     websocket.send(JSON.stringify({ post_type: 'message', message_type: 'group', sub_type: 'normal', self_id: botId,
-      group_id: groupId, user_id: authorId, message_id: messageId, time: Math.floor(Date.now() / 1000),
+      group_id: group, user_id: authorId, message_id: messageId, time: Math.floor(Date.now() / 1000),
       sender: { user_id: authorId, nickname: authorId === userId ? '小林' : '小吴' },
       message: [...(directed ? [{ type: 'at', data: { qq: String(botId) } }] : []), { type: 'text', data: { text } }],
     }))
+  }
+  function sendPrivate(text, messageId) {
+    websocket.send(JSON.stringify({ post_type: 'message', message_type: 'private', sub_type: 'friend', self_id: botId,
+      user_id: userId, message_id: messageId, time: Math.floor(Date.now() / 1000),
+      sender: { user_id: userId, nickname: '小林' }, message: [{ type: 'text', data: { text } }],
+    }))
+  }
+  async function disableForPrivateCleanup() {
+    assert.equal(child, undefined, 'change only a stopped fixture')
+    const host = JSON.parse(await readFile(configFile, 'utf8'))
+    host.midtermMemory.enabled = false
+    host.episodicMemory.enabled = false
+    delete host.midtermSummary
+    delete env.TEST_SUMMARY_BACKEND_KEY
+    host.privateChat = { enabled: true }
+    host.textGroups = host.textGroups.filter(row => row.conversationId !== String(groupId))
+    await writeFile(configFile, JSON.stringify(host))
+    const file = path.join(directory, 'agent-bindings.yaml'), bindings = JSON.parse(await readFile(file, 'utf8'))
+    bindings.bindings = bindings.bindings.filter(row => row.conversationId !== String(groupId))
+    bindings.bindings.push({ connectionId: 'qq-summary', kind: 'private', conversationId: String(userId), agentId: 'daily' })
+    await writeFile(file, JSON.stringify(bindings))
   }
   async function feedSources() {
     for (const [index, text] of sourceTexts.entries()) send(text, 86101 + index)
@@ -169,7 +205,7 @@ async function fixture(t, { instance, backend = true, enabled = true }) {
     }, 'four real group utterances captured')
   }
   async function check() {
-    const checking = spawn(process.execPath, [entry, '--config', configFile, '--check'], { cwd: directory, env })
+    const checking = spawn(process.execPath, cliArgs(['--config', configFile, '--check']), { cwd: directory, env })
     const exited = once(checking, 'exit')
     const timer = setTimeout(() => checking.kill('SIGKILL'), 8000)
     let output = '', error = ''
@@ -193,7 +229,10 @@ async function fixture(t, { instance, backend = true, enabled = true }) {
       for (const secret of [mainKey, summaryKey, oneBotToken]) assert.ok(!output.includes(secret))
     }
   }
-  return { start, stop, send, feedSources, state, check, ledgerRows, assertClean, mainRequests, summaries, deliveries,
+  return { start, stop, send, sendPrivate, disableForPrivateCleanup, rawStates,
+    diagnostics() { return { log: completeLog, summaries: summaries.length, mainRequests: mainRequests.length, errors: fixtureErrors } },
+    async rawCatalog() { return JSON.parse(await reader.get(`${prefix}agent:conversation-memory:v1:catalog`)) },
+    feedSources, state, check, ledgerRows, assertClean, mainRequests, summaries, deliveries,
     unknownNext() { unknownNext = true } }
 }
 
@@ -303,5 +342,50 @@ test('standalone --check verifies connections without executing an already due s
   assert.equal(run.summaries.length, 0)
   assert.equal(run.mainRequests.length, 0)
   assert.deepEqual(await run.state(), before, 'readiness checks do not consume or rewrite pending summary work')
+  run.assertClean()
+})
+
+test('standalone private forgetting physically deletes disabled conversation records and mixed aggregates from an unbound group across restart', {
+  skip: !redisAvailable, timeout: 150000,
+}, async t => {
+  const run = await fixture(t, { instance: 'standalone-conversation-forgetting', cleanup: true, startupTimeoutMs: 45000 })
+  await run.start()
+  await run.feedSources()
+  try { await waitFor(async () => (await run.state())?.summary?.text === digest, 'real summary before cleanup', 12000) }
+  catch (error) { assert.fail(`${error.message}; ${JSON.stringify({ ...run.diagnostics(), states: await run.rawStates() })}`) }
+  run.send('小林之前在另一场景分享了绿色场地口令。', 86301, { group: groupId + 1 })
+  run.send(confirmedProbe, 86302, { group: groupId + 1, directed: true, authorId: userId + 1 })
+  const before = await waitFor(async () => {
+    const states = await run.rawStates(), mixed = states.find(state => state.scope.target.id === String(groupId + 1))
+    return states.length === 2 && mixed?.records.length === 2 && mixed.episodes.length === 1 && states
+  }, 'mixed-author raw state and a confirmed episode')
+  const mixed = before.find(state => state.scope.target.id === String(groupId + 1))
+  assert.equal(mixed.episodes[0].userId, String(userId + 1), 'an episode responder is not proof that no earlier author contributed')
+  const retained = mixed.records.filter(row => row.authorId === String(userId + 1))
+  assert.equal(retained.length, 1)
+  await run.stop()
+  await run.disableForPrivateCleanup()
+  const summaryCalls = run.summaries.length, mainCalls = run.mainRequests.length
+  await run.start()
+  assert.deepEqual(await run.rawStates(), before, 'disabled and unbound state remains present until an authorized command')
+  run.sendPrivate('#清空我的记忆', 86303)
+  await waitFor(() => run.deliveries.some(row => row.epoch === 2 && row.action === 'send_private_msg' && Number(row.params.user_id) === userId),
+    'private forgetting confirmation')
+  const after = await waitFor(async () => {
+    const states = await run.rawStates()
+    return states.length === 1 && states[0].scope.target.id === String(groupId + 1) &&
+      states[0].records.length === 1 && states[0].records[0].authorId === String(userId + 1) &&
+      !states[0].summary && states[0].episodes.length === 0 && states
+  }, 'raw Redis deletion of the forgotten author and all old aggregates')
+  assert.deepEqual(after[0].records, retained, 'the other author original stays byte-for-byte equivalent')
+  assert.deepEqual((await run.rawCatalog()).ids, [after[0].id], 'the empty unbound state and catalog entry are retired')
+  assert.ok(!JSON.stringify(after).includes(digest))
+  assert.ok(!JSON.stringify(after).includes(confirmedReply))
+  await run.stop()
+  await run.start()
+  assert.deepEqual(await run.rawStates(), after, 'restart cannot restore the erased raw records, summary or episode')
+  assert.equal(run.summaries.length, summaryCalls, 'cleanup does not call a disabled or absent summary provider')
+  assert.equal(run.mainRequests.length, mainCalls, 'the privacy command does not call the main model')
+  await run.stop()
   run.assertClean()
 })

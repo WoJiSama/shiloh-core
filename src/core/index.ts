@@ -32,7 +32,8 @@ export type { AgentQzoneOperation, AgentQzoneAction, AgentQzoneGuard, AgentQzone
 export type { AgentRedPacketPort, AgentRedPacketSnapshot, AgentRedPacketGuard, AgentRedPacketPolicy, AgentRedPacketResult } from '../contracts/agentQqRedPacket.js'
 export type { PersonProfileExtractor, PersonProfileExtractionMessage, PersonProfileExtractionContext } from '../contracts/personProfileExtraction.js'
 export type { TextPersonMemoryConfig } from '../contracts/textPersonMemory.js'
-export type { MidtermMemoryConfig, EpisodicMemoryConfig, ConversationSummaryModel, ConversationSummaryInput } from '../contracts/conversationMemory.js'
+export type { MidtermMemoryConfig, EpisodicMemoryConfig, ConversationSummaryModel, ConversationSummaryInput,
+  AgentConversationMemoryCleanup, AgentConversationMemoryPurgeSubject, AgentConversationMemoryCleanupGuard, AgentConversationMemoryCleanupReceipt } from '../contracts/conversationMemory.js'
 export type { GroupMemoryConfig, GroupMemoryModel, GroupMemoryModelInput, GroupMemoryProposal } from '../contracts/groupMemory.js'
 export type { AgentSemanticMemoryConfig, AgentSemanticMemoryBackend, AgentSemanticMemoryRecall, AgentSemanticMemoryQuerySource,
   AgentSemanticMemoryCleanup, AgentSemanticMemoryCleanupGuard, AgentSemanticMemoryPurgeSubject, AgentSemanticMemoryCleanupReceipt } from '../contracts/semanticMemory.js'

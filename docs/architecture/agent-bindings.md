@@ -1769,3 +1769,23 @@ NjuGVo 实际 npm 归档为 `/tmp/bl-console-perf-archive-NjuGVo-XcZVkK/bl-chat-
 二百条历史档案和一百九十四张图片仍逐项核验通过，读数共二百零七条，保留自然业务增删能力。旧两个 unit 继续 `not-found`，`/opt/trss-yunzai` 不存在；独立备份保留。交付回执、验证及独立最终回读分别为服务器 `/opt/bl-chat-agent/staging/core-semantic-forget-20261119/deployment-receipt.json`、同目录 `verification.json` 和 `final-readback.json`，本地安全副本为 `/tmp/bl-core-semantic-forget-production-*.json`。生产验证只检查清理公共声明，没有主动调用生产删除端口、读取语义正文、发送真实 QQ 消息或调用付费模型。
 
 本批语义原文和向量库切片的源码、独立安装与生产加载已分别核验，整体独立 Core/QQ 迁移保持进行中。下一实际缺口是 `agent:conversation-memory:v1:state:<scope摘要>` 中滚动原文、摘要及情节的持久清理：现有读取水位和在途取消不能替代原始 JSON 删除证明。下一切片须按原账号、原 Agent、人物、完整场景和固定截止点删除本人旧 records，保留其他人原文；缺少逐作者来源的旧 epoch 摘要和情节整体失效清除，并防止迟到摘要或旧快照复活，覆盖功能关闭、无摘要后端及解绑后的清理。其他无证明的分区继续 unsupported；真实 QQ 多连接权限与长期模型效果仍须分别验收。
+
+
+### 2026-11-19：滚动会话原文、摘要与情节的持久遗忘
+
+接续上节的会话记忆分区，本批新增可信 `AgentConversationMemoryCleanup` 合同及 Core 的 `conversationMemoryCleanup` 端口，由原 `conversationMemory` owner 执行，不作为模型工具。清理不依赖中期或情节功能开启、摘要模型存在、原群仍绑定或在线。真人群命令限本人当前完整 target，本人私聊命令覆盖同接收账号、同原 Agent 下本人的全部场景；只在隐私事务 `applied` 后执行，恢复沿用原 owner 和原入站 `occurredAt`。控制台整人删除保留隐私 admission，限所选完整 target，Core 固定 admission 开始时刻，外层回执重试固定原 `receipt.createdAt`；字段删除不扩大为整人清理。
+
+原文只按匹配账号、Agent、人物、可选完整 target 及包含式原始消息截止点删除，其他人和截止点后的原文逐项保留。旧摘要、情节缺少逐作者依赖，`episode.userId` 不是全部贡献者的证明；首次有效清理会使所选场景的旧聚合整体失效，不能按字符串或回复者猜测作者。持久水位 `agent:conversation-memory:v1:cleanup` 只含上述 selector 的摘要及固定截止点，上限四千零九十六条、二 MiB；满或损坏拒绝，不淘汰旧屏障。每个场景按相关 selector 中各人物的有效最大截止点排序计算 `cleanupToken`，冗余的更早或更窄重放不改变有效代次。新摘要和情节登记实际捕获的代次，旧快照、迟到结果和重启不能把失效原文或旧聚合重新写回。
+
+store 的 catalog、state 和水位在声明全部 KEYS 的原子读取及 CAS 中一起核对，保留旧原文不可变证据和 `nextSeq` 单调约束。load/list 是按水位过滤的读取投影；主动清理必须按原始 Redis JSON 计算删除原文、摘要、情节和空分区数量，末内容删除时同时退役 state/catalog，再次原始核证才能返回 `cleanup: completed`。`usage: blocked` 仅表示持久屏障已经确认；发布失败或结果不明直接拒绝，物理清理 I/O 未完成则 `unknown`，异步授权拒绝与取消不能被吞成 unknown 或完成。Core 中各 owner 的清理独立 allSettled，一项失败不阻止其它分支；未知或异常保留真人 `applied` 队列，不能先发送完成确认。
+
+可信公共端口异步授权通过后，临时阻止同账号新记忆回合，并取消匹配原 Agent 和可选场景的旧回合，防止旧主模型结果在清理后冒用新代次登记情节；授权拒绝不取消原工作。owner 在摘要提供器前后、情节登记及读取返回前复核代次，取消匹配的在途摘要。调度额外保存可选 `dueCleanupToken`，与人物隐私 epoch 一起控制 debounce 和有限重试；清理后即使旧摘要已经耗尽三次重试，也会重新完整等待 debounce 并允许合法新来源生成摘要。跨 owner 的旧摘要迟到失败不能消耗新代次重试预算。
+
+控制台分别展示“滚动对话原文”“近期会话摘要”“历史情节”三项分区回执，`completed/unknown` 取自真实 owner 结果；总来源消费者分区继续 `unsupported`，不宣称其它存储均已擦除。源码回执三十八项、前端定向三十二项、前端类型及正式构建通过；新 Core/owner 专项二十二项、原会话记忆十七项、相邻语义/表情/管理六十二项通过。store 清理专项九项和既有十二项、focused strict 通过；最后完整 backend:typecheck 和架构边界检查通过。专项直接核对带宿主前缀的原始 Redis，覆盖关闭功能、缺模型、解绑、人物/账号/Agent/完整场景隔离、混合聚合、固定截止点重放、未知 I/O 与授权取消、迟到任务及清理后新聚合恢复。
+
+完整 CLI 同例在旧固定包 `1f395b8` 实际生成原文、摘要和另一位发言者的确认情节后停止，关闭摘要/情节功能并移除摘要后端、解绑原群，再从本人私聊遗忘。旧版已经确认命令，但 Redis 仍保留本人原文和旧聚合，业务红例见 `/tmp/bl-conversation-forget-cli-baseline-business-red-20261119.log`。首次两次未到业务断言，停在八秒启动等待；独立旧包 `--help` 读数为 32.51 秒，见 `/tmp/bl-conversation-forget-baseline-startup-help-20261119.log`。新增三进程用例将自己的启动就绪等待独立设为四十五秒、总测试一百五十秒，摘要和删除业务等待不变，既有三个 CLI 用例的窗口不变。
+
+本批源码首次完整 CLI 揭示空摘要的可选代次等值判断缺陷：无摘要、无水位时 `undefined === undefined` 成立，随后读取缺失摘要导致首次生成失败。已改为显式检查摘要存在，新 Core 专项已覆盖首次生成；原失败为 `/tmp/bl-conversation-forget-cli-source-diagnostic-20261119.log`。同时修复清理后旧重试状态停滞及旧失败污染新代次预算，未通过禁用摘要或放宽业务期限掩盖问题。最终源码完整 CLI 同例已通过，见 `/tmp/bl-conversation-forget-cli-source-final-20261119.log`：实际删除旧群和其它场景中本人的原文、旧摘要和混合情节，逐项保留另一人的原文、退役清空的旧群 state/catalog，关闭功能后的清理和重启不调用摘要或主模型。该 CLI 使用隔离 Redis、本地 HTTP 与替身 OneBot，不替代真实 QQ 客户端验收。最终 backend 构建二千六百六十一个文件通过；固定独立安装及生产交付，以本节后续实际证据为准；整体独立 Core/QQ 目标保持进行中。
+
+
+下一实际分区为 `agent:group-memory:v1:state:<完整target摘要>`：同一状态含多个 Agent 的滚动 records、待办 job.messages、派生 fact 及共享教学来源；现有 facts 只登记单条 proposal.source，不能证明整批模型上下文没有包含另一位发言者。下一切片须按原 Agent 和来源清理本人旧原文的全部副本及受污染聚合，保留其他 Agent/人物和截止点后来源；普通 update 与 staging 写入都须观察持久屏障。共享教学有独立来源人格且可能跨 Agent 复用，不能按单 Agent 整键删除。该分区当前尚未提供主动清理证明，继续 unsupported；此处是只读定位，未提前扩大本批实现或执行生产删除。

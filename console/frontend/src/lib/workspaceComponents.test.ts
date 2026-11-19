@@ -564,7 +564,10 @@ describe('actual source-scoped person memory', () => {
         { kind: 'partition', id: 'local-emoji-attributed-sources', partition: 'local-emoji:partition', state: 'completed' },
         { kind: 'partition', id: 'local-emoji-unattributed', partition: 'local-emoji:partition', state: 'unsupported' },
         { kind: 'partition', id: 'semantic-memory-sources', partition: 'semantic-memory:partition', state: 'completed' },
-        { kind: 'partition', id: 'semantic-memory-vectors', partition: 'semantic-memory:partition', state: 'unknown' }] }
+        { kind: 'partition', id: 'semantic-memory-vectors', partition: 'semantic-memory:partition', state: 'unknown' },
+        { kind: 'partition', id: 'conversation-memory-records', partition: 'conversation-memory:partition', state: 'completed' },
+        { kind: 'partition', id: 'conversation-memory-summaries', partition: 'conversation-memory:partition', state: 'unknown' },
+        { kind: 'partition', id: 'conversation-memory-episodes', partition: 'conversation-memory:partition', state: 'completed' }] }
     let deleted = false
     vi.mocked(api).mockImplementation(async (path, options) => {
       if (options?.method === 'POST') { deleted = true; return receipt }
@@ -588,6 +591,12 @@ describe('actual source-scoped person memory', () => {
     expect(wrapper.text()).toContain('语义向量库 · 处理结果待核对')
     expect(wrapper.text()).not.toContain('semantic-memory-sources')
     expect(wrapper.text()).not.toContain('semantic-memory-vectors')
+    expect(wrapper.text()).toContain('滚动对话原文 · 已处理')
+    expect(wrapper.text()).toContain('近期会话摘要 · 处理结果待核对')
+    expect(wrapper.text()).toContain('历史情节 · 已处理')
+    expect(wrapper.text()).not.toContain('conversation-memory-records')
+    expect(wrapper.text()).not.toContain('conversation-memory-summaries')
+    expect(wrapper.text()).not.toContain('conversation-memory-episodes')
     expect(wrapper.text()).toContain('当前范围未提供清理证明')
     expect(wrapper.text()).not.toContain('local-emoji-attributed-sources')
     await wrapper.setProps({ conversationScopes: [] })

@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
-import { createAgentBindingDirectory, createAgentRuntime } from '../dist/backend/core/index.js'
-import { createConversationMemoryStore, conversationMemoryId } from '../dist/backend/modules/memory/infrastructure/conversationMemoryStore.js'
-import { personMemoryCommandText as commands } from '../dist/backend/modules/memory/domain/personMemoryCommands.js'
-import { agentBindingToken, conversationAddressKey, platformAccountKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
-import { simulationAddressKey } from '../dist/backend/modules/simulation/infrastructure/simulationAddress.js'
-import { simulationSessionKey } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
+import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
+const [{ createAgentBindingDirectory, createAgentRuntime }, { createConversationMemoryStore, conversationMemoryId },
+  { personMemoryCommandText: commands }, { agentBindingToken, conversationAddressKey, platformAccountKey },
+  { simulationAddressKey }, { simulationSessionKey }] = await Promise.all([
+  load('core/index.js'), load('modules/memory/infrastructure/conversationMemoryStore.js'),
+  load('modules/memory/domain/personMemoryCommands.js'), load('modules/runtime/domain/agentBindings.js'),
+  load('modules/simulation/infrastructure/simulationAddress.js'), load('modules/simulation/infrastructure/simSessionStore.js'),
+])
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
 
 const redisTest = { skip: !redisAvailable, timeout: 25_000 }

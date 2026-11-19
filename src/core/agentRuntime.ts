@@ -54,7 +54,8 @@ import type { AgentToolRegistry, AgentToolMessage, AgentToolRequest } from '../c
 import type { DeliveryReceipt } from '../contracts/delivery.js'
 import { normalizeDeliveryReceipt } from '../modules/messaging/domain/deliveryReceipt.js'
 import type { TextPersonMemoryConfig } from '../contracts/textPersonMemory.js'
-import type { ConversationSummaryModel, MidtermMemoryConfig, EpisodicMemoryConfig } from '../contracts/conversationMemory.js'
+import type { ConversationSummaryModel, MidtermMemoryConfig, EpisodicMemoryConfig, AgentConversationMemoryCleanup,
+  AgentConversationMemoryCleanupGuard, AgentConversationMemoryCleanupReceipt, AgentConversationMemoryPurgeSubject } from '../contracts/conversationMemory.js'
 import type { GroupMemoryConfig, GroupMemoryModel } from '../contracts/groupMemory.js'
 import type { AgentSemanticMemoryConfig, AgentSemanticMemoryBackend, AgentSemanticMemoryCleanup, AgentSemanticMemoryCleanupGuard,
   AgentSemanticMemoryCleanupReceipt, AgentSemanticMemoryPurgeSubject } from '../contracts/semanticMemory.js'
@@ -84,6 +85,7 @@ import { personMemoryAddress, revokePersonMemorySourceForAccount } from '../modu
 import { createPersonMemoryStore } from '../modules/memory/infrastructure/personMemoryStore.js'
 import { createTextPersonMemory } from '../modules/memory/infrastructure/textPersonMemory.js'
 import { createConversationMemory } from '../modules/memory/infrastructure/conversationMemory.js'
+import { conversationCleanupSelector } from '../modules/memory/infrastructure/conversationMemoryCleanup.js'
 import { createAgentSemanticMemory } from '../modules/memory/infrastructure/agentSemanticMemory.js'
 import { createGroupMemory } from '../modules/memory/infrastructure/groupMemory.js'
 import { createGroupMemoryManagement } from '../modules/memory/infrastructure/groupMemoryManagement.js'
@@ -389,6 +391,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     guard = sourceCleanupGuard()): Promise<AgentSemanticMemoryCleanupReceipt> {
     const receipt = await semanticMemoryCleanup.purgeSubject(input, guard)
     if (receipt.usage !== 'blocked' || receipt.cleanup !== 'completed') throw new Error('语义记忆清理尚未完成')
+    return receipt
+  }
+  async function completeConversationMemoryCleanup(input: AgentConversationMemoryPurgeSubject,
+    guard = sourceCleanupGuard()): Promise<AgentConversationMemoryCleanupReceipt> {
+    const receipt = await conversationMemoryCleanup.purgeSubject(input, guard)
+    if (receipt.usage !== 'blocked' || receipt.cleanup !== 'completed') throw new Error('会话记忆清理尚未完成')
     return receipt
   }
   function conversationEnabled(target: ConversationAddress): boolean {
@@ -1836,6 +1844,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
             const results = await Promise.allSettled([
               ...(options.localEmojiCleanup ? [completeLocalEmojiCleanup(cleanup => options.localEmojiCleanup!.purgeSubject(subject, cleanup), cleanupGuard)] : []),
               completeSemanticMemoryCleanup(subject, cleanupGuard),
+              completeConversationMemoryCleanup(subject, cleanupGuard),
             ])
             const rejected = results.find(result => result.status === 'rejected')
             if (rejected?.status === 'rejected') throw rejected.reason
@@ -1896,6 +1905,29 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, begin: beginMemoryTurn,
     isRunning, allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
     logger, ...(options.recordTokens ? { recordUsage: options.recordTokens } : {}), ...(options.now ? { now: options.now } : {}),
+  })
+  const conversationMemoryCleanup: AgentConversationMemoryCleanup = Object.freeze({
+    async purgeSubject(input: AgentConversationMemoryPurgeSubject, authority: AgentConversationMemoryCleanupGuard): Promise<AgentConversationMemoryCleanupReceipt> {
+      conversationCleanupSelector(input)
+      const owned = { ...input, account: { ...input.account },
+        ...(input.target ? { target: { ...input.target, account: { ...input.target.account } } } : {}) }
+      const guard = sourceCleanupGuard(() => authority.isCurrent(), () => authority.ensureCurrent(), authority.signal)
+      await guard.ensureCurrent()
+      const key = platformAccountKey(owned.account), targetKey = owned.target && conversationAddressKey(owned.target)
+      privacyAdmissions.set(key, (privacyAdmissions.get(key) ?? 0) + 1)
+      // A model holding old conversation context cannot label its late episode with the new generation.
+      for (const [invalidate, turn] of memoryTurns.get(key) ?? []) if (turn.agentId === owned.agentId && (!targetKey || turn.targetKey === targetKey)) invalidate()
+      try {
+        const receipt = await conversationMemory.purgeSubject(owned, guard)
+        await guard.ensureCurrent()
+        return receipt
+      } finally {
+        const remaining = (privacyAdmissions.get(key) ?? 1) - 1
+        if (remaining > 0) privacyAdmissions.set(key, remaining)
+        else privacyAdmissions.delete(key)
+        wakeMemoryTurns(key)
+      }
+    },
   })
   const authorizePrivateSource: NonNullable<Parameters<typeof createAgentSemanticMemory>[0]['authorizePrivateSource']> = async (viewer, source, subjectId, context) => {
     const adapter = adapterFor(source.target)
@@ -2481,6 +2513,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           if (await inbox.privacyCommandState(target, messageId, raw) !== 'applied') throw new Error('隐私指令尚未提交')
         })).then(receipt => { emojiCleanupUnsupported = receipt.cleanup === 'unsupported' })] : []),
         completeSemanticMemoryCleanup({ ...subject, through: incoming.occurredAt }, sourceCleanupGuard(() => true, async () => {
+          if (await inbox.privacyCommandState(target, messageId, raw) !== 'applied') throw new Error('隐私指令尚未提交')
+        })),
+        completeConversationMemoryCleanup({ ...subject, through: incoming.occurredAt }, sourceCleanupGuard(() => true, async () => {
           if (await inbox.privacyCommandState(target, messageId, raw) !== 'applied') throw new Error('隐私指令尚未提交')
         })),
         groupLogs.purgeSubject({ account: target.account, agentId: originalAgentId, subjectId: sender.id,
@@ -3136,6 +3171,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     management,
     /** Trusted host cleanup only; never installed as a model tool. */
     semanticMemoryCleanup,
+    conversationMemoryCleanup,
     /** Expected admission identity for read-only queue observations; does not claim or execute work. */
     inboxBindingToken(binding: AgentBindingSnapshot, queue: AgentInboxQueue['kind']): string {
       return queue === 'private' || queue === 'group' ? textBindingToken(binding) : agentBindingToken(binding)

@@ -253,6 +253,139 @@ test('semantic cleanup retains the full exact account and conversation scope inc
   assert.equal(partitions.size, variants.length)
 })
 
+test('whole-person forget persists separate conversation record, summary and episode cleanup proof with a stable cutoff', async () => {
+  const purges = [], operations = [], fixedTime = 1_795_075_800_000
+  const f = fixture({ conversationMemoryCleanup: { async purgeSubject(input, guard) {
+    assert.equal(guard.signal, f.context.signal); assert.equal(guard.isCurrent(), true)
+    await guard.ensureCurrent(); purges.push(structuredClone(input))
+    return { usage: 'blocked', cleanup: 'completed', removedRecords: 3, removedSummaries: 2, removedEpisodes: 1, removedPartitions: 1 }
+  } } })
+  f.auth.authorize = async (_principal, operation) => { operations.push(operation); return 'allowed' }
+  const begin = f.store.begin
+  f.store.begin = (input, guard) => begin({ ...input, now: fixedTime }, guard)
+  const result = await f.ops.profile({ userId: 'u1', requestId: 'conversation-person' }, f.context)
+  assert.deepEqual(purges, [{ account: binding.target.account, agentId: binding.agentId, subjectId: 'u1', target: binding.target, through: fixedTime }])
+  assert.equal(result.createdAt, fixedTime); assert.equal(result.phase, 'completed'); assert.equal(result.usage, 'blocked')
+  const conversation = result.impacts.filter(row => row.id.startsWith('conversation-memory-'))
+  assert.deepEqual(conversation.map(row => [row.kind, row.id, row.state]), [
+    ['partition', 'conversation-memory-records', 'completed'], ['partition', 'conversation-memory-summaries', 'completed'], ['partition', 'conversation-memory-episodes', 'completed'],
+  ])
+  assert.match(conversation[0].partition, /^conversation-memory:[a-f0-9]{64}$/u)
+  assert.equal(conversation[0].partition, conversation[1].partition); assert.equal(conversation[0].partition, conversation[2].partition)
+  assert.equal(result.cleanup, 'unsupported')
+  assert.ok(result.impacts.some(row => row.id === 'source-consumers' && row.state === 'unsupported'))
+  assert.deepEqual((await f.ops.read(result.operationId, f.context)).impacts, result.impacts)
+  assert.equal([...f.values.values()].join('\n').includes('secret body'), false)
+  assert.ok(operations.includes('profiles.delete'))
+  const again = await f.ops.profile({ userId: 'u1', requestId: 'conversation-person' }, f.context)
+  assert.equal(again.operationId, result.operationId); assert.equal(again.createdAt, fixedTime)
+  assert.equal(purges.length, 1); assert.equal(f.calls.profile, 1)
+})
+
+test('an absent conversation cleanup owner does not claim conversation partitions were erased', async () => {
+  const f = fixture({ conversationMemoryCleanup: undefined })
+  const result = await f.ops.profile({ userId: 'u1', requestId: 'conversation-disabled' }, f.context)
+  assert.equal(result.phase, 'completed'); assert.equal(result.cleanup, 'unsupported')
+  assert.equal(result.impacts.some(row => row.id.startsWith('conversation-memory-')), false)
+})
+
+test('conversation cleanup uncertainty persists for all three partitions without claiming global cleanup', async () => {
+  const f = fixture({ conversationMemoryCleanup: { async purgeSubject() {
+    return { usage: 'blocked', cleanup: 'unknown', removedRecords: 1, removedSummaries: 0, removedEpisodes: 0, removedPartitions: 0 }
+  } } })
+  const result = await f.ops.profile({ userId: 'u1', requestId: 'conversation-unknown' }, f.context)
+  assert.deepEqual(result.impacts.filter(row => row.id.startsWith('conversation-memory-')).map(row => row.state), ['unknown', 'unknown', 'unknown'])
+  assert.equal(result.cleanup, 'unsupported')
+  assert.deepEqual((await f.ops.read(result.operationId, f.context)).impacts, result.impacts)
+})
+
+test('malformed conversation cleanup receipts cannot publish completed impacts', async () => {
+  const valid = { usage: 'blocked', cleanup: 'completed', removedRecords: 0, removedSummaries: 0, removedEpisodes: 0, removedPartitions: 0 }
+  const invalid = [null, undefined, {}, { ...valid, usage: 'pending' }, { ...valid, cleanup: 'unsupported' },
+    ...['removedRecords', 'removedSummaries', 'removedEpisodes', 'removedPartitions'].flatMap(key =>
+      [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, '1', NaN, Infinity, undefined].map(value => ({ ...valid, [key]: value }))),
+  ]
+  for (const [index, receipt] of invalid.entries()) {
+    let purges = 0
+    const f = fixture({ conversationMemoryCleanup: { async purgeSubject() { purges++; return receipt } } })
+    const requestId = 'conversation-invalid-' + index
+    await assert.rejects(f.ops.profile({ userId: 'u1', requestId }, f.context), error => error.code === 'unavailable')
+    const recorded = await f.store.readByRequestId(requestId)
+    assert.equal(recorded.phase, 'unknown'); assert.equal(recorded.cleanup, 'unknown')
+    assert.equal(recorded.impacts.some(row => row.id.startsWith('conversation-memory-')), false)
+    assert.equal((await f.ops.profile({ userId: 'u1', requestId }, f.context)).operationId, recorded.operationId)
+    assert.equal(purges, 1); assert.equal(f.calls.profile, 1)
+  }
+})
+
+test('a failed conversation cleanup owner leaves an unknown receipt without replaying deletion', async () => {
+  let purges = 0
+  const f = fixture({ conversationMemoryCleanup: { async purgeSubject() { purges++; throw Error('conversation unavailable') } } })
+  await assert.rejects(f.ops.profile({ userId: 'u1', requestId: 'conversation-owner-failed' }, f.context), /conversation unavailable/u)
+  const result = await f.ops.profile({ userId: 'u1', requestId: 'conversation-owner-failed' }, f.context)
+  assert.equal(result.phase, 'unknown'); assert.equal(result.cleanup, 'unknown')
+  assert.equal(purges, 1); assert.equal(f.calls.profile, 1)
+})
+
+test('conversation cleanup cannot publish completion after delete permission or binding lease is revoked', async () => {
+  for (const mode of ['permission', 'binding', 'stopped']) {
+    let f
+    const controller = new AbortController()
+    f = fixture({ conversationMemoryCleanup: { async purgeSubject(_input, guard) {
+      await guard.ensureCurrent()
+      if (mode === 'permission') f.auth.authorize = async (_principal, operation) => operation === 'profiles.delete' ? 'denied' : 'allowed'
+      else {
+        if (mode === 'binding') f.context.binding = { ...binding, revision: 'r2' }
+        else controller.abort()
+        assert.equal(guard.isCurrent(), false)
+      }
+      await assert.rejects(guard.ensureCurrent(), error => error.code === (mode === 'permission' ? 'forbidden' : 'conflict'))
+      return { usage: 'blocked', cleanup: 'completed', removedRecords: 1, removedSummaries: 1, removedEpisodes: 1, removedPartitions: 1 }
+    } } })
+    f.context.signal = controller.signal
+    const requestId = 'conversation-revoke-' + mode
+    await assert.rejects(f.ops.profile({ userId: 'u1', requestId }, f.context), error => error.code === (mode === 'permission' ? 'forbidden' : 'conflict'))
+    const receipt = await f.store.readByRequestId(requestId)
+    assert.notEqual(receipt.phase, 'completed'); assert.equal(receipt.impacts.some(row => row.id.startsWith('conversation-memory-')), false)
+  }
+})
+
+test('deleting a profile field never purges conversation records, summaries or episodes', async () => {
+  let purges = 0
+  const f = fixture({ conversationMemoryCleanup: { async purgeSubject() { purges++; throw Error('must not purge') } } })
+  const result = await f.ops.profile({ userId: 'u1', field: 'entries', value: 'entry-1', requestId: 'conversation-field' }, f.context)
+  assert.equal(purges, 0); assert.equal(result.impacts.some(row => row.id.startsWith('conversation-memory-')), false)
+})
+
+test('conversation cleanup waits for source deletion readback', async () => {
+  let purges = 0
+  const f = fixture({ conversationMemoryCleanup: { async purgeSubject() { purges++; throw Error('must not purge') } } })
+  f.profiles.list = async () => [{ binding, profile: { userId: 'u1', entries: [{ id: 'entry-1', category: 'fact', text: 'secret body' }] } }]
+  await assert.rejects(f.ops.profile({ userId: 'u1', requestId: 'conversation-source-retained' }, f.context), error => error.code === 'unavailable')
+  assert.equal(purges, 0)
+  assert.equal((await f.store.readByRequestId('conversation-source-retained')).phase, 'unknown')
+})
+
+test('conversation cleanup retains the full exact account and conversation scope including private scenes', async () => {
+  const variants = [binding,
+    { ...binding, agentId: 'other-agent' },
+    { ...binding, target: { ...binding.target, account: { ...binding.target.account, namespace: 'other' } } },
+    { ...binding, target: { ...binding.target, kind: 'private', id: 'u1' } },
+  ], partitions = new Set()
+  for (const [index, selected] of variants.entries()) {
+    const purges = [], f = fixture({ conversationMemoryCleanup: { async purgeSubject(input, guard) {
+      await guard.ensureCurrent(); purges.push(structuredClone(input))
+      return { usage: 'blocked', cleanup: 'completed', removedRecords: 0, removedSummaries: 0, removedEpisodes: 0, removedPartitions: 0 }
+    } } }, selected)
+    const result = await f.ops.profile({ userId: 'u1', requestId: 'conversation-scope-' + index }, f.context)
+    assert.deepEqual(purges, [{ account: selected.target.account, agentId: selected.agentId, subjectId: 'u1', target: selected.target, through: result.createdAt }])
+    const partition = result.impacts.find(row => row.id === 'conversation-memory-records').partition
+    partitions.add(partition)
+    assert.equal(partition.includes(selected.target.id), false)
+  }
+  assert.equal(partitions.size, variants.length)
+})
+
 test('character memory forget reports source and derived partitions without storing content', async () => {
   const f = fixture(), result = await f.ops.character({ scopeKey: agentConversationKey(binding), memoryId: 'memory-1', requestId: 'request-2' }, f.context)
   assert.equal(result.phase, 'completed')

@@ -1,4 +1,4 @@
-import type { AgentBindingSnapshot, AgentConversationScope } from './agentBinding.js'
+import type { AgentBindingSnapshot, AgentConversationScope, ConversationAddress, PlatformAccountRef } from './agentBinding.js'
 import type { PersonaScope } from './persona.js'
 import type { PersonProfileExtractionContext } from './personProfileExtraction.js'
 
@@ -36,6 +36,8 @@ export interface ConversationMemoryEpisode {
   messageIds: string[]
   replyIds: string[]
   invalidatedAt: number
+  /** Durable cleanup generation of all aggregate inputs; missing on legacy content. */
+  cleanupToken?: string
   peerId?: string
 }
 export interface ConversationMemorySummary {
@@ -43,6 +45,8 @@ export interface ConversationMemorySummary {
   updatedAt: number
   coveredSeq: number
   invalidatedAt: number
+  /** Durable cleanup generation of all aggregate inputs; missing on legacy content. */
+  cleanupToken?: string
 }
 export interface ConversationMemoryState {
   version: 1
@@ -56,6 +60,8 @@ export interface ConversationMemoryState {
   summary?: ConversationMemorySummary
   dueAt: number
   dueInvalidatedAt?: number
+  /** Cleanup generation for the scheduled summary and its bounded retries. */
+  dueCleanupToken?: string
   attempts: number
   retryAt: number
 }
@@ -77,4 +83,31 @@ export interface ConversationEpisodeInput {
   messageIds: readonly string[]
   replyIds: readonly string[]
   peerId?: string
+}
+
+/** Authority supplied by a trusted host, never by a model tool. */
+export interface AgentConversationMemoryCleanupGuard {
+  readonly signal: AbortSignal
+  isCurrent(): boolean
+  ensureCurrent(): void | Promise<void>
+}
+export interface AgentConversationMemoryPurgeSubject {
+  readonly account: PlatformAccountRef
+  readonly agentId: string
+  readonly subjectId: string
+  /** Omission covers this subject's scopes under the same account and Agent. */
+  readonly target?: ConversationAddress
+  /** Inclusive original-message cutoff, fixed across recovery and retries. */
+  readonly through: number
+}
+export interface AgentConversationMemoryCleanupReceipt {
+  readonly usage: 'blocked'
+  readonly cleanup: 'completed' | 'unknown'
+  readonly removedRecords: number
+  readonly removedSummaries: number
+  readonly removedEpisodes: number
+  readonly removedPartitions: number
+}
+export interface AgentConversationMemoryCleanup {
+  purgeSubject(input: AgentConversationMemoryPurgeSubject, guard: AgentConversationMemoryCleanupGuard): Promise<AgentConversationMemoryCleanupReceipt>
 }

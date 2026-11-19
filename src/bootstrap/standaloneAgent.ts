@@ -674,6 +674,7 @@ export async function main(argv: string[]): Promise<void> {
           profiles: { list: profilePort.list, remove: profilePort.remove, removeField: profilePort.removeField },
           localEmojiCleanup: localEmoji,
           semanticMemoryCleanup: host.semanticMemoryCleanup,
+          conversationMemoryCleanup: host.conversationMemoryCleanup,
           characters: { describeGroup: runtime.describeGroup, controlCharacter: runtime.controlCharacter } })
         : undefined
       const installed = createStandaloneAgentConsoleServices({ bindings, auth: consoleAuth, runtime, ledger, ...management, ...(forgetting ? { forgetting } : {}),
