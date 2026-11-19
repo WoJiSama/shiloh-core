@@ -1657,3 +1657,11 @@ NjuGVo 实际 npm 归档为 `/tmp/bl-console-perf-archive-NjuGVo-XcZVkK/bl-chat-
 图片配置兼容原单后端，并接受每操作一至八个有序候选。渠道 `name`、上游 `model` 和有界 `aliases` 分开，未指定时保持候选顺序，显式渠道只在同名候选中选择。只有明确拒绝请求的 400、404、405、413、415、422、429 可继续下一候选；网络、超时、5xx、无效成功响应和未知交付结果停止，不换渠道重复生成。原有一次 response_format 明确拒绝后的格式兼容仍保留。所有候选凭据纳入宿主秘密检查，用量按实际上游模型记账。
 
 旧来源只读核对得到实际 generation 三个候选、edit 两个候选，包含原编辑设置合成的末位生成后备；旧运行目录保持删除。生产候选在服务器内生成，凭据仅以新增环境变量接续，不输出或下载密钥。配置实际事务提交、发布包与生产状态，以本节后续交付回读为准；本地专项不替代真实图片模型效果或 QQ 交付验收。整体目标仍进行中。
+
+本批实现提交 `4ccbbe55e0ccaf33243ea767ca215a5144ef8f10` 已推送，连同仅调整图片 CLI 启动就绪窗口的测试提交 `622a75988e757befc96df52e32fada94e9281e02` 快进合并至远端 main。后端类型、架构边界和构建通过，前端定向三十二项、类型及最终构建通过。真实本地 Redis 与 HTTP 服务的浏览器检查覆盖 1440px 和 360px、四条持久任务、私聊和 unknown 状态、完整身份与详情抽屉，无横向溢出或浏览器错误；记录见 `/tmp/bl-core-pipeline-images-browser-20261119/proof.json`。这些页面数据来自隔离夹具，不是生产聊天内容。
+
+最终真实 npm 归档在仓库外解包后，按归档自带锁文件完成 `npm ci --omit=dev`，ESM 公共消费者实际导入 `bl-chat-agent/images` 并构造工具。安装目录内七文件六十八项全部通过，无失败、取消或跳过，六百七十二个发布文件的 SHA-256 在测试前后保持相同，证据为 `/tmp/bl-core-pipeline-images-installed-20261119.json` 和 `/tmp/bl-core-pipeline-images-installed-tests-20261119.log`。普通 consumer 的 `npm install <tgz>` 曾在 optional peer 的远程解析阶段被终止，不能称其已通过；最终成功路径是原归档加锁文件独立安装。先前构建批次的两个 CLI 因八秒启动窗口超限，改为十五秒就绪窗口后，同一包独立测试六十八项全过；图片业务执行和回执期限没有放宽。
+
+生产 `/opt/bl-chat-agent/current` 已切换到实现提交 `4ccbbe55e0ccaf33243ea767ca215a5144ef8f10`，实际进程工作目录和发布清单一致，六百七十二个文件逐项核验通过。图片配置通过 owner 的配置事务提交，只替换 host 中的图片设置，环境文件仅追加五个候选凭据变量；原变量未覆盖，绑定和人设的内容及文件元数据保持不变。生成三个与编辑两个候选的顺序、渠道、上游模型、别名和凭据映射均已核对，实际新宿主解析及工具构造通过，未主动调用图片提供器。
+
+生产回读为 Core active、NRestarts=0，`qq-main` connected，三位本人和二十个绑定；配置 active、loaded/stored revision 相同、无需重启且事务 clean。前端及认证接口 200，未认证任务接口 401，认证任务接口 200，`pipeline.read` 可用且 process epoch 与配置一致。本次任务响应包含三条真实记录，并明确标记有界扫描截断，不将其作为全部历史或累计数量。观测日志未降级且 failed=0，旧两个 unit 均为 not-found，`/opt/trss-yunzai` 仍不存在。回执及验证为服务器 `/opt/bl-chat-agent/staging/core-pipeline-images-20261119/deployment-receipt.json` 和同目录 `verification.json`，配置备份为 `/opt/bl-chat-agent/backups/pipeline-images-2026-11-19T08-09-55Z`。发布核验没有主动发送 QQ 业务消息或调用付费模型；图片实际效果、真实 QQ 交付及其它未完成的整体迁移验收继续单独跟踪。
