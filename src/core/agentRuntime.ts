@@ -56,7 +56,8 @@ import { normalizeDeliveryReceipt } from '../modules/messaging/domain/deliveryRe
 import type { TextPersonMemoryConfig } from '../contracts/textPersonMemory.js'
 import type { ConversationSummaryModel, MidtermMemoryConfig, EpisodicMemoryConfig } from '../contracts/conversationMemory.js'
 import type { GroupMemoryConfig, GroupMemoryModel } from '../contracts/groupMemory.js'
-import type { AgentSemanticMemoryConfig, AgentSemanticMemoryBackend } from '../contracts/semanticMemory.js'
+import type { AgentSemanticMemoryConfig, AgentSemanticMemoryBackend, AgentSemanticMemoryCleanup, AgentSemanticMemoryCleanupGuard,
+  AgentSemanticMemoryCleanupReceipt, AgentSemanticMemoryPurgeSubject } from '../contracts/semanticMemory.js'
 import type { AgentHistoryConfig, AgentHistoryRequestSource } from '../contracts/agentHistory.js'
 import { createAgentHistory } from '../modules/memory/infrastructure/agentHistory.js'
 import { createAgentHistoryTool } from '../modules/tools/infrastructure/agentHistoryTool.js'
@@ -362,26 +363,32 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   function observeCurrent(check: () => boolean): boolean {
     return options.observeExecutionCurrent ? options.observeExecutionCurrent(check) === true : check()
   }
-  function localEmojiCleanupGuard(isAuthorized: () => boolean = () => true,
-    ensureAuthorized?: () => void | Promise<void>, parentSignal?: AbortSignal): AgentLocalEmojiCleanupGuard {
+  function sourceCleanupGuard(isAuthorized: () => boolean = () => true,
+    ensureAuthorized?: () => void | Promise<void>, parentSignal?: AbortSignal): AgentSemanticMemoryCleanupGuard {
     const signal = AbortSignal.any([toolCancellation.signal, ...(options.signal ? [options.signal] : []), ...(parentSignal ? [parentSignal] : [])])
-    const guard: AgentLocalEmojiCleanupGuard = {
+    const guard: AgentSemanticMemoryCleanupGuard = {
       signal,
       isCurrent() { try { return observeCurrent(() => !signal.aborted && isRunning() && isAuthorized()) } catch { return false } },
       async ensureCurrent() {
-        if (!guard.isCurrent()) throw new Error('本地表情清理权限已失效')
+        if (!guard.isCurrent()) throw new Error('来源清理权限已失效')
         await ensureAuthorized?.()
-        if (!guard.isCurrent()) throw new Error('本地表情清理权限已失效')
+        if (!guard.isCurrent()) throw new Error('来源清理权限已失效')
       },
     }
     return guard
   }
   async function completeLocalEmojiCleanup(operation: (guard: AgentLocalEmojiCleanupGuard) => Promise<AgentLocalEmojiCleanupReceipt>,
-    guard = localEmojiCleanupGuard()): Promise<AgentLocalEmojiCleanupReceipt> {
+    guard = sourceCleanupGuard()): Promise<AgentLocalEmojiCleanupReceipt> {
     await guard.ensureCurrent()
     const receipt = await operation(guard)
     await guard.ensureCurrent()
     if (receipt.usage !== 'blocked' || receipt.cleanup !== 'completed' && receipt.cleanup !== 'unsupported') throw new Error('本地表情清理尚未完成')
+    return receipt
+  }
+  async function completeSemanticMemoryCleanup(input: AgentSemanticMemoryPurgeSubject,
+    guard = sourceCleanupGuard()): Promise<AgentSemanticMemoryCleanupReceipt> {
+    const receipt = await semanticMemoryCleanup.purgeSubject(input, guard)
+    if (receipt.usage !== 'blocked' || receipt.cleanup !== 'completed') throw new Error('语义记忆清理尚未完成')
     return receipt
   }
   function conversationEnabled(target: ConversationAddress): boolean {
@@ -1821,12 +1828,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         const through = options.now?.() ?? Date.now()
         try {
           const result = await action(guard); ensureBinding()
-          if (cleanupSubjectId !== undefined && options.localEmojiCleanup) {
-            await completeLocalEmojiCleanup(cleanup => options.localEmojiCleanup!.purgeSubject({
-              account: binding.target.account, agentId: binding.agentId, subjectId: cleanupSubjectId, target: binding.target, through,
-            }, cleanup), localEmojiCleanupGuard(() => {
+          if (cleanupSubjectId !== undefined) {
+            const subject = { account: binding.target.account, agentId: binding.agentId, subjectId: cleanupSubjectId, target: binding.target, through }
+            const cleanupGuard = sourceCleanupGuard(() => {
               try { ensureBinding(); return true } catch { return false }
-            }, ensureBinding, guard.signal))
+            }, ensureBinding, guard.signal)
+            const results = await Promise.allSettled([
+              ...(options.localEmojiCleanup ? [completeLocalEmojiCleanup(cleanup => options.localEmojiCleanup!.purgeSubject(subject, cleanup), cleanupGuard)] : []),
+              completeSemanticMemoryCleanup(subject, cleanupGuard),
+            ])
+            const rejected = results.find(result => result.status === 'rejected')
+            if (rejected?.status === 'rejected') throw rejected.reason
           }
           ensureBinding(); return result
         }
@@ -1913,6 +1925,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     authorizePrivateSource,
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
     logger, ...(options.now ? { now: options.now } : {}),
+  })
+  const semanticMemoryCleanup: AgentSemanticMemoryCleanup = Object.freeze({
+    async purgeSubject(input: AgentSemanticMemoryPurgeSubject, authority: AgentSemanticMemoryCleanupGuard): Promise<AgentSemanticMemoryCleanupReceipt> {
+      const guard = sourceCleanupGuard(() => authority.isCurrent(), () => authority.ensureCurrent(), authority.signal)
+      await guard.ensureCurrent()
+      const receipt = await semanticMemory.purgeSubject(input, guard)
+      await guard.ensureCurrent()
+      return receipt
+    },
   })
   const groupMemory = createGroupMemory({
     redis: storage, memory: personMemory, config: () => options.groupMemory,
@@ -2456,9 +2477,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const results = await Promise.allSettled([
         ...(options.localEmojiCleanup ? [completeLocalEmojiCleanup(guard => options.localEmojiCleanup!.purgeSubject({
           ...subject, through: incoming.occurredAt,
-        }, guard), localEmojiCleanupGuard(() => true, async () => {
+        }, guard), sourceCleanupGuard(() => true, async () => {
           if (await inbox.privacyCommandState(target, messageId, raw) !== 'applied') throw new Error('隐私指令尚未提交')
         })).then(receipt => { emojiCleanupUnsupported = receipt.cleanup === 'unsupported' })] : []),
+        completeSemanticMemoryCleanup({ ...subject, through: incoming.occurredAt }, sourceCleanupGuard(() => true, async () => {
+          if (await inbox.privacyCommandState(target, messageId, raw) !== 'applied') throw new Error('隐私指令尚未提交')
+        })),
         groupLogs.purgeSubject({ account: target.account, agentId: originalAgentId, subjectId: sender.id,
           ...(kind === 'group' ? { groupId: target.id } : {}) }),
         diceState.purgeSubject(subject), diceLedger.purgeSubject(subject),
@@ -3110,6 +3134,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   return {
     runtime,
     management,
+    /** Trusted host cleanup only; never installed as a model tool. */
+    semanticMemoryCleanup,
     /** Expected admission identity for read-only queue observations; does not claim or execute work. */
     inboxBindingToken(binding: AgentBindingSnapshot, queue: AgentInboxQueue['kind']): string {
       return queue === 'private' || queue === 'group' ? textBindingToken(binding) : agentBindingToken(binding)

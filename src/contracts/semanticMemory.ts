@@ -1,4 +1,36 @@
 import type { PersonProfileExtractionContext } from './personProfileExtraction.js'
+import type { ConversationAddress, PlatformAccountRef } from './agentBinding.js'
+
+/** Trusted cleanup authority, supplied by the host after privacy admission. */
+export interface AgentSemanticMemoryCleanupGuard {
+  readonly signal: AbortSignal
+  isCurrent(): boolean
+  ensureCurrent(): Promise<void>
+}
+
+export interface AgentSemanticMemoryPurgeSubject {
+  readonly account: PlatformAccountRef
+  readonly agentId: string
+  readonly subjectId: string
+  /** Omitted only for the person's own account-wide private privacy command. */
+  readonly target?: ConversationAddress
+  /** Stable inclusive source timestamp; retries must not replace this with the current time. */
+  readonly through: number
+}
+
+/** Blocked requires a committed durable fence. Publication failure rejects the operation.
+ * Completed proves the matching persisted rows/vectors are gone; unknown requires a retry. */
+export interface AgentSemanticMemoryCleanupReceipt {
+  readonly usage: 'blocked'
+  readonly cleanup: 'completed' | 'unknown'
+  readonly removedRows: number
+  readonly removedVectors: number
+  readonly removedPartitions: number
+}
+
+export interface AgentSemanticMemoryCleanup {
+  purgeSubject(input: AgentSemanticMemoryPurgeSubject, guard: AgentSemanticMemoryCleanupGuard): Promise<AgentSemanticMemoryCleanupReceipt>
+}
 
 /** Disabled unless explicitly enabled. Retention is bounded per conversation. */
 export interface AgentSemanticMemoryConfig {

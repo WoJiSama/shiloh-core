@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -10,9 +10,15 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { createClient } from '@redis/client'
 import { WebSocketServer } from 'ws'
+import { agentHostModuleUrl } from './helpers/bilibiliQualitySource.mjs'
 
 const repo = fileURLToPath(new URL('../', import.meta.url))
 const entry = path.join(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo, 'scripts/start-agent.mjs')
+const sourceLoader = new URL('./helpers/bilibiliQualitySource.mjs', import.meta.url).href
+function cliArgs(args) {
+  return process.env.BL_CHAT_AGENT_SOURCE_TEST === '1' ? ['--import', sourceLoader, '--input-type=module', '-e',
+    `const {main}=await import(${JSON.stringify(agentHostModuleUrl('bootstrap/standaloneAgent.js').href)}); await main(process.argv.slice(1))`, '--', ...args] : [entry, ...args]
+}
 const redisAvailable = spawnSync('redis-server', ['--version'], { stdio: 'ignore' }).status === 0
 const botId = 19000051, groupId = 310501, otherGroupId = 310502, authorId = 330059
 const mainKey = 'standalone-semantic-main-private-key'
@@ -152,7 +158,7 @@ async function fixture(t, { instance, enabled = true }) {
   async function state(id = groupId) { return (await states()).find(row => row.scope.target.id === String(id)) }
   async function start() {
     epoch++; log = ''; websocket = undefined
-    child = spawn(process.execPath, [entry, '--config', configFile], { cwd: directory, env })
+    child = spawn(process.execPath, cliArgs(['--config', configFile]), { cwd: directory, env })
     childExit = once(child, 'exit')
     for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { log += chunk; completeLog += chunk })
     await waitFor(() => {
@@ -182,8 +188,29 @@ async function fixture(t, { instance, enabled = true }) {
     send(forwardedText, 88105, { segments: [{ type: 'forward', data: { id: 'synthetic-forward' } }] })
     send(barrierText, 88106)
   }
+  async function disableForPrivateCleanup() {
+    assert.equal(child, undefined, 'change only a stopped fixture')
+    const host = JSON.parse(await readFile(configFile, 'utf8'))
+    host.semanticMemory.enabled = false
+    host.privateChat = { enabled: true }
+    host.textGroups = host.textGroups.filter(row => row.conversationId !== String(groupId))
+    await writeFile(configFile, JSON.stringify(host))
+    delete env.TEST_SEMANTIC_EMBEDDING_KEY
+    delete env.TEST_SEMANTIC_RERANK_KEY
+    const bindingFile = path.join(directory, 'agent-bindings.yaml')
+    const configured = JSON.parse(await readFile(bindingFile, 'utf8'))
+    configured.bindings = configured.bindings.filter(row => row.conversationId !== String(groupId))
+    configured.bindings.push({ connectionId: 'qq-semantic', kind: 'private', conversationId: String(authorId), agentId: 'daily' })
+    await writeFile(bindingFile, JSON.stringify(configured))
+  }
+  function sendPrivate(text, messageId) {
+    websocket.send(JSON.stringify({ post_type: 'message', message_type: 'private', sub_type: 'friend', self_id: botId,
+      user_id: authorId, message_id: messageId, time: Math.floor(Date.now() / 1000),
+      sender: { user_id: authorId, nickname: '合成发言者' }, message: [{ type: 'text', data: { text } }],
+    }))
+  }
   async function check() {
-    const checking = spawn(process.execPath, [entry, '--config', configFile, '--check'], { cwd: directory, env })
+    const checking = spawn(process.execPath, cliArgs(['--config', configFile, '--check']), { cwd: directory, env })
     const exited = once(checking, 'exit')
     const timer = setTimeout(() => checking.kill('SIGKILL'), 8000)
     let output = '', error = ''
@@ -200,7 +227,8 @@ async function fixture(t, { instance, enabled = true }) {
       for (const secret of [mainKey, embeddingKey, rerankKey, oneBotToken]) assert.ok(!output.includes(secret))
     }
   }
-  return { start, stop, send, sources, state, states, check, assertClean, mainRequests, embeddings, rerankings, deliveries,
+  return { start, stop, send, sendPrivate, disableForPrivateCleanup, sources, state, states, check, assertClean, mainRequests, embeddings, rerankings, deliveries,
+    async catalog() { return JSON.parse(await reader.get(`${prefix}agent:semantic-memory:v1:catalog`) || '{"version":1,"entries":[]}') },
     diagnostics: async () => JSON.stringify({ entry, keys: await reader.keys(`${prefix}*`), states: await states(), inputs: embeddings.map(row => row.body.input), log: completeLog }) }
 }
 
@@ -283,6 +311,46 @@ test('standalone disabled semantic memory and --check need no semantic credentia
   assert.equal(run.embeddings.length, 0)
   assert.equal(run.rerankings.length, 0)
   assert.equal(run.mainRequests.length, 1)
+  await run.stop()
+  run.assertClean()
+})
+
+test('standalone private forgetting deletes disabled semantic sources and vectors from an unbound group without reviving them after restart', {
+  skip: !redisAvailable, timeout: 40000,
+}, async t => {
+  const run = await fixture(t, { instance: 'standalone-semantic-forgetting' })
+  await run.start()
+  run.send(source, 88201)
+  run.send(otherGroupSource, 88202, { group: otherGroupId })
+  run.send(distractor, 88203, { group: otherGroupId, author: authorId + 1 })
+  await waitFor(async () => {
+    const first = await run.state(), second = await run.state(otherGroupId)
+    return first?.rows.length === 1 && second?.rows.length === 2 &&
+      [...first.rows, ...second.rows].every(row => row.vector?.length === 3)
+  }, 'persisted source text and vectors before disabling', 12000)
+  const retained = (await run.state(otherGroupId)).rows.find(row => row.authorId === String(authorId + 1))
+  await run.stop()
+  await run.disableForPrivateCleanup()
+  const embedded = run.embeddings.length, reranked = run.rerankings.length
+  await run.start()
+  assert.equal((await run.state()).rows[0].text, source, 'old unbound corpus still exists before the command')
+  run.sendPrivate('#清空我的记忆', 88204)
+  await waitFor(() => run.deliveries.some(row => row.epoch === 2 && row.action === 'send_private_msg' && Number(row.params.user_id) === authorId),
+    'private forgetting confirmation')
+  await waitFor(async () => {
+    const first = await run.state(), second = await run.state(otherGroupId)
+    return first === undefined && second?.rows.length === 1 && second.rows[0].authorId === String(authorId + 1)
+  }, 'raw Redis text/vector deletion in the disabled unbound partition')
+  assert.deepEqual((await run.state(otherGroupId)).rows, [retained])
+  assert.deepEqual((await run.catalog()).entries.map(entry => entry.scope.target.id), [String(otherGroupId)], 'the empty old partition is removed from the durable catalog')
+  const rawAfter = await run.states()
+  assert.ok(!JSON.stringify(rawAfter).includes(source) && !JSON.stringify(rawAfter).includes(otherGroupSource))
+  await run.stop()
+  await run.start()
+  assert.deepEqual(await run.states(), rawAfter, 'restart retains only the other person and their existing vector')
+  assert.equal(run.embeddings.length, embedded, 'disabled cleanup and restart perform no embedding requests')
+  assert.equal(run.rerankings.length, reranked)
+  assert.equal(run.mainRequests.length, 0, 'the privacy command never becomes a model request')
   await run.stop()
   run.assertClean()
 })

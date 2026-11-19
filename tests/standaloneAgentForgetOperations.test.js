@@ -125,6 +125,134 @@ test('emoji owner cannot publish a completion receipt after authorization change
   assert.notEqual(receipt.phase, 'completed'); assert.equal(receipt.impacts.some(row => row.id === 'local-emoji-attributed-sources'), false)
 })
 
+test('whole-person forget persists separate semantic source and vector cleanup proof with a stable cutoff', async () => {
+  const purges = [], operations = [], fixedTime = 1_795_075_800_000
+  const f = fixture({ semanticMemoryCleanup: { async purgeSubject(input, guard) {
+    assert.equal(guard.signal, f.context.signal); assert.equal(guard.isCurrent(), true)
+    await guard.ensureCurrent(); purges.push(structuredClone(input))
+    return { usage: 'blocked', cleanup: 'completed', removedRows: 3, removedVectors: 2, removedPartitions: 1 }
+  } } })
+  f.auth.authorize = async (_principal, operation) => { operations.push(operation); return 'allowed' }
+  const begin = f.store.begin
+  f.store.begin = (input, guard) => begin({ ...input, now: fixedTime }, guard)
+  const result = await f.ops.profile({ userId: 'u1', requestId: 'semantic-person' }, f.context)
+  assert.deepEqual(purges, [{ account: binding.target.account, agentId: binding.agentId, subjectId: 'u1', target: binding.target, through: fixedTime }])
+  assert.equal(result.createdAt, fixedTime); assert.equal(result.phase, 'completed'); assert.equal(result.usage, 'blocked')
+  const semantic = result.impacts.filter(row => row.id.startsWith('semantic-memory-'))
+  assert.deepEqual(semantic.map(row => [row.kind, row.id, row.state]), [
+    ['partition', 'semantic-memory-sources', 'completed'], ['partition', 'semantic-memory-vectors', 'completed'],
+  ])
+  assert.match(semantic[0].partition, /^semantic-memory:[a-f0-9]{64}$/u)
+  assert.equal(semantic[0].partition, semantic[1].partition)
+  assert.equal(result.cleanup, 'unsupported')
+  assert.ok(result.impacts.some(row => row.id === 'source-consumers' && row.state === 'unsupported'))
+  assert.deepEqual((await f.ops.read(result.operationId, f.context)).impacts, result.impacts)
+  assert.equal([...f.values.values()].join('\n').includes('secret body'), false)
+  assert.ok(operations.includes('profiles.delete'))
+  const again = await f.ops.profile({ userId: 'u1', requestId: 'semantic-person' }, f.context)
+  assert.equal(again.operationId, result.operationId); assert.equal(again.createdAt, fixedTime)
+  assert.equal(purges.length, 1); assert.equal(f.calls.profile, 1)
+})
+
+test('an absent semantic cleanup owner does not claim semantic partitions were erased', async () => {
+  const f = fixture({ semanticMemoryCleanup: undefined })
+  const result = await f.ops.profile({ userId: 'u1', requestId: 'semantic-disabled' }, f.context)
+  assert.equal(result.phase, 'completed'); assert.equal(result.cleanup, 'unsupported')
+  assert.equal(result.impacts.some(row => row.id.startsWith('semantic-memory-')), false)
+})
+
+test('semantic cleanup uncertainty persists for both partitions without claiming global cleanup', async () => {
+  const f = fixture({ semanticMemoryCleanup: { async purgeSubject() {
+    return { usage: 'blocked', cleanup: 'unknown', removedRows: 1, removedVectors: 0, removedPartitions: 0 }
+  } } })
+  const result = await f.ops.profile({ userId: 'u1', requestId: 'semantic-unknown' }, f.context)
+  assert.deepEqual(result.impacts.filter(row => row.id.startsWith('semantic-memory-')).map(row => row.state), ['unknown', 'unknown'])
+  assert.equal(result.cleanup, 'unsupported')
+  assert.deepEqual((await f.ops.read(result.operationId, f.context)).impacts, result.impacts)
+})
+
+test('malformed semantic cleanup receipts cannot publish completed impacts', async () => {
+  const valid = { usage: 'blocked', cleanup: 'completed', removedRows: 0, removedVectors: 0, removedPartitions: 0 }
+  const invalid = [null, undefined, {}, { ...valid, usage: 'pending' }, { ...valid, cleanup: 'unsupported' },
+    ...['removedRows', 'removedVectors', 'removedPartitions'].flatMap(key =>
+      [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, '1', NaN, Infinity, undefined].map(value => ({ ...valid, [key]: value }))),
+  ]
+  for (const [index, receipt] of invalid.entries()) {
+    let purges = 0
+    const f = fixture({ semanticMemoryCleanup: { async purgeSubject() { purges++; return receipt } } })
+    const requestId = 'semantic-invalid-' + index
+    await assert.rejects(f.ops.profile({ userId: 'u1', requestId }, f.context), error => error.code === 'unavailable')
+    const recorded = await f.store.readByRequestId(requestId)
+    assert.equal(recorded.phase, 'unknown'); assert.equal(recorded.cleanup, 'unknown')
+    assert.equal(recorded.impacts.some(row => row.id.startsWith('semantic-memory-')), false)
+    assert.equal((await f.ops.profile({ userId: 'u1', requestId }, f.context)).operationId, recorded.operationId)
+    assert.equal(purges, 1); assert.equal(f.calls.profile, 1)
+  }
+})
+
+test('a failed semantic cleanup owner leaves an unknown receipt without replaying deletion', async () => {
+  let purges = 0
+  const f = fixture({ semanticMemoryCleanup: { async purgeSubject() { purges++; throw Error('semantic unavailable') } } })
+  await assert.rejects(f.ops.profile({ userId: 'u1', requestId: 'semantic-owner-failed' }, f.context), /semantic unavailable/u)
+  const result = await f.ops.profile({ userId: 'u1', requestId: 'semantic-owner-failed' }, f.context)
+  assert.equal(result.phase, 'unknown'); assert.equal(result.cleanup, 'unknown')
+  assert.equal(purges, 1); assert.equal(f.calls.profile, 1)
+})
+
+test('semantic cleanup cannot publish completion after delete permission or binding lease is revoked', async () => {
+  for (const mode of ['permission', 'binding']) {
+    let f, current = true
+    f = fixture({ semanticMemoryCleanup: { async purgeSubject(_input, guard) {
+      await guard.ensureCurrent()
+      if (mode === 'permission') f.auth.authorize = async (_principal, operation) => operation === 'profiles.delete' ? 'denied' : 'allowed'
+      else { current = false; assert.equal(guard.isCurrent(), false) }
+      await assert.rejects(guard.ensureCurrent(), error => error.code === (mode === 'permission' ? 'forbidden' : 'conflict'))
+      return { usage: 'blocked', cleanup: 'completed', removedRows: 1, removedVectors: 1, removedPartitions: 1 }
+    } } })
+    f.context.isCurrent = () => current
+    const requestId = 'semantic-revoke-' + mode
+    await assert.rejects(f.ops.profile({ userId: 'u1', requestId }, f.context), error => error.code === (mode === 'permission' ? 'forbidden' : 'conflict'))
+    const receipt = await f.store.readByRequestId(requestId)
+    assert.notEqual(receipt.phase, 'completed'); assert.equal(receipt.impacts.some(row => row.id.startsWith('semantic-memory-')), false)
+  }
+})
+
+test('deleting a profile field never purges semantic rows or vectors', async () => {
+  let purges = 0
+  const f = fixture({ semanticMemoryCleanup: { async purgeSubject() { purges++; throw Error('must not purge') } } })
+  const result = await f.ops.profile({ userId: 'u1', field: 'entries', value: 'entry-1', requestId: 'semantic-field' }, f.context)
+  assert.equal(purges, 0); assert.equal(result.impacts.some(row => row.id.startsWith('semantic-memory-')), false)
+})
+
+test('semantic cleanup waits for source deletion readback', async () => {
+  let purges = 0
+  const f = fixture({ semanticMemoryCleanup: { async purgeSubject() { purges++; throw Error('must not purge') } } })
+  f.profiles.list = async () => [{ binding, profile: { userId: 'u1', entries: [{ id: 'entry-1', category: 'fact', text: 'secret body' }] } }]
+  await assert.rejects(f.ops.profile({ userId: 'u1', requestId: 'semantic-source-retained' }, f.context), error => error.code === 'unavailable')
+  assert.equal(purges, 0)
+  assert.equal((await f.store.readByRequestId('semantic-source-retained')).phase, 'unknown')
+})
+
+test('semantic cleanup retains the full exact account and conversation scope including private scenes', async () => {
+  const variants = [binding,
+    { ...binding, agentId: 'other-agent' },
+    { ...binding, target: { ...binding.target, account: { ...binding.target.account, namespace: 'other' } } },
+    { ...binding, target: { ...binding.target, kind: 'private', id: 'u1' } },
+  ], partitions = new Set()
+  for (const [index, selected] of variants.entries()) {
+    const purges = [], f = fixture({ semanticMemoryCleanup: { async purgeSubject(input, guard) {
+      await guard.ensureCurrent(); purges.push(structuredClone(input))
+      return { usage: 'blocked', cleanup: 'completed', removedRows: 0, removedVectors: 0, removedPartitions: 0 }
+    } } }, selected)
+    const result = await f.ops.profile({ userId: 'u1', requestId: 'semantic-scope-' + index }, f.context)
+    assert.deepEqual(purges, [{ account: selected.target.account, agentId: selected.agentId, subjectId: 'u1', target: selected.target, through: result.createdAt }])
+    const partition = result.impacts.find(row => row.id === 'semantic-memory-sources').partition
+    partitions.add(partition)
+    assert.equal(partition.includes(selected.target.id), false)
+  }
+  assert.equal(partitions.size, variants.length)
+})
+
 test('character memory forget reports source and derived partitions without storing content', async () => {
   const f = fixture(), result = await f.ops.character({ scopeKey: agentConversationKey(binding), memoryId: 'memory-1', requestId: 'request-2' }, f.context)
   assert.equal(result.phase, 'completed')

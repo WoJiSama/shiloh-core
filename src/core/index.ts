@@ -34,7 +34,8 @@ export type { PersonProfileExtractor, PersonProfileExtractionMessage, PersonProf
 export type { TextPersonMemoryConfig } from '../contracts/textPersonMemory.js'
 export type { MidtermMemoryConfig, EpisodicMemoryConfig, ConversationSummaryModel, ConversationSummaryInput } from '../contracts/conversationMemory.js'
 export type { GroupMemoryConfig, GroupMemoryModel, GroupMemoryModelInput, GroupMemoryProposal } from '../contracts/groupMemory.js'
-export type { AgentSemanticMemoryConfig, AgentSemanticMemoryBackend, AgentSemanticMemoryRecall, AgentSemanticMemoryQuerySource } from '../contracts/semanticMemory.js'
+export type { AgentSemanticMemoryConfig, AgentSemanticMemoryBackend, AgentSemanticMemoryRecall, AgentSemanticMemoryQuerySource,
+  AgentSemanticMemoryCleanup, AgentSemanticMemoryCleanupGuard, AgentSemanticMemoryPurgeSubject, AgentSemanticMemoryCleanupReceipt } from '../contracts/semanticMemory.js'
 export type { AgentHistoryConfig, AgentHistoryRecall, AgentHistoryRequestSource } from '../contracts/agentHistory.js'
 export type {
   AgentTextTriggerConfig, AgentTextTriggerSmartConfig, AgentTextTriggerTalkOverride, AgentTextTriggerPhase,

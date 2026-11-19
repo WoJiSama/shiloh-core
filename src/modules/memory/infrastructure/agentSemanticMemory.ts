@@ -3,7 +3,8 @@ import type { AgentBindingSnapshot, AgentConversationScope, ConversationAddress 
 import type { IncomingMessage } from '../../../contracts/platformMessage.js'
 import type { PersonMemoryStore } from '../../../contracts/personMemory.js'
 import type { PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
-import type { AgentSemanticMemoryBackend, AgentSemanticMemoryConfig, AgentSemanticMemoryRecall, AgentSemanticMemoryQuerySource } from '../../../contracts/semanticMemory.js'
+import type { AgentSemanticMemoryBackend, AgentSemanticMemoryConfig, AgentSemanticMemoryRecall, AgentSemanticMemoryQuerySource,
+  AgentSemanticMemoryCleanupGuard, AgentSemanticMemoryCleanupReceipt, AgentSemanticMemoryPurgeSubject } from '../../../contracts/semanticMemory.js'
 import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey, isPlatformIdentifier, platformAccountKey } from '../../runtime/domain/agentBindings.js'
 import { isPersonMemoryRedacted } from '../domain/personMemory.js'
@@ -13,6 +14,7 @@ import { canReadUnattributedMemory, personMemoryAddress } from './personMemoryCo
 import { BM25Index, tokenizeForBM25 } from './SemanticMemoryStore.js'
 import { rrfFuse } from './SemanticMemoryRetriever.js'
 import { agentSemanticMemoryId, createAgentSemanticMemoryStore, type AgentSemanticMemoryRow } from './agentSemanticMemoryStore.js'
+import { ensureSemanticCleanup, semanticCleanupCurrent, semanticCleanupMatchesScope, semanticCleanupSelector } from './agentSemanticMemoryCleanup.js'
 
 type MemoryTurn = { isCurrent(): boolean; signal: AbortSignal; release(): void }
 const DAY = 86_400_000
@@ -54,7 +56,7 @@ export function createAgentSemanticMemory(ports: {
   const store = createAgentSemanticMemoryStore(ports.redis)
   const now = ports.now ?? Date.now
   const lifecycle = new AbortController()
-  const requests = new Set<{ target: ConversationAddress; controller: AbortController; related: readonly AgentBindingSnapshot[] }>()
+  const requests = new Set<{ agentId: string; target: ConversationAddress; controller: AbortController; related: readonly AgentBindingSnapshot[] }>()
   const indexing = new Map<string, Promise<void>>()
   const retryAt = new Map<string, number>()
   const nextCheck = new Map<string, number>()
@@ -77,7 +79,7 @@ export function createAgentSemanticMemory(ports: {
   async function permitted(binding: AgentBindingSnapshot, rows: readonly AgentSemanticMemoryRow[]): Promise<AgentSemanticMemoryRow[]> {
     const result: AgentSemanticMemoryRow[] = []
     const snapshots = new Map<string, Awaited<ReturnType<PersonMemoryStore['getRedactions']>>>()
-    for (const row of rows) {
+    for (const row of await store.filterRows(binding, rows)) {
       if (row.at < now() - retention() || row.at > now() + 60_000 || !ports.allowsText(row.text) ||
           (binding.target.kind === 'private' && ports.privatePeer(binding.target) !== row.authorId) ||
           await ports.isRecalled(binding.target, row.messageId)) continue
@@ -85,7 +87,7 @@ export function createAgentSemanticMemory(ports: {
       if (!snapshot) { snapshot = await ports.memory.getRedactions({ identity: identity(binding), subjectId: row.authorId }); snapshots.set(row.authorId, snapshot) }
       if (!isPersonMemoryRedacted(source(binding, row), row.text, snapshot)) result.push(row)
     }
-    return result
+    return store.filterRows(binding, result)
   }
   async function present(binding: AgentBindingSnapshot, rows: readonly AgentSemanticMemoryRow[]): Promise<boolean> {
     const saved = await store.read(agentSemanticMemoryId(binding))
@@ -98,7 +100,7 @@ export function createAgentSemanticMemory(ports: {
   async function withContext<T>(binding: AgentBindingSnapshot, guard: () => boolean, timeout: number, work: (context: PersonProfileExtractionContext) => Promise<T>, related: readonly AgentBindingSnapshot[] = []): Promise<T> {
     const turn = await ports.begin(binding)
     const controller = new AbortController()
-    const request = { target: binding.target, controller, related }
+    const request = { agentId: binding.agentId, target: binding.target, controller, related }
     requests.add(request)
     const signal = AbortSignal.any([lifecycle.signal, controller.signal, turn.signal])
     const isCurrent = () => !signal.aborted && turn.isCurrent() && guard() && current(binding) && related.every(current)
@@ -308,7 +310,32 @@ export function createAgentSemanticMemory(ports: {
     const binding = ports.resolve(scope.target)?.binding
     if (binding?.agentId === scope.agentId && current(binding)) await index(binding)
   }
-  return { capture, read, tick,
+  async function purgeSubject(input: AgentSemanticMemoryPurgeSubject, authority: AgentSemanticMemoryCleanupGuard): Promise<AgentSemanticMemoryCleanupReceipt> {
+    const selector = semanticCleanupSelector(input)
+    const owned: AgentSemanticMemoryPurgeSubject = { ...input, account: { ...input.account },
+      ...(input.target ? { target: { ...input.target, account: { ...input.target.account } } } : {}) }
+    const signal = AbortSignal.any([lifecycle.signal, authority.signal])
+    const guard: AgentSemanticMemoryCleanupGuard = {
+      signal,
+      isCurrent() {
+        try { return !signal.aborted && ports.isRunning() && semanticCleanupCurrent(authority) }
+        catch { return false }
+      },
+      async ensureCurrent() {
+        if (!guard.isCurrent()) throw new Error('语义记忆清理权限已失效')
+        await ensureSemanticCleanup(authority)
+        if (!guard.isCurrent()) throw new Error('语义记忆清理权限已失效')
+      },
+    }
+    await ensureSemanticCleanup(guard)
+    for (const request of requests) {
+      if (semanticCleanupMatchesScope(request, selector) || request.related.some(binding => semanticCleanupMatchesScope(binding, selector))) request.controller.abort()
+    }
+    const receipt = await store.purgeSubject(owned, guard)
+    await ensureSemanticCleanup(guard)
+    return receipt
+  }
+  return { capture, read, tick, purgeSubject,
     invalidate(target: ConversationAddress) {
       const key = conversationAddressKey(target)
       for (const request of requests) if (conversationAddressKey(request.target) === key || request.related.some(binding => conversationAddressKey(binding.target) === key)) request.controller.abort()

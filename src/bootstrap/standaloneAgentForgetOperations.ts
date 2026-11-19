@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { AgentBindingSnapshot } from '../contracts/agentBinding.js'
 import type { AgentLocalEmojiRuntime } from '../contracts/agentLocalEmoji.js'
+import type { AgentSemanticMemoryCleanup } from '../contracts/semanticMemory.js'
 import { AgentConsoleError, type AgentConsoleContext, type AgentConsoleAuthPort } from '../contracts/agentConsole.js'
 import { ForgetOperationConflictError, type ForgetImpact, type ForgetOperationGuard, type ForgetOperationKind, type ForgetOperationReceipt, type ForgetOperationStore } from '../contracts/forgetOperation.js'
 import { agentBindingToken, agentConversationKey } from '../modules/runtime/domain/agentBindings.js'
@@ -72,6 +73,7 @@ export function createStandaloneAgentForgetOperations(options: {
   readonly profiles: ProfilePort
   readonly characters: CharacterPort
   readonly localEmojiCleanup?: Pick<AgentLocalEmojiRuntime, 'purgeSubject'>
+  readonly semanticMemoryCleanup?: AgentSemanticMemoryCleanup
 }): StandaloneAgentForgetOperations {
   const active = new Set<string>()
   async function owned<T>(action: (operationId: string) => Promise<T>): Promise<T> {
@@ -185,6 +187,19 @@ export function createStandaloneAgentForgetOperations(options: {
             const emojiPartition = `local-emoji:${digest(binding.agentId)}`
             impacts.push(impact('partition', 'local-emoji-attributed-sources', emojiPartition, cleanup.cleanup))
             if (cleanup.unattributedImages) impacts.push(impact('partition', 'local-emoji-unattributed', emojiPartition, 'unsupported'))
+          }
+          if (field === undefined && options.semanticMemoryCleanup) {
+            const cleanup = await checked(context, operationName, binding, () => options.semanticMemoryCleanup!.purgeSubject({
+              account: binding.target.account, agentId: binding.agentId, subjectId: userId, target: binding.target, through: receipt.createdAt,
+            }, { signal: context.signal,
+              isCurrent() { try { current(context, binding); return true } catch { return false } },
+              ensureCurrent: () => authorize(context, 'profiles.delete', binding),
+            }))
+            if (!cleanup || typeof cleanup !== 'object' || cleanup.usage !== 'blocked' || !['completed', 'unknown'].includes(cleanup.cleanup) ||
+                ![cleanup.removedRows, cleanup.removedVectors, cleanup.removedPartitions].every(value => Number.isSafeInteger(value) && value >= 0)) fail('unavailable')
+            const semanticPartition = `semantic-memory:${digest(agentConversationKey(binding))}`
+            impacts.push(impact('partition', 'semantic-memory-sources', semanticPartition, cleanup.cleanup),
+              impact('partition', 'semantic-memory-vectors', semanticPartition, cleanup.cleanup))
           }
           const result = await checked(context, operationName, binding, () => finish(operationId, impacts, lease))
           return { ok: true, message: '来源删除已确认；其他存储的完整清理证明暂不支持', ...(field === undefined ? {} : { profile: profileResult }), ...result } as unknown as Data

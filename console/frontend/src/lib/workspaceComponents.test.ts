@@ -562,7 +562,9 @@ describe('actual source-scoped person memory', () => {
     const selected = scene(), receipt = { operationId: 'operation-1', phase: 'completed', usage: 'blocked', cleanup: 'unsupported',
       impacts: [{ kind: 'person-memory-entry', id: 'entry-1', partition: 'person-memory', state: 'completed' },
         { kind: 'partition', id: 'local-emoji-attributed-sources', partition: 'local-emoji:partition', state: 'completed' },
-        { kind: 'partition', id: 'local-emoji-unattributed', partition: 'local-emoji:partition', state: 'unsupported' }] }
+        { kind: 'partition', id: 'local-emoji-unattributed', partition: 'local-emoji:partition', state: 'unsupported' },
+        { kind: 'partition', id: 'semantic-memory-sources', partition: 'semantic-memory:partition', state: 'completed' },
+        { kind: 'partition', id: 'semantic-memory-vectors', partition: 'semantic-memory:partition', state: 'unknown' }] }
     let deleted = false
     vi.mocked(api).mockImplementation(async (path, options) => {
       if (options?.method === 'POST') { deleted = true; return receipt }
@@ -582,6 +584,10 @@ describe('actual source-scoped person memory', () => {
     expect(wrapper.text()).toContain('人物记忆 entry-1')
     expect(wrapper.text()).toContain('本地表情（已登记来源） · 已处理')
     expect(wrapper.text()).toContain('历史表情（缺少原始来源） · 未提供清理证明')
+    expect(wrapper.text()).toContain('语义原文库 · 已处理')
+    expect(wrapper.text()).toContain('语义向量库 · 处理结果待核对')
+    expect(wrapper.text()).not.toContain('semantic-memory-sources')
+    expect(wrapper.text()).not.toContain('semantic-memory-vectors')
     expect(wrapper.text()).toContain('当前范围未提供清理证明')
     expect(wrapper.text()).not.toContain('local-emoji-attributed-sources')
     await wrapper.setProps({ conversationScopes: [] })
