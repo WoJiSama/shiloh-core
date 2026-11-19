@@ -263,7 +263,7 @@ function readMcp(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: boo
 
 function readTools(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: boolean, directory: string) {
   const config = value === undefined ? {} : object(value)
-  if (Object.keys(config).some(key => !['search', 'web', 'images', 'mcp', 'github', 'modrinth', 'rendering', 'excel', 'files', 'voice', 'music', 'pixiv', 'videoAnalysis', 'videoSearch', 'magnetSearch', 'interactions', 'qqActions', 'deferredActions'].includes(key))) throw new Error('tools 含不支持的工具配置')
+  if (Object.keys(config).some(key => !['search', 'web', 'images', 'imageSearch', 'mcp', 'github', 'modrinth', 'rendering', 'excel', 'files', 'voice', 'music', 'pixiv', 'videoAnalysis', 'videoSearch', 'magnetSearch', 'interactions', 'qqActions', 'deferredActions'].includes(key))) throw new Error('tools 含不支持的工具配置')
   const qqActions = readStandaloneQqActionsConfig(config.qqActions)
   const deferredActions = readStandaloneDeferredActionsConfig(config.deferredActions)
   const voice = readStandaloneVoiceConfig(config.voice, env, requireCredentials)
@@ -271,6 +271,19 @@ function readTools(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: b
   const videoSearch = readStandaloneVideoSearchConfig(config.videoSearch)
   const magnetSearch = readStandaloneMagnetSearchConfig(config.magnetSearch)
   const pixiv = readStandalonePixivToolsConfig(config.pixiv, env, requireCredentials)
+  let imageSearch: { emoji?: { enabled: true }; bing?: { enabled: true } } | undefined
+  if (config.imageSearch !== undefined) {
+    const input = object(config.imageSearch)
+    if (Object.keys(input).some(key => !['emoji', 'bing'].includes(key))) throw new Error('tools.imageSearch 仅支持 emoji 和 bing')
+    const decoded: NonNullable<typeof imageSearch> = {}
+    for (const name of ['emoji', 'bing'] as const) {
+      if (input[name] === undefined) continue
+      const selected = object(input[name])
+      if (Object.keys(selected).some(key => key !== 'enabled') || typeof selected.enabled !== 'boolean') throw new Error('tools.imageSearch 渠道仅支持布尔字段 enabled')
+      if (selected.enabled) decoded[name] = { enabled: true }
+    }
+    if (Object.keys(decoded).length) imageSearch = decoded
+  }
   let interactions: Readonly<{ enabled: true }> | undefined
   if (config.interactions !== undefined) {
     const input = object(config.interactions)
@@ -414,7 +427,7 @@ function readTools(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: b
     if (!Object.keys(images).length) images = undefined
   }
   const mcp = config.mcp === undefined ? undefined : readMcp(config.mcp, env, requireCredentials, directory)
-  return { qqActions, deferredActions, ...(search ? { search } : {}), ...(web ? { web } : {}), ...(images ? { images } : {}), ...(mcp ? { mcp } : {}), ...(github ? { github } : {}), ...(modrinth ? { modrinth } : {}), ...(rendering ? { rendering } : {}), ...(excel ? { excel } : {}), ...(files ? { files } : {}), ...(voice ? { voice } : {}), ...(music ? { music } : {}), ...(pixiv.enabled ? { pixiv } : {}), ...(videoAnalysis ? { videoAnalysis } : {}), ...(videoSearch.enabled ? { videoSearch } : {}), ...(magnetSearch.enabled ? { magnetSearch } : {}), ...(interactions ? { interactions } : {}) }
+  return { qqActions, deferredActions, ...(search ? { search } : {}), ...(web ? { web } : {}), ...(images ? { images } : {}), ...(imageSearch ? { imageSearch } : {}), ...(mcp ? { mcp } : {}), ...(github ? { github } : {}), ...(modrinth ? { modrinth } : {}), ...(rendering ? { rendering } : {}), ...(excel ? { excel } : {}), ...(files ? { files } : {}), ...(voice ? { voice } : {}), ...(music ? { music } : {}), ...(pixiv.enabled ? { pixiv } : {}), ...(videoAnalysis ? { videoAnalysis } : {}), ...(videoSearch.enabled ? { videoSearch } : {}), ...(magnetSearch.enabled ? { magnetSearch } : {}), ...(interactions ? { interactions } : {}) }
 }
 
 function parseSource(source: string, label: string): Record<string, unknown> {

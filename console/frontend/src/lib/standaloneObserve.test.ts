@@ -261,6 +261,117 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 describe('standalone observation page', () => {
+  it('looks up an exact query reference beyond the default list without claiming a complete history', async () => {
+    const traceId = 'older-trace.42:check'
+    const older = { ...event('older-event'), traceId }
+    vi.mocked(api).mockImplementation(async (path) =>
+      path === `/api/observe/summary?traceId=${encodeURIComponent(traceId)}`
+        ? { ...summary(), events: [older], scan: { ...summary().scan, truncated: true } }
+        : summary()
+    )
+    const wrapper = await page()
+    expect(wrapper.find('[data-event-id="older-event"]').exists()).toBe(false)
+    await wrapper.get('input[aria-label="查询编号"]').setValue(traceId)
+    await wrapper.get('form.trace-lookup').trigger('submit')
+    await flushPromises()
+    expect(api).toHaveBeenLastCalledWith(
+      `/api/observe/summary?traceId=${encodeURIComponent(traceId)}`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
+    expect(
+      wrapper.findAll('[data-event-id]').map((row) => row.attributes('data-event-id'))
+    ).toEqual(['older-event'])
+    expect(wrapper.text()).toContain('已达到本次读取上限')
+    expect(wrapper.text()).toContain('qq / global / 10001')
+    await wrapper.get('[data-action="recent-observations"]').trigger('click')
+    await flushPromises()
+    expect(api).toHaveBeenLastCalledWith('/api/observe/summary', expect.anything())
+    expect(wrapper.find('[data-event-id="event-1"]').exists()).toBe(true)
+  })
+  it('cancels replaced queries, clears old details and ignores late responses', async () => {
+    const pending = new Map<string, { signal: AbortSignal; resolve: (value: unknown) => void }>()
+    vi.mocked(api).mockImplementation((path, options) =>
+      path === '/api/observe/summary'
+        ? Promise.resolve(summary())
+        : new Promise((resolve) => pending.set(path, { signal: options!.signal!, resolve }))
+    )
+    const wrapper = await page()
+    await wrapper.find('[data-event-id="event-1"] button').trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('a.conversation-link')).not.toBeNull()
+    await wrapper.get('input[aria-label="查询编号"]').setValue('old-trace')
+    await wrapper.get('form.trace-lookup').trigger('submit')
+    await flushPromises()
+    expect(document.body.querySelector('a.conversation-link')).toBeNull()
+    await wrapper.get('input[aria-label="查询编号"]').setValue('new-trace')
+    await wrapper.get('form.trace-lookup').trigger('submit')
+    await flushPromises()
+    expect(pending.get('/api/observe/summary?traceId=old-trace')!.signal.aborted).toBe(true)
+    pending.get('/api/observe/summary?traceId=new-trace')!.resolve({
+      ...summary(),
+      events: [{ ...event('new-result'), traceId: 'new-trace' }]
+    })
+    await flushPromises()
+    pending.get('/api/observe/summary?traceId=old-trace')!.resolve({
+      ...summary(),
+      events: [{ ...event('stale-result'), traceId: 'old-trace' }]
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-event-id="new-result"]').exists()).toBe(true)
+    expect(wrapper.find('[data-event-id="stale-result"]').exists()).toBe(false)
+  })
+  it('invalidates an in-flight lookup when authorization is no longer current', async () => {
+    let complete!: (value: unknown) => void
+    let signal!: AbortSignal
+    vi.mocked(api).mockImplementation((path, options) =>
+      path === '/api/observe/summary'
+        ? Promise.resolve(summary())
+        : new Promise((resolve) => {
+            complete = resolve
+            signal = options!.signal!
+          })
+    )
+    const wrapper = await page()
+    await wrapper.get('input[aria-label="查询编号"]').setValue('pending-trace')
+    await wrapper.get('form.trace-lookup').trigger('submit')
+    await flushPromises()
+    workspace.error.value = '授权状态暂时无法核对'
+    await flushPromises()
+    expect(signal.aborted).toBe(true)
+    expect(wrapper.findAll('[data-event-id]')).toHaveLength(0)
+    complete({ ...summary(), events: [{ ...event('revoked-result'), traceId: 'pending-trace' }] })
+    await flushPromises()
+    expect(wrapper.findAll('[data-event-id]')).toHaveLength(0)
+    expect(wrapper.text()).toContain('授权状态待核对')
+  })
+  it('discards old process results and cancels the active request on unmount', async () => {
+    const pending: { signal: AbortSignal; resolve: (value: unknown) => void }[] = []
+    vi.mocked(api).mockImplementation(
+      (_path, options) =>
+        new Promise((resolve) => pending.push({ signal: options!.signal!, resolve }))
+    )
+    const wrapper = await page()
+    consoleRestart.state.generation++
+    consoleRestart.state.processEpoch = 'process-2'
+    await flushPromises()
+    expect(pending[0].signal.aborted).toBe(true)
+    pending[0].resolve(summary())
+    await flushPromises()
+    expect(wrapper.findAll('[data-event-id]')).toHaveLength(0)
+    expect(wrapper.text()).toContain('运行实例已改变')
+    workspace.data.value = {
+      ...workspaceData(),
+      configState: { ...workspaceData().configState, processEpoch: 'process-2' }
+    }
+    await flushPromises()
+    const active = pending.at(-1)!
+    expect(active.signal.aborted).toBe(false)
+    wrapper.unmount()
+    expect(active.signal.aborted).toBe(true)
+    active.resolve({ ...summary(), processEpoch: 'process-2' })
+    await flushPromises()
+    expect(document.body.querySelector('[data-event-id]')).toBeNull()
+  })
   it('loads one independent summary without rendering legacy 48-hour statistics', async () => {
     const wrapper = await page()
     expect(api).toHaveBeenCalledTimes(1)

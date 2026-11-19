@@ -28,6 +28,7 @@ import { createAgentRepositoryTools } from '../modules/tools/infrastructure/agen
 import { createAgentModrinthTools } from '../modules/tools/infrastructure/agentModrinthTools.js'
 import { createAgentModrinthCardRenderer } from '../modules/media/infrastructure/agentModrinthCardRenderer.js'
 import { agentImageBackends, createAgentImageTools } from '../modules/tools/infrastructure/agentImageTools.js'
+import { createAgentImageSearchTools } from '../modules/content/infrastructure/agentImageSearchTools.js'
 import { createAgentExcelTool } from '../modules/content/infrastructure/agentExcelTool.js'
 import { createAgentFileTextTool } from '../modules/content/infrastructure/agentFileTextTool.js'
 import { createAgentVoiceTool } from '../modules/media/infrastructure/agentVoiceTool.js'
@@ -525,7 +526,9 @@ export async function main(argv: string[]): Promise<void> {
     const magnetSearchTools = config.tools.magnetSearch && magnetSearchProvider ? createAgentMagnetSearchTools(config.tools.magnetSearch, {
       provider: magnetSearchProvider, secrets: hostSecrets, allowsText: allowsMediaText,
     }).builtIn ?? [] : []
+    const imageSearchTools = createAgentImageSearchTools({ ...config.tools.imageSearch, secrets: hostSecrets, allowsText: allowsMediaText }).builtIn ?? []
     const builtInTools = [
+        ...imageSearchTools,
         ...magnetSearchTools,
         ...videoTools,
         ...videoSearchTools,
@@ -551,7 +554,7 @@ export async function main(argv: string[]): Promise<void> {
       managementBindings,
       toolRegistry: {
         // Removing a definition also fences its pending HTTP, queued send and late result.
-        get builtIn() { return config.isConfigCurrent() ? builtInTools : builtInTools.filter(tool => !pixivTools.includes(tool) && !videoTools.includes(tool) && !videoSearchTools.includes(tool) && !magnetSearchTools.includes(tool)) },
+        get builtIn() { return config.isConfigCurrent() ? builtInTools : builtInTools.filter(tool => !pixivTools.includes(tool) && !videoTools.includes(tool) && !videoSearchTools.includes(tool) && !magnetSearchTools.includes(tool) && !imageSearchTools.includes(tool)) },
         get custom() { return mcp?.registry.custom ?? [] },
       },
       isExecutionCurrent: () => storage?.isCurrent() === true && config.isConfigCurrent(),

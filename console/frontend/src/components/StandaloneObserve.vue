@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { NAlert, NButton, NDrawer, NDrawerContent, NInput, NSelect, NTag } from 'naive-ui'
 import PageHeader from './PageHeader.vue'
 import PageState from './PageState.vue'
 import { api } from '../lib/api'
 import { count, useOpsResource } from '../lib/operations'
-import { workspace } from '../lib/workspace'
+import { capability, workspace } from '../lib/workspace'
+import { consoleRestart } from '../lib/consoleRestart'
 import { accountLabel, robotLabel } from '../lib/workspaceModel'
 import {
   diagnosticLocation,
@@ -18,16 +19,106 @@ import {
   type DiagnosticEvent
 } from '../lib/standaloneObserve'
 
-const resource = useOpsResource(
-  async (signal) => parseStandaloneObserve(await api('/api/observe/summary', { signal })),
-  45000
-)
 const query = ref(''),
+  traceDraft = ref(''),
+  traceId = ref(''),
+  traceError = ref(''),
+  sessionCurrent = ref(true),
   agent = ref('all'),
   account = ref('all'),
   outcome = ref('all'),
   selectedId = ref(''),
   drawerOpen = ref(false)
+const readAccess = computed(() => capability('observe.read'))
+const epochCurrent = computed(
+  () =>
+    !consoleRestart.state.processEpoch ||
+    workspace.data.value?.configState.processEpoch === consoleRestart.state.processEpoch
+)
+const mayRead = computed(
+  () =>
+    sessionCurrent.value &&
+    workspace.mode.value === 'standalone' &&
+    epochCurrent.value &&
+    readAccess.value.status === 'available'
+)
+const accessKey = computed(() => {
+  const snapshot = workspace.data.value
+  return JSON.stringify([
+    sessionCurrent.value,
+    workspace.mode.value,
+    workspace.error.value,
+    consoleRestart.state.generation,
+    consoleRestart.state.processEpoch,
+    snapshot?.revision,
+    snapshot?.configState.processEpoch,
+    snapshot?.agents.map((owner) => [
+      owner.id,
+      owner.conversations.map((row) => [row.scopeKey, row.bindingToken])
+    ]),
+    snapshot?.capabilities
+  ])
+})
+function clearDetail() {
+  selectedId.value = ''
+  drawerOpen.value = false
+}
+const resource = useOpsResource(async (signal) => {
+  clearDetail()
+  resource.data.value = null
+  if (!mayRead.value)
+    throw new Error(
+      sessionCurrent.value
+        ? epochCurrent.value
+          ? readAccess.value.reason
+          : '运行实例已改变，请刷新工作区后重新查询。'
+        : '登录状态已失效，请重新登录后查询。'
+    )
+  const expectedAccess = accessKey.value,
+    expectedEpoch = consoleRestart.state.processEpoch,
+    path = traceId.value
+      ? `/api/observe/summary?traceId=${encodeURIComponent(traceId.value)}`
+      : '/api/observe/summary'
+  const result = parseStandaloneObserve(await api(path, { signal }))
+  if (signal.aborted || accessKey.value !== expectedAccess)
+    throw new DOMException('查询已失效，请重新查询。', 'AbortError')
+  if (expectedEpoch && result.processEpoch !== expectedEpoch)
+    throw new Error('运行实例已改变，请刷新工作区后重新查询。')
+  return result
+}, 45000)
+function refreshRecords() {
+  clearDetail()
+  resource.reset()
+}
+function resetFilters() {
+  query.value = ''
+  agent.value = account.value = outcome.value = 'all'
+}
+function lookupTrace() {
+  const value = traceDraft.value.trim()
+  clearDetail()
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value)) {
+    traceError.value =
+      '请输入完整查询编号，支持字母、数字、点、冒号、横线和下划线，最长 128 个字符。'
+    return
+  }
+  traceError.value = ''
+  traceId.value = value
+  resetFilters()
+  refreshRecords()
+}
+function recentRecords() {
+  traceDraft.value = traceId.value = traceError.value = ''
+  resetFilters()
+  refreshRecords()
+}
+watch(accessKey, refreshRecords, { flush: 'sync' })
+watch([query, agent, account, outcome], clearDetail, { flush: 'sync' })
+function unauthorized() {
+  sessionCurrent.value = false
+}
+onMounted(() => window.addEventListener('console:unauthorized', unauthorized))
+onUnmounted(() => window.removeEventListener('console:unauthorized', unauthorized))
 const events = computed(() => resource.data.value?.events ?? [])
 function accountKey(event: DiagnosticEvent) {
   const scope = event.scope
@@ -172,19 +263,43 @@ function detail(event: DiagnosticEvent) {
       eyebrow="运行与排障"
       description="从近期保存的操作记录，追踪完整会话、配置版本和平台回执。"
     >
-      <template #actions
-        ><NButton :loading="resource.loading.value" @click="resource.refresh"
-          >刷新记录</NButton
-        ></template
-      >
+      <template #actions><NButton @click="refreshRecords">刷新记录</NButton></template>
     </PageHeader>
+    <form class="panel trace-lookup" @submit.prevent="lookupTrace">
+      <label class="section-title" for="observe-trace-reference">按查询编号查找</label>
+      <div class="trace-lookup-controls">
+        <NInput
+          v-model:value="traceDraft"
+          clearable
+          :input-props="{ id: 'observe-trace-reference', 'aria-label': '查询编号' }"
+          placeholder="粘贴异常提示中的完整查询编号"
+          :maxlength="128"
+          :disabled="!mayRead"
+        />
+        <NButton attr-type="submit" :disabled="!mayRead">查找记录</NButton>
+        <NButton
+          v-if="traceId"
+          attr-type="button"
+          data-action="recent-observations"
+          @click="recentRecords"
+          >返回近期记录</NButton
+        >
+      </div>
+      <p class="field-help">
+        在当前授权和日志保留范围内查找，仍受本次读取上限限制。
+        <span v-if="traceId"
+          >当前查询：<code>{{ traceId }}</code></span
+        >
+      </p>
+    </form>
+    <NAlert v-if="traceError" type="warning" :bordered="false">{{ traceError }}</NAlert>
     <NAlert v-if="resource.error.value && resource.data.value" type="warning" :bordered="false"
       >刷新失败，当前展示上次同步的记录：{{ resource.error.value }}</NAlert
     >
     <PageState
       :loading="resource.loading.value && !resource.data.value"
       :error="!resource.data.value ? resource.error.value : null"
-      @retry="resource.refresh"
+      @retry="refreshRecords"
     >
       <template v-if="resource.data.value">
         <NAlert
@@ -246,7 +361,7 @@ function detail(event: DiagnosticEvent) {
         <section class="panel events-panel">
           <div class="panel-heading">
             <div>
-              <h2 class="section-title">近期操作</h2>
+              <h2 class="section-title">{{ traceId ? '查询编号的操作记录' : '近期操作' }}</h2>
               <p class="field-help">
                 筛选本次已返回记录。一次操作可能产生多条记录，记录数不等于聊天回合数。
               </p>
@@ -326,7 +441,11 @@ function detail(event: DiagnosticEvent) {
           </div>
           <p v-else class="empty-records">
             {{
-              events.length ? '没有符合筛选条件的记录。' : '当前读取范围内没有已授权的操作记录。'
+              events.length
+                ? '没有符合筛选条件的记录。'
+                : traceId
+                  ? '当前读取与授权范围内未找到此查询编号，记录可能已过期或超出读取范围。'
+                  : '当前读取范围内没有已授权的操作记录。'
             }}
           </p>
           <p v-if="resource.data.value.journal.available" class="field-help journal-health">
@@ -429,9 +548,25 @@ function detail(event: DiagnosticEvent) {
 
 <style scoped>
 .configuration-panel,
-.events-panel {
+.events-panel,
+.trace-lookup {
   padding: 24px;
   min-width: 0;
+}
+.trace-lookup-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0 10px;
+}
+.trace-lookup-controls > .n-input {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.trace-lookup .field-help {
+  margin-bottom: 0;
+  overflow-wrap: anywhere;
 }
 .configuration-facts {
   display: grid;
@@ -605,7 +740,8 @@ code {
 }
 @media (max-width: 650px) {
   .configuration-panel,
-  .events-panel {
+  .events-panel,
+  .trace-lookup {
     padding: 18px;
   }
   .configuration-facts,

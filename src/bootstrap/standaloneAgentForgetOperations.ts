@@ -52,6 +52,16 @@ function impact(kind: ForgetImpact['kind'], key: string, partition: string, stat
   return { kind, id: token(key, 512), partition: token(partition, 8192), state }
 }
 function digest(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex') }
+function hasPrunedMemoryVersion(before: Data, after: Data, removedMemoryRefs: ReadonlySet<string>): boolean {
+  if (!Number.isSafeInteger(before.revision) || !Number.isSafeInteger(after.revision) || Number(after.revision) <= Number(before.revision) ||
+      !Array.isArray(before.versions) || !Array.isArray(after.versions) || !after.versions.length) return false
+  const previous = records(before.versions), remaining = records(after.versions)
+  const valid = (item: Data, maximum: unknown) => Number.isSafeInteger(item.revision) && Number(item.revision) >= 1 && Number(item.revision) <= Number(maximum)
+  if (previous.some(item => !valid(item, before.revision)) || remaining.some(item => !valid(item, after.revision)) ||
+      new Set(previous.map(item => item.revision)).size !== previous.length || new Set(remaining.map(item => item.revision)).size !== remaining.length) return false
+  const retained = new Set(remaining.map(item => item.revision))
+  return previous.some(item => !retained.has(item.revision) && Array.isArray(item.evidenceRefs) && item.evidenceRefs.some(ref => typeof ref === 'string' && removedMemoryRefs.has(ref)))
+}
 
 /** Records safe references around the existing source owners; it never replays an accepted mutation. */
 export function createStandaloneAgentForgetOperations(options: {
@@ -184,7 +194,9 @@ export function createStandaloneAgentForgetOperations(options: {
           const after = await checked(context, 'simulation.group-read', binding, () => options.characters.describeGroup(scopeKey, context)), updated = after.character as Data | undefined
           if (!updated || records(updated.memories).some(item => id(item) === memoryId)) fail('unavailable')
           const partition = `character:${scopeKey}`, liveMemories = new Set(records(updated.memories).map(id))
-          const impacts: ForgetImpact[] = records(character.memories).filter(item => !liveMemories.has(id(item))).map(item => impact('character-memory', id(item), partition))
+          const removedMemories = records(character.memories).filter(item => !liveMemories.has(id(item)))
+          const removedMemoryRefs = new Set(removedMemories.map(item => `memory:${id(item)}`))
+          const impacts: ForgetImpact[] = removedMemories.map(item => impact('character-memory', id(item), partition))
           const goals = new Map(records(updated.goals ?? []).map(item => [id(item), item]))
           for (const goal of records(character.goals ?? [])) {
             const next = goals.get(id(goal))
@@ -193,8 +205,11 @@ export function createStandaloneAgentForgetOperations(options: {
           const priorActivity = before.activities as Data | undefined, nextActivity = after.activities as Data | undefined
           for (const [key, impactKind] of [['works', 'character-work'], ['shared', 'character-shared-derived'], ['sharedPending', 'character-shared-derived']] as const) {
             if (!priorActivity || !nextActivity) continue
-            const remaining = new Set(records(nextActivity[key] ?? []).map(id))
-            for (const item of records(priorActivity[key] ?? [])) if (!remaining.has(id(item))) impacts.push(impact(impactKind, id(item), partition))
+            const remaining = new Map(records(nextActivity[key] ?? []).map(item => [id(item), item]))
+            for (const item of records(priorActivity[key] ?? [])) {
+              const next = remaining.get(id(item))
+              if (!next || key === 'works' && hasPrunedMemoryVersion(item, next, removedMemoryRefs)) impacts.push(impact(impactKind, id(item), partition))
+            }
           }
           impacts.push(impact('partition', 'source-consumers', partition, 'unsupported'))
           const unique = [...new Map(impacts.map(item => [JSON.stringify([item.kind, item.partition, item.id]), item])).values()]

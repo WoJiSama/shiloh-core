@@ -3,6 +3,7 @@ import test from 'node:test'
 import { createForgetOperationStore } from '../dist/backend/modules/runtime/infrastructure/forgetOperationStore.js'
 import { agentConversationKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
 import { createStandaloneAgentForgetOperations } from '../dist/backend/bootstrap/standaloneAgentForgetOperations.js'
+import { createCharacterWorkspace } from '../dist/backend/modules/simulation/infrastructure/characterWorkspace.js'
 
 const binding = {
   source: 'configured', id: 'scope', revision: 'r1', agentId: 'agent', personaId: 'persona', connectionId: 'qq-main',
@@ -56,6 +57,66 @@ test('character memory forget reports source and derived partitions without stor
   assert.ok(result.impacts.some(row => row.kind === 'partition'))
   assert.equal(JSON.stringify(result).includes('secret body'), false)
   assert.equal(f.calls.character, 1)
+})
+
+test('character forget reports a retained work whose dependent version was actually pruned', async () => {
+  const f = fixture(), values = new Map(), workspace = createCharacterWorkspace({
+    redis: { get: async key => values.get(key) ?? null, set: async (key, value) => { values.set(key, value); return 'OK' } },
+    scope: { botId: 'robot', personaId: 'agent', groupId: '10001' }, now: () => 1_795_075_800_000,
+  })
+  const first = await workspace.write({ title: 'private work title', kind: 'research', content: 'surviving independent body', evidenceRefs: ['message:1'] })
+  await workspace.write({ id: first.id, expectedRevision: first.revision, title: 'private work title', kind: 'research',
+    content: 'forgotten derived body', evidenceRefs: ['memory:memory-1'] })
+  const unaffected = await workspace.write({ title: 'unaffected title', kind: 'note', content: 'independent body', evidenceRefs: ['message:2'] })
+  const describe = f.characters.describeGroup, control = f.characters.controlCharacter
+  f.characters.describeGroup = async () => ({ ...await describe(), activities: { works: await workspace.list(), shared: [], sharedPending: [] } })
+  f.characters.controlCharacter = async (...args) => {
+    const result = await control(...args)
+    await workspace.pruneEvidence([])
+    return result
+  }
+  const result = await f.ops.character({ scopeKey: agentConversationKey(binding), memoryId: 'memory-1', requestId: 'pruned-version' }, f.context)
+  const retained = await workspace.read(first.id)
+  assert.deepEqual(retained.versions.map(version => version.revision), [1])
+  assert.equal(retained.versions[0].content, 'surviving independent body')
+  assert.equal(retained.revision, 3)
+  await assert.rejects(workspace.read(first.id, 2), /不存在/)
+  assert.deepEqual(await workspace.read(unaffected.id), unaffected)
+  assert.deepEqual(result.impacts.filter(row => row.kind === 'character-work'), [{
+    kind: 'character-work', id: first.id, partition: `character:${agentConversationKey(binding)}`, state: 'completed',
+  }])
+  assert.equal(result.cleanup, 'unsupported')
+  assert.ok(result.impacts.some(row => row.kind === 'partition' && row.state === 'unsupported'))
+  assert.deepEqual((await f.ops.read(result.operationId, f.context)).impacts, result.impacts)
+  const persisted = [...f.values.values()].join('\n')
+  for (const text of ['private work title', 'unaffected title', 'surviving independent body', 'forgotten derived body', 'memory:memory-1'])
+    assert.equal(persisted.includes(text), false)
+})
+
+test('work edits, archival and unrelated pruned versions are not reported as memory cleanup', async () => {
+  const f = fixture(), values = new Map(), workspace = createCharacterWorkspace({
+    redis: { get: async key => values.get(key) ?? null, set: async (key, value) => { values.set(key, value); return 'OK' } },
+    scope: { botId: 'robot', personaId: 'agent', groupId: '10001' }, now: () => 1_795_075_800_000,
+  })
+  const draft = (changes = {}) => ({ title: 'independent work', kind: 'note', content: 'work body', evidenceRefs: ['memory:memory-1'], ...changes })
+  const edited = await workspace.write(draft()), archived = await workspace.write(draft())
+  const unrelated = await workspace.write(draft({ evidenceRefs: ['message:1'] }))
+  await workspace.write(draft({ id: unrelated.id, expectedRevision: unrelated.revision, evidenceRefs: ['memory:other-memory'] }))
+  const describe = f.characters.describeGroup, control = f.characters.controlCharacter
+  f.characters.describeGroup = async () => ({ ...await describe(), activities: { works: await workspace.list(), shared: [], sharedPending: [] } })
+  f.characters.controlCharacter = async (...args) => {
+    const result = await control(...args)
+    await workspace.write(draft({ id: edited.id, expectedRevision: edited.revision, content: 'ordinary edit', evidenceRefs: ['message:2'] }))
+    await workspace.archive(archived.id, true)
+    await workspace.pruneEvidence(['memory:memory-1'])
+    return result
+  }
+  const result = await f.ops.character({ scopeKey: agentConversationKey(binding), memoryId: 'memory-1', requestId: 'unrelated-work-changes' }, f.context)
+  assert.equal((await workspace.read(edited.id)).revision, 2)
+  assert.equal((await workspace.read(archived.id)).status, 'archived')
+  assert.deepEqual((await workspace.read(unrelated.id)).versions.map(version => version.revision), [1])
+  assert.deepEqual(result.impacts.filter(row => row.kind === 'character-work'), [])
+  assert.equal(result.cleanup, 'unsupported')
 })
 
 

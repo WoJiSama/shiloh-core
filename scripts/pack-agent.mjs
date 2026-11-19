@@ -16,6 +16,7 @@ const exports = {
   './simulation-models': 'modules/simulation/infrastructure/agentSimulationModels.js',
   './interactions': 'modules/tools/infrastructure/agentInteractions.js',
   './images': 'modules/tools/infrastructure/agentImageTools.js',
+  './image-search': 'modules/content/infrastructure/agentImageSearchTools.js',
   './mcp': 'modules/tools/infrastructure/agentMcpTools.js',
   './semantic': 'modules/memory/infrastructure/agentSemanticBackend.js',
   './repositories': 'modules/tools/infrastructure/agentRepositoryTools.js',
