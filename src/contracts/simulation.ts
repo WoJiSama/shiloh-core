@@ -211,6 +211,7 @@ export interface SimSessionState {
   qzone?: { lastVisitAt?: number; likes?: { day?: string; count?: number }; comments?: { day?: string; count?: number }; visitedTids?: string[] }
   /** 人物核心档案提取游标（已提取到哪条 seq、上次提取时间） */
   personProfileCursor?: { seq: number; at: number }
+  personProfileRetryAt?: number
   /** Last source invalidation reflected in persisted conversation context. */
   personMemoryInvalidatedAt?: number
   /** 群梗自动提取游标：已提取到哪条消息（seq）、上次提取时间 */

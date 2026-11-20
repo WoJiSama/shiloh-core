@@ -536,7 +536,7 @@ export async function main(argv: string[]): Promise<void> {
     const extractionBackend = config.personMemoryExtraction
     const personProfileExtract = extractionBackend && createAgentPersonExtractor({
       baseUrl: extractionBackend.apiUrl, name: extractionBackend.model, apiKey: extractionBackend.apiKey,
-      secrets: hostSecrets, fetchImpl: observeModelFetch('person_memory_provider_http'),
+      secrets: hostSecrets,
     })
     // The old side paths used memoryAiConfig; this slot carries that backend in standalone.
     const wakeGateJudge = extractionBackend && createAgentSimulationWakeGate({

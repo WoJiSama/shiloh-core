@@ -7,6 +7,7 @@ const { createSimSessionStore } = await load('modules/simulation/infrastructure/
 const { createDefaultSimSession } = await load('modules/simulation/domain/simConfig.js')
 const { agentBindingToken } = await load('modules/runtime/domain/agentBindings.js')
 const { AgentSimulationModelError } = await load('modules/simulation/infrastructure/agentSimulationModels.js')
+const { PersonProfileExtractionError } = await load('modules/memory/infrastructure/agentPersonExtractor.js')
 const at = 1800000000000, bot = '90000', user = '10001', group = '10086'
 const target = { account: { platform: 'qq', namespace: 'global', id: bot }, kind: 'group', id: group }
 const binding = { source: 'configured', id: 'side-binding', revision: 'r1', agentId: 'side-agent', personaId: 'default', connectionId: 'qq-side', target }
@@ -16,24 +17,25 @@ async function until(check) {
   while (Date.now() < deadline) { const value = await check(); if (value) return value; await delay(10) }
   assert.fail('side path did not reach the expected observable boundary')
 }
-function fixture({ meme = false, style = false, ...ports } = {}) {
+function fixture({ meme = false, style = false, personProfile = false, ...ports } = {}) {
   const data = new Map(), models = [], writes = [], clock = { at }
   const redis = { get: async key => data.get(key) ?? null, set: async (key, value) => { data.set(key, value); if (key === sessionKey) writes.push(JSON.parse(value)); return 'OK' },
     del: async (...keys) => keys.reduce((n, key) => n + Number(data.delete(key)), 0) }
   const state = createDefaultSimSession(at)
   Object.assign(state, { botId: bot, personaId: 'agent:side-agent', bindingToken: agentBindingToken(binding), bootstrapSent: true,
     seq: 20, lastIncomingAt: at, nextProactiveCheckAt: at + 86400000, nextReplyCheckAt: at + 86400000 })
-  state.wakeConfig.triggers.probability = meme || style ? 0 : 1
+  const sidePathOnly = meme || style || personProfile
+  state.wakeConfig.triggers.probability = sidePathOnly ? 0 : 1
   state.recent = Array.from({ length: 20 }, (_, i) => ({ seq: i + 1, messageId: `source-${i + 1}`, userId: user, name: '群友', text: '蓝色星期八', at,
     atSelf: false, quoteToSelf: false, imageCount: 0, kind: 'text' }))
   data.set(sessionKey, JSON.stringify(state)); data.set('shiloh:sim:known', JSON.stringify([group]))
-  data.set('shiloh:sim:overrides', JSON.stringify({ explicitEnabled: [group], disabled: [], atOnly: meme || style ? [group] : [], budgetCaps: {}, turnCaps: {} }))
+  data.set('shiloh:sim:overrides', JSON.stringify({ explicitEnabled: [group], disabled: [], atOnly: sidePathOnly ? [group] : [], budgetCaps: {}, turnCaps: {} }))
   const runtime = createSimulationRuntime({ redis, now: () => clock.at, random: () => 0.001,
     logger: { info() {}, warn() {}, error() {} }, getSelf: () => ({ id: bot, name: '机器人' }),
     getPersona: () => ({ binding, persona: {}, systemContent: '' }), getExecutionConfig: () => ({}),
     getSection: () => ({ enabled: true, allGroups: false, groups: [group], reflection: { enabled: false }, mood: { enabled: false }, rhythm: { enabled: false },
-      userStyle: { enabled: style }, personProfile: { enabled: false }, meme: { enabled: meme, extractMinMessages: 20 }, lifeThreads: { enabled: false },
-      wake: { probability: meme || style ? 0 : 1, proactiveProbability: 0, batchWindowMs: 100 } }),
+      userStyle: { enabled: style }, personProfile: { enabled: personProfile }, meme: { enabled: meme, extractMinMessages: 20 }, lifeThreads: { enabled: false },
+      wake: { probability: sidePathOnly ? 0 : 1, proactiveProbability: 0, batchWindowMs: 100 } }),
     async YTapi(request) { models.push(request); return { choices: [{ message: { content: '[SILENT]' } }] } },
     sendGroupMessage: async () => ({ ok: true, messageId: 'sent' }), ...ports })
   const store = scope => createSimSessionStore({ redis, memoryScope: scope, now: () => clock.at })
@@ -151,5 +153,32 @@ test('style cache separates account and Agent, and revoked originals cannot repl
     assert.notDeepEqual((await first.loadUserStyle(group)).users, { [user]: ['原有风格'] })
     assert.deepEqual((await otherAgent.loadUserStyle(group)).users, {})
     assert.deepEqual((await otherAccount.loadUserStyle(group)).users, {})
+  } finally { await f.runtime.stop() }
+})
+
+test('person profile timeout reports one alarm and preserves the original batch until its retry', async () => {
+  const events = [], batches = []
+  const f = fixture({ personProfile: true, diagnostics: { emit: event => events.push(event) },
+    async personProfileExtract(messages) {
+      batches.push(structuredClone(messages))
+      if (batches.length === 1) throw new PersonProfileExtractionError('provider_timeout')
+      return '[]'
+    } })
+  try {
+    await f.runtime.sweepOnce()
+    assert.equal(f.session().personProfileCursor, undefined)
+    assert.equal(f.session().personProfileRetryAt, at + 60_000)
+    assert.deepEqual(events.filter(event => event.outcome === 'failed').map(event => [event.operation, event.code]), [
+      ['simulation_person_profile_extract', 'provider_timeout'],
+    ])
+    f.clock.at += 59_999
+    await f.runtime.sweepOnce()
+    assert.equal(batches.length, 1)
+    f.clock.at++
+    await f.runtime.sweepOnce()
+    assert.equal(batches.length, 2)
+    assert.deepEqual(batches[1], batches[0])
+    assert.equal(f.session().personProfileCursor.seq, 20)
+    assert.equal(f.session().personProfileRetryAt, undefined)
   } finally { await f.runtime.stop() }
 })

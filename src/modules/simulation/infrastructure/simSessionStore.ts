@@ -671,5 +671,6 @@ function normalizeSession(parsed: Partial<SimSessionState>, now: number): SimSes
       : base.conversation,
   }
   if (!Number.isSafeInteger(state.memeRetryAt) || (state.memeRetryAt ?? 0) <= 0) delete state.memeRetryAt
+  if (!Number.isSafeInteger(state.personProfileRetryAt) || (state.personProfileRetryAt ?? 0) <= 0) delete state.personProfileRetryAt
   return state
 }

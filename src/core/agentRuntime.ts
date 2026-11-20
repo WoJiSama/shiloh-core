@@ -2040,7 +2040,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     available: target => isRunning() && allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
     begin: beginMemoryTurn,
     isRecalled: inbox.isRecalled,
-    logger,
+    logger, diagnostics,
     ...(options.recordTokens ? { recordUsage: options.recordTokens } : {}),
     ...(options.now ? { now: options.now } : {}),
   })

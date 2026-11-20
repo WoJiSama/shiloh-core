@@ -46,6 +46,7 @@ import { resolveSimulationActor, AUTONOMOUS_EXTRA_TOOLS, AUTONOMOUS_DENIED_SIM_T
 import type { SimAffinityEntry, SimAffinityMap, SimulationSection, SimHistoryMessage, SimMemoryEntry, SimMessage, SimMoodState, SimRuntimeConfig, SimSessionState, SimToolResultObservation, SimWakeReason } from '../../../contracts/simulation.js'
 import type { PersonMemorySource } from '../../../contracts/personMemory.js'
 import type { PersonProfileExtractor, PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
+import { PersonProfileExtractionError } from '../../memory/infrastructure/agentPersonExtractor.js'
 import type { AgentBindingSnapshot, AgentBindingTurn, AgentConversationScope, ConversationAddress, PlatformAccountRef, PlatformUserRef } from '../../../contracts/agentBinding.js'
 import type { ForwardContent, ForwardReference, MessageImage, MessageImageReadOptions, PlatformNudgeEvent } from '../../../contracts/platformConnection.js'
 import type { IncomingMessage, MessageActionOptions, MessageActionPort, MessagePart, OutgoingPart, MessageBundleItem, MessageBundlePart } from '../../../contracts/platformMessage.js'
@@ -872,6 +873,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     delete state.offeredFollowUpIds
     delete state.lastPlayAlongWakeAt
     state.personProfileCursor = {seq:state.seq, at:0}
+    delete state.personProfileRetryAt
     state.memeCursor = {seq:state.seq, at:0}
     delete state.memeRetryAt
     return true
@@ -4336,10 +4338,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const profileStore = scopedStore(scope, binding)
     const token = state.bindingToken
     const cursor = state.personProfileCursor
-    if (cursor && at - cursor.at < cfg.personProfile.extractCooldownMs) return
+    if ((state.personProfileRetryAt ?? 0) > at || cursor && at - cursor.at < cfg.personProfile.extractCooldownMs) return
     if (ports.isMemoryInputAvailable?.(target.account) === false) return
     const controller = new AbortController()
-    let active = true, bindingCurrent = true, usageRecorded = false
+    let active = true, bindingCurrent = true, usageRecorded = false, timedOut = false
     let activityVersion = '', memoryInvalidatedAt = 0
     let fresh: SimMessage[] = []
     let completedSeq: number | undefined
@@ -4347,19 +4349,23 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const sourceStillPresent = (message: SimMessage) => state.recent.some(current =>
       current.seq === message.seq && current.messageId === message.messageId && current.userId === message.userId &&
       current.at === message.at && current.text === message.text && !current.forwardId && !current.textTruncated)
-    const isCurrent = () => {
+    const scopeCurrent = () => {
+      if (!active || stopped || memoryTurn?.signal.aborted || memoryTurn?.isCurrent() === false ||
+          ports.isMemoryInputAvailable?.(target.account) === false || ports.isAccountReady?.(target.account) === false ||
+          !handlesTarget(target) || !allowsConversationAI(target) || !groupActive(runtimeConfig(), groupId) ||
+          !runtimeConfig(groupId).personProfile.enabled) return false
+      const live = personaFor(target)
+      bindingCurrent = bindingCurrent && state.botId === target.account.id && state.bindingToken === token &&
+        (live.personaId || 'default') === scope.personaId &&
+        (live.binding ? agentBindingToken(live.binding) : undefined) === token
+      return bindingCurrent && fresh.every(sourceStillPresent)
+    }
+    const authorized = () => {
       try {
-        if (!active || stopped || controller.signal.aborted || memoryTurn?.isCurrent() === false ||
-            ports.isMemoryInputAvailable?.(target.account) === false || ports.isAccountReady?.(target.account) === false ||
-            !handlesTarget(target) || !allowsConversationAI(target) || !groupActive(runtimeConfig(), groupId) ||
-            !runtimeConfig(groupId).personProfile.enabled) return false
-        const live = personaFor(target)
-        bindingCurrent = bindingCurrent && state.botId === target.account.id && state.bindingToken === token &&
-          (live.personaId || 'default') === scope.personaId &&
-          (live.binding ? agentBindingToken(live.binding) : undefined) === token
-        return bindingCurrent && fresh.every(sourceStillPresent)
+        return ports.observeCurrent ? ports.observeCurrent(scopeCurrent) === true : scopeCurrent()
       } catch { return false }
     }
+    const isCurrent = () => !controller.signal.aborted && authorized()
     if (!isCurrent()) return
     background.add(groupId)
     liveStates.set(groupId, state)
@@ -4373,7 +4379,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     controller.signal.addEventListener('abort', abort, { once: true })
     const bounded = <T>(operation: Promise<T>): Promise<T> => Promise.race([operation, aborted])
     const cancelMemoryTurn = () => controller.abort()
-    const timeout = setTimeout(() => controller.abort(), 60_000)
+    const timeout = setTimeout(() => {
+      if (!controller.signal.aborted) { timedOut = true; controller.abort() }
+    }, 60_000)
     const bindingPoll = setInterval(() => { if (!isCurrent()) controller.abort() }, 50)
     timeout.unref?.(); bindingPoll.unref?.()
     const assertCurrent = () => { if (!isCurrent()) throw new Error('人物事实提取范围已改变') }
@@ -4447,11 +4455,21 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       await ensureCurrent()
       completedSeq = fresh.at(-1)!.seq
       if (mergedCount > 0) logger.info(`[仿真] 群 ${groupId} 人物来源提取 ${mergedCount} 条（提取自 ${fresh.length} 条消息）`)
-    } catch {
-      logger.warn(`[仿真] 群 ${groupId} 人物事实提取未完成，已丢弃未提交结果`)
+    } catch (error) {
+      if (isCurrent() || timedOut && authorized()) {
+        state.personProfileRetryAt = now() + 60_000
+        const failure = error instanceof PersonProfileExtractionError ? error : undefined
+        diagnose({ stage: failure ? 'model' : 'memory', operation: 'simulation_person_profile_extract', outcome: 'failed',
+          code: failure?.code ?? (timedOut ? 'extraction_timeout' : 'extraction_failed'),
+          ...(failure?.httpStatus === undefined ? {} : { httpStatus: failure.httpStatus }), error, durationMs: now() - at })
+        if (!ports.diagnostics) logger.warn(`[仿真] 群 ${groupId} 人物事实提取未完成，稍后重试`)
+      } else {
+        diagnose({ stage: 'memory', operation: 'simulation_person_profile_extract', outcome: 'cancelled', code: 'source_revoked' })
+      }
     } finally {
       let pending: SimWakeReason[] = []
       let finalSave: Promise<void> | undefined
+      let cursorUpdated = false
       try {
         // Ingress shares this object while storage is pending. Keep ownership through
         // the handoff snapshot so a concurrent message or durable wake cannot be lost.
@@ -4460,6 +4478,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           try {
             await ensureCurrent()
             state.personProfileCursor = { seq: completedSeq, at }
+            delete state.personProfileRetryAt
+            cursorUpdated = true
           } catch { /* Cancelled work must not advance the extraction cursor. */ }
         }
         pending = (bindingCurrent ? state.pendingWakeReasons : []).filter(reason => messageReasonStillPending(reason, state.unread))
@@ -4485,6 +4505,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         notifyWaiters(groupId)
       }
       await finalSave
+      if (cursorUpdated) diagnose({ stage: 'memory', operation: 'simulation_person_profile_extract', outcome: 'succeeded', durationMs: now() - at })
       if (!stopped && pending.length) await scheduleWake(groupId, pending.reduce((a,b) => mergeWakeReason(a,b).reason), state.bindingToken, cfg)
     }
   }

@@ -1,5 +1,6 @@
 import type { PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
 import { resolveChatCompletionUrl } from '../../models/domain/chatCompletionUrl.js'
+import { glmFlashJsonOptions } from '../../models/domain/modelGateway.js'
 import { buildMemeExtractionPrompt } from '../domain/simMemory.js'
 import { conversationAddressKey, isConversationAddress, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
 
@@ -123,14 +124,13 @@ function client(options: AgentSimulationModelOptions, deadline: number, maxToken
       if (hasSecret(JSON.stringify(messages), secrets)) throw new Error(FAILURE)
       await ensureCurrent(context, signal, isCurrent)
       // This official GLM endpoint otherwise uses the small output budget for reasoning.
-      const disableThinking = endpoint.hostname === 'open.bigmodel.cn' && options.name.trim().toLowerCase() === 'glm-5.3-flash'
       const received = await abortable<Response>(Promise.resolve().then(() => {
         assertCurrent(context, requestSignal, isCurrent)
         waitingForHeaders = true
         return (options.fetchImpl ?? fetch)(resolveChatCompletionUrl(endpoint.href), { method: 'POST', redirect: 'error', signal: requestSignal,
           headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: options.name, messages, stream: false, temperature, max_tokens: maxTokens,
-            ...(disableThinking ? { thinking: { type: 'disabled' } } : {}) }) })
+            ...glmFlashJsonOptions(endpoint, options.name) }) })
       }), signal)
       waitingForHeaders = false
       response = received

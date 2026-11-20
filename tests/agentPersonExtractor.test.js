@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import test from 'node:test'
-import { createAgentPersonExtractor } from '../dist/backend/modules/memory/infrastructure/agentPersonExtractor.js'
+import { createAgentPersonExtractor, PersonProfileExtractionError } from '../dist/backend/modules/memory/infrastructure/agentPersonExtractor.js'
 import { buildPersonProfileExtractPrompt } from '../dist/backend/modules/simulation/domain/personProfile.js'
 
 const apiKey = 'person-extractor-private-key-123456'
@@ -20,10 +20,13 @@ function answer(content = raw, extra = {}, init) {
   return new Response(JSON.stringify({ choices: [{ message: { content } }], ...extra }), init)
 }
 function extractor(options = {}) { return createAgentPersonExtractor({ ...config, ...options }) }
-async function rejected(operation) {
+async function rejected(operation, code, status) {
   await assert.rejects(operation, error => {
+    assert.ok(error instanceof PersonProfileExtractionError)
     assert.equal(error.message, FAILURE)
     assert.equal(error.cause, undefined)
+    if (code) assert.equal(error.code, code)
+    if (status) assert.equal(error.httpStatus, status)
     return true
   })
 }
@@ -62,6 +65,30 @@ test('person extractor uses real JSON HTTP with only bounded author/text prompts
   }
   assert.doesNotMatch(JSON.stringify(received[0].body), /private-|person-extractor-private|nativeEvent/u)
   assert.deepEqual(usage, [[config.name, { prompt_tokens: 4, completion_tokens: 0, total_tokens: 4 }]])
+})
+
+test('person extraction disables thinking only for official GLM flash JSON requests', async () => {
+  for (const [baseUrl, name, expected] of [
+    ['https://open.bigmodel.cn/api/paas/v4', 'glm-5.3-flash', { type: 'disabled' }],
+    ['https://open.bigmodel.cn/api/paas/v4', 'other-model', undefined],
+    ['https://proxy.example.com/v1', 'glm-5.3-flash', undefined],
+  ]) {
+    const run = extractor({ baseUrl, name, fetchImpl: async (_url, request) => {
+      assert.deepEqual(JSON.parse(request.body).thinking, expected)
+      return answer()
+    } })
+    assert.equal(await run(messages, undefined, context()), raw)
+  }
+})
+
+test('person extraction reports transport timeouts and response errors without retrying', async () => {
+  const keepAlive = setTimeout(() => {}, 1000)
+  let calls = 0
+  try {
+    await rejected(extractor({ timeoutMs: 10, fetchImpl: async () => { calls++; return new Promise(() => {}) } })(messages, undefined, context()), 'provider_timeout')
+    await rejected(extractor({ fetchImpl: async () => { calls++; return new Response('upstream detail', { status: 503 }) } })(messages, undefined, context()), 'http_error', 503)
+    assert.equal(calls, 2)
+  } finally { clearTimeout(keepAlive) }
 })
 
 test('person extraction requires scoped context and current synchronous/async authorization before any request', async () => {
