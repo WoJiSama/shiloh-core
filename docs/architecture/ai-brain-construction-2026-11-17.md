@@ -1,8 +1,8 @@
 # 希洛统一认知系统施工方案：借鉴 Hindsight、Letta、ReMe
 
-日期：2026-11-17。适用项目：bl-chat-plugin 正在迁移的独立 Agent Core。
+日期：2026-11-17；工程进度更新：2026-11-18。适用项目：bl-chat-plugin 独立 Agent Core。
 
-**P0 已完成会议改期的首个本地回放。** 统一认知链路、记忆迁移和完整对照仍在后续阶段。 本文承接[自主角色总路线](../autonomous-character-design-roadmap-2026-11-09.md)及本次会话确认的产品要求。本文的源码与需求快照用于说明设计依据；当前实现、部署与验收范围统一见[项目当前状态](../project-status.md)，历史候选与验证见[Core 历史记录](agent-bindings-history.md)。
+**交付状态：首版统一认知链路及记忆评估回放已实现，2026-11-20 归并主线；默认关闭，未部署、未导入生产历史、未运行实模对照评测。** 实际落地、验证及剩余工作见第 14 节。本文承接[自主角色总路线](../autonomous-character-design-roadmap-2026-11-09.md)及本次会话确认的产品要求。历史实现和验收记录仍以原文及其证据为准。
 
 **当前方向：借鉴三个项目，自研 Core 内的统一认知系统。** 希洛的经历、人物、兴趣、观点、目标、行动结果与过程经验共享身份和证据，通过明确的关系连接，形成“经历影响判断、判断影响行动、结果更新认知”的完整循环。
 
@@ -26,7 +26,7 @@
 | R4 | 人物判断保留语境和证据地位 | A 群调侃、转述、推测不能自动成为某人的永久性格 |
 | R5 | 记忆可发展、可纠正、可撤销 | 改变偏好能保留变化过程；删除来源后，摘要、缓存和迟到任务不能把它恢复 |
 | R6 | 优先解决体验，不以实现数量证明优劣 | 与现有实现比较连续性、关联使用、来源正确性、成本和延迟，再决定启用范围 |
-| R7 | 与 Core 迁移协作 | 本次仅写文档；后续开发沿用迁移后的身份、会话、存储和运行接口 |
+| R7 | 与 Core 迁移协作 | 沿用迁移后的身份、会话、存储和运行接口，在独立工作树开发和验证 |
 | R8 | 尽量自主掌握核心实现 | 三个开源项目作为设计参考，当前方案不增加独立第三方记忆服务 |
 | R9 | 各能力构成一个有联系的整体 | 同一经历可关联人物、兴趣、目标和结果；修订能影响后续读取与判断 |
 | R10 | 为长期演进保留连续性 | 原始依据、有效自我和执行状态独立持久化；升级模型后经验证继续使用 |
@@ -53,7 +53,7 @@
 
 ### 2.2 现状与需要改变的地方
 
-核对工作树：2026-11-17，HEAD 为 `db84d7dd2549270aa56da6482917a8a5f6e425b7`，同时有大量未提交的 Core 迁移工作。下面是源码快照，不是线上状态报告。
+最初调查快照：2026-11-17，HEAD 为 `db84d7dd2549270aa56da6482917a8a5f6e425b7`。2026-11-18 开发已重新固定到迁移完成后的 `4a9b336d248158f78e1510e58885bff5a5a70f92`，分支 `codex/unified-cognition-20261118`；原工作树当时干净。以下表格保留改造前的问题背景，当前新增实现见第 14 节，不作为线上状态报告。
 
 | 当前事实 | 施工方向 | 依据 |
 | --- | --- | --- |
@@ -312,9 +312,11 @@ ReMe 的 proactive 能力只作为候选话题读取的参考。整理完成不�
 
 ## 9. 与 Core 迁移的衔接
 
+Core 迁移会话已经结束。本次开发固定其完成后的本地提交，复用独立 Core、完整会话地址、实例 Redis 前缀与宿主租约；没有重新实现一套绑定或另建第三方记忆进程。
+
 Core、会话、工具及独立 QQ 宿主的迁移与认知方案并行推进。2026-11-19 的 P0 回放在冻结的 Core 副本和隔离测试存储上运行，会议改期的修正接入普通文字回合的系统提示。
 
-后续开发使用独立 worktree 和独立测试数据命名空间。工作树隔离解决文件相互覆盖，接口变化仍需按迁移后的基线整合。
+本次开发使用独立 worktree 和独立测试数据命名空间，没有改动原工作树或生产配置。工作树隔离解决文件相互覆盖，接口变化仍按迁移后的基线整合。
 
 | 接缝 | 消费已有能力 | 本方案产出 |
 | --- | --- | --- |
@@ -328,11 +330,11 @@ Core、会话、工具及独立 QQ 宿主的迁移与认知方案并行推进。
 
 整合时会触及 `src/core/agentRuntime.ts`、普通对话与仿真提示入口、`characterSharedSelf`、`characterReflection`、宿主配置。先做独立模块和契约测试，再在稳定 Core 上接线；不在旧运行时先构造另一套 agent 身份再二次迁移。
 
-生产接线阶段同步更新 [RULES](../../RULES.md) 与 [SECURITY_BASELINE](../SECURITY_BASELINE.md)，明确新的自然自我共享规则、关联查询和模型的数据流、关闭方式与遗忘边界。本次文档不表示这些现行运行规则已经改变。
+本次 Core 接线同步更新 [RULES](../../RULES.md) 与 [SECURITY_BASELINE](../SECURITY_BASELINE.md)，明确自然自我共享规则、关联查询和模型的数据流、关闭方式与遗忘边界。部署仍需另行进行。
 
 ## 10. 分阶段施工与交付物
 
-P0 正在固定基线与补充样本，P1–P6 待实施。P0 已验证的范围见下文，完整阶段依照表中的完成条件验收。进度同步到[总路线](../autonomous-character-design-roadmap-2026-11-09.md)。
+以下表格保留完整施工目标；首版各阶段的实际覆盖及剩余项见第 14 节。表中的“完成条件”不自动视为已取得的结果。进度仍回写[总路线](../autonomous-character-design-roadmap-2026-11-09.md)，不另建一份平行任务账本。
 
 | 阶段 | 文件/改动范围 | 输入 → 产出 | 完成条件与依赖 |
 | --- | --- | --- | --- |
@@ -427,11 +429,11 @@ P0–P4 可在迁移以外准备；P5 依赖身份、完整会话地址、存储
 
 整理启停、金额与数据出机属于部署边界配置；普通兴趣强弱、话题风格继续由现有机制调整。登记实际存储位置、模型渠道和备份保留；停用整理后停止新增后台模型调用，保留有效状态供正常聊天读取。
 
-### 12.3 下一次开发的起点
+### 12.3 当前继续点
 
-延续 P0 时，先用获准的真实检索后端和目标回答模型复跑会议样本，补齐第 11.2 节的场景与证据。再按 P1 在稳定 Core 基线上确认身份、来源、存储和撤销接缝，建立统一认知入口。P2/P3 可随后并行，以 M17 的完整循环核对经历、判断、行动与结果能否接上。
+首版的存储、自我、整理、历史导入与 Core 接线已实现并完成本地工程验证，本轮已将独立认知开发与主线工具、控制台、检索改动归并。下一步以独立数据运行第 11 节的 A/B/C 对照和 18 类实模回放，补充长期页面质量、中文同义词检索、跨天自然使用与模型升级回归。以 M17 的完整循环检查实际收益，不把“多了一张关系图”记为“记忆体验更好”。
 
-开工前需要落实的技术事项是：最终 Core 提交、实际存储原子操作接口、记录与关系的兼容版本、受控评测资源与预算。它们在对应阶段调查并记录，不阻止本方案的产品方向，也不以本文件代替部署授权。
+本次已落实 Core 基线、Redis CAS、schema v1、派生撤销及离线导入接口。受控评测的实际模型、样本与预算仍需在评测前固定；本文不代替部署或生产数据写入授权。
 
 ### 12.4 随模型进步延续成长
 
@@ -456,3 +458,81 @@ P0–P4 可在迁移以外准备；P5 依赖身份、完整会话地址、存储
 - Hindsight 测试定义：[异步任务同 ID 重试](https://github.com/vectorize-io/hindsight/blob/b92ceb180e349a456d2b5454575067b6ff0f6306/hindsight-api-slim/tests/test_async_retain_operation_id.py#L121)、[来源文本范围](https://github.com/vectorize-io/hindsight/blob/b92ceb180e349a456d2b5454575067b6ff0f6306/hindsight-api-slim/tests/test_source_text_tag_scope.py)。
 - Letta：[local MemFS 记忆分层](https://github.com/letta-ai/letta-code/blob/b622fb1bc0941981e08da5ec2b2736d897e9bde1/src/agent/prompts/letta_local_memfs.md)、[root MemFS 自我与连续性](https://github.com/letta-ai/letta-code/blob/b622fb1bc0941981e08da5ec2b2736d897e9bde1/src/agent/prompts/letta_root_memfs.md)。
 - ReMe：[Auto Dream](https://github.com/agentscope-ai/ReMe/blob/5d957113cefa693d5acf5838b57abe5bf3dbc41a/docs/zh/auto_dream.md)、[抽取规则](https://github.com/agentscope-ai/ReMe/blob/5d957113cefa693d5acf5838b57abe5bf3dbc41a/reme/steps/evolve/dream/extract.yaml)、[四种整合操作](https://github.com/agentscope-ai/ReMe/blob/5d957113cefa693d5acf5838b57abe5bf3dbc41a/reme/steps/evolve/dream/integrate.yaml)、[proactive](https://github.com/agentscope-ai/ReMe/blob/5d957113cefa693d5acf5838b57abe5bf3dbc41a/docs/zh/proactive.md)。
+
+## 14. 2026-11-18 首版实现与交接
+
+### 14.1 实际落地
+
+首版开发基线为 `4a9b336d248158f78e1510e58885bff5a5a70f92`，原工作树 `/Users/shiqi/.codex/worktrees/unified-cognition/bl-chat-plugin`，分支 `codex/unified-cognition-20261118`。沿用 Core 实例的 `bl-agent:<instance>:` 前缀；其中新键为 `agent:cognition:v1:<agentId>`。没有连接生产、部署或导入真实用户历史。
+
+| 范围 | 已实现 | 本轮工程证据 |
+| --- | --- | --- |
+| P0 / P1 来源与入口 | `AgentCognition`、schema v1、完整来源身份、类型化关系、source revision、privacyRevision、原子 CAS、检查点、持久撤销墓碑 | `agentCognitionStore.test.js`：实例重建、真实 Redis 多客户端并发、无来源拒绝、源修订与多层撤销、关系环、容量拒写 |
+| P2 自我与上下文 | CREATE / CORROBORATE / REFINE / CORRECT；同一 agent 跨群及私聊自我；普通兴趣/观点与至少两次独立事件的习惯；模型显式 selfAssessment | `agentCognitionSelf.test.js`、`agentCognitionRuntime.test.js`：他人/私聊不能升为自我、重复证据不增强、偏好修订、不复活旧版 |
+| P3 首版关系与检索 | 场景来源→经历，经历→目标，目标→实际回执，自身表达→自我；按场景筛选、逐节点核验来源后对获准项排序，最多两跳/30 候选、紧凑自我与场景材料 | 来源链与相关边不混用；看不见的节点/证据不能作为桥。命名长期页面的独立重建任务、向量/同义词多路融合仍待实施/评测 |
+| P4 低频整理 | 同一次角色反思预算内替换为统一整理，按来源批次与快照提交，失败保留认知检查点，频率账本记录失败尝试 | `agentCognitionSelf.test.js`、`characterReflection.test.js`：provider 派发前复核、外部撤销、快照冲突、六小时/每日两次、无第二次模型调用 |
+| P5 Core 接线 | 文字与仿真都读取同一个入口；入站来源、已提交记忆/目标/回执和确认发送回流；模型与发送前核验；删除人物与消息回流撤销 | `agentCognitionCore.test.js` 使用真实 Redis；`characterRuntime.test.js` 使用编译后的生产仿真；运行时再次读取原角色/回执记录，直接删除也不能绕过 |
+| P6 离线导入基础 | 规范化历史 JSON、旧 scope 显式映射、只读预览、完整输入哈希、目标 revision、单次提交、重复执行、删除限制和 CLI 文件锁/原子替换 | `agentCognitionImport.test.js`；这是离线文件工具，尚未把旧 Yunzai 数据自动转换或写入新宿主 |
+
+跨场景自我只输出提炼后的普通偏好；前台提示不附其他群原话、群号或人物标识。自身表达的来源链仍保存，以便后续删除和现场授权核验。群内真人事实、调侃与人物描述不会因摘要或关系扩展获得跨场景读取权限。模型对内容是否普通、是否涉及他人的语义判断仍需第 11 节实模回放与人工评审，单元测试不能证明不会误判。
+
+执行状态继续由原 `CharacterState` 和正式托付模块持有。统一认知中的 goal/receipt 是只读引用投影，failed/unknown/pending 与 succeeded 区分；整理不能重新执行、取消托付、发送公告或赋予权限。保留已确认文本只登记实际消息 ID；未知投递不生成可携带的自我证据。
+
+正常记忆或目标换版保留 superseded 历史并重接当前关系，不作为删除。目标→回执的 result 表示行动归属，真实结果仍以独立回执为依据，不能因为下一步计划改变而消失。已补合成的“经历→兴趣→既有目标→成功/失败/未知回执→过程经验→再次召回→删除后失效”循环，认知整理不改原执行账本。
+
+### 14.2 开关、容量与兼容边界
+
+独立宿主配置新增：
+
+```yaml
+cognition:
+  enabled: false
+```
+
+默认关闭。显式启用后，普通文字与仿真读取统一自我，同一回合不再挂旧的手动共享自我提议工具或注入它的共享投影。兼容存储继续保留；关闭新链路停止新认知读写，不删除新状态。后台模型整理仍受 `simulation.reflection.enabled`、自主参与、暂停、原群预算和原反思频率限制；没有新后台定时器或模型渠道。
+
+首版整理借用有自主活动的仿真场景反思入口，仍需至少两项未处理角色记忆/结果。纯文字场景可读取和积累真实来源及自身表达，但尚无独立文字后台调度器；不会凭启用开关额外启动一套反思。自我语义提案可由统一入口注入并由此持久化。
+
+每个 agent 当前上限：4,000 来源、4,000 节点、8,000 关系、20,000 撤销/检查点、16 MiB 编码状态。到限显式拒绝写入并记诊断，不删除旧依据来腾空间。尚未完成长期容量整理、分片、p95 延迟或费用基准；第 11 节数字保持验收目标，不是已有测量。排序为本地字词相关性与关系展开，未为新认知增加 embedding 服务。
+
+旧画像和摘要尚无逐行来源引用，因此人物隐私版本变化会保守停用较早的自身派生表达；无关场景的原始消息仍按各自规则可读。纯文字与仿真依赖认知生成的回复不进入旧叙事回复缓存、聊天快照或模型历史；认知依赖的文字工具结果仅保留执行尝试标记，不保存可在重启后绕过来源检查的回复正文。
+
+### 14.3 历史导入与恢复
+
+CLI 的输入是显式准备并核对过的规范化 JSON：`schemaVersion`、`agentId`、`mappings`、`sources`、`memories`、`invalidations`。完整字段示例与允许值见 `node scripts/import-cognition.mjs --help`。旧裸群记录、无真实消息 ID/作者/时间的自我笔记不能由导入器补造来源；含缺失或撤销依据的记忆整条跳过。无法确认历史删除限制时整次应用拒绝。所有导入条目默认保持 scene，不自动变成全局自我。
+
+回执来源要求真实 `receipt:<id>`、机器人作者及空参与者列表，活动正文必须是与 Core 一致的 `{toolName,status,summary,goalId}` JSON，并与独立声明的 `receiptStatus` 相符。`pending`、正文格式不全或状态矛盾的来源跳过；`failed/unknown` 可作 reported 依据，不能证明完成。已撤销回执允许空正文并保留墓碑，无法核验撤销身份时拒绝应用。
+
+```sh
+node scripts/import-cognition.mjs --input /tmp/legacy-cognition.json --output /tmp/cognition-state.json
+node scripts/import-cognition.mjs --input /tmp/legacy-cognition.json --output /tmp/cognition-state.json --apply --preview-hash <previewHash> --expected-revision <destinationRevision>
+```
+
+默认预览不创建目标文件。应用使用源/目标真实路径和 inode 检查、独占锁、完整输入 hash、目标 revision 和同目录原子 rename；状态与输入检查点一起保存，进程中断后先检查文件与锁，再重新预览；不会自动移除看似过期的锁。重试不重复增强。输出只是一个 agent 的离线状态文件，不会读取宿主凭据或连接 Redis；安装进实例仍需独立的停写、最新撤销核对和受控切换。
+
+回退时关闭新认知入口并保留新数据与最新撤销。不得用旧备份覆盖已生效删除，不能把导入器输出文件直接当成整实例恢复方案。更完整的归档转换、增量追平、页面重建和正式回退演练仍在 P6 后续范围。
+
+本轮归并继续保留认知节点的不可读历史；人物遗忘对其他持久分区的 completed 回执不表示认知节点已物理擦除。多账号遗忘按完整账号限定，重复执行使用原命令的固定截止点。
+
+### 14.4 验证状态与下一步
+
+本轮采用无外部模型/平台请求的专项回归、真实临时 Redis、编译后的仿真运行时以及 TypeScript/分层边界检查。验证命令与证据如下，源测试通过 `BL_CHAT_AGENT_SOURCE_TEST=1` 明确读取当前 TypeScript 实现：
+
+| 命令/范围 | 当前结果 |
+| --- | --- |
+| 源测试：`agentCognitionStore`、`agentCognitionRuntime`、`agentCognitionSelf`、`agentCognitionCore`、`agentCognitionText` | 80/80，无失败或跳过；存储 CAS 与 Core 使用真实临时 Redis |
+| 源回归：`agentCoreManagement`、`agentTextPersonMemory`、`agentTextConversationTrigger` | 62/62，无失败或跳过；覆盖旧管理、隐私删除、文字学习和触发路径 |
+| 源导入专项：`agentCognitionImport` | 13/13，无失败或跳过；覆盖预览、CAS/中断、重放、撤销、回执正文与结果地位、CLI 文件锁与别名拒绝 |
+| `npm run backend:build` | 通过，TypeScript 5.9.3，2,604 个运行/声明/映射文件；构建前后源码哈希一致 |
+| `node node_modules/typescript/bin/tsc -p tsconfig.backend-tests.json` | 通过；严格编译全部生产 TypeScript、领域测试及公共契约测试 |
+| 新构建产物：六个 `agentCognition*.test.js`，另加 `characterReflection`、`standaloneAgentConfigCandidate` | 122/122，无失败或跳过；同一份最终 `dist/backend` 的运行验证 |
+| 新构建产物：`characterRuntime`、`replySanitizer`、`simSilentDeclaration` | 95/95，无失败或跳过；覆盖仿真发送、收尾、目标、撤销、未知结果与旧行为，含新增认知缓存用例 |
+| `node --test .test-build/tests/typescript/characterState.test.js .test-build/tests/typescript/simulationDomain.test.js` | 89/89，无失败或跳过；使用上述最终 TypeScript 编译结果 |
+| 实际离线 CLI：`node /tmp/bl-cognition-cli-smoke-20261118.mjs` | 通过；单独进程加载本次构建，核对 help、预览零写入、按 hash/revision 应用、幂等重放及错误 hash 拒绝；临时文件清理，无生产访问 |
+| `npm run test:boundaries` | 通过 |
+
+所有合成模型输出都明确属于工程验证；尚未运行第 11 节 A/B/C 三组实模、每类三次的完整 18 类序列、跨天观察和模型升级对照，也没有真实群体验验收结论。
+
+本机多会话构建竞争期间，冗余的 `npm run backend:typecheck`（内部使用 `--noEmit`）和首次测试编译被主动中止，不列为通过证据；上表正式构建及顺序重新运行的测试编译均已取得最终通过结果。未执行全量 `verify:phase`、发布打包或部署验收。
+
+后续先固定模型、快照、预算与样本，再量化连续性、中文检索、误共享率、p95、token/费用及关联行动收益。完成这些证据后才讨论有限启用；当前不把“自研首版可用”写成“比现状更自然”或“完整长期认知已验收”。

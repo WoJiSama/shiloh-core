@@ -189,16 +189,20 @@ test('SPI may never receive a configured host or account secret as its device cr
 })
 
 test('a card renderer replaces the intro with one card image and falls back on failure', async t => {
-  const card = Buffer.from('CARD-IMAGE-BYTES-PRIVATE')
+  const card = Buffer.from(PNG)
+  const coverView = { pic: 'https://i0.hdslb.com/cover.png' }
   const rendered = []
   await t.test('successful render swaps text+cover for title text plus the card artifact', async t => {
-    const f = await fixture(t, { options: { cardRenderer: { render: async (view, context) => {
+    const f = await fixture(t, { view: coverView, options: { cardRenderer: { render: async (view, context) => {
       rendered.push({ view, current: context.isCurrent() })
       assert.ok(view.title && view.owner && view.pageUrl)
       assert.ok(view.stats && view.stats['播放'])
+      assert.equal(view.cover.mime, 'image/png')
+      assert.deepEqual(view.cover.bytes, PNG)
       return { mime: 'image/png', base64: card.toString('base64') }
     } } } })
     const result = await f.prepare(); assert.equal(result.status, 'ready')
+    assert.equal(rendered.length, 1); assert.equal(rendered[0].current, true)
     const intro = result.plan.items[0]
     assert.deepEqual(intro.parts.map(part => part.kind), ['text', 'image'])
     assert.match(intro.parts[0].text, /《示例视频》\nhttps:\/\/www\.bilibili\.com\/video\//u)
@@ -208,9 +212,10 @@ test('a card renderer replaces the intro with one card image and falls back on f
     await result.release(); await f.clean()
   })
   await t.test('a failing render keeps the plain text and cover intro with one diagnostic', async t => {
-    const f = await fixture(t, { options: { cardRenderer: { render: async () => { throw Error('render down') } } } })
+    const f = await fixture(t, { view: coverView, options: { cardRenderer: { render: async () => { throw Error('render down') } } } })
     const result = await f.prepare(); assert.equal(result.status, 'ready')
     assert.deepEqual(result.plan.items[0].parts.map(part => part.kind), ['text', 'image'])
+    assert.deepEqual(await f.read(result.plan.items[0].parts[1].artifact), PNG)
     assert.ok(result.plan.items[0].parts[0].text.includes('示例视频'))
     assert.ok(f.events.some(event => event.operation === 'bilibili_provider_card' && event.code === 'card_unavailable'))
     await result.release(); await f.clean()

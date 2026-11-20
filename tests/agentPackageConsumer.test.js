@@ -23,11 +23,13 @@ test('npm archive supports an external TypeScript host using only public Agent e
   const { stdout } = await execute('npm', ['pack', path.resolve(release), '--ignore-scripts', '--json'])
   const [archive] = JSON.parse(stdout)
   const entries = new Set(archive.files.map(file => file.path))
-  for (const name of ['npm-shrinkwrap.json', 'release-manifest.json', 'dist/backend/core/index.d.ts']) {
+  for (const name of ['npm-shrinkwrap.json', 'release-manifest.json', 'dist/backend/core/index.d.ts',
+    'scripts/import-cognition.mjs', 'scripts/semantic-memory-eval.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json']) {
     assert.ok(entries.has(name), `npm archive is missing ${name}`)
   }
   assert.equal(entries.has('package-lock.json'), false)
-  assert.ok([...entries].every(name => !name.startsWith('src/') && !name.startsWith('tests/')))
+  assert.ok([...entries].every(name => !name.startsWith('src/') &&
+    (!name.startsWith('tests/') || name === 'tests/fixtures/semantic-retrieval-benchmark.v2.json')))
 
   const project = JSON.parse(await readFile(path.join(release, 'package.json'), 'utf8'))
   const lock = JSON.parse(await readFile(path.join(release, 'npm-shrinkwrap.json'), 'utf8'))

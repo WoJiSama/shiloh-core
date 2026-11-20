@@ -40,6 +40,13 @@ export type { AgentSourceMemoryCleanup, AgentSourceMemoryCleanupGuard, AgentSour
   AgentSourceMemoryPartitionCleanupReceipt, AgentSourceMemoryPurgeSubject } from '../contracts/sourceMemoryCleanup.js'
 export type { AgentSemanticMemoryConfig, AgentSemanticMemoryBackend, AgentSemanticMemoryRecall, AgentSemanticMemoryQuerySource,
   AgentSemanticMemoryCleanup, AgentSemanticMemoryCleanupGuard, AgentSemanticMemoryPurgeSubject, AgentSemanticMemoryCleanupReceipt } from '../contracts/semanticMemory.js'
+export type { AgentCognition, AgentCognitionConfig, CognitionSource, CognitionNode, CognitionLink, CognitionState,
+  CognitionGuard, CognitionInvalidation, CognitionProposal, CognitionQuery, CognitionRecall, CognitionModelInput,
+  CognitionConsolidator, CognitionTurnProjection } from '../contracts/agentCognition.js'
+export { createAgentCognition } from '../modules/memory/infrastructure/agentCognition.js'
+export { cognitionKey, cognitionSourceId, createEmptyCognitionState, validateCognitionState } from '../modules/memory/domain/cognitionState.js'
+export { previewCognitionImport, applyCognitionImport } from '../modules/memory/infrastructure/cognitionImport.js'
+export type { CognitionImportSnapshot, CognitionImportPreview, CognitionImportSkip } from '../modules/memory/infrastructure/cognitionImport.js'
 export type { AgentHistoryConfig, AgentHistoryRecall, AgentHistoryRequestSource } from '../contracts/agentHistory.js'
 export type {
   AgentTextTriggerConfig, AgentTextTriggerSmartConfig, AgentTextTriggerTalkOverride, AgentTextTriggerPhase,

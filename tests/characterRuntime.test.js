@@ -57,6 +57,7 @@ function fixture({
   runCharacterWorker, recordToolResult, judgeSocialPermission, getPersona, loadDelegatedMemories,
   getSelf, handlesTarget, messageActions, getTodaySpendCny, durableIngress, isAccountReady, readFault,
   describeImages, fetchImageBase64, getForwardContent, registeredTools = [], boundTools = [],
+  readCognition, projectCognition, recordEpisode,
 } = {}) {
   if (seed) for (const groupId of groups) if (!kv.has(sessionKey(groupId))) seedSession(kv, groupId, botId, clock)
   const calls = []
@@ -112,6 +113,9 @@ function fixture({
     ...(describeImages ? { describeImages } : {}),
     ...(fetchImageBase64 ? { fetchImageBase64 } : {}),
     ...(getForwardContent ? { getForwardContent } : {}),
+    ...(readCognition ? { readCognition } : {}),
+    ...(projectCognition ? { projectCognition } : {}),
+    ...(recordEpisode ? { recordEpisode } : {}),
     getExtraTools: names => toolDefinitions.filter(tool => names.includes(tool.name)),
     getBoundTools: () => boundTools,
     async YTapi(request) {
@@ -151,6 +155,82 @@ function qqBinding(revision,agentId='daily') {
     bindings:[{connectionId:'qq-main', kind:'group', conversationId:GROUP, agentId}],
   }, revision).resolve(address)
 }
+
+test('cognition context reaches simulation and revoked evidence stops the closing send', async t => {
+  let valid = true
+  const binding = qqBinding('cognition-recall')
+  const h = fixture({
+    getPersona: () => ({ personaId: 'agent:daily', persona: { name: '希洛' }, systemContent: '', binding }),
+    readCognition: async () => ({ text: '我喜欢探索独立解谜游戏', nodes: [], revision: 1, isCurrent: async () => valid }),
+    script: request => {
+      assert.ok(JSON.stringify(request).includes('我喜欢探索独立解谜游戏'))
+      valid = false
+      return tools(toolCall('simFinishTurn', { choice: 'chat', reason: '讨论游戏', messages: ['这条不能发送'] }))
+    },
+  })
+  t.after(() => h.runtime.stop())
+  await h.ingest(); await idle(h, 1)
+  assert.deepEqual(h.sent, [])
+  assert.deepEqual(JSON.parse(h.kv.get(sessionKey(GROUP))).agentHistory, [])
+})
+
+test('cognition projection carries actual committed memory, receipt and confirmed send IDs', async t => {
+  const projections = [], binding = qqBinding('cognition-projection')
+  const h = fixture({
+    durableIngress: true,
+    getPersona: () => ({ personaId: 'agent:daily', persona: { name: '希洛' }, systemContent: '', binding }),
+    projectCognition: async (input, guard) => { assert.equal(guard.isCurrent(), true); projections.push(structuredClone(input)) },
+    script: () => tools(toolCall('simFinishTurn', { choice: 'chat', reason: '从讨论中形成兴趣',
+      memories: [{ kind: 'interest', content: '我想再了解独立解谜游戏', epistemic: 'inferred', evidenceRefs: ['message:1'] }],
+      messages: ['我喜欢独立解谜游戏'],
+    })),
+  })
+  t.after(() => h.runtime.stop())
+  await h.ingest(); await idle(h, 1)
+  assert.equal(h.sent.length, 1)
+  const projected = projections.at(-1)
+  assert.equal(projected.agentId, 'daily')
+  assert.equal(projected.conversation.kind, 'group')
+  assert.ok(projected.messageRefs.some(ref => ref.seq === 1 && ref.messageId.startsWith('test-')))
+  assert.equal(projected.character.memories[0].content, '我想再了解独立解谜游戏')
+  assert.ok(projected.character.receipts.some(receipt => receipt.status === 'succeeded'))
+  assert.deepEqual(projected.expressions.map(item => ({ messageId: item.messageId, content: item.content, participantIds: item.participantIds })),
+    [{ messageId: 'sent-1', content: '我喜欢独立解谜游戏', participantIds: [BOT] }])
+})
+
+test('cognition never treats an unknown delivery as a confirmed self-expression', async t => {
+  const projections = [], binding = qqBinding('cognition-unknown')
+  const h = fixture({
+    durableIngress: true,
+    getPersona: () => ({ personaId: 'agent:daily', persona: { name: '希洛' }, systemContent: '', binding }),
+    projectCognition: async input => projections.push(structuredClone(input)),
+    send: async () => ({ ok: false, unknown: true }),
+    script: () => tools(toolCall('simFinishTurn', { choice: 'chat', reason: '讨论游戏', messages: ['我喜欢独立游戏'] })),
+  })
+  t.after(() => h.runtime.stop())
+  await h.ingest(); await idle(h, 1)
+  assert.ok(projections.length > 0)
+  assert.ok(projections.every(input => input.expressions.length === 0))
+  assert.deepEqual(h.sent, [])
+})
+
+test('cognition-dependent simulation replies do not survive in untracked episodes, chat snapshots or model history', async t => {
+  const episodes = [], binding = qqBinding('cognition-cache')
+  const h = fixture({
+    durableIngress: true,
+    getPersona: () => ({ personaId: 'agent:daily', persona: { name: '希洛' }, systemContent: '', binding }),
+    readCognition: async () => ({ text: '我喜欢探索独立解谜游戏', nodes: [], revision: 1, isCurrent: async () => true }),
+    recordEpisode: async input => episodes.push(input),
+    script: () => tools(toolCall('simFinishTurn', { choice: 'chat', reason: '使用带来源的兴趣', messages: ['我也想试试这款解谜游戏'] })),
+  })
+  t.after(() => h.runtime.stop())
+  await h.ingest(); await idle(h, 1)
+  assert.equal(h.sent.length, 1)
+  assert.deepEqual(episodes, [])
+  const persisted = JSON.parse(h.kv.get(sessionKey(GROUP)))
+  assert.deepEqual(persisted.agentHistory, [])
+  assert.equal(persisted.lastConfirmedChat, undefined)
+})
 
 test('a QQ binding revision change stops a pending simulation send even when the persona ID is unchanged', async t => {
   let current = qqBinding('first')

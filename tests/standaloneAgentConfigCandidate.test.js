@@ -59,6 +59,17 @@ test('synchronous runtime observations retain live bindings without a console an
   assert.equal(config.observeConfigCurrent(() => config.isConfigCurrent()), false)
 })
 
+test('cognition requires an explicit boolean rollout boundary and starts disabled', async t => {
+  const f = await fixture(t)
+  assert.deepEqual(readStandaloneAgentConfig(f.file, { MAIN_KEY: 'private-key' }).cognition, { enabled: false })
+  await writeFile(f.file, JSON.stringify(host({ cognition: { enabled: true } })))
+  assert.deepEqual(readStandaloneAgentConfig(f.file, { MAIN_KEY: 'private-key' }).cognition, { enabled: true })
+  for (const cognition of [{}, { enabled: 'true' }, { enabled: true, provider: 'third-party' }]) {
+    await writeFile(f.file, JSON.stringify(host({ cognition })))
+    assert.throws(() => readStandaloneAgentConfig(f.file, { MAIN_KEY: 'private-key' }), /cognition/)
+  }
+})
+
 test('candidate validation needs no existing files and performs no filesystem or network calls', async t => {
   const f = await fixture(t), validate = createStandaloneAgentCandidateValidator(f.file, { MAIN_KEY: 'private-key' })
   await rm(f.directory, { recursive: true, force: true })

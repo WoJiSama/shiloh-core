@@ -1058,6 +1058,12 @@ node scripts/start-agent.mjs --config /path/to/agent-host.yaml --recover-config
 
 两条命令须分别运行，也不能与 `--check` 或迁移参数混用；它们不启动 QQ、Redis 或模型。无有效 commit 时恢复旧配置，有有效 commit 时完成新配置；损坏记录或未知文件身份会保留现场并拒绝覆盖。正常启动不会抢残留锁，不应通过删除锁或事务文件绕过恢复。恢复后再正常启动宿主。
 
+### 统一认知
+
+`cognition: { enabled: true }` 显式启用 Core 内的统一认知，省略时默认关闭。同一 Agent 的普通自我偏好按来源规则跨群和私聊延续，真人事实仍受完整来源场景限制；低频整理复用仿真反思调度及预算，没有新增第三方记忆服务、模型渠道或凭据。关闭后停止新认知读写并保留状态。
+
+新状态位于现有实例前缀的 `agent:cognition:v1:<agentId>`。`scripts/import-cognition.mjs` 只处理显式映射后的离线来源 JSON，不读取旧 Redis 或连接生产。认知失效会撤销来源和依赖的可读性，节点历史并非全部物理擦除；现有遗忘分区回执不能替代认知物删证明。实现及待验收项见[统一认知方案第 14 节](ai-brain-construction-2026-11-17.md#14-2026-11-18-首版实现与交接)。
+
 ## 核心与平台接入
 
 `src/core/agentRuntime.ts` 是独立核心的装配入口。它接收存储、模型及平台连接端口，负责绑定校验、收件、回复和定时承诺。现有 QQ 插件与独立核心共用角色解析、仿真、记忆和承诺模块。`npm run test:boundaries` 检查核心及其内部依赖，阻止对平台适配器、启动层和 Yunzai 宿主的反向依赖。

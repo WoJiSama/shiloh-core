@@ -543,6 +543,8 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     groupExtractMinIntervalMinutes: [0, 1440], groupExtractMaxBatchMessages: [1, 40],
   })
   const semanticMemory = readSemanticMemory(raw.semanticMemory, env, requireCredentials)
+  const cognition = raw.cognition === undefined ? { enabled: false } : object(raw.cognition)
+  if (Object.keys(cognition).some(key => key !== 'enabled') || typeof cognition.enabled !== 'boolean') throw new Error('cognition 仅支持布尔值 enabled')
   const history = readHistory(raw.history)
   const dice = readDice(raw.dice)
   const textTrigger = resolveAgentTextTriggerConfig(raw.textTrigger)
@@ -714,7 +716,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     return Object.freeze({ id, name: personaName, personaId, personaName })
   }))
   return { candidate, config: {
-    instance, dataDir, games, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords,
+    instance, dataDir, games, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, cognition: { enabled: cognition.enabled }, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords,
     workspaceAgents,
     loadedBindings: Object.freeze([...bindings.listBindings()]),
     listBindings: () => readBindings()?.listBindings() ?? [],
