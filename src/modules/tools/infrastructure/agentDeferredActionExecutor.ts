@@ -5,6 +5,8 @@ import type {
 import type { AgentTool, AgentToolContext, AgentToolResult } from '../../../contracts/agentTool.js'
 import { agentBindingIdentity, agentConversationKey } from '../../runtime/domain/agentBindings.js'
 import { assertDeferredGrant, freezeDeferredAction } from '../../commitments/infrastructure/agentDeferredActionData.js'
+import { authorizeAgentToolContext } from './agentToolAuthorization.js'
+import { validateAgentToolInput } from './agentToolSchema.js'
 
 const failed = (): AgentToolResult => ({ status: 'failed', content: '延期工具在调用前不可用或授权已失效，未执行。' })
 const unknown = (): AgentToolResult => ({ status: 'unknown', content: '延期工具结果未知，已停止后续调用；核实前不重复执行。' })
@@ -78,7 +80,7 @@ export function createAgentDeferredActionExecutor(ports: { getDefinitions(): rea
         })
         const operation = Promise.resolve().then(async () => {
           await scoped.ensureCurrent()
-          if (!isCurrent()) return failed()
+          if (!isCurrent() || !definition.validate(action.params)) return failed()
           dispatched = true
           const result = await definition.execute(action.params, scoped)
           await scoped.ensureCurrent()
@@ -110,10 +112,12 @@ export function createAgentDeferredToolDefinition(ports: {
   validate(params: AgentDeferredParams): boolean
   capabilities?(context: AgentDeferredActionExecutionContext): AgentDeferredToolCapabilities
 }): AgentDeferredActionDefinition {
+  const validate = (params: AgentDeferredParams) => validateAgentToolInput(ports.tool, params) && ports.validate(params)
   return {
     name: ports.tool.name, executor: 'builtin', definitionId: ports.definitionId,
-    timeoutMs: deadline(ports.tool.timeoutMs), isCurrent: ports.isCurrent, validate: ports.validate,
+    timeoutMs: deadline(ports.tool.timeoutMs), isCurrent: ports.isCurrent, validate,
     async execute(params, context) {
+      if (!validate(params)) return failed()
       await context.ensureCurrent()
       if (!context.isCurrent() || !safeCurrent(ports.isCurrent)) return failed()
       let uncertain = false
@@ -154,7 +158,9 @@ export function createAgentDeferredToolDefinition(ports: {
         ...capabilities, binding: context.binding, actor: { kind: 'commitment' }, signal, isCurrent, ensureCurrent,
       }
       try {
-        const result = await ports.tool.execute({ ...params }, toolContext)
+        const authorized = authorizeAgentToolContext(ports.tool, params, toolContext)
+        if (!authorized || !isCurrent()) return failed()
+        const result = await ports.tool.execute({ ...params }, authorized)
         return uncertain ? unknown() : result
       } catch (error) { if (uncertain) return unknown(); throw error }
       finally { controller.abort() }

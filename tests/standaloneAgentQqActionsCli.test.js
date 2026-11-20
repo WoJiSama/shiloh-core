@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
-import { mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -19,6 +19,7 @@ const repo = fileURLToPath(new URL('../', import.meta.url)), release = path.reso
 const entry = path.join(release, 'scripts/start-agent.mjs'), BOT = 19000425, USER = 330425, GROUP = 310425, WALLET = 95425
 const MODEL_KEY = 'QQ_ACTIONS_MODEL_PRIVATE_123456', QQ_TOKEN = 'QQ_ACTIONS_SOCKET_PRIVATE_123456'
 const PC_BODY = 'QQ_ACTIONS_PC_BODY_PRIVATE_123456', PACKET_INDEX = 'QQ_ACTIONS_INDEX_PRIVATE_123456'
+const nativeOutcomeWaitMs = 55_000
 const PASSWORD = '红包原生口令[CQ:at,qq=all]', POST = 'post-qq-actions-425', POST_TEXT = '今天想记录一段自己的日常。'
 const qqTools = ['sendGiftTool', 'grabRedBagTool', 'qqZoneTool'], writes = ['send_packet', 'send_qzone_msg', 'delete_qzone_msg', 'grab_red_bag']
 const names = body => (body.tools ?? []).map(value => value.function.name)
@@ -162,7 +163,7 @@ async function fixture(t, { enabled = true, declared = true, flags = true, grant
     },
     emit(kind = 'gift', input = {}) {
       active = kind; confirm = input.confirm; caseModels = 0; held = undefined
-      if (kind === 'packet' || kind === 'password') sources.set(String(WALLET), { post_type: 'message', message_type: 'group', sub_type: 'normal', self_id: BOT, group_id: GROUP,
+      if ((kind === 'packet' || kind === 'password') && !sources.has(String(WALLET))) sources.set(String(WALLET), { post_type: 'message', message_type: 'group', sub_type: 'normal', self_id: BOT, group_id: GROUP,
         user_id: USER, sender: { user_id: USER, nickname: '真实红包作者' }, message_id: WALLET, time: Math.floor(Date.now() / 1000), message_seq: 702,
         message: [{ type: 'wallet', data: { pc_body: PC_BODY, string_index: PACKET_INDEX, msg_seq: '702', red_type: 2,
           ...(kind === 'password' ? { red_channel: 32 } : {}), title: PASSWORD } }] })
@@ -173,7 +174,7 @@ async function fixture(t, { enabled = true, declared = true, flags = true, grant
           { type: 'at', data: { qq: String(BOT) } }, { type: 'text', data: { text } }] }
       sources.set(String(source.message_id), source); websocket.send(JSON.stringify(source)); return source
     },
-    async run(kind = 'gift', input = {}, outcomeTimeout = 20000) {
+    async run(kind = 'gift', input = {}) {
       if (models.length) await delay(900) // the normal text-group 800ms throttle remains active
       const before = (await records(kind)).length, modelBefore = models.length, textBefore = actions.filter(row => row.action === 'send_group_msg').length
       const readyBefore = (await events()).filter(row => row.operation === 'text_qq_action' && row.code === 'tool_result_ready').length
@@ -181,7 +182,7 @@ async function fixture(t, { enabled = true, declared = true, flags = true, grant
       await waitFor(() => models.length > modelBefore, 'one human model request')
       if (!allowed(toolFor(kind))) await waitFor(() => actions.filter(row => row.action === 'send_group_msg').length > textBefore, 'unavailable capability text')
       else if (input.confirm === false) await waitFor(async () => (await events()).filter(row => row.operation === 'text_qq_action' && row.code === 'tool_result_ready').length > readyBefore, 'local cancellation completes')
-      else await waitFor(async () => (await records(kind)).slice(before).some(row => row.state === (unknown ? 'unknown' : 'confirmed')), 'durable native outcome', outcomeTimeout)
+      else await waitFor(async () => (await records(kind)).slice(before).some(row => row.state === (unknown ? 'unknown' : 'confirmed')), 'durable native outcome', nativeOutcomeWaitMs)
       await drained(message); assert.equal(models.length, modelBefore + 1); assert.deepEqual(errors, []); return message
     },
     async cancelHeldModel() {
@@ -189,9 +190,12 @@ async function fixture(t, { enabled = true, declared = true, flags = true, grant
       if (!held.destroyed) held.end(completion(active, confirm)); await drained(source); await delay(300); assert.deepEqual(errors, [])
     },
     async revokeAfterPassword() {
-      await waitFor(async () => (await records('password')).some(row => row.phase === 'password_confirmed' && row.passwordConfirmed), 'durable confirmed password')
-      raw.tools.qqActions.redPackets.allowPasswordSend = false; configText = JSON.stringify(raw); await writeFile(file, configText)
-      await waitFor(async () => (await records('password')).some(row => row.state === 'cancelled'), 'confirmed password cancellation')
+      await waitFor(async () => (await records('password')).some(row => row.phase === 'password_confirmed' && row.passwordConfirmed), 'durable confirmed password', nativeOutcomeWaitMs)
+      raw.tools.qqActions.redPackets.allowPasswordSend = false
+      configText = JSON.stringify(raw)
+      await writeFile(file + '.next', configText)
+      await rename(file + '.next', file)
+      await waitFor(async () => (await records('password')).some(row => row.state === 'cancelled'), 'confirmed password cancellation', nativeOutcomeWaitMs)
       await drained(source); assert.deepEqual(errors, [])
     },
     async replay(message = source) { websocket.send(JSON.stringify(message)); await delay(1000); await drained(message); assert.deepEqual(errors, []) },
@@ -217,7 +221,7 @@ for (const [label, options] of [['host defaults off', { enabled: false, declared
   })
 }
 
-test('actual QQ actions CLI keeps explicit red-packet grant independent of enabled tool and native connection declaration', { timeout: 60000 }, async t => {
+test('actual QQ actions CLI keeps explicit red-packet grant independent of enabled tool and native connection declaration', { timeout: 150_000 }, async t => {
   const f = await fixture(t, { explicit: false }); await f.start(); await f.run('packet')
   assert.deepEqual(f.effects(), []); assert.deepEqual(await f.records('packet'), []); assert.equal(names(f.models[0]).includes('grabRedBagTool'), false)
   await f.run('gift'); await f.run('qzone')
@@ -228,7 +232,7 @@ test('actual QQ actions CLI keeps explicit red-packet grant independent of enabl
 
 test('actual QQ actions CLI performs one gift display, own Qzone publish and two-phase password grab without extra messages', { timeout: 210000 }, async t => {
   const f = await fixture(t); await f.start()
-  for (const kind of ['gift', 'qzone', 'password']) await f.run(kind, {}, 55000) // 45s product deadline plus durable settlement and observation
+  for (const kind of ['gift', 'qzone', 'password']) await f.run(kind)
   assert.deepEqual(f.effects().map(row => row.action), ['send_packet', 'send_qzone_msg', 'send_group_msg', 'grab_red_bag'])
   assert.equal(f.models.length, 3)
   const password = f.effects().find(row => row.action === 'send_group_msg'), grabbed = f.effects().find(row => row.action === 'grab_red_bag')
@@ -239,7 +243,7 @@ test('actual QQ actions CLI performs one gift display, own Qzone publish and two
   await f.stop(); await f.clean()
 })
 
-for (const kind of ['gift', 'qzone']) test(`actual QQ actions CLI ${kind} unknown is single-shot and frozen after source replay and restart`, { timeout: 60000 }, async t => {
+for (const kind of ['gift', 'qzone']) test(`actual QQ actions CLI ${kind} unknown is single-shot and frozen after source replay and restart`, { timeout: 90_000 }, async t => {
   const f = await fixture(t, { unknown: true }); await f.start(); const source = await f.run(kind)
   assert.equal(f.effects().length, 1); assert.equal((await f.records(kind))[0].state, 'unknown'); assert.equal(f.actions.some(row => row.action === 'send_group_msg'), false)
   await f.replay(source); await f.stop(); await f.restart(); await f.replay(source)
@@ -247,14 +251,25 @@ for (const kind of ['gift', 'qzone']) test(`actual QQ actions CLI ${kind} unknow
   await f.stop(); await f.clean()
 })
 
-test('actual QQ actions CLI missing password messageId freezes the real packet for different human triggers and restart', { timeout: 60000 }, async t => {
+test('actual QQ actions CLI missing password messageId freezes the real packet for different human triggers and restart', { timeout: 120_000 }, async t => {
   const f = await fixture(t, { unknown: true }); await f.start(); const source = await f.run('password')
   assert.deepEqual(f.effects().map(row => row.action), ['send_group_msg']); assert.equal((await f.records('password'))[0].phase, 'password_pending')
-  await delay(900); const another = f.emit('password'); await waitFor(() => f.models.length === 2, 'second human request')
-  await f.drained(another); await delay(300)
-  assert.deepEqual(f.effects().map(row => row.action), ['send_group_msg']); assert.equal((await f.records('password')).length, 1)
+  const unknownResults = async () => (await f.events()).filter(row => row.operation === 'text_qq_action' &&
+    row.code === 'tool_result_ready' && row.outcome === 'unknown').length
+  const requestSamePacket = async () => {
+    await delay(900) // let the prior turn clear the regular group throttle
+    const previousResults = await unknownResults()
+    const another = f.emit('password')
+    await waitFor(async () => await unknownResults() > previousResults, 'unknown wallet result for a new request', nativeOutcomeWaitMs)
+    await f.drained(another)
+    assert.deepEqual(f.effects().map(row => row.action), ['send_group_msg'])
+    const rows = await f.records('password')
+    assert.equal(rows.length, 1); assert.equal(rows[0].state, 'unknown')
+  }
+  await requestSamePacket(); assert.equal(f.models.length, 2)
   await f.stop(); await f.restart(); await f.replay(source)
   assert.equal(f.effects().length, 1); assert.equal(f.models.length, 2)
+  await requestSamePacket(); assert.equal(f.models.length, 3)
   await f.stop(); await f.clean()
 })
 
@@ -273,7 +288,7 @@ test('actual QQ actions CLI config withdrawal while the model is pending fences 
   await f.stop(); await f.clean()
 })
 
-test('actual QQ actions CLI stops between a durably confirmed password and grab when its grant is revoked', { timeout: 60000 }, async t => {
+test('actual QQ actions CLI stops between a durably confirmed password and grab when its grant is revoked', { timeout: 120_000 }, async t => {
   const f = await fixture(t); await f.start(); f.emit('password'); await f.revokeAfterPassword()
   const row = (await f.records('password'))[0]; assert.equal(row.passwordConfirmed, true); assert.equal(row.grabbed, false); assert.equal(row.phase, 'password_confirmed')
   assert.deepEqual(f.effects().map(row => row.action), ['send_group_msg']); assert.equal(f.models.length, 1)

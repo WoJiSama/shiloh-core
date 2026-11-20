@@ -1,10 +1,14 @@
 # bl-chat 控制台
 
+本文负责控制台使用与配置操作。当前实现、部署快照及待验收项统一见[项目当前状态](../docs/project-status.md)；阶段候选与验证证据见[历史记录](../docs/architecture/agent-bindings-history.md)。
+
 控制台前端采用 Vue 3、TypeScript、Vite、Vue Router 和 Naive UI。`console/server.js` 保留独立 Node 服务，提供认证、配置和运营 API，并直接返回 `console/frontend/dist/index.html` 与构建后的静态资源。前端源码不再拼接进服务文件。
 
 独立 Agent 的内置 HTTP 宿主复用这份前端，通过认证的 `/api/workspace` 返回已加载的机器人本人、连接、版本化会话及真实管理能力。工作区有总览、机器人、连接、资源库、运行中心、系统六个入口，机器人详情有主页、会话、自我与记忆、行动、能力与边界五个标签。插件模式继续走原导航；接口错误不会切换成空工作区。
 
-人物页显示已有来源的记忆条目，删除仅作用于所选完整来源会话；托付页保留原任务 ID、未知结果和真实取消状态。管理员可见的聚合不会授予机器人跨场景使用原始资料的权限。新增 QQ 连接、本人创建、服务端配置候选预览及跨文件事务已实现；统一认知、完整追溯与遗忘影响状态仍按 [架构进度](../docs/architecture/agent-bindings.md) 推进。
+各分类页及其模块内保留功能导航；`⌘K` / `Ctrl+K` 可按名称和关键词直达模块、机器人、连接或会话。连接分类可直接进入群管理。人物记忆和托付面板由机器人详情的 `panel=person-profiles` / `panel=trusteeship` 保存到地址，刷新和返回可恢复；从会话卡片进入“管理此会话”会自动打开对应详情，保留完整会话地址与绑定版本。机器人到人设资源的链接会选中当前模板，并保留返回来源。
+
+人物页显示已有来源的记忆条目，删除仅作用于所选完整来源会话；托付页保留原任务 ID、未知结果和真实取消状态。管理员可见的聚合不会授予机器人跨场景使用原始资料的权限。新增 QQ 连接、本人创建、服务端配置候选预览及跨文件事务已实现；统一认知、完整追溯与遗忘影响状态见[项目当前状态](../docs/project-status.md#未完成工作与待验收项)。
 
 ## 独立 Agent 的配置变更与恢复
 
@@ -30,6 +34,10 @@ node scripts/start-agent.mjs --config /path/to/agent-host.yaml --recover-config
 
 ## 安装、构建和启动
 
+独立 Agent 的控制台随宿主启动，启用方法见[独立控制台配置](../docs/architecture/agent-bindings.md#独立控制台)。发布包已包含前端；从仓库运行时先完成前后端构建，再启动 Agent。首次管理员初始化须显式配置 `console.allowSetup: true` 且监听回环地址。
+
+以下 `console:start` 命令用于 Yunzai 插件模式的独立控制台进程。
+
 前端构建需要 **Node 20.19 及以上的 20.x，或 Node 22.12 及以上**，建议使用受支持的 LTS。Vite 7 不支持更早的 Node 版本。以下命令均从插件根目录执行；插件根目录的依赖仍需按现有部署流程安装。
 
 ```sh
@@ -40,7 +48,7 @@ npm run console:start
 
 `build` 会先运行 TypeScript 检查，再生成 `console/frontend/dist/`。`dist`、前端 `node_modules` 和 Vite 缓存不提交 Git；提交源码与 `console/frontend/package-lock.json`，在目标机器或构建流水线执行 `npm ci` 和构建，再交付 `dist`。
 
-更新已运行的控制台时，**先完成构建，再重启控制台服务**。沿用示例 systemd unit 的机器可在构建成功后运行：
+更新插件模式已运行的控制台时，**先完成构建，再重启控制台服务**。沿用示例 systemd unit 的机器可在构建成功后运行：
 
 ```sh
 sudo systemctl restart bl-console
@@ -68,6 +76,8 @@ sudo systemctl restart bl-console
 继续使用 hash 路由，原 `#/`、`#/persona`、`#/ai`、`#/draw`、`#/commands`、`#/observe`、`#/semantic` 地址保持可用。新增 `#/conversation`（对话设置）、`#/groups`、`#/group-admin`（群管理）、`#/pipeline`、`#/risk` 和 `#/bot/<QQ>` 等页面。
 
 命令 / 骰子与语义记忆已经使用原生 Vue 页面，通过现有 `/bl-chat/*` API 代理访问 Yunzai；命令表、骰子回复、牌堆规则和表情包等能力沿用已有后端。骰子基础设置、对话追踪和记忆策略使用独立控制台配置 API，不依赖这些运营 API。运行观测 `#/observe` 展示聚合概览，`#/observe/details` 保留原工具的完整运行明细入口，可在嵌入页查看或在新窗口打开。
+
+`#/observe/details` 在独立宿主中归属运行中心；当前独立宿主尚未提供完整明细服务，页面明确提示可用性，不请求插件模式的 Yunzai iframe。其他模块也按当前宿主实际报告的能力显示可用状态。
 
 群聊页在群号旁显示群名，并支持按群名搜索。名称优先读取 Yunzai 各机器人已有群列表；上游不可用时回退插件与 Yunzai 主目录的 `data/group_names.json` 缓存，仍未知的名称显示“群名未获取”。群聊列表汇总白名单、今日活动和已配置群管的群；未启用的群管配置也可被发现。
 

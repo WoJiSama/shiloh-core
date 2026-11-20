@@ -60,7 +60,7 @@ import { openStandaloneAgentConsoleAuth } from './standaloneAgentConsoleAuth.js'
 import { createStandaloneAgentConsoleServices } from './standaloneAgentConsoleServices.js'
 import { createStandaloneAgentConsoleRuntime } from './standaloneAgentConsoleRuntime.js'
 import { createStandaloneAgentConsolePersistence } from './standaloneAgentConsolePersistence.js'
-import { inspectStandaloneAgentConfigTransaction, recoverStandaloneAgentConfigTransaction } from './standaloneAgentConfigSources.js'
+import { inspectStandaloneAgentConfigTransaction, recoverStandaloneAgentConfigTransaction, withStandaloneAgentConfigObservation } from './standaloneAgentConfigSources.js'
 import { createStandaloneAgentConsoleManagement } from './standaloneAgentConsoleManagement.js'
 import { createStandaloneAgentWorkspace } from './standaloneAgentWorkspace.js'
 import { AGENT_CONSOLE_SERVICES, type AgentConsoleService } from '../contracts/agentConsole.js'
@@ -516,6 +516,7 @@ export async function main(argv: string[]): Promise<void> {
         get custom() { return mcp?.registry.custom ?? [] },
       },
       isExecutionCurrent: () => storage?.isCurrent() === true && config.isConfigCurrent(),
+      checkToolCurrent: check => withStandaloneAgentConfigObservation(config.sourceSnapshot, check),
       signal: executionSignal,
       allowsText: (text, direction) => (direction !== 'outgoing' || allowsSecretText(text)) &&
         (direction === 'outgoing' && config.forbiddenWords.blockOutput === false || !words.findForbiddenWord(text, config.forbiddenWords)),

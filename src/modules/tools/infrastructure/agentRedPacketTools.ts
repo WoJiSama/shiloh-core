@@ -12,8 +12,9 @@ const failed = (code: string): AgentToolResult => ({ status: 'failed', content: 
 export function createAgentRedPacketTools(options: AgentRedPacketToolOptions = {}): readonly AgentTool[] {
   const execute = options.execute
   if (options.enabled !== true || typeof execute !== 'function') return Object.freeze([])
-  const tool: AgentTool = Object.freeze({
+  const tool = Object.freeze<AgentTool>({
     name: 'grabRedBagTool',
+    effect: input => input.confirm === false ? {} : { actor: 'user', conversation: 'group', required: ['runQqAction'], metadata: ['request'] },
     description: '仅按当前真人明确请求领取当前群已核验红包。confirm默认true，false取消。只可选择可信来源message_id或packet_ref；查最近、引用失败后回退及代发口令须各自获显式授权。不确定结果停止，不重复领取。',
     dataPolicy: 'ephemeral',
     parameters: Object.freeze({ type: 'object', additionalProperties: false, required: Object.freeze([]), properties: Object.freeze({

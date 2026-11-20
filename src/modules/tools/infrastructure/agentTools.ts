@@ -27,6 +27,8 @@ import { validateAgentToolImage } from '../../image/infrastructure/agentToolImag
 import { validateMessageBundle } from '../../messaging/infrastructure/messageBundle.js'
 import { validateAgentToolMessage } from '../../messaging/infrastructure/agentToolMessage.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { agentToolInputValidator, isAgentToolInput } from './agentToolSchema.js'
+import { authorizeAgentToolContext, isAgentToolEffect } from './agentToolAuthorization.js'
 
 const maxChars = 16_000
 const outcome = (status: 'success' | 'error' | 'unknown', content: string) => ({ kind: 'tool_outcome', status, content })
@@ -34,10 +36,11 @@ const outcome = (status: 'success' | 'error' | 'unknown', content: string) => ({
 /** Adapt public host tools into the existing policy and durable action executor. */
 export function createAgentTools(registry: AgentToolRegistry | undefined, ports: {
   signal: AbortSignal
+  checkCurrent?(check: () => boolean): boolean
   diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'>
   /** Dynamic host credential check before any public tool receives model arguments. */
   allowsInput?(input: string): boolean
-  context(event: unknown): (Omit<AgentToolContext, 'signal' | 'sendImage' | 'sendFile' | 'sendAudio' | 'sendVideo' | 'sendMusic' | 'sendVideoCard' | 'sendMediaRelay' | 'interact' | 'isSourceAvailable' | 'readImages' | 'sendBundle' | 'sendMessage' | 'readMember' | 'listMembers' | 'readHistory' | 'readFile' | 'readVideo' | 'listFiles'> & {
+  context(event: unknown, name: string, origin: 'builtin' | 'custom'): (Omit<AgentToolContext, 'signal' | 'sendImage' | 'sendFile' | 'sendAudio' | 'sendVideo' | 'sendMusic' | 'sendVideoCard' | 'sendMediaRelay' | 'interact' | 'isSourceAvailable' | 'readImages' | 'sendBundle' | 'sendMessage' | 'readMember' | 'listMembers' | 'readHistory' | 'readFile' | 'readVideo' | 'listFiles'> & {
     readFile?(input: AgentFileRequest, isCurrent: () => boolean, signal: AbortSignal): Promise<AgentFileBytes>
     /** The current check lives for the turn; signal ends only this individual call. */
     readVideo?(isCurrent: () => boolean, signal: AbortSignal): Promise<AgentVideoInput>
@@ -92,13 +95,17 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
         }
         const schema = JSON.stringify(definition.parameters)
         if (!schema || schema.length > maxChars || definition.parameters.type !== 'object' ||
-            !definition.parameters.properties || Array.isArray(definition.parameters.properties) ||
+            !isAgentToolInput(definition.parameters.properties) ||
             !Array.isArray(definition.parameters.required) ||
             definition.parameters.required.some(key => typeof key !== 'string' || !Object.hasOwn(definition.parameters.properties, key))) {
           throw new Error('Agent 工具需要有界的对象参数定义')
         }
+        const effect = definition.effect
+        if (!isAgentToolEffect(effect)) throw new Error('Agent 工具声明的副作用无效')
+        const validateInput = agentToolInputValidator(definition)
         const execute = definition.execute.bind(definition)
         const dataPolicy = definition.dataPolicy
+        const authorization = { ...(effect === undefined ? {} : { effect }), ...(dataPolicy ? { dataPolicy } : {}) }
         const timeoutMs = definition.timeoutMs === undefined ? 45_000 : definition.timeoutMs
         if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 240_000) throw new Error('Agent 工具执行时限需要为 1 到 240000 毫秒的整数')
         class HostTool extends AbstractTool {
@@ -121,21 +128,37 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
               throw error
             }
           }
-          override validateParameters(input: Record<string, unknown>) {
-            if (JSON.stringify(input).length > maxChars || (this.parameters.additionalProperties === false &&
-                Object.keys(input).some(key => !Object.hasOwn(this.parameters.properties, key)))) return '工具参数超出定义'
-            return super.validateParameters(input)
+          override normalizeParameters(input: unknown) {
+            if (!isAgentToolInput(input)) throw new Error('工具参数必须是对象')
+            return super.normalizeParameters(input)
           }
-          override async func(input: Record<string, unknown>, event: unknown) {
-            const originalScope = ports.context(event)
+          override validateParameters(input: Record<string, unknown>) {
+            return validateInput(input) || '工具参数不符合声明的 Schema'
+          }
+          private resolveScope(input: Record<string, unknown>, event: unknown) {
+            const originalScope = ports.context(event, this.name, origin)
             const definitionCurrent = () => {
               try { return (origin === 'builtin' ? registry?.builtIn : registry?.custom)?.includes(definition) === true }
               catch { return false }
             }
-            const scope = originalScope && { ...originalScope, isCurrent: () => definitionCurrent() && originalScope.isCurrent() }
-            if (!scope || !scope.isCurrent() || ports.signal.aborted) return outcome('error', '工具所属回合已失效，未执行')
-            if (ports.allowsInput?.(JSON.stringify(input)) === false) return outcome('error', '工具参数包含宿主禁止外发的内容，未执行')
-            if (origin === 'custom' && scope.actor.kind !== 'user') return outcome('error', '自定义工具仅允许真实用户触发的回合执行')
+            const current = () => definitionCurrent() && originalScope?.isCurrent() === true
+            const isCurrent = () => ports.checkCurrent ? ports.checkCurrent(current) : current()
+            if (!originalScope || !isCurrent() || ports.signal.aborted) return '工具所属回合已失效，未执行'
+            if (ports.allowsInput?.(JSON.stringify(input)) === false) return '工具参数包含宿主禁止外发的内容，未执行'
+            const scope = authorizeAgentToolContext(authorization, input, { ...originalScope, isCurrent }, { custom: origin === 'custom' })
+            return scope ?? (effect === 'sendMusic'
+              ? '发送音乐需要当前群的真人请求和音乐投递权限，未执行'
+              : '当前执行主体或会话缺少工具所需权限，未执行')
+          }
+          override agentPreflight(input: Record<string, unknown>, event: unknown): string | undefined {
+            const validation = this.validateParameters(input)
+            if (validation !== true) return validation
+            const scope = this.resolveScope(input, event)
+            return typeof scope === 'string' ? scope : undefined
+          }
+          override async func(input: Record<string, unknown>, event: unknown) {
+            const scope = this.resolveScope(input, event)
+            if (typeof scope === 'string') return outcome('error', scope)
             const cancel = new AbortController()
             const inherited = (event as { _agentToolSignal?: AbortSignal })._agentToolSignal
             const signal = AbortSignal.any([cancel.signal, ports.signal, AbortSignal.timeout(timeoutMs), ...(inherited ? [inherited] : [])])
@@ -156,13 +179,14 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
                   if (!scope.isCurrent()) throw new Error('stale tool')
                 } catch { cancel.abort(); throw new Error('工具权限已失效') }
               }
-              const ensureMediaKnown = () => { if (mediaDeliveryUnknown) throw new Error('媒体发送结果未知，核实前不重复执行或发送') }
+              const ensureMediaKnown = () => { if (mediaDeliveryUnknown || fileDeliveryUnknown) throw new Error('投递结果未知，核实前不重复执行或发送') }
               const sendImage = scope.sendImage
                 ? async (image: { readonly mime: string; readonly base64: string }) => {
                   ensureMediaKnown()
                   await ensureCurrent()
                   const validated = validateAgentToolImage(image)
-                  const receipt = await scope.sendImage!(validated, () => !signal.aborted && scope.isCurrent())
+                  const receipt = normalizeDeliveryReceipt(await scope.sendImage!(validated, () => !signal.aborted && scope.isCurrent()))
+                  if (receipt.state === 'unknown') mediaDeliveryUnknown = true
                   await ensureCurrent()
                   return receipt
                 } : undefined
@@ -277,7 +301,8 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
                   // Own immutable bytes/text before an asynchronous authorization wait.
                   const validated = validateMessageBundle(items)
                   await ensureCurrent()
-                  const receipt = await scope.sendBundle!(validated, () => !signal.aborted && scope.isCurrent())
+                  const receipt = normalizeDeliveryReceipt(await scope.sendBundle!(validated, () => !signal.aborted && scope.isCurrent()))
+                  if (receipt.state === 'unknown') mediaDeliveryUnknown = true
                   await ensureCurrent()
                   return receipt
                 } : undefined
@@ -334,7 +359,8 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
                 ensureMediaKnown()
                 const owned = validateAgentToolMessage(message)
                 await ensureCurrent()
-                const receipt = await scope.sendMessage!(owned, () => !signal.aborted && scope.isCurrent(), signal)
+                const receipt = normalizeDeliveryReceipt(await scope.sendMessage!(owned, () => !signal.aborted && scope.isCurrent(), signal))
+                if (receipt.state === 'unknown') mediaDeliveryUnknown = true
                 await ensureCurrent()
                 return receipt
               } : undefined
@@ -351,8 +377,18 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
               const result = await Promise.race([
                 Promise.resolve().then(async () => {
                   await ensureCurrent()
-                  const { readMember: _readMember, listMembers: _listMembers, sendMessage: _sendMessage, sendFile: _sendFile, sendAudio: _sendAudio, sendVideo: _sendVideo, sendMusic: _sendMusic, sendVideoCard: _sendVideoCard, sendMediaRelay: _sendMediaRelay, interact: _interact, isSourceAvailable: _isSourceAvailable, readHistory: _readHistory, readFile: _readFile, readVideo: _readVideo, listFiles: _listFiles, runQqAction: _runQqAction, ...publicScope } = scope
-                  const result = await execute(input, { ...publicScope, signal, isCurrent: () => !signal.aborted && scope.isCurrent(), ensureCurrent,
+                  const { binding, actor, request, botUserId, privatePeer, persona, recordUsage } = scope
+                  const result = await execute(input, {
+                    binding, actor, signal, isCurrent: () => !signal.aborted && scope.isCurrent(), ensureCurrent,
+                    ...(request ? { request } : {}),
+                    ...(botUserId ? { botUserId } : {}),
+                    ...(privatePeer ? { privatePeer } : {}),
+                    ...(persona ? { persona } : {}),
+                    ...(recordUsage ? { recordUsage } : {}),
+                    ...(scope.qzoneAffinity ? { qzoneAffinity: scope.qzoneAffinity } : {}),
+                    ...(scope.qzoneCandidates ? { qzoneCandidates: scope.qzoneCandidates } : {}),
+                    ...(scope.reviewQqText ? { reviewQqText: scope.reviewQqText } : {}),
+                    ...(scope.qzone ? { qzone: scope.qzone } : {}),
                     ...(sendImage ? { sendImage } : {}),
                     ...(sendFile ? { sendFile } : {}),
                     ...(sendAudio ? { sendAudio } : {}),
@@ -365,11 +401,13 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
                       ensureMediaKnown()
                       if (usedHistory) throw new Error('临时资料不能授权QQ扩展动作')
                       await ensureCurrent()
-                      return scope.runQqAction!(kind, async guard => {
+                      const receipt = await scope.runQqAction!(kind, async guard => {
                         const current = () => !signal.aborted && scope.isCurrent() && guard.isCurrent()
                         const ensure = async () => { await ensureCurrent(); await guard.ensureCurrent(); if (!current()) throw new Error('QQ扩展动作已失效') }
                         return operation({ signal: AbortSignal.any([signal, guard.signal]), isCurrent: current, ensureCurrent: ensure })
                       })
+                      if (receipt.state === 'unknown') mediaDeliveryUnknown = true
+                      return receipt
                     } } : {}),
                     ...(isSourceAvailable ? { isSourceAvailable } : {}),
                     ...(readImages ? { readImages } : {}),
@@ -393,7 +431,7 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
               ]).finally(() => { if (abort) signal.removeEventListener('abort', abort) })
               if (signal.aborted || !scope.isCurrent()) return outcome('unknown', '执行期间回合已失效，迟到结果不再使用；核实前不重复执行')
               if (fileDeliveryUnknown) return outcome('unknown', '文件上传结果未知，核实前不重复执行或发送')
-              if (mediaDeliveryUnknown) return outcome('unknown', '媒体发送结果未知，核实前不重复执行或发送')
+              if (mediaDeliveryUnknown) return outcome('unknown', '媒体投递结果未知，请核实后再操作')
               if (!result || !['succeeded', 'failed', 'unknown'].includes(result.status) || typeof result.content !== 'string') {
                 return outcome('unknown', '工具没有返回有效执行回执，核实前不重复执行')
               }

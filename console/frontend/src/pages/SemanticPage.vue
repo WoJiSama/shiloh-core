@@ -39,6 +39,7 @@ const base = '/bl-chat/semantic-memory/api/',
   chunks = ref<any>(null),
   page = ref(1),
   history = ref<any[]>([]),
+  versionedHistory = ref<any[]>([]),
   actionBusy = ref('')
 const resultGroup = ref(''),
   chunksGroup = ref('')
@@ -54,7 +55,10 @@ async function load() {
     const data = await api(base + 'stats')
     if (live) stats.value = data
     const evaluations = await api(base + 'eval-history')
-    if (live) history.value = evaluations.history || []
+    if (live) {
+      history.value = evaluations.history || []
+      versionedHistory.value = evaluations.versionedHistory || []
+    }
   } catch (e) {
     if (live) error.value = (e as Error).message
   } finally {
@@ -382,21 +386,29 @@ onBeforeUnmount(() => {
             />
           </section>
           <section v-if="tab === 'evaluation'" class="panel">
-            <NEmpty v-if="!history.length" description="暂无评估历史" />
+            <NAlert type="warning" :show-icon="false">
+              插件旧评估 legacy-v1 的向量对照和延迟口径无效，历史值不可与 Core v2
+              比较。旧在线自出题评估已停用。
+            </NAlert>
+            <p class="field-help">
+              在项目根目录运行 Core v2 隔离评估。固定合成后端仅验证评估流程；真实模型质量需显式配置后端。
+            </p>
+            <pre>node scripts/semantic-memory-eval.mjs --dataset tests/fixtures/semantic-retrieval-benchmark.v2.json --output /tmp/core-retrieval-v2.json</pre>
+            <NEmpty v-if="!history.length" description="暂无插件旧评估历史" />
             <template v-else>
-              <h2 class="section-title">检索效果</h2>
-              <p class="field-help">比较向量、混合检索和重排在评估样本上的召回率。</p>
+              <h2 class="section-title">插件旧评估历史 · legacy-v1</h2>
+              <p class="field-help">保留原始记录供追溯；旧值不能证明当前 Core 的检索质量。</p>
               <div class="table-scroll">
                 <table class="evaluation-table">
                   <thead>
                     <tr>
                       <th>评估时间</th>
                       <th>样本</th>
-                      <th>向量 Recall@5</th>
-                      <th>混合 Recall@5</th>
-                      <th>重排 Recall@5</th>
-                      <th>混合 Recall@10</th>
-                      <th>耗时 P50</th>
+                      <th>旧向量字段(无效对照)</th>
+                      <th>旧混合 Hit@5</th>
+                      <th>旧重排 Hit@5</th>
+                      <th>旧混合 Hit@10</th>
+                      <th>旧合计 P50</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -423,6 +435,16 @@ onBeforeUnmount(() => {
               <details class="evaluation-source">
                 <summary>完整评估记录</summary>
                 <pre>{{ JSON.stringify(history, null, 2) }}</pre>
+              </details>
+            </template>
+            <template v-if="versionedHistory.length">
+              <h2 class="section-title">版本化评估报告</h2>
+              <p class="field-help">
+                按报告中的数据集、模型和配置解释结果；这些报告与 legacy-v1 单独展示。
+              </p>
+              <details class="evaluation-source">
+                <summary>完整版本化报告（{{ versionedHistory.length }} 份）</summary>
+                <pre>{{ JSON.stringify(versionedHistory, null, 2) }}</pre>
               </details>
             </template>
           </section>

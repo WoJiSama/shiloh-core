@@ -213,7 +213,12 @@ test('actual CLI unknown native extra remains fenced without fixed body across h
 
 for (const fence of ['configuration', 'recall']) test(`actual CLI ${fence} revocation before due time prevents native extra and fixed body`, { timeout: 60_000 }, async t => {
   const f = await fixture(t); await f.start(); await f.run()
-  if (fence === 'configuration') await f.revoke(); else f.recall()
+  if (fence === 'configuration') {
+    await f.revoke()
+    await f.beyondDue()
+    assert.deepEqual(f.pokes, []); assert.deepEqual(f.texts, [])
+    await f.stop(); await f.restart()
+  } else f.recall()
   await f.terminal('cancelled'); await f.beyondDue()
   assert.deepEqual(f.pokes, []); assert.deepEqual(f.texts, [])
   await f.stop(); await f.clean()

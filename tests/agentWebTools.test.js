@@ -4,6 +4,7 @@ import http, { createServer } from 'node:http'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import { createAgentWebTools } from '../dist/backend/modules/tools/infrastructure/agentWebTools.js'
+import { createAgentTools } from '../dist/backend/modules/tools/infrastructure/agentTools.js'
 
 const apiKey = 'search-private-key-123456'
 const search = { baseUrl: 'https://search.example.com/v1', name: 'search-fixture', apiKey }
@@ -42,6 +43,35 @@ test('unconfigured network capabilities are absent and configured capabilities h
   assert.deepEqual(createAgentWebTools({ search }).builtIn.map(item => item.name), ['searchInformationTool'])
   assert.deepEqual(createAgentWebTools({ web: { enabled: true } }).builtIn.map(item => item.name), ['webParserTool'])
   for (const item of createAgentWebTools({ search, web: { enabled: true } }).builtIn) assert.equal(item.parameters.additionalProperties, false)
+})
+
+test('registered search validates its schema before entering the tool scope and gets no delivery ports', async () => {
+  const calls = [], contexts = [], presentPorts = [], usage = []
+  const definition = tool({ search, async fetchImpl(_url, request) {
+    calls.push(JSON.parse(request.body))
+    return answer('已找到资料', { usage: { total_tokens: 5 } })
+  } })
+  const scope = context({ actor: { kind: 'autonomous' }, recordUsage: (...entry) => usage.push(entry),
+    sendMusic() {}, sendMessage() {}, interact() {}, runQqAction() {} })
+  const registry = createAgentTools({ builtIn: [{ ...definition, async execute(input, scoped) {
+    presentPorts.push(...['sendMusic', 'sendMessage', 'interact', 'runQqAction'].filter(name => name in scoped))
+    return definition.execute(input, scoped)
+  } }] }, {
+    signal: scope.signal,
+    context() { contexts.push(true); return scope },
+  })
+  const [registered] = registry.getExtraTools(['searchInformationTool'])
+  for (const input of [{ query: 123 }, { query: 'x'.repeat(4001) }, { query: '晴天', target: 'injected' }]) {
+    assert.match(await registered.execute(input, {}), /^error: .*Schema/u)
+  }
+  assert.equal(contexts.length, 0)
+  assert.equal(calls.length, 0)
+
+  assert.equal((await registered.execute({ query: '资料' }, {})).status, 'success')
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].messages, [{ role: 'user', content: '资料' }])
+  assert.deepEqual(usage, [['search-fixture', { total_tokens: 5 }]])
+  assert.deepEqual(presentPorts, [])
 })
 
 test('search uses actual JSON HTTP, sends only query text, stamps time and records usage', async t => {

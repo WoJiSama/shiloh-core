@@ -277,6 +277,10 @@ test('existing commitment management can inspect and cancel unresolved migrated 
 
 test('builtin adapter never manufactures a human, and tool exposes only creator-owned management',async()=>{
   const f=fixture(),tool=createAgentDeferredActionTool({runtime:f.runtime,sourceAt:()=>at}),context={binding,actor:{kind:'user',user:creator},request:{messageId:'source-1',text:'创建提醒',mentions:[]},signal:new AbortController().signal,isCurrent:()=>true}
+  assert.deepEqual(tool.effect,{actor:'user',metadata:['request']})
+  assert.equal((await tool.execute({action:'create',reminder_time:new Date(at+60_000).toISOString(),content:'喝水',extra_action:{tool:'testTool',params:{value:'fixed'},unexpected:true}},context)).status,'failed')
+  assert.equal((await tool.execute({action:'list'},{...context,request:undefined})).status,'failed')
+  assert.deepEqual(await f.runtime.store.listDeferredActions(),[])
   assert.equal((await tool.execute({action:'create',reminder_time:new Date(at+60_000).toISOString(),content:'喝水',extra_action:{tool:'testTool',params:{value:'fixed'}}},context)).status,'succeeded')
   const [task]=await f.runtime.list(binding,creator)
   assert.match((await tool.execute({action:'list'},context)).content,new RegExp(task.id))

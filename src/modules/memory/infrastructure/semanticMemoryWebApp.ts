@@ -2,6 +2,7 @@ import fs from "fs"
 import path from "path"
 import type { SemanticRuntime } from "./semanticRuntime.js"
 import { effectiveStrength } from "./SemanticMemoryStore.js"
+import { LEGACY_RETRIEVAL_EVAL_WARNING, RETRIEVAL_EVAL_COMMAND } from "./retrievalEval.js"
 
 // 语义记忆后台页:索引总览(量化数据)、检索游乐场、分块浏览器、评估历史。
 // 挂在 /bl-chat/semantic-memory,与命令/观测页共用同一份令牌。
@@ -17,21 +18,27 @@ let registered = false
 
 function readEvalHistory(baseDir:string) {
   const file = path.join(String(baseDir || ""), "eval-history.ndjson")
-  if (!baseDir || !fs.existsSync(file)) return []
+  const history: Record<string, unknown>[] = [], versionedHistory: Record<string, unknown>[] = []
+  if (!baseDir || !fs.existsSync(file)) return { history, versionedHistory }
   try {
-    return fs.readFileSync(file, "utf8").split(/\r?\n/)
+    const records: unknown[] = fs.readFileSync(file, "utf8").split(/\r?\n/)
       .filter(line => line.trim())
       .map(line => { try { return JSON.parse(line) } catch { return null } })
-      .filter(Boolean)
+      .filter(value => value && typeof value === 'object' && !Array.isArray(value))
       .slice(-30)
       .reverse()
-  } catch {
-    return []
-  }
+    for (const value of records) {
+      const row = value as Record<string, unknown>
+      if ((row.schemaVersion === undefined && row.schema === undefined) || row.schemaVersion === 1 || row.schema === 1) {
+        history.push({ ...row, method: 'legacy-v1', runtime: 'plugin', comparable: false, comparisonWarning: LEGACY_RETRIEVAL_EVAL_WARNING })
+      } else versionedHistory.push(row)
+    }
+  } catch { /* Historical reports are optional; never rewrite the source file. */ }
+  return { history, versionedHistory }
 }
 
 function pct(value:unknown) {
-  return Number.isFinite(Number(value)) ? `${Math.round(Number(value) * 100)}%` : "-"
+  return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) ? `${Math.round(Number(value) * 100)}%` : "-"
 }
 
 function checkToken(req:Request, token:Tokens|string) {
@@ -79,7 +86,7 @@ function buildStats(runtime:SemanticRuntime|null) {
       : null,
     retriever: { ...runtime.retriever.stats },
     indexer: { ...runtime.indexer.stats, pendingGroups: runtime.indexer.dirtyGroups.size },
-    evalLatest: readEvalHistory(runtime.baseDir)[0] || null
+    evalLatest: readEvalHistory(runtime.baseDir).history[0] || null
   }
 }
 
@@ -154,23 +161,18 @@ function buildPageHtml() {
         card(s.retriever.hits + "/" + s.retriever.queries, "检索命中/查询") +
         card(s.indexer.chunksIndexed, "累计索引分块") +
         '</div>' +
-        '<h2>量化指标(最近一次评估)</h2>' +
-        '<div class="cards">' +
-        card(pct(ev.recallAt5Vector), "recall@5 纯向量") +
-        card(pct(ev.recallAt5Hybrid), "recall@5 混合召回", true) +
-        card(ev.recallAt5Rerank !== undefined ? pct(ev.recallAt5Rerank) : "未启用", "recall@5 混合+重排", true) +
-        card(ev.latencyP50Ms ? ev.latencyP50Ms + " ms" : "-", "检索延迟 P50") +
-        card(ev.latencyP95Ms ? ev.latencyP95Ms + " ms" : "-", "检索延迟 P95") +
-        card(ev.samples || 0, "评估样本数") +
-        '</div>' +
-        '<div class="sub">评估时间:' + esc(ev.generatedAt || "尚未评估") + ' · embedding:' + esc(s.embedding.model) + ' · 缓存命中 ' + s.embedding.cacheHits + ' · 重排:' + (s.reranker ? esc(s.reranker.model) + " 请求 " + s.reranker.requests + (s.reranker.circuitBroken ? '<span class="off">(熔断中)</span>' : '') : "未启用") + (s.config.rerankInChat ? " · <span class=\\"good\\">聊天热路径已开重排</span>" : "") + '</div>' +
+        '<h2>评估方法迁移</h2>' +
+        '<div class="item">${LEGACY_RETRIEVAL_EVAL_WARNING}旧在线自出题评估已停用。</div>' +
+        '<div class="sub">在项目根目录运行 Core v2 隔离评估；合成后端只验证评估流程。</div>' +
+        '<pre>' + esc(${JSON.stringify(RETRIEVAL_EVAL_COMMAND)}) + '</pre>' +
+        '<div class="sub">旧评估时间:' + esc(ev.generatedAt || "尚无历史") + ' · embedding:' + esc(s.embedding.model) + ' · 缓存命中 ' + s.embedding.cacheHits + ' · 重排:' + (s.reranker ? esc(s.reranker.model) + " 请求 " + s.reranker.requests + (s.reranker.circuitBroken ? '<span class="off">(熔断中)</span>' : '') : "未启用") + (s.config.rerankInChat ? " · <span class=\\"good\\">聊天热路径已开重排</span>" : "") + '</div>' +
         '<h2>检索游乐场</h2>' +
         '<div class="row"><input id="pg-group" placeholder="群号(必填)"><input id="pg-query" placeholder="问题,如:我们之前聊的星露谷是什么"><label style="align-self:center;font-size:13px"><input type="checkbox" id="pg-rerank" style="flex:none;min-width:0" checked> 重排</label><button class="primary" id="pg-run">检索</button></div>' +
         '<div id="pg-out"></div>' +
         '<h2>分块浏览器</h2>' +
         '<div class="row"><input id="cb-group" placeholder="群号"><button id="cb-load">加载</button><button id="cb-more">更多</button></div>' +
         '<div id="cb-out"></div>' +
-        '<h2>评估历史</h2><div id="eh-out">-</div>' +
+        '<h2>插件旧评估历史 · legacy-v1</h2><div id="eh-out">-</div><div id="eh-versioned"></div>' +
         '<div class="row" style="margin-top:16px"><button onclick="refresh()">刷新总览</button></div>';
       document.getElementById("pg-run").onclick = runPlayground;
       document.getElementById("cb-load").onclick = function () { cbOffset = 0; loadChunks(); };
@@ -232,11 +234,14 @@ function buildPageHtml() {
   function loadEvalHistory() {
     api("eval-history").then(function (r) {
       var rows = (r.history || []).map(function (h) {
-        return "<tr><td>" + esc(String(h.generatedAt || "").slice(5, 16)) + "</td><td>" + h.samples + "</td><td>" + pct(h.recallAt5Vector) + "</td><td class='good'>" + pct(h.recallAt5Hybrid) + "</td><td>" + (h.recallAt5Rerank !== undefined ? pct(h.recallAt5Rerank) : "-") + "</td><td>" + pct(h.recallAt10Hybrid) + "</td><td>" + (h.latencyP50Ms || "-") + "</td></tr>";
+        return "<tr><td>" + esc(String(h.generatedAt || "").slice(5, 16)) + "</td><td>" + esc(h.samples == null ? "-" : h.samples) + "</td><td>" + pct(h.recallAt5Vector) + "</td><td>" + pct(h.recallAt5Hybrid) + "</td><td>" + (h.recallAt5Rerank !== undefined ? pct(h.recallAt5Rerank) : "-") + "</td><td>" + pct(h.recallAt10Hybrid) + "</td><td>" + esc(h.latencyP50Ms == null ? "-" : h.latencyP50Ms) + "</td></tr>";
       }).join("");
       document.getElementById("eh-out").innerHTML = rows
-        ? '<table><tr><th>时间</th><th>样本</th><th>@5 向量</th><th>@5 混合</th><th>@5 重排</th><th>@10 混合</th><th>P50ms</th></tr>' + rows + '</table>'
-        : '<div class="dim">暂无历史(运行 .语义记忆 评估 或 eval 脚本生成)</div>';
+        ? '<table><tr><th>时间</th><th>样本</th><th>旧向量字段(无效对照)</th><th>旧混合 Hit@5</th><th>旧重排 Hit@5</th><th>旧混合 Hit@10</th><th>旧合计 P50ms</th></tr>' + rows + '</table>'
+        : '<div class="dim">暂无插件旧评估历史。Core v2 报告由离线工具单独生成。</div>';
+      document.getElementById("eh-versioned").innerHTML = (r.versionedHistory || []).length
+        ? '<h2>版本化评估报告(单独展示)</h2><div class="sub">按各报告的数据集、模型和配置解释结果，不与 legacy-v1 比较。</div><details><summary>完整报告</summary><pre>' + esc(JSON.stringify(r.versionedHistory, null, 2)) + '</pre></details>'
+        : '';
     });
   }
   window.refresh = refresh;
@@ -281,7 +286,7 @@ function registerSemanticMemoryWebApp(expressApp:ExpressApp, pluginRoot:string, 
           return
         }
         if (req.path === "/api/eval-history") {
-          res.json({ history: runtime ? readEvalHistory(runtime.baseDir) : [] })
+          res.json(runtime ? readEvalHistory(runtime.baseDir) : { history: [], versionedHistory: [] })
           return
         }
         if (!runtime) {

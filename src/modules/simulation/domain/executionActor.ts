@@ -19,3 +19,8 @@ export function resolveSimulationActor(scope: CharacterScope, reason: SimWakeRea
 export const AUTONOMOUS_EXTRA_TOOLS: readonly string[] = ['searchInformationTool', 'webParserTool']
 export const AUTONOMOUS_DENIED_SIM_TOOLS: readonly string[] = ['simQzoneInteract', 'simSendPoke', 'simUpdateAffinity']
 export const AUTONOMOUS_CREATIVE_TOOLS: readonly string[] = ['bananaTool', 'googleImageEditTool', 'googleImageAnalysisTool']
+
+export function isAutonomousExtraToolAllowed(name: string, configured: readonly string[] | undefined): boolean {
+  return AUTONOMOUS_EXTRA_TOOLS.includes(name) ||
+    (AUTONOMOUS_CREATIVE_TOOLS.includes(name) && Array.isArray(configured) && configured.includes(name))
+}

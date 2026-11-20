@@ -89,6 +89,8 @@ const lifeOverview = {
 }
 const simulationRequests = [], lifeRequests = [], featureChecks = []
 const semanticRequests = [], missingApis = [], browserErrors = [], externalRequests = [], checks = [], screenshots = []
+// These standalone-only probes return 404 in plugin mode; all other missing APIs remain failures.
+const legacyProbePaths = new Set(['/api/workspace', '/api/config-state', '/api/bindings'])
 let authMode = 'authenticated'
 const json = (res, data, status = 200) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)) }
 const pixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j9zQAAAAASUVORK5CYII=', 'base64')
@@ -96,6 +98,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1'), pathname = url.pathname
   if (pathname === '/favicon.ico') { res.writeHead(204); res.end(); return }
   if (pathname === '/api/auth/state') return json(res, { hasUser: authMode !== 'setup', username: authMode === 'authenticated' ? 'fixture-admin' : null, tokenWorks: false })
+  if (req.method === 'GET' && legacyProbePaths.has(pathname)) return json(res, { error: 'Standalone endpoint unavailable in plugin fixture' }, 404)
   if (pathname === '/api/identities') return json(res, { bots: [{ id: '100001', name: '长昵称示例机器人与桌游助手' }, { id: '200002', name: '离线测试机器人' }], groups: [{ id: '100001', name: '周末游戏交流与桌游活动安排群（长名称示例）' }] })
   if (pathname === '/api/simulation/overview') return json(res, { enabled: true, allGroups: true, disabled: [], budgetDefaultCny: 5, groups: Object.values(simulationGroups), groupNames: { '100001': '周末游戏交流与桌游活动安排群（长名称示例）', '200002': '第二隔离群' } })
   if (pathname === '/api/simulation/group') {
@@ -215,7 +218,12 @@ try {
     else { externalRequests.push(url); request.abort() }
   })
   page.on('pageerror', error => browserErrors.push({ type: 'pageerror', message: error.message, url: page.url() }))
-  page.on('console', item => { if (item.type() === 'error') browserErrors.push({ type: 'console', message: item.text(), url: page.url() }) })
+  page.on('console', item => {
+    if (item.type() !== 'error') return
+    const source = item.location().url
+    if (item.text() === 'Failed to load resource: the server responded with a status of 404 (Not Found)' && source && legacyProbePaths.has(new URL(source, origin).pathname)) return
+    browserErrors.push({ type: 'console', message: item.text(), url: page.url() })
+  })
   async function click(text, selector = 'button') {
     const handle = await page.evaluateHandle((label, query) => [...document.querySelectorAll(query)].find(element => element.getClientRects().length && element.textContent.trim() === label), text, selector)
     const element = handle.asElement()

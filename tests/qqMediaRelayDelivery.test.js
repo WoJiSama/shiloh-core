@@ -98,11 +98,20 @@ test('distinct IDs are staged once in first-use order across repeated cover, thu
   assert.deepEqual(d.released, [cover.id, video.id])
 })
 
-test('missing video thumbnail and direct-video mixed content reject before staging or native dispatch', async () => {
+test('missing video thumbnail rejects before staging or native dispatch', async () => {
   const d = direct()
   assert.deepEqual(await d.sendMediaRelay(action({ plan: { version: 1, items: [{ parts: [{ kind: 'video', artifact: video }] }] } })), { state: 'failed', code: 'video_thumbnail_missing' })
-  assert.deepEqual(await d.sendMediaRelay(action({ mode: 'direct-video' })), { state: 'failed', code: 'invalid_direct_video' })
   assert.equal(d.staged.length, 0); assert.equal(d.calls.length, 0)
+})
+
+test('direct-video accepts the plain text, cover and video form of the full plan in one native message', async () => {
+  const d = direct()
+  const receipt = await d.sendMediaRelay(action({ mode: 'direct-video' }))
+  assert.equal(receipt.state, 'sent')
+  assert.equal(d.calls.length, 1); assert.equal(d.calls[0].action, 'send_group_msg')
+  const segments = d.calls[0].params.message
+  assert.deepEqual(segments.map(segment => segment.type), ['text', 'image', 'video'])
+  assert.equal(segments[2].data.thumb, `http://127.0.0.1:4242/resource/${thumb.id}`)
 })
 
 test('closed plan rejects URLs, local paths, credentials, getter fields, conflicting opaque metadata and invalid MIME/limits', async () => {

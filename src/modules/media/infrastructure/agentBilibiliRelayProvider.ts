@@ -24,6 +24,8 @@ export interface AgentBilibiliRelayProviderOptions {
   readonly lookup?: AgentBilibiliLookup
   readonly request?: AgentBilibiliRequest
   readonly thumbnail?: AgentBilibiliThumbnail
+  /** Optional rendered card image replacing the plain text/cover intro in automatic relays. */
+  readonly cardRenderer?: { render(view: Readonly<import('./agentBilibiliCardRenderer.js').AgentBilibiliCardView>, context: AgentMediaResourceContext): Promise<{ mime: string; base64: string }> }
   /** Metadata only: upstream errors, URLs, credentials and local paths are never emitted. */
   readonly diagnostics?: Pick<AgentDiagnostics, 'emit'>
   /** May shorten each API stage's 10s and download candidate's 10min deadlines. */
@@ -116,8 +118,10 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
     if (requiredAuth && !cookie || profile.mode === 'attachment' && cookie) throw bilibiliFailure()
     if (options.timeoutMs !== undefined) { if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 600_000) throw bilibiliFailure(); timeout = options.timeoutMs }
   } catch { throw bilibiliFailure() }
-  // SPI is the fixed credential-reception endpoint for anonymous device tokens.
-  // It may repeat a previously learned buvid, but must still reject host/account secrets.
+  // Bilibili API responses and signed media URLs legitimately echo the client's own
+  // anonymous device tokens (playurl durl URLs embed buvid3), so host/account secrets
+  // gate requests, URLs and response bodies while learned device tokens are only kept
+  // out of delivered text through `allowed`/`safe` below.
   const hostSecretCheck = createAgentSecretTextCheck([...secrets])
   const hostAllowed = (value: string): boolean => { try { return hostSecretCheck(value) && options.allowsText?.(value) !== false } catch { return false } }
   let secretCheck = createAgentSecretTextCheck([...secrets])
@@ -133,14 +137,14 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       else if (next.value && typeof next.value === 'object') for (const [key, value] of Object.entries(next.value)) { if (key.length > 256 || !check(key)) throw bilibiliFailure(); pending.push({ value, depth: next.depth + 1 }) }
     }
   }
-  const read = createBilibiliHttp({ ...(options.lookup ? { lookup: options.lookup } : {}), ...(options.request ? { request: options.request } : {}), allows: allowed,
+  const read = createBilibiliHttp({ ...(options.lookup ? { lookup: options.lookup } : {}), ...(options.request ? { request: options.request } : {}), allows: hostAllowed,
     onCleanupFailure: code => diagnose('bilibili_provider_release', code) })
   let fingerprintCache = { value: '', expiresAt: 0 }
   async function json(url: string, context: AgentMediaResourceContext, auth = '', exact = false): Promise<Record<string, unknown>> {
     const guard = bilibiliGuard(context, Math.min(timeout, 10_000))
     let response: Awaited<ReturnType<typeof read>> | undefined
     try {
-      const reader = exact ? createBilibiliHttp({ ...(options.lookup ? { lookup: options.lookup } : {}), allows: allowed,
+      const reader = exact ? createBilibiliHttp({ ...(options.lookup ? { lookup: options.lookup } : {}), allows: hostAllowed,
         onCleanupFailure: code => diagnose('bilibili_provider_release', code),
         request: (current, address, signal, policy) => {
           if (current.href !== url) throw bilibiliFailure()
@@ -151,7 +155,7 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       const chunks: Uint8Array[] = []; let size = 0
       for await (const bytes of response.chunks) { size += bytes.length; chunks.push(bytes) }
       const raw = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, size))
-      const responseAllowed = url === 'https://api.bilibili.com/x/frontend/finger/spi' ? hostAllowed : allowed
+      const responseAllowed = hostAllowed
       if (!responseAllowed(raw)) throw bilibiliFailure()
       const payload = JSON.parse(raw)
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw bilibiliFailure()
@@ -163,10 +167,17 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
     if (Date.now() < fingerprintCache.expiresAt) return fingerprintCache.value
     try {
       const payload = await json('https://api.bilibili.com/x/frontend/finger/spi', context), data = row(payload.data)
-      if (payload.code !== 0 || typeof data.b_3 !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/u.test(data.b_3) || data.b_4 !== undefined && (typeof data.b_4 !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/u.test(data.b_4))) { diagnose('bilibili_provider_fingerprint', 'fingerprint_invalid_fallback', context); fingerprintCache = { value: '', expiresAt: Date.now() + 60_000 }; return '' }
-      for (const value of [data.b_3, data.b_4]) if (typeof value === 'string' && value) secrets.add(value)
+      // Bilibili appends a base64 tail (with +/=: characters) to b_4; a rejected b_4 now
+      // degrades to a buvid3-only cookie instead of dropping the whole fingerprint,
+      // because anonymous view/playback APIs are risk-controlled (HTTP 412) without buvid3.
+      const token = /^[A-Za-z0-9_+=:-]{1,256}$/u
+      const b3 = typeof data.b_3 === 'string' && token.test(data.b_3) ? data.b_3 : ''
+      const b4 = typeof data.b_4 === 'string' && token.test(data.b_4) ? data.b_4 : ''
+      if (payload.code !== 0 || !b3) { diagnose('bilibili_provider_fingerprint', 'fingerprint_invalid_fallback', context); fingerprintCache = { value: '', expiresAt: Date.now() + 60_000 }; return '' }
+      if (!b4 && data.b_4) diagnose('bilibili_provider_fingerprint', 'fingerprint_partial_fallback', context)
+      for (const value of [b3, b4]) if (value) secrets.add(value)
       secretCheck = createAgentSecretTextCheck([...secrets])
-      const value = `buvid3=${data.b_3}${data.b_4 ? `; buvid4=${data.b_4}` : ''}`
+      const value = `buvid3=${b3}${b4 ? `; buvid4=${b4}` : ''}`
       fingerprintCache = { value, expiresAt: Date.now() + 24 * 60 * 60 * 1000 }; return value
     } catch { diagnose('bilibili_provider_fingerprint', 'fingerprint_unavailable_fallback', context); const guard = bilibiliGuard(context, Math.min(timeout, 10_000)); try { await guard.ensure(); fingerprintCache = { value: '', expiresAt: Date.now() + 60_000 }; return '' } finally { guard.close() } }
   }
@@ -265,9 +276,17 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       }
       for (const [index, item] of durls.entries()) {
         if (typeof item.url !== 'string') throw bilibiliFailure()
-        bilibiliOfficialUrl(item.url, 'video')
-        const backups = item.backup_url === undefined ? [] : Array.isArray(item.backup_url) && item.backup_url.length <= 8 ? item.backup_url.map(value => { if (typeof value !== 'string') throw bilibiliFailure(); bilibiliOfficialUrl(value, 'video'); return value }) : undefined
-        if (!backups) throw bilibiliFailure()
+        // Bilibili's PCDN scheduling can point the primary durl at a non-whitelisted
+        // edge host while official upos mirrors sit in backup_url. Outside strict mode
+        // such candidates are skipped instead of failing the whole playback; the URL
+        // whitelist itself stays enforced per request inside download/createBilibiliHttp.
+        const mediaCandidate = (value: string): boolean => { try { bilibiliOfficialUrl(value, 'video'); return true } catch { return false } }
+        if (strict && !mediaCandidate(item.url)) throw bilibiliFailure()
+        const rawBackups = item.backup_url === undefined ? [] : Array.isArray(item.backup_url) && item.backup_url.length <= 8 ? item.backup_url : undefined
+        if (!rawBackups) throw bilibiliFailure()
+        const backups = strict ? rawBackups.map(value => { if (typeof value !== 'string') throw bilibiliFailure(); bilibiliOfficialUrl(value, 'video'); return value })
+          : rawBackups.filter((value): value is string => typeof value === 'string' && mediaCandidate(value))
+        if (!strict && !mediaCandidate(item.url) && !backups.length) continue
         result.resources.push({ url: item.url, backups, size: nonnegative(item.size ?? 0), part, index, quality, preview })
       }
     }
@@ -362,7 +381,27 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       const outputAllowed = (value: string) => allowed(value) && outputCheck(value)
       const infoText = safe(lines.join('\n')), pageUrl = safe(meta.pageUrl)
       if (!outputAllowed(infoText) || !outputAllowed(pageUrl) || actualQualities.some(value => !outputAllowed(value.label))) throw bilibiliFailure()
-      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover } as const] : [])] }, ...mediaItems] }, { allowsText: outputAllowed })
+      // The rendered card carries the metadata visually; failures keep the plain text+cover intro.
+      let introParts: readonly ({ kind: 'text', text: string } | { kind: 'image', artifact: AgentMediaArtifact })[] | undefined
+      if (!strict && options.cardRenderer) {
+        try {
+          let coverData: { readonly mime: string; readonly bytes: Buffer } | undefined
+          if (cover) {
+            const reader = await options.artifacts.open(cover, guard.context)
+            try { const chunks: Buffer[] = []; for await (const bytes of reader.chunks) chunks.push(Buffer.from(bytes)); coverData = { mime: cover.mime, bytes: Buffer.concat(chunks) } } finally { await reader.close?.() }
+          }
+          const statLabels: Record<string, string> = { view: '播放', like: '点赞', coin: '投币', favorite: '收藏', share: '转发', reply: '评论', danmaku: '弹幕' }
+          const image = await options.cardRenderer.render({ title: meta.title, owner: meta.owner, durationText: durationText(meta.duration),
+            partText: meta.partCount > 1 ? `${meta.partCount}个分P` : '', publishedText: meta.published ? new Date(meta.published * 1000).toISOString().slice(0, 10) : '',
+            pageUrl: meta.pageUrl, stats: Object.fromEntries(Object.entries(statLabels).filter(([key]) => meta.stats[key] !== undefined).map(([key, label]) => [label, meta.stats[key]!.toLocaleString('zh-CN')])),
+            description: meta.description.slice(0, 300), episode: meta.episode, ...(coverData ? { cover: coverData } : {}) }, guard.context)
+          const bytes = Buffer.from(image.base64, 'base64')
+          const lease = await guard.wait(options.artifacts.stage({ kind: 'image', mime: image.mime, chunks: (async function* () { yield bytes })() }, guard.context), late => releaseLeases([late]))
+          leases.push(lease)
+          introParts = [{ kind: 'text', text: safe(`《${meta.title}》\n${meta.pageUrl}`) }, { kind: 'image', artifact: lease.artifact }]
+        } catch { diagnose('bilibili_provider_card', 'card_unavailable', context); await guard.ensure() }
+      }
+      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: introParts ?? [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover } as const] : [])] }, ...mediaItems] }, { allowsText: outputAllowed })
       await guard.ensure()
       let released: Promise<void> | undefined
       const result = Object.freeze({ status, pageUrl, infoText, plan, requestedQuality: profile.quality, actualQualities, release() {

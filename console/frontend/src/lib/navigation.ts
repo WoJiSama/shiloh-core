@@ -81,109 +81,135 @@ export const workspaceFeatures = {
     label: '人设模板',
     group: '/resources',
     operation: 'persona.read',
-    hint: '管理可复用模板及其引用，保存后重启生效'
+    hint: '管理可复用模板及其引用，保存后重启生效',
+    keywords: '人设 人格 角色 模板 绑定'
   },
   ai: {
     label: '模型资源',
     group: '/resources',
     operation: 'providers.read',
-    hint: '现有模型渠道与环境变量凭据引用'
+    hint: '现有模型渠道与环境变量凭据引用',
+    keywords: 'AI 模型 渠道 提供商 API key 凭据'
   },
   draw: {
     label: '创作工作台',
     group: '/resources',
     operation: 'images.providers',
-    hint: '图片生成、编辑与历史'
+    hint: '图片生成、编辑与历史',
+    keywords: '生图 图片 绘图 图像 生成 编辑'
   },
   games: {
     label: '游戏资源',
     group: '/resources',
     operation: 'turtle-soup.read',
-    hint: '题库审核与游戏资源'
+    hint: '题库审核与游戏资源',
+    keywords: '游戏 海龟汤 题库'
   },
   simulation: {
     label: '会话参与',
     group: '/runtime',
     operation: 'simulation.read',
-    hint: '各会话的参与方式、预算与自我记录'
+    hint: '各会话的参与方式、预算与自我记录',
+    keywords: '仿真 自主 会话 预算 回合'
   },
   'person-profiles': {
     label: '人物记忆',
     group: '/robots',
     operation: 'profiles.read',
-    hint: '按机器人与来源会话查看人物记录'
+    hint: '按机器人与来源会话查看人物记录',
+    keywords: '人物 用户 画像 好感 记忆'
   },
   trusteeship: {
     label: '托付与承诺',
     group: '/runtime',
     operation: 'trusteeship.read',
-    hint: '真实承诺、托付记忆与执行结果'
+    hint: '真实承诺、托付记忆与执行结果',
+    keywords: '托付 承诺 提醒 委托 定时任务'
   },
   observe: {
     label: '运行观测',
     group: '/runtime',
     operation: 'observe.read',
-    hint: '真实运行记录与失败原因'
+    hint: '真实运行记录与失败原因',
+    keywords: '观测 日志 轨迹 请求 调试 运行明细'
   },
   tokens: {
     label: '模型用量',
     group: '/runtime',
     operation: 'tokens.summary',
-    hint: '实例账本中的用量和费用'
+    hint: '实例账本中的用量和费用',
+    keywords: '令牌 token 用量 花费 费用 成本'
   },
   pipeline: {
     label: '消息与搬运',
     group: '/runtime',
     operation: 'pipeline.read',
-    hint: '消息任务与投递状态'
+    hint: '消息任务与投递状态',
+    keywords: '消息 搬运 投递 管道 任务'
   },
   life: {
     label: '作息与生活',
     group: '/runtime',
     operation: 'life.read',
-    hint: '当前可用的作息记录与管理'
+    hint: '当前可用的作息记录与管理',
+    keywords: '作息 生物钟 生活 追番'
   },
   style: {
     label: '表达学习',
     group: '/resources',
     operation: 'style.read',
-    hint: '已有表达策略及其来源'
+    hint: '已有表达策略及其来源',
+    keywords: '风格 表达 学习 语言'
   },
   semantic: {
     label: '记忆检索',
     group: '/resources',
     operation: 'semantic.read',
-    hint: '当前宿主可用的检索管理'
+    hint: '当前宿主可用的检索管理',
+    keywords: '语义 记忆 检索 召回 搜索 向量'
   },
   commands: {
     label: '骰子边界',
     group: '/system',
     operation: 'config.read',
-    hint: '已开放的四项骰子护栏，保存后重启生效'
+    hint: '骰子规则与参与边界，保存后重启生效',
+    keywords: '命令 骰子 规则'
   },
   conversation: {
     label: '对话配置',
     group: '/system',
     operation: 'conversation.config',
-    hint: '当前宿主是否提供对话配置编辑'
+    hint: '当前宿主是否提供对话配置编辑',
+    keywords: '对话 回复 触发 权限 上下文'
   },
   risk: {
     label: '安全配置',
     group: '/system',
     operation: 'risk-control.config',
-    hint: '当前宿主是否提供安全配置编辑'
+    hint: '当前宿主是否提供安全配置编辑',
+    keywords: '风控 安全 审查 限流 通知'
   },
   'group-admin': {
     label: '群管理',
     group: '/connections',
     operation: 'group-admin.read',
-    hint: '在明确的连接和会话中管理'
+    hint: '入群验证、广告处理与群通知',
+    keywords: '群管理 入群验证 广告 刷屏 欢迎 退群'
   },
   groups: {
     label: '接入会话',
     group: '/connections',
     operation: 'groups.read',
-    hint: '当前接入的完整会话地址'
+    hint: '当前接入的完整会话地址',
+    keywords: '群聊 群组 会话 连接 平台'
   }
 } as const
 export type WorkspaceFeature = keyof typeof workspaceFeatures
+
+export function workspaceFeatureEntries(group: string) {
+  return Object.entries(workspaceFeatures).filter(([, item]) => item.group === group)
+}
+
+export function workspaceFeaturePath(feature: WorkspaceFeature) {
+  return '/' + feature
+}

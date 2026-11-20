@@ -27,6 +27,78 @@ test('public tool registry rejects name collisions, reserved capabilities and in
   ]) assert.throws(() => createAgentTools(registry, ports))
 })
 
+test('registry validates the canonical schema and selects capabilities per action before entering the tool', async () => {
+  const account = { platform: 'qq', namespace: 'global', id: '10001' }
+  const sender = { ...account, id: '20001' }
+  const projected = [], deliveries = []
+  const result = { status: 'succeeded', content: 'fixture-result' }
+  let scope = {
+    binding: { target: { account, kind: 'group', id: '30001' } }, actor: { kind: 'user', user: sender },
+    request: { messageId: 'active-request', text: '请查一下', mentions: [] }, isCurrent: () => true,
+    async sendBundle(items) { deliveries.push(items); return { state: 'unknown' } },
+    async sendMessage() { assert.fail('an unknown bundle must fence other sends') },
+    async readFile() { assert.fail('a delivery must never get the file reader') },
+  }
+  const properties = {
+    mode: { enum: ['text', 'bundle'] },
+    filter: { type: 'object', properties: { page: { type: 'integer', minimum: 1 } }, required: ['page'], additionalProperties: false },
+  }
+  const tool = {
+    name: 'scopedLookup', description: 'Fixture with text and bundle actions',
+    parameters: { type: 'object', properties: { mode: properties.mode }, required: ['mode'], additionalProperties: false },
+    inputSchema: { type: 'object', properties, required: ['mode', 'filter'], additionalProperties: false },
+    effect: input => input.mode === 'bundle'
+      ? { actor: 'user', conversation: 'group', required: ['sendBundle'], optional: ['sendMessage'] }
+      : {},
+    async execute(input, context) {
+      projected.push(Object.keys(context).sort())
+      if (input.mode === 'bundle') {
+        assert.deepEqual(await context.sendBundle([{ parts: [{ kind: 'text', text: 'fixture message' }] }]), { state: 'unknown' })
+        await assert.rejects(context.sendMessage({ text: 'fixture fallback' }), /结果未知/u)
+      }
+      return result
+    },
+  }
+  const [registered] = createAgentTools({ builtIn: [tool] }, { signal: new AbortController().signal, context: () => scope }).getExtraTools([tool.name])
+  for (const params of [[], null, { mode: 'text' }, { mode: 'text', filter: { page: '1' } }, { mode: 'text', filter: { page: 1, extra: true } }]) {
+    assert.match(await registered.execute(params, {}), /^error:/u)
+  }
+  const valid = { filter: { page: 1 }, mode: 'text' }
+  assert.equal((await registered.execute(valid, {})).status, 'success')
+  assert.deepEqual(projected, [['actor', 'binding', 'ensureCurrent', 'isCurrent', 'signal']])
+  const authorized = scope
+  for (const change of [
+    { actor: { kind: 'autonomous' } }, { actor: { kind: 'user', user: account } }, { request: undefined }, { sendBundle: undefined },
+  ]) {
+    scope = { ...authorized, ...change }
+    assert.equal((await registered.execute({ ...valid, mode: 'bundle' }, {})).status, 'error')
+  }
+  assert.equal(projected.length, 1)
+  assert.equal(deliveries.length, 0)
+  scope = authorized
+  assert.equal((await registered.execute({ ...valid, mode: 'bundle' }, {})).status, 'unknown')
+  assert.deepEqual(projected[1], ['actor', 'binding', 'ensureCurrent', 'isCurrent', 'sendBundle', 'sendMessage', 'signal'])
+  assert.equal(deliveries.length, 1)
+})
+
+test('canonical schemas validate object constants and tuple rules without inherited properties', async () => {
+  const schema = {
+    $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object', additionalProperties: false,
+    required: ['constructor', 'tuple'], properties: {
+      constructor: { const: { source: 'public' } },
+      tuple: { type: 'array', prefixItems: [{ type: 'string' }, { type: 'integer' }], minItems: 2, items: false },
+    },
+  }
+  const host = createAgentTools({ builtIn: [{ ...definition('schemaLookup'), inputSchema: schema, effect: 'read' }] }, {
+    signal: new AbortController().signal, context: () => ({ binding: {}, actor: { kind: 'autonomous' }, isCurrent: () => true }),
+  })
+  const [tool] = host.getExtraTools(['schemaLookup'])
+  assert.match(await tool.execute({ tuple: ['label', 1] }, {}), /^error: .*Schema/u)
+  assert.match(await tool.execute({ constructor: { source: 'other' }, tuple: ['label', 1] }, {}), /^error: .*Schema/u)
+  assert.match(await tool.execute({ constructor: { source: 'public' }, tuple: ['label', '1'] }, {}), /^error: .*Schema/u)
+  assert.equal((await tool.execute({ constructor: { source: 'public' }, tuple: ['label', 1] }, {})).status, 'success')
+})
+
 test('host cancellation stops waiting for an uncooperative tool and never exposes its exception', async () => {
   const stopped = new AbortController()
   let entered = false
@@ -129,7 +201,7 @@ test('Core tools obey policy and pass neutral identities, scoped usage and bindi
       assert.equal(results.filter(result => result.status === 'rejected').length, 1)
       return { status: 'succeeded', content: 'Image delivered' }
     }
-    if (['late', 'recall', 'activity'].includes(input.query)) {
+    if (['late', 'recall', 'activity', 'policy'].includes(input.query)) {
       delayedContext = context
       return new Promise(resolve => { releaseDelayed = () => resolve({ status: 'succeeded', content: 'revoked-private-result' }) })
     }
@@ -150,12 +222,13 @@ test('Core tools obey policy and pass neutral identities, scoped usage and bindi
       const start = request.messages.findLastIndex(row => typeof row.content === 'string' && row.content.includes('【执行主体】'))
       const wake = String(request.messages[start]?.content)
       const results = request.messages.slice(start + 1).filter(row => row.role === 'tool')
-      const label = [...wake.matchAll(/command-(builtin|custom|denied|activity|recall|late|image)/gu)].at(-1)?.[1]
+      const label = [...wake.matchAll(/command-(builtin|custom|denied|activity|policy|recall|late|image|invalid)/gu)].at(-1)?.[1]
       requests.push({ request, label, results })
       const name = label === 'custom' ? 'customProbe' : 'readProbe'
       const shouldCall = label && label !== 'denied' && !results.length
       return { choices: [{ message: { content: '', tool_calls: [{ id: 'call', type: 'function', function: {
-        name: shouldCall ? name : 'simFinishTurn', arguments: JSON.stringify(shouldCall ? { query: label } : { choice: 'silent', reason: 'fixture complete', throughSeq: sequence }),
+        name: shouldCall ? name : 'simFinishTurn', arguments: JSON.stringify(shouldCall ? { query: label === 'invalid' ? 99 : label }
+          : { choice: 'silent', reason: 'fixture complete', throughSeq: sequence }),
       } }] } }] }
     },
   })
@@ -201,6 +274,26 @@ test('Core tools obey policy and pass neutral identities, scoped usage and bindi
     assert.ok(!denied.includes('readProbe') && !denied.includes('customProbe'))
     assert.equal(calls.length, 3)
     section.toolPolicy.denyTools = []
+    const readProbeReceiptCount = async () => {
+      const keys = await reader.keys(prefix + 'shiloh:character:v1:*')
+      const rows = await Promise.all(keys.map(async key => JSON.parse(await reader.get(key)).receipts ?? []))
+      return rows.flat().filter(receipt => receipt.toolName === 'readProbe').length
+    }
+    const receiptsBeforeInvalid = await readProbeReceiptCount()
+    await emit('invalid')
+    await waitFor(() => requests.some(row => row.label === 'invalid' && row.results.some(result => /Schema/u.test(result.content))),
+      'invalid schema fails visibly in the model loop')
+    await waitFor(settled, 'invalid tool turn completes')
+    assert.equal(calls.length, 3)
+    assert.equal(await readProbeReceiptCount(), receiptsBeforeInvalid, 'invalid input cannot take a durable action slot')
+    await emit('policy')
+    await waitFor(() => delayedContext, 'tool starts with current policy')
+    section.toolPolicy.denyTools = ['readProbe']
+    await waitFor(() => delayedContext.signal.aborted, 'updated deny list aborts an in-flight call')
+    releaseDelayed()
+    await waitFor(settled, 'revoked tool turn completes')
+    delayedContext = undefined
+    section.toolPolicy.denyTools = []
     await emit('activity')
     await waitFor(() => delayedContext, 'tool waits while its stored activity remains current')
     await storage.set(simulationSessionKey(key) + ':activity-version', 'external-revocation')
@@ -235,6 +328,72 @@ test('Core tools obey policy and pass neutral identities, scoped usage and bindi
     assert.ok(!JSON.stringify(requests).includes('revoked-private-result'))
     assert.equal(sends.length, 1)
   } finally { releaseDelayed?.(); await host.stop() }
+})
+
+test('Core revokes an in-flight creative tool when autonomous permission is withdrawn', {
+  skip: !redisAvailable, timeout: 20_000,
+}, async t => {
+  const { reader, storage, prefix, isCurrent } = await createAgentRedisFixture(t, 'tool-autonomous')
+  const account = { platform: 'qq', namespace: 'global', id: '10001' }
+  const sender = { ...account, id: '20001' }
+  const target = { account, kind: 'group', id: '30001' }
+  const directory = createAgentBindingDirectory({
+    version: 1, agents: [{ id: 'role', personaId: 'default' }],
+    connections: [{ id: 'connection', platform: account.platform, namespace: account.namespace, accountId: account.id }],
+    bindings: [{ connectionId: 'connection', kind: target.kind, conversationId: target.id, agentId: 'role' }],
+  }, 'one')
+  let now = Date.now(), accept, context
+  const requests = [], sends = [], release = Promise.withResolvers()
+  const section = { enabled: true, reflection: { enabled: false }, rhythm: { enabled: false },
+    wake: { batchWindowMs: 1000, proactiveIdleMs: 60_000, proactiveProbability: 1, probability: 0 },
+    autonomousTools: ['bananaTool'],
+  }
+  const key = simulationAddressKey(target)
+  const session = createDefaultSimSession(now)
+  session.bootstrapSent = true
+  session.botId = account.id
+  session.nextProactiveCheckAt = 0
+  await storage.set(simulationSessionKey(key), JSON.stringify(session))
+  const tool = { ...definition('bananaTool', async (_input, scoped) => { context = scoped; return release.promise }),
+    effect: { required: ['sendImage'] } }
+  const host = createAgentRuntime({
+    storage, isExecutionCurrent: isCurrent, now: () => now,
+    adapters: [{ id: 'connection', account, botName: 'fixture', botUserId: account.id, isReady: () => !!accept,
+      async start(consume) { accept = consume }, stop() {},
+      actions: { async send(action) { sends.push(action); return { state: 'sent', messageId: 'unexpected' } } },
+    }],
+    logger: { info() {}, warn() {}, error() {} },
+    getSection: () => section, getExecutionConfig: () => ({ providers: 'openai', useTools: true }),
+    toolRegistry: { builtIn: [tool] },
+    resolvePersona(address) { const binding = directory.resolve(address); return binding && { binding, persona: { name: 'fixture' }, systemContent: '' } },
+    async YTapi(request) {
+      requests.push(request)
+      const create = requests.length === 1
+      return { choices: [{ message: { content: '', tool_calls: [{ id: 'autonomous-' + requests.length, type: 'function', function: {
+        name: create ? tool.name : 'simFinishTurn', arguments: JSON.stringify(create ? { query: 'image' } : { choice: 'silent', reason: 'fixture' }),
+      } }] } }] }
+    },
+  })
+  try {
+    await host.start()
+    const text = '一条普通聊天'
+    await accept({ kind: 'message', message: { version: 1, conversation: target, sender, messageId: 'incoming-1',
+      occurredAt: now, text, parts: [{ kind: 'text', text }], mentions: [], directedToAccount: false } })
+    await waitFor(async () => JSON.parse(await reader.get(prefix + simulationSessionKey(key)) ?? 'null')?.recent.length === 1,
+      'group has ordinary chat for an idle wake')
+    now += 2 * 60 * 60_000
+    await host.runtime.sweepOnce()
+    await waitFor(() => context, 'configured autonomous tool starts')
+    assert.equal(context.actor.kind, 'autonomous')
+    section.autonomousTools = []
+    await waitFor(() => context.signal.aborted, 'revoked autonomous permission aborts the tool')
+    assert.equal(context.isCurrent(), false)
+    await assert.rejects(context.sendImage(image), /失效/u)
+    release.resolve({ status: 'succeeded', content: 'revoked-autonomous-result' })
+    await host.runtime.drain()
+    assert.equal(sends.length, 0)
+    assert.ok(!JSON.stringify(requests).includes('revoked-autonomous-result'))
+  } finally { release.resolve({ status: 'failed', content: '' }); await host.stop() }
 })
 
 test('Core attachment tools read visible QQ and quoted images without vision, then stop on binding changes', {

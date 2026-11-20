@@ -1,5 +1,7 @@
 # Message Pipeline Architecture
 
+This document describes the **Yunzai plugin pipeline** and its `ytbot:message_pipeline:` jobs. The standalone Core uses a separate inbox and ledgers; its configuration is documented in [Agent bindings](agent-bindings.md). Current delivery and verification status is maintained in [Project status](../project-status.md).
+
 ## Purpose
 
 This pipeline owns message capture, recent context, NDJSON archives, media relay jobs, and OneBot delivery. It exists outside the Yunzai app dispatcher because the dispatcher can reject duplicate-looking messages before any app plugin runs. In particular, its duplicate key does not contain `group_id`, so the same user forwarding the same card to two groups can otherwise lose one event.
@@ -8,7 +10,7 @@ This pipeline owns message capture, recent context, NDJSON archives, media relay
 
 1. The same Bilibili or Douyin share sent to two groups creates two independent delivery jobs.
 2. A slow download in one group does not block capture or delivery in another group.
-3. A retry does not duplicate recent-context rows or NDJSON records.
+3. Reprocessing the same retained event uses consumer identity checks to avoid duplicate recent-context rows or NDJSON records; this is not a cross-system delivery guarantee.
 4. A media resource failure still produces a merged-forward information node when stable card data exists.
 5. A OneBot response is never marked `sent` without a valid `retcode=0` receipt.
 6. A transport exception with an unknown delivery outcome is not retried automatically, because doing so can duplicate a visible group message.
@@ -73,9 +75,11 @@ Each event stores independent `recent`, `archive`, `media`, and `emoji` consumer
 Delivery jobs:
 
 ```text
-pending -> processing -> sent
+pending -> processing -> sending -> sent
                     \-> retry_wait -> processing
                     \-> failed
+                    \-> uncertain
+sending -- interrupted or receipt not persisted --> uncertain
 ```
 
 Jobs record attempts, retry time, lease owner, lease expiry, last error, OneBot retcode, uncertainty, and the final receipt. Locks use Redis compare-and-delete and compare-and-expire scripts. Recovery waits for an unexpired lease instead of stealing it from a live or hot-reloaded worker.
@@ -83,9 +87,22 @@ Jobs record attempts, retry time, lease owner, lease expiry, last error, OneBot 
 ## Delivery Semantics
 
 - Returned non-zero OneBot retcodes are known failures and may retry up to the configured limit.
-- A thrown transport error or malformed/missing receipt has an unknown outcome. It becomes `failed` with `uncertain=true` and is not retried automatically.
-- A confirmed `retcode=0` is persisted as `sent`; subsequent duplicate events reuse that state and do not send again.
-- OneBot does not expose a general idempotency token. Therefore a process crash after OneBot accepted a message but before Redis persisted the receipt cannot be made strictly exactly-once. The pipeline minimizes this boundary and chooses no automatic retry whenever the outcome is uncertain.
+- A failure only retries when it is marked retryable, is not uncertain, and has remaining attempts. These are the plugin gateway's rules, not a retry contract for every Core tool or platform operation.
+- A thrown transport error or malformed/missing `retcode` receipt has an unknown outcome. The media job becomes `uncertain` and is not retried automatically.
+- The legacy plugin gateway accepts `retcode=0` and persists `sent`; it does not reject that receipt solely because a message ID is missing. Duplicate events reuse the stored state while the record is retained. A `sent` job alone therefore does not prove the acceptance gate below, which also requires a platform message ID and a visible message.
+- An interrupted `sending` job, or a confirmed send whose receipt could not be persisted, becomes `uncertain` on handling/recovery. It does not resume sending automatically.
+
+## Reliability Boundary
+
+The pipeline provides retained job identity, idempotent storage consumers, bounded retries for known failures, and restart recovery for persisted, unexpired work that is safe to continue. It does **not** guarantee strict cross-system exactly-once delivery or end-to-end zero message loss.
+
+- **Before persistence:** raw capture schedules Redis persistence asynchronously. A process failure before that write completes, or a failed initial write, can leave no durable event to recover. The initial capture failure is logged; this entry point does not replay it automatically.
+- **Retention:** `messagePipeline.eventTtlMinutes` defaults to 360 minutes and `deliveryTtlHours` to 24 hours. `RedisJobStore.create/save` applies these TTLs to unfinished as well as terminal jobs. Work can expire during downtime; recovery scans only records that still exist. Expired records also stop providing deduplication history.
+- **Platform side effects:** OneBot has no general idempotency token and cannot atomically commit a send with Redis. A crash after saving `sending` can happen before the platform accepts the message or after it accepts it but before the receipt is stored. Recovery cannot distinguish the two, so it preserves uncertainty and stops automatic resending; delivery may remain incomplete.
+- **Durability:** recovery depends on Redis retaining the data. Process restart checks do not prove survival of Redis data loss or a power failure.
+- **Standalone Core:** it has separate storage and operation-specific retention rules, so the plugin TTLs above do not describe Core. Its OneBot adapter also has a 256-event receive backlog before durable admission; when full it rejects new events and emits `event_not_queued`. A durable inbox cannot recover an event that never reached it. Core's unknown receipts likewise do not establish exactly-once delivery.
+
+Implementation anchors: `src/modules/messaging/infrastructure/redisJobStore.ts`, `messagePipeline.ts`, `mediaOutbox.ts`, and `src/adapters/oneBotConnection.ts`.
 
 ## Ordering And Concurrency
 
@@ -105,8 +122,9 @@ Jobs record attempts, retry time, lease owner, lease expiry, last error, OneBot 
 | Recent Redis read fails | Retry; never overwrite history with an empty array |
 | NDJSON retry | Identity index prevents duplicate append |
 | Known OneBot retcode failure | Retry with backoff, then retain `failed` state |
-| Unknown OneBot outcome | Retain `failed + uncertain`; do not auto-retry |
-| Restart or hot reload | Recover pending work after its lease is available |
+| Unknown OneBot outcome or interrupted `sending` | Retain `uncertain`; do not auto-retry |
+| Restart or hot reload | Recover persisted, unexpired, safe-to-continue work after its lease is available |
+| Unfinished job expires | No job remains for recovery; the configured TTL also bounds deduplication history |
 
 ## Operations
 

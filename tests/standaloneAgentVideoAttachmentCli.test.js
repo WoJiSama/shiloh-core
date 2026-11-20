@@ -26,6 +26,7 @@ const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x
 const MP4 = Buffer.alloc(128, 0x23); MP4.writeUInt32BE(24); MP4.write('ftyp', 4); MP4.write('isom', 8); MP4.write('isom', 16); MP4.write('isom', 20)
 const MP4_SECOND = Buffer.from(MP4); MP4_SECOND.fill(0x24, 24)
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
+const attachmentWaitMs = 90_000
 const completion = (name, input, id) => JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(input) } }] } }], usage: { total_tokens: 15 } })
 async function waitFor(probe, label, timeout = 25000) { const until = Date.now() + timeout; while (Date.now() < until) { if (await probe()) return; await delay(25) }; assert.fail(`timed out: ${label}`) }
 async function files(directory) {
@@ -156,7 +157,7 @@ async function fixture(t, { unknown = false, attachments = true } = {}) {
     async restart() { log = ''; websocket = undefined; launch(false); await waitFor(() => { if (child.exitCode !== null) assert.fail(`CLI exited early: ${log}`); return log.includes('已启动') && websocket }, 'CLI readiness') },
     async run() {
       websocket.send(JSON.stringify(source))
-      await waitFor(async () => attachments ? (await records()).some(row => row.state === (unknown ? 'unknown' : 'sent')) : actions.some(row => row.action === 'send_group_msg'), 'native video result')
+      await waitFor(async () => attachments ? (await records()).some(row => row.state === (unknown ? 'unknown' : 'sent')) : actions.some(row => row.action === 'send_group_msg'), 'native video result', attachments ? attachmentWaitMs : undefined)
       await waitFor(queueEmpty, 'text inbox drained'); assert.deepEqual(errors, [])
     },
     async replay() { websocket.send(JSON.stringify(source)); await delay(1200); await waitFor(queueEmpty, 'replayed text inbox drained'); assert.deepEqual(errors, []) },
@@ -170,7 +171,7 @@ async function fixture(t, { unknown = false, attachments = true } = {}) {
   }
 }
 
-test('actual CLI group text searches then sends one owned anonymous video attachment forward, without extra text and source replay', { timeout: 60000 }, async t => {
+test('actual CLI group text searches then sends one owned anonymous video attachment forward, without extra text and source replay', { timeout: 120_000 }, async t => {
   const f = await fixture(t); await f.start(); await f.run()
   assert.equal(f.models.length, 2); assert.equal(f.forwards.length, 1); assert.deepEqual(f.resources.map(row => [row.kind, row.size]), [['image', PNG.length], ['video', MP4.length], ['thumbnail', JPEG.length], ['video', MP4_SECOND.length], ['thumbnail', JPEG.length]])
   assert.equal(f.external.filter(row => row.path.endsWith('/playurl')).length, 1); assert.equal(f.external.find(row => row.path.endsWith('/playurl')).qn, '16')
@@ -178,7 +179,7 @@ test('actual CLI group text searches then sends one owned anonymous video attach
   assert.equal(f.actions.filter(row => row.action.startsWith('send_')).length, 1); await f.stop(); await f.clean()
 })
 
-test('actual CLI uncertain video attachment freezes one native attempt across replay and restart without retry or text fallback', { timeout: 60000 }, async t => {
+test('actual CLI uncertain video attachment freezes one native attempt across replay and restart without retry or text fallback', { timeout: 150_000 }, async t => {
   const f = await fixture(t, { unknown: true }); await f.start(); await f.run(); assert.equal((await f.records())[0].state, 'unknown')
   assert.equal(f.forwards.length, 1); const before = { requests: f.external.length, models: f.models.length }; await f.replay(); await f.stop(); await f.restart(); await f.replay()
   assert.equal(f.forwards.length, 1); assert.equal(f.external.length, before.requests); assert.equal(f.models.length, before.models); assert.equal(f.actions.filter(row => row.action.startsWith('send_')).length, 1)

@@ -24,7 +24,7 @@ if (process.env.BL_CHAT_AGENT_SOURCE_TEST === '1') {
 }
 const { createAgentBilibiliRelayProvider } = await import(providerUrl)
 const { parseAgentBilibiliReference, validateAgentMediaShare } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentBilibiliRelayReference.js')).href)
-const { nativeAgentBilibiliRequest } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentBilibiliRelayHttp.js')).href)
+const { bilibiliGuard, nativeAgentBilibiliRequest } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentBilibiliRelayHttp.js')).href)
 const { createAgentMediaArtifactStore } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentMediaArtifactStore.js')).href)
 const MiB = 1024 * 1024
 const BV = 'BV1H7Gq6zEiC', EP = '1455179'
@@ -45,7 +45,7 @@ function view(overrides = {}) {
     owner: { name: '示例UP', mid: 12345 }, pubdate: 1784304716, stat: { view: 12034, like: 567, coin: 89, favorite: 321, share: 45, reply: 67, danmaku: 88 },
     pages: [{ page: 1, cid: 11, part: 'P1', duration: 60 }], pic: '', ...overrides } }
 }
-function play(overrides = {}) { return { code: 0, data: { quality: 6, support_formats: [{ quality: 6, new_description: '240P' }], durl: [{ url: 'https://cn-test.bilivideo.com/video.mp4?token=upstream-private', length: 60000, size: 64 }], ...overrides } } }
+function play(overrides = {}) { return { code: 0, data: { quality: 6, support_formats: [{ quality: 6, new_description: '240P' }], durl: [{ url: 'https://cn-test.bilivideo.com/video.mp4?token=upstream-private&buvid3=BUVID_PRIVATE_3', length: 60000, size: 64, backup_url: ['https://cn-test.bilivideo.com/backup.mp4?token=upstream-private&buvid4=BUVID_PRIVATE_4'] }], ...overrides } } }
 async function files(directory) { const output = []; for (const name of await readdir(directory)) { const file = path.join(directory, name), info = await stat(file); if (info.isDirectory()) output.push(...await files(file)); else output.push(file) } return output }
 async function bounded(promise, ms = 2000) { let timer; try { return await Promise.race([promise, new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error('fixture operation hung')), ms) })]) } finally { clearTimeout(timer) } }
 async function rejected(operation) { await bounded(assert.rejects(operation, error => { assert.equal(error.message, 'B站媒体获取失败：来源、权限、网络或内容不符合要求'); return true })) }
@@ -138,6 +138,17 @@ test('ordinary automatic relay uses anonymous fingerprint cookies and never the 
   assert.equal(f.requests.find(request => request.url.includes('bilivideo.com')).policy.headers.Cookie, undefined)
 })
 
+test('PCDN primary durl with port falls back to official backup instead of failing the relay', async t => {
+  const body = mp4(72, 9)
+  const f = await fixture(t, { play: { durl: [{ url: 'https://edge.mountaintoys.cn:4483/upgcxcode/pcdn.mp4?buvid3=BUVID_PRIVATE_3', length: 60000, size: 72,
+      backup_url: ['https://upos-sz-estgcos.bilivideo.com/official.mp4?token=upstream-private&buvid4=BUVID_PRIVATE_4'] }] },
+    respond: async url => url.hostname === 'edge.mountaintoys.cn' ? assert.fail('non-whitelisted host must never be requested') : url.pathname === '/official.mp4' ? response(body, 'video/mp4') : undefined })
+  const result = await f.prepare(); assert.equal(result.status, 'ready')
+  assert.deepEqual(await f.read(result.plan.items[1].parts[0].artifact), body)
+  assert.ok(f.events.some(event => event.operation === 'bilibili_provider_download' && event.code === 'video_candidate_failed'))
+  await result.release(); await f.clean()
+})
+
 test('a 24-hour SPI refresh can repeat only its learned device tokens while metadata still rejects them', async t => {
   const original = Date.now; let clock = original()
   Date.now = () => clock
@@ -159,6 +170,62 @@ test('SPI may never receive a configured host or account secret as its device cr
     const result = await f.prepare(); assert.equal(result.status, 'ready')
     assert.ok(f.requests.every(request => request.policy.headers.Cookie === undefined))
     assert.equal(JSON.stringify(result).includes(value), false)
+  })
+})
+
+test('a card renderer replaces the intro with one card image and falls back on failure', async t => {
+  const card = Buffer.from('CARD-IMAGE-BYTES-PRIVATE')
+  const rendered = []
+  await t.test('successful render swaps text+cover for title text plus the card artifact', async t => {
+    const f = await fixture(t, { options: { cardRenderer: { render: async (view, context) => {
+      try {
+      rendered.push({ view, current: context.isCurrent() })
+      assert.ok(view.title && view.owner && view.pageUrl)
+      assert.ok(view.stats && view.stats['播放'])
+      } catch (e) { console.error('DBG-RENDER-ASSERT', e.message, JSON.stringify(view).slice(0, 300)) }
+      return { mime: 'image/png', base64: card.toString('base64') }
+    } } } })
+    const result = await f.prepare(); assert.equal(result.status, 'ready')
+    const intro = result.plan.items[0]
+    assert.deepEqual(intro.parts.map(part => part.kind), ['text', 'image'])
+    assert.match(intro.parts[0].text, /《示例视频》\nhttps:\/\/www\.bilibili\.com\/video\//u)
+    assert.equal(await f.read(intro.parts[1].artifact), card)
+    assert.equal(result.plan.items.slice(1).every(item => item.parts.every(part => part.kind === 'video')), true)
+    assert.ok(!f.events.some(event => event.code === 'card_unavailable'))
+    await result.release(); await f.clean()
+  })
+  await t.test('a failing render keeps the plain text and cover intro with one diagnostic', async t => {
+    const f = await fixture(t, { options: { cardRenderer: { render: async () => { throw Error('render down') } } } })
+    const result = await f.prepare(); assert.equal(result.status, 'ready')
+    assert.deepEqual(result.plan.items[0].parts.map(part => part.kind), ['text', 'image'])
+    assert.ok(result.plan.items[0].parts[0].text.includes('示例视频'))
+    assert.ok(f.events.some(event => event.operation === 'bilibili_provider_card' && event.code === 'card_unavailable'))
+    await result.release(); await f.clean()
+  })
+})
+
+test('SPI base64 b_4 tails are accepted while a rejected b_4 degrades to buvid3-only', async t => {
+  const b4 = '404E0020-4827-645B-6779-CEDB4921136910568-026111822-wPC5+TsSN7zkqT5Aufv7rA=='
+  await t.test('current b_4 format keeps the full device cookie without diagnostics', async t => {
+    const f = await fixture(t, { respond: async url => url.pathname.includes('finger/spi') ? response({ code: 0, data: { b_3: 'BUVID_PRIVATE_3', b_4: b4 } }) : undefined })
+    const result = await f.prepare(); assert.equal(result.status, 'ready')
+    assert.equal(f.requests.find(request => request.url.includes('web-interface/view')).policy.headers.Cookie, `buvid3=BUVID_PRIVATE_3; buvid4=${b4}`)
+    assert.ok(!f.events.some(event => event.operation === 'bilibili_provider_fingerprint'))
+    await result.release(); await f.clean()
+  })
+  await t.test('cookie-unsafe b_4 still parses with buvid3-only and one partial diagnostic', async t => {
+    const f = await fixture(t, { respond: async url => url.pathname.includes('finger/spi') ? response({ code: 0, data: { b_3: 'BUVID_PRIVATE_3', b_4: 'bad; injected=secret' } }) : undefined })
+    const result = await f.prepare(); assert.equal(result.status, 'ready')
+    assert.equal(f.requests.find(request => request.url.includes('web-interface/view')).policy.headers.Cookie, 'buvid3=BUVID_PRIVATE_3')
+    assert.deepEqual(f.events.filter(event => event.operation === 'bilibili_provider_fingerprint'), [{ stage: 'runtime', operation: 'bilibili_provider_fingerprint', outcome: 'failed', code: 'fingerprint_partial_fallback' }])
+    await result.release(); await f.clean()
+  })
+  await t.test('cookie-unsafe b_3 still drops the whole fingerprint anonymously', async t => {
+    const f = await fixture(t, { respond: async url => url.pathname.includes('finger/spi') ? response({ code: 0, data: { b_3: 'bad; injected=secret', b_4: 'BUVID_PRIVATE_4' } }) : undefined })
+    const result = await f.prepare(); assert.equal(result.status, 'ready')
+    assert.ok(f.requests.every(request => request.policy.headers.Cookie === undefined))
+    assert.ok(f.events.some(event => event.code === 'fingerprint_invalid_fallback'))
+    await result.release(); await f.clean()
   })
 })
 
@@ -264,6 +331,30 @@ test('actual streamed video overflow at 512 MiB and image overflow at 32 MiB cle
   await f.clean()
 })
 
+test('nested Bilibili requests share live monitoring and recheck at explicit checkpoints', async t => {
+  const entered = gate(), blocked = gate(), revoked = gate()
+  let checks = 0, allowed = true
+  const parent = bilibiliGuard(context({ async ensureCurrent() {
+    checks++
+    if (checks === 1) { entered.release(); await blocked.promise }
+    if (!allowed) throw new Error('revoked')
+  } }), 1_000)
+  const child = bilibiliGuard(parent.context, 1_000)
+  t.after(() => { blocked.release(); child.close(); parent.close() })
+  const checking = child.ensure()
+  await bounded(entered.promise)
+  await delay(60)
+  assert.equal(checks, 1)
+  blocked.release()
+  await checking
+  await child.ensure()
+  assert.ok(checks >= 2)
+  child.signal.addEventListener('abort', revoked.release, { once: true })
+  allowed = false
+  await bounded(revoked.promise)
+  assert.equal(parent.signal.aborted, true)
+})
+
 for (const cancellation of ['signal', 'current', 'ensure']) test(`${cancellation} cancellation interrupts a hanging real artifact stream and cleans partial bytes`, async t => {
   const reached = gate(), late = gate(), controller = new AbortController(); let current = true, permission = true
   const f = await fixture(t, { respond: async url => url.hostname.endsWith('.bilivideo.com') ? response((async function* () { yield mp4(MiB); reached.release(); await late.promise; yield Buffer.alloc(MiB) })(), 'video/mp4') : undefined })
@@ -297,10 +388,15 @@ test('DNS policy rejects every non-public family, mixed answer and family mismat
   })
 })
 
-test('official URL policy rejects hostile media, cover and every redirect before DNS/request', async t => {
+test('official URL policy never requests hostile media, cover or redirects before DNS/request', async t => {
   for (const hostile of ['http://127.0.0.1/x', 'https://cn-test.bilivideo.com.evil.test/x', 'https://user@cn-test.bilivideo.com/x',
     'https://cn-test.bilivideo.com:443/x', 'https://cn-test.bilivideo.com/a/../x', 'https://cn-test.bilivideo.com/%2e%2e/x']) await t.test(hostile, async t => {
-    const f = await fixture(t, { play: { durl: [{ url: hostile, size: 64 }] } }); await rejected(f.prepare()); assert.ok(!f.lookups.some(host => host.includes('evil') || host === '127.0.0.1')); await f.clean()
+    // Hostile durl candidates are skipped, never requested, and degrade to a metadata-only relay.
+    const f = await fixture(t, { play: { durl: [{ url: hostile, size: 64 }] } })
+    const result = await f.prepare(); assert.equal(result.status, 'metadata-only')
+    assert.ok(!f.lookups.some(host => host.includes('evil') || host === '127.0.0.1'))
+    assert.ok(f.requests.every(request => !request.url.includes('evil.test') && !request.url.includes('127.0.0.1')))
+    await result.release(); await f.clean()
   })
   const f = await fixture(t, { respond: async url => url.hostname === 'b23.tv' ? response('', '', { status: 302, headers: { location: 'https://private.evil.test/x' } }) : undefined })
   await rejected(f.prepare(share('short', 'safe'))); assert.deepEqual(f.lookups, ['b23.tv']); assert.equal(f.requests.length, 1)

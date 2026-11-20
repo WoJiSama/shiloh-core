@@ -1,0 +1,851 @@
+{
+  "schemaVersion": 2,
+  "id": "core-semantic-benchmark",
+  "revision": "2026-11-18-v2",
+  "clockAt": 1794960000000,
+  "profiles": {
+    "production": {
+      "topK": 5,
+      "minScore": 0.35,
+      "timeoutMs": 1000
+    },
+    "comparison": {
+      "topK": 10,
+      "minScore": 0,
+      "timeoutMs": 5000
+    }
+  },
+  "scopes": [
+    {
+      "id": "main",
+      "agentId": "daily",
+      "target": {
+        "account": {
+          "platform": "fixture",
+          "namespace": "evaluation",
+          "id": "account-a"
+        },
+        "kind": "group",
+        "id": "main"
+      },
+      "rows": [
+        {
+          "messageId": "meeting-old",
+          "authorId": "alice",
+          "name": "alice",
+          "text": "项目发布会议原定周一上午九点。",
+          "at": 1794959940000
+        },
+        {
+          "messageId": "meeting-new",
+          "authorId": "alice",
+          "name": "alice",
+          "text": "更正：项目发布会议改到周三下午两点，之前的周一安排取消。",
+          "at": 1794959970000
+        },
+        {
+          "messageId": "venue",
+          "authorId": "alice",
+          "name": "alice",
+          "text": "项目发布会议地点是松林会议室。",
+          "at": 1794959940000
+        },
+        {
+          "messageId": "budget",
+          "authorId": "alice",
+          "name": "alice",
+          "text": "项目预算上限为三千元。",
+          "at": 1794959940000
+        },
+        {
+          "messageId": "revoked",
+          "authorId": "alice",
+          "name": "alice",
+          "text": "已撤销的暗号是雪山青鸟。",
+          "at": 1794959940000,
+          "revoked": true
+        },
+        {
+          "messageId": "recalled",
+          "authorId": "alice",
+          "name": "alice",
+          "text": "已撤回的密码是蓝色石桥。",
+          "at": 1794959940000,
+          "recalled": true
+        },
+        {
+          "messageId": "forgotten",
+          "authorId": "alice",
+          "name": "alice",
+          "text": "已遗忘的住址是月光小路九号。",
+          "at": 1794959940000,
+          "forgotten": true
+        }
+      ]
+    },
+    {
+      "id": "other-group",
+      "agentId": "daily",
+      "target": {
+        "account": {
+          "platform": "fixture",
+          "namespace": "evaluation",
+          "id": "account-a"
+        },
+        "kind": "group",
+        "id": "other"
+      },
+      "rows": [
+        {
+          "messageId": "foreign",
+          "authorId": "alice",
+          "name": "alice",
+          "text": "别的群的保险柜号码是三七九。",
+          "at": 1794959940000
+        }
+      ]
+    },
+    {
+      "id": "other-account",
+      "agentId": "daily",
+      "target": {
+        "account": {
+          "platform": "fixture",
+          "namespace": "evaluation",
+          "id": "account-b"
+        },
+        "kind": "group",
+        "id": "main"
+      },
+      "rows": [
+        {
+          "messageId": "foreign-account",
+          "authorId": "alice",
+          "name": "alice",
+          "text": "另一账号的保险柜号码是四八六。",
+          "at": 1794959940000
+        }
+      ]
+    },
+    {
+      "id": "private",
+      "agentId": "daily",
+      "target": {
+        "account": {
+          "platform": "fixture",
+          "namespace": "evaluation",
+          "id": "account-a"
+        },
+        "kind": "private",
+        "id": "private-alice"
+      },
+      "privatePeer": "alice",
+      "rows": [
+        {
+          "messageId": "private-self",
+          "authorId": "alice",
+          "name": "alice",
+          "text": "我私聊中确认的偏好是桂花茶。",
+          "at": 1794959940000
+        }
+      ]
+    },
+    {
+      "id": "private-other",
+      "agentId": "daily",
+      "target": {
+        "account": {
+          "platform": "fixture",
+          "namespace": "evaluation",
+          "id": "account-a"
+        },
+        "kind": "private",
+        "id": "private-charlie"
+      },
+      "privatePeer": "charlie",
+      "rows": [
+        {
+          "messageId": "third-party",
+          "authorId": "charlie",
+          "name": "charlie",
+          "text": "第三人的私聊密码是银色月轮。",
+          "at": 1794959940000
+        }
+      ]
+    },
+    {
+      "id": "empty",
+      "agentId": "daily",
+      "target": {
+        "account": {
+          "platform": "fixture",
+          "namespace": "evaluation",
+          "id": "account-a"
+        },
+        "kind": "group",
+        "id": "empty"
+      },
+      "rows": []
+    },
+    {
+      "id": "optout",
+      "agentId": "daily",
+      "target": {
+        "account": {
+          "platform": "fixture",
+          "namespace": "evaluation",
+          "id": "account-a"
+        },
+        "kind": "group",
+        "id": "optout"
+      },
+      "rows": [
+        {
+          "messageId": "disabled",
+          "authorId": "bob",
+          "name": "bob",
+          "text": "停用人物的私密标记是紫色风车。",
+          "at": 1794959940000,
+          "disabled": true
+        }
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "id": "meeting-correction",
+      "scope": "main",
+      "query": "项目发布会议改到什么时候？",
+      "relevant": [
+        {
+          "scope": "main",
+          "messageId": "meeting-new"
+        }
+      ],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "tags": [
+        "correction",
+        "time"
+      ]
+    },
+    {
+      "id": "meeting-multiple-evidence",
+      "scope": "main",
+      "query": "项目发布会议的最新时间和地点分别是什么？",
+      "relevant": [
+        {
+          "scope": "main",
+          "messageId": "meeting-new"
+        },
+        {
+          "scope": "main",
+          "messageId": "venue"
+        }
+      ],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "tags": [
+        "multi-evidence"
+      ]
+    },
+    {
+      "id": "budget",
+      "scope": "main",
+      "query": "项目预算上限是多少？",
+      "relevant": [
+        {
+          "scope": "main",
+          "messageId": "budget"
+        }
+      ],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ]
+    },
+    {
+      "id": "no-answer-empty",
+      "scope": "empty",
+      "query": "火星基地的值班医生是谁？",
+      "relevant": [],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "tags": [
+        "no-answer"
+      ]
+    },
+    {
+      "id": "no-answer-unrelated",
+      "scope": "main",
+      "query": "深海潜艇的发动机型号是什么？",
+      "relevant": [],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "tags": [
+        "no-answer"
+      ]
+    },
+    {
+      "id": "revoked-source",
+      "scope": "main",
+      "query": "雪山青鸟暗号是什么？",
+      "relevant": [],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "tags": [
+        "revoked",
+        "no-answer"
+      ]
+    },
+    {
+      "id": "recalled-source",
+      "scope": "main",
+      "query": "蓝色石桥密码是什么？",
+      "relevant": [],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "tags": [
+        "recalled",
+        "no-answer"
+      ]
+    },
+    {
+      "id": "forgotten-source",
+      "scope": "main",
+      "query": "月光小路住址是什么？",
+      "relevant": [],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "tags": [
+        "forgotten",
+        "no-answer"
+      ]
+    },
+    {
+      "id": "disabled-person",
+      "scope": "optout",
+      "query": "紫色风车标记是什么？",
+      "relevant": [],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "tags": [
+        "opt-out",
+        "no-answer"
+      ]
+    },
+    {
+      "id": "group-isolation",
+      "scope": "main",
+      "query": "别的群的保险柜号码是多少？",
+      "relevant": [],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "tags": [
+        "scope-isolation",
+        "no-answer"
+      ]
+    },
+    {
+      "id": "account-isolation",
+      "scope": "main",
+      "query": "另一账号的保险柜号码是多少？",
+      "relevant": [],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "tags": [
+        "account-isolation",
+        "no-answer"
+      ]
+    },
+    {
+      "id": "private-self",
+      "scope": "private",
+      "query": "我的私聊偏好是什么？",
+      "relevant": [
+        {
+          "scope": "private",
+          "messageId": "private-self"
+        }
+      ],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "tags": [
+        "private-self"
+      ]
+    },
+    {
+      "id": "private-authorized-self-history",
+      "scope": "private",
+      "query": "我的项目预算上限是多少？",
+      "relevant": [
+        {
+          "scope": "main",
+          "messageId": "budget"
+        }
+      ],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "allowPrivateScopes": [
+        "main"
+      ],
+      "querySource": {
+        "messageId": "query-private-1",
+        "authorId": "alice",
+        "at": 1794960000000
+      },
+      "tags": [
+        "private-cross-scene-self"
+      ]
+    },
+    {
+      "id": "private-third-party",
+      "scope": "private",
+      "query": "第三人的私聊密码是什么？",
+      "relevant": [],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        }
+      ],
+      "tags": [
+        "private-third-party",
+        "no-answer"
+      ]
+    },
+    {
+      "id": "excluded-current-message",
+      "scope": "private",
+      "query": "我的私聊偏好是什么？",
+      "relevant": [],
+      "forbidden": [
+        {
+          "scope": "main",
+          "messageId": "revoked"
+        },
+        {
+          "scope": "main",
+          "messageId": "recalled"
+        },
+        {
+          "scope": "main",
+          "messageId": "forgotten"
+        },
+        {
+          "scope": "optout",
+          "messageId": "disabled"
+        },
+        {
+          "scope": "other-group",
+          "messageId": "foreign"
+        },
+        {
+          "scope": "other-account",
+          "messageId": "foreign-account"
+        },
+        {
+          "scope": "private-other",
+          "messageId": "third-party"
+        },
+        {
+          "scope": "private",
+          "messageId": "private-self"
+        }
+      ],
+      "excludeMessageIds": [
+        "private-self"
+      ],
+      "tags": [
+        "excluded-source",
+        "no-answer"
+      ]
+    }
+  ]
+}

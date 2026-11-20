@@ -1,10 +1,12 @@
 # shiloh-plugin
 
-> 基于 TRSS-Yunzai + NapCat 的 QQ 群聊 LLM Agent 平台
+> 支持独立 Core 与 TRSS-Yunzai 插件入口的 QQ 群聊 LLM Agent 平台
 
 TRSS-Yunzai · OneBot v11（NapCat）· Node.js ≥ 22.12 · TypeScript 严格模式 · MIT
 
-shiloh-plugin 不只是一个"能回话的聊天插件"。它把一个大模型 Agent 需要的对话编排、多层记忆、函数调用工具、消息可靠投递、群自动化管理和运营观测做成了一个完整平台，并在 23 个群、周消息 3.4 万条、峰值日 6,500+ 条的真实环境里持续运行。
+shiloh-plugin 提供对话编排、多层记忆、函数调用工具、持久消息任务、群管理和运营观测。项目保留 TRSS-Yunzai 插件入口，并提供独立 Core 与 QQ 宿主。插件阶段曾记录 23 个群、周消息 3.4 万条、峰值日 6,500+ 条；这些是历史运行规模，不代表当前 Core 的接续与验收范围。
+
+当前实现、部署快照、验证结果和剩余事项统一见[项目当前状态](docs/project-status.md)。以下功能按宿主及显式配置提供；插件入口的安装方式见“快速开始”，独立部署见[独立 QQ 宿主](docs/architecture/agent-bindings.md#独立-qq-宿主)。
 
 本项目基于上游 shiloh-plugin（作者 Cat-bl）深度二次开发：业务代码已 100% 迁移到 TypeScript 严格模式并按领域分层重写，消息管道、语义记忆、Agent 调度、群管系统、控制台均为本仓库重新实现。与上游的关系见文末[致谢](#致谢与上游)。
 
@@ -30,18 +32,22 @@ shiloh-plugin 不只是一个"能回话的聊天插件"。它把一个大模型 
 ### 2. 人物连续、场景有界的记忆体系
 
 - **人物记忆**：同一机器人和人格通过稳定账号认识同一个人；人物索引与事实详情分开存储，每条记录保留原始消息、作者、场景、时间、证据类型和可跨场景范围。AI 负责提炼与分类，宿主校验真实来源并执行访问边界。群事实、群关系和具体经历继续保留场景。
-- **语义记忆（RAG）**：直接在自己产出的群聊归档上建索引——按群滑窗分块，BM25（CJK bigram）与向量检索双路召回，RRF 融合后再用交叉编码器重排。实测 recall@10 达 94%，P50 检索延迟 386ms，且检索超时自动跳过、绝不阻塞回复。配套专属后台页：量化总览、检索游乐场、分块浏览器、评估历史。
+- **语义记忆（RAG）**：结合 BM25 与向量检索、RRF 融合和可选重排。独立 Core 按有来源的原消息保存语料，在授权范围内召回；旧插件继续使用群聊归档滑窗。检索设置有界时限。质量使用[固定数据集的 Core 离线评估](docs/evals/semantic-retrieval.md)，同时检查检索结果与最终上下文；旧插件自出题评估的数字不能代表当前 Core。
 - **中期记忆与画像**：会话摘要缓冲、情绪状态、人物画像自动注入上下文，让"上周聊过的那个游戏"和每个人的说话风格都能被想起。
 
-### 3. 恰好一次的消息管道
+### 3. 持久任务、幂等消费与有界恢复
 
-QQ 事件处理内嵌了一套微型事件处理系统：Redis 任务存储（事件 / 投递两类 job）+ 按会话串行队列 + 租约锁防多实例并发 + 指数退避重试 + 启动恢复 + 媒体 outbox。进程重启不丢消息、不重复搬运；媒体发送失败可可靠重试。全量消息按群按天 NDJSON 归档，撤回事件幂等回写 `recalled` 标记，本地仍可查。
+Yunzai 插件管道使用 Redis 事件/投递任务、按会话串行队列、租约锁及媒体 outbox。已持久化、未过期且可安全继续的任务在重启后恢复；只有标记为可重试且结果明确的失败才按上限退避重试。传输结果未知、发送中断或发送成功但回执未落盘时，保留待核实状态并停止自动重发。原消息可按群按天归档为 NDJSON，撤回事件幂等回写 `recalled` 标记。
+
+这套机制不提供跨系统 exactly-once 或端到端零丢失保证：落盘前故障、任务过期以及平台发送与本地回执之间的窗口仍存在。插件任务默认事件保留 6 小时、投递保留 24 小时，未完成任务也会到期；独立 Core 使用自己的 inbox 和账本，不能套用插件 TTL。具体范围见[消息管道的可靠性边界](docs/architecture/message-pipeline.md#reliability-boundary)。
 
 ### 4. 40 个函数调用工具 + MCP 扩展
 
 生图 / 修图 / 识图、联网搜索、网页解析、视频分析、音乐 / 视频 / Pixiv / Bing 图片搜索、思维导图、文本转图、Excel 工作簿、语音合成、提醒、聊天记录查询，以及禁言、戳一戳、点赞、@成员、送礼物等群互动工具。长任务工具可加 `(dedupe)` 防止重复触发。
 
 支持标准 MCP（Model Context Protocol）：在 `config/mcp-servers.yaml` 声明 stdio / SSE 服务器，外部工具自动注入主模型，带自动重连与结果截断。
+
+独立 Core 在执行前校验工具的 JSON Schema，并根据本次动作核对真人请求、来源和会话端口。群文字、私聊、自主和延期继续使用各自已开放的工具。文件和历史等临时资料只供当前回合使用。接入宿主扩展见[工具注册与接入说明](docs/architecture/agent-bindings.md)。
 
 ### 5. 海豹（SealDice）兼容骰娘
 
@@ -65,9 +71,9 @@ COC7 / DND 全套指令（`.r` `.ra` `.st` `.pc` `.sc` `.ri` `.log` 等约 85 �
 
 ### 10. 工程质量
 
-- 业务代码 100% TypeScript 严格模式（`noUncheckedIndexedAccess` / `exactOptionalPropertyTypes`），src 下 491 个 TS 文件按 domain / application / infrastructure 分层。
+- 业务代码使用 TypeScript 严格模式（`noUncheckedIndexedAccess` / `exactOptionalPropertyTypes`），按 domain / application / infrastructure 分层。
 - `npm run test:boundaries` 用 AST 强制分层边界：纯路径禁止 IO、禁止引用 `Bot` / `redis` / `global` 等全局。
-- 后端 1800+ 项、前端 30+ 项单测全绿；类型负例、发布产物加载合约、影子机器人 E2E（注入假 OneBot 客户端跑全链路，不污染真实群）。
+- 后端与前端测试包含类型负例、发布产物加载合约、影子机器人 E2E（注入假 OneBot 客户端跑全链路）；最新批次结果及失败、跳过和待验收范围见[项目当前状态](docs/project-status.md#已有验证及其范围)。
 - 发布包带逐文件哈希 manifest，支持校验、原子安装与自动回滚。
 
 ## 功能总览
@@ -270,7 +276,7 @@ oneapi_tools:
 
 ## Web 控制台
 
-控制台采用 Vue 3；插件使用独立 Koa 服务，独立 Agent 使用宿主内置的认证 HTTP 服务。安装、构建和环境变量详见 [console/README.md](console/README.md)：
+控制台采用 Vue 3；插件使用独立 Koa 服务，独立 Agent 使用宿主内置的认证 HTTP 服务。独立模式按[独立控制台配置](docs/architecture/agent-bindings.md#独立控制台)随 Agent 启动；以下命令用于插件模式，安装、构建和环境变量详见 [console/README.md](console/README.md)：
 
 ```bash
 npm --prefix console/frontend ci
@@ -278,7 +284,7 @@ npm --prefix console/frontend run build
 npm run console:start    # 默认 0.0.0.0:8787
 ```
 
-首次访问创建管理员账号（scrypt 密码哈希 + HttpOnly 会话）。独立 Agent 的工作区分为总览、机器人、连接、资源库、运行中心、系统；机器人详情按主页、会话、自我与记忆、行动、能力与边界组织。本人和人设模板分开，所有场景操作保留账号、连接和绑定版本；未接入的能力显示真实状态。插件模式继续使用原控制台入口。当前实施范围及待验收项见 [架构进度](docs/architecture/agent-bindings.md)。
+首次访问创建管理员账号（scrypt 密码哈希 + HttpOnly 会话）。独立 Agent 的工作区分为总览、机器人、连接、资源库、运行中心、系统；机器人详情按主页、会话、自我与记忆、行动、能力与边界组织。本人和人设模板分开，所有场景操作保留账号、连接和绑定版本；未接入的能力显示真实状态。插件模式继续使用原控制台入口。当前实施范围及待验收项见[项目当前状态](docs/project-status.md)，认证和配置操作见[控制台使用说明](console/README.md)。
 
 ## 独立功能插件
 

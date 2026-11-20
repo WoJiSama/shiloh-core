@@ -21,6 +21,11 @@ const context = overrides => ({ binding: { target: { account: { platform: 'fixtu
   actor: { kind: 'user', user: { platform: 'fixture', namespace: 'tests', id: 'person' } },
   signal: new AbortController().signal, isCurrent: () => true, async ensureCurrent() {}, ...overrides,
 })
+const bridgedContext = () => {
+  const selected = context({ request: { messageId: 'mcp-source', text: 'Run the MCP lookup', mentions: [] } })
+  return { ...selected, binding: { ...selected.binding, source: 'configured', id: 'mcp-binding', revision: 'one',
+    agentId: 'role', personaId: 'default', connectionId: 'mcp-fixture' } }
+}
 
 async function waitFor(probe, label, timeout = 2500) {
   const until = Date.now() + timeout
@@ -70,6 +75,8 @@ test('real stdio MCP tools remain custom, preserve aliases, filter lists and nev
 
 test('original remote JSON schema enforces range, pattern, enum, arrays and nested additionalProperties before dispatch', { timeout: 8000 }, async t => {
   const f = await stdioFixture(t), tool = f.get('lookup')
+  assert.deepEqual(tool.effect, { actor: 'user' })
+  assert.equal(tool.inputSchema.properties.count.type, 'integer')
   for (const change of [
     value => { value.count = 0 }, value => { value.count = 4 }, value => { value.count = 1.5 }, value => { delete value.count },
     value => { value.mode = 'unsupported' }, value => { value.nested.code = 'lowercase' },
@@ -86,14 +93,20 @@ test('original remote JSON schema enforces range, pattern, enum, arrays and nest
   assert.equal(result.status, 'succeeded')
   assert.match(result.content, /structuredContent:.*accepted/u)
   assert.deepEqual((await f.calls('lookup')).map(call => call.input), [valid()])
-  const wrapped = createAgentTools(f.handle.registry, { signal: new AbortController().signal, context: () => context() })
-  const wrappedResult = await wrapped.getExtraTools(['mcp_server_lookup'])[0].execute(valid(), {})
+  const unverified = createAgentTools(f.handle.registry, { signal: new AbortController().signal, context: () => context() })
+  assert.equal((await unverified.getExtraTools(['mcp_server_lookup'])[0].execute(valid(), {})).status, 'error')
+  assert.equal((await f.calls('lookup')).length, 1)
+  const wrapped = createAgentTools(f.handle.registry, { signal: new AbortController().signal, context: bridgedContext })
+  const lookup = wrapped.getExtraTools(['mcp_server_lookup'])[0]
+  const wrappedResult = await lookup.execute(valid(), {})
   assert.equal(wrappedResult.status, 'success', `valid integer inputs must survive the host wrapper: ${JSON.stringify(wrappedResult)}`)
+  assert.match(await lookup.execute({ ...valid(), nested: { code: 'lowercase' } }, {}), /^error: .*Schema/u)
+  assert.equal((await f.calls('lookup')).length, 2)
 })
 
 test('tools/list_changed refreshes the live custom registry and invalidates captured old definitions', { timeout: 8000 }, async t => {
   const f = await stdioFixture(t), old = f.get('old_only'), staleLookup = f.get('lookup')
-  const wrapped = createAgentTools(f.handle.registry, { signal: new AbortController().signal, context: () => context() })
+  const wrapped = createAgentTools(f.handle.registry, { signal: new AbortController().signal, context: bridgedContext })
   const oldWrapped = wrapped.getExtraTools(['mcp_server_old_only'])[0]
   assert.ok(old)
   const pending = f.get('slow').execute({}, context())

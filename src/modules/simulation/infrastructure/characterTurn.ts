@@ -2,6 +2,7 @@ import type { CharacterState, CharacterMemory, CharacterGoal, CharacterDecision 
 import { AbstractTool, type ParameterSchema } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { isQqSimulationUserId } from '../domain/simConfig.js'
 import { createCharacterTools, type CharacterToolContext } from './characterTools.js'
+import { prepareSimulationToolInput } from './simulationToolInput.js'
 
 export const CHARACTER_TURN_CHOICES = ['chat', 'interest_only', 'silent', 'cannot', 'unauthorized', 'unwilling', 'deferred', 'schedule', 'wait', 'complete', 'abandon'] as const
 export type CharacterTurnChoice = typeof CHARACTER_TURN_CHOICES[number]
@@ -123,7 +124,10 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
         },
       }
     }
-    override normalizeParameters(params: unknown) { return object(params, TOP_FIELDS, '收尾参数') }
+    override normalizeParameters(params: unknown) {
+      const input = object(params, TOP_FIELDS, '收尾参数')
+      return typeof input.messages === 'string' ? { ...input, messages: [input.messages] } : input
+    }
     override validateParameters(params: Record<string, unknown>) {
       try { parse(params, memoryFields, goalFields, isUserId); return true }
       catch (error) { return error instanceof Error ? error.message : '收尾参数无效' }
@@ -144,7 +148,9 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
       })
       const apply = async (name: string, value: Record<string, unknown>) => {
         const tool = localTools.find(tool => tool.name === name)!
-        const result = await tool.execute(value, {})
+        const input = prepareSimulationToolInput(tool, value)
+        if (typeof input === 'string') throw new Error(input)
+        const result = await tool.execute(input, {})
         if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true) throw new Error(typeof result === 'string' ? result : '角色草稿校验失败')
       }
       for (const memory of input.memories) await apply('simCharacterMemory', { ...memory, action: 'remember' })

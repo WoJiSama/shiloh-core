@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentMusicTool, createAgentMusicProvider } from '../dist/backend/modules/media/infrastructure/agentMusicTool.js'
+import { createAgentTools } from '../dist/backend/modules/tools/infrastructure/agentTools.js'
 
 const HOST_SECRET = 'music-host-private-token-123456/+='
 const COOKIE_SECRET = 'music-explicit-cookie-key=='
@@ -32,6 +33,42 @@ test('music keeps original name and closed two-parameter schema, uses only scope
   assert.equal(f.sent[0].title, '歌曲标题'); assert.equal(f.sent[0].artist, '歌手')
   assert.match(f.sent[0].pageUrl, /song0\.html$/u); assert.match(f.sent[0].audioUrl, /ephemeral-only-play-key/u)
   assert.equal(f.requests[0].init.headers.Cookie, cookie)
+})
+
+test('registered music requires a verified human group request and scopes the effect before provider calls', async () => {
+  const f = fixture()
+  const presentPorts = []
+  let scope = f.context
+  const registry = createAgentTools({ builtIn: [{ ...f.tool, async execute(input, scoped) {
+    presentPorts.push(...['sendMusic', 'sendMessage', 'interact'].filter(name => name in scoped))
+    return f.tool.execute(input, scoped)
+  } }] }, { signal: f.controller.signal, context: () => scope })
+  const [registered] = registry.getExtraTools(['searchMusicTool'])
+  const input = { keyword: '晴天', isArtistOnly: false }
+  assert.match(await registered.execute({ ...input, isArtistOnly: 'false' }, {}), /^error: .*Schema/u)
+  for (const overrides of [
+    { actor: { kind: 'autonomous' } },
+    { actor: { kind: 'commitment' } },
+    { request: undefined },
+    { sendMusic: undefined },
+    { binding: { ...f.context.binding, target: { ...f.context.binding.target, kind: 'friend' } } },
+  ]) {
+    scope = { ...f.context, ...overrides }
+    const result = await registered.execute(input, {})
+    assert.equal(result.status, 'error')
+    assert.match(result.content, /真人请求和音乐投递权限/u)
+  }
+  assert.deepEqual(f.requests, [])
+  assert.deepEqual(f.sent, [])
+  assert.deepEqual(presentPorts, [])
+
+  scope = { ...f.context, sendMessage() {}, interact() {} }
+  const result = await registered.execute(input, {})
+  assert.equal(result.status, 'success')
+  assert.match(result.content, /confirmed-music-id/u)
+  assert.equal(f.requests.length, 2)
+  assert.equal(f.sent.length, 1)
+  assert.deepEqual(presentPorts, ['sendMusic'])
 })
 
 test('song requests select first and artist requests select randomly with actual pool size', async () => {

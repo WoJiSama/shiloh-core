@@ -5,7 +5,7 @@ import ts from 'typescript'
 import { root, digestFiles, filesUnder, run, verifyBackend } from './lib/build-support.mjs'
 
 const backend = path.join(root, 'dist/backend')
-const runtimeEntries = ['bootstrap/standaloneAgent.js', 'modules/platform/infrastructure/admin/backendArtifactGuard.js', 'modules/content/infrastructure/agentExcelWorker.js', 'modules/content/infrastructure/agentFileTextChild.js']
+const runtimeEntries = ['bootstrap/standaloneAgent.js', 'modules/platform/infrastructure/admin/backendArtifactGuard.js', 'modules/content/infrastructure/agentExcelWorker.js', 'modules/content/infrastructure/agentFileTextChild.js', 'modules/memory/infrastructure/agentSemanticEvaluation.js']
 const exports = {
   '.': 'core/index.js',
   './qq': 'adapters/oneBotConnection.js',
@@ -97,8 +97,8 @@ const [project, projectLock] = await Promise.all(['package.json', 'package-lock.
   .map(async name => JSON.parse(await fs.readFile(path.join(root, name), 'utf8'))))
 const packageJson = {
   name: 'bl-chat-agent', version: project.version, private: true, type: 'module', license: project.license, engines: project.engines,
-  scripts: { start: 'node scripts/start-agent.mjs' },
-  files: ['dist/backend', 'console/frontend/dist', 'scripts/start-agent.mjs', 'utils/backendArtifactGuard.js', 'release-manifest.json', 'npm-shrinkwrap.json'],
+  scripts: { start: 'node scripts/start-agent.mjs', 'eval:memory': 'node scripts/semantic-memory-eval.mjs' },
+  files: ['dist/backend', 'console/frontend/dist', 'console/README.md', 'docs', 'scripts/start-agent.mjs', 'scripts/semantic-memory-eval.mjs', 'scripts/examples/semantic-evaluation-backend.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json', 'utils/backendArtifactGuard.js', 'release-manifest.json', 'npm-shrinkwrap.json'],
   exports: Object.fromEntries(Object.entries(exports).map(([key, name]) => [key, {
     types: `./dist/backend/${name.replace(/\.js$/, '.d.ts')}`, import: `./dist/backend/${name}`,
   }])),
@@ -137,8 +137,15 @@ try {
   for (const name of frontendFiles) await copy(name, path.posix.join('console/frontend/dist', path.relative(frontendOutput, name)))
   const files = Object.fromEntries([...new Set([...runtimeFiles, ...declarations])].sort().map(file => [file, manifest.files[file]]))
   for (const name of Object.keys(files)) await copy(path.join(backend, name), `dist/backend/${name}`)
-  for (const name of ['scripts/start-agent.mjs', 'utils/backendArtifactGuard.js', 'LICENSE']) await copy(path.join(root, name), name)
-  await copy(path.join(root, 'docs/architecture/agent-bindings.md'), 'README.md')
+  for (const name of ['scripts/start-agent.mjs', 'scripts/semantic-memory-eval.mjs', 'scripts/examples/semantic-evaluation-backend.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json', 'utils/backendArtifactGuard.js', 'LICENSE']) await copy(path.join(root, name), name)
+  for (const name of ['docs/project-status.md', 'docs/architecture/agent-bindings.md', 'docs/architecture/agent-bindings-history.md',
+    'docs/architecture/message-pipeline.md', 'docs/evals/semantic-retrieval.md', 'console/README.md']) await copy(path.join(root, name), name)
+  const agentReadme = await fs.readFile(path.join(root, 'docs/architecture/agent-bindings.md'), 'utf8')
+  await fs.writeFile(path.join(output, 'README.md'), agentReadme
+    .replaceAll('](../project-status.md', '](docs/project-status.md')
+    .replaceAll('](agent-bindings-history.md', '](docs/architecture/agent-bindings-history.md')
+    .replaceAll('](../evals/semantic-retrieval.md', '](docs/evals/semantic-retrieval.md')
+    .replaceAll('](../../console/README.md', '](console/README.md'))
   await writeJson('package.json', packageJson)
   await copy(path.join(root, 'package-lock.json'), 'package-lock.json')
   run('npm', ['install', '--package-lock-only', '--omit=dev', '--ignore-scripts', '--offline', '--no-audit', '--no-fund', '--silent'], { cwd: output })

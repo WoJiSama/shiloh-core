@@ -21,12 +21,16 @@ interface Persona {
   name: string
   [key: string]: any
 }
-const props = defineProps<{ initial: LibraryView }>()
+const props = defineProps<{ initial: LibraryView; initialPersonaId?: string }>()
 const view = ref(clone(props.initial)),
   draft = ref(clone(props.initial.personas))
-const tab = ref('library'),
-  defaultsOpened = ref(false),
-  selectedId = ref(props.initial.personas[0]?.id || '')
+const tab = ref(props.initialPersonaId === 'default' ? 'default' : 'library'),
+  defaultsOpened = ref(props.initialPersonaId === 'default'),
+  selectedId = ref(
+    props.initial.personas.find((item) => item.id === props.initialPersonaId)?.id ||
+      props.initial.personas[0]?.id ||
+      ''
+  )
 const assignments = ref<StandaloneAssignmentView | null>(null)
 const agentDraft = ref<{ agentId: string; personaId: string }[]>([])
 const error = ref(''),

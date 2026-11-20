@@ -21,6 +21,7 @@ interface Pin { readonly name: string; readonly stat: BigIntStats }
 interface Root { readonly hostFile: string; readonly root: string; readonly pins: readonly Pin[] }
 interface Guard { readonly signal: AbortSignal; ensureCurrent(): void }
 const snapshots = new WeakMap<SourceSnapshot, Root>()
+const observations = new WeakMap<SourceSnapshot, { current?: SourceSnapshot }>()
 const maximum = 2 * 1024 * 1024
 const fail = (code: 'conflict' | 'unavailable' = 'conflict'): never => { throw new AgentConsoleError(code) }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
@@ -127,13 +128,21 @@ export function readStandaloneAgentSourceSnapshot(hostFile: string): SourceSnaps
   try { return lock.read() } finally { lock.release() }
 }
 export function isStandaloneAgentSourceSnapshotCurrent(snapshot: SourceSnapshot): boolean {
-  try { const root = snapshots.get(snapshot); return !!root && readRoot(root).revision === snapshot.revision } catch { return false }
+  try { return inspectStandaloneAgentSourceSnapshot(snapshot).revision === snapshot.revision } catch { return false }
+}
+/** Reuse a single fenced observation within one synchronous authorization decision. */
+export function withStandaloneAgentConfigObservation(loaded: SourceSnapshot, check: () => boolean): boolean {
+  if (observations.has(loaded)) return check()
+  observations.set(loaded, {})
+  try { return check() } finally { observations.delete(loaded) }
 }
 /** Observation only. Mutations must acquire the root lock and compare the entire read set. */
 export function inspectStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot): SourceSnapshot {
   const root = snapshots.get(snapshot)
   if (!root) return fail('unavailable')
-  return readRoot(root)
+  const observation = observations.get(snapshot)
+  if (!observation) return readRoot(root)
+  return observation.current ??= readRoot(root)
 }
 /** Runtime lock acquisition is bounded and abortable; an abandoned lock is never stolen. */
 export async function acquireStandaloneAgentConfigLock(snapshot: SourceSnapshot, guard: Guard): Promise<StandaloneAgentConfigLock> {

@@ -35,12 +35,13 @@ import { validateAgentAudioAttachment } from '../modules/media/infrastructure/ag
 import { createAgentMusicExtraction, type MusicExtractionProvider } from '../modules/media/infrastructure/agentMusicExtraction.js'
 import { isPersonMemoryRedacted } from '../modules/memory/domain/personMemory.js'
 import { validateAgentMusicCard } from '../modules/media/infrastructure/agentMusicCard.js'
-import type { AgentToolContext } from '../contracts/agentTool.js'
+import type { AgentTool, AgentToolContext } from '../contracts/agentTool.js'
 import type { AgentQqActionRunner, AgentQqActionGuard } from '../contracts/agentTool.js'
 import { createAgentQqActions, type AgentQqActionsConfig } from '../modules/runtime/infrastructure/agentQqActions.js'
 import { validateAgentRedPacketSnapshot } from '../modules/runtime/infrastructure/agentRedPacketValidation.js'
 import { defaultSimRuntimeConfig } from '../modules/simulation/domain/simConfig.js'
-import { resolveSimToolSurface } from '../modules/simulation/domain/toolPolicy.js'
+import { normalizeSimToolPolicy, resolveSimToolSurface } from '../modules/simulation/domain/toolPolicy.js'
+import { isAutonomousExtraToolAllowed } from '../modules/simulation/domain/executionActor.js'
 import { validateAgentMedia } from '../modules/media/infrastructure/agentMediaBytes.js'
 import { validateAgentFileUpload, normalizeFileDeliveryReceipt, agentFileUploadText } from '../modules/messaging/infrastructure/agentFileDelivery.js'
 import { readAgentPublicFile } from '../modules/tools/infrastructure/agentPublicWeb.js'
@@ -133,6 +134,8 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   /** Optional trusted directory for scoped management; never supplied by model or browser input. */
   managementBindings?: AgentManagementBindings
   isExecutionCurrent?(): boolean
+  /** Share the host configuration observation for one synchronous tool permission check. */
+  checkToolCurrent?(check: () => boolean): boolean
   signal?: AbortSignal
   allowsText?(text: string, direction: 'incoming' | 'outgoing'): boolean
   /** Host credentials, including newly refreshed values, cannot become model-selected tool inputs. */
@@ -250,6 +253,7 @@ const privacyCommandMaxAgeMs = textConversationSeconds * 1000
 const privacyCommandClockSkewMs = 60_000
 
 export function createAgentRuntime(options: AgentRuntimeOptions) {
+  const checkToolCurrent = options.checkToolCurrent ?? ((check: () => boolean) => check())
   const diagnostics = options.diagnostics ?? createAgentDiagnostics({ logger: options.logger, ...(options.now ? { now: options.now } : {}) })
   // All module loggers pass this metadata-only boundary; free-form upstream
   // log strings can include credentials or temporary source content.
@@ -1216,11 +1220,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     }
     return result
   }
-  const qqActionsCurrent = (binding: AgentBindingSnapshot) => isRunning() && options.isQqActionsCurrent?.() !== false &&
-    binding.target.kind === 'group' && conversationEnabled(binding.target) && allowsConversationAI(binding.target) &&
-    bindingIsCurrent(binding.target, agentBindingToken(binding)) && adapterFor(binding.target)?.isReady() === true
+  const qqActionsCurrent = (binding: AgentBindingSnapshot) => checkToolCurrent(() =>
+    isRunning() && options.isQqActionsCurrent?.() !== false && binding.target.kind === 'group' &&
+    conversationEnabled(binding.target) && allowsConversationAI(binding.target) &&
+    bindingIsCurrent(binding.target, agentBindingToken(binding)) && adapterFor(binding.target)?.isReady() === true)
   const qqActions = createAgentQqActions({
-    ...(options.qqActions ? { config: options.qqActions } : {}), storage, adapterFor, isCurrent: qqActionsCurrent,
+    ...(options.qqActions ? { config: options.qqActions } : {}), storage, adapterFor, isCurrent: qqActionsCurrent, checkCurrent: checkToolCurrent,
     authorize(name, binding, actor) {
       if (!qqActionsCurrent(binding) || actor.kind === 'commitment') return false
       const config = defaultSimRuntimeConfig(options.getSection())
@@ -1229,7 +1234,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
     async sourceAvailable(binding, source, guard) {
       const target = binding.target, adapter = adapterFor(target)
-      const current = () => guard.isCurrent() && !guard.signal.aborted && qqActionsCurrent(binding) && adapterFor(target) === adapter
+      const current = () => checkToolCurrent(() => guard.isCurrent() && !guard.signal.aborted && qqActionsCurrent(binding) && adapterFor(target) === adapter)
       try {
         if (!adapter?.readMessage || !current() || !isMessageId(source.messageId) || !isPlatformAccount(source.author) ||
             !samePlatformNamespace(source.author, target.account) || await inbox.isRecalled(target, source.messageId)) return false
@@ -1247,14 +1252,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     getQzoneLimits: () => defaultSimRuntimeConfig(options.getSection()).qzone,
     diagnostics, ...(options.now ? { now: options.now } : {}),
   })
-  const supportsQqAction = (target: ConversationAddress, name: string): boolean => {
+  const supportsQqAction = (target: ConversationAddress, name: string): boolean => checkToolCurrent(() => {
     const adapter = adapterFor(target), binding = bindingFor(target)?.binding
     if (!binding || !qqActionsCurrent(binding)) return false
     if (name === 'sendGiftTool') return options.qqActions?.gift?.enabled === true && !!adapter?.gift
     if (name === 'grabRedBagTool') return options.qqActions?.redPackets?.enabled === true && options.qqActions.redPackets.allowExplicit === true && !!adapter?.redPackets
     return name === 'qqZoneTool' ? options.qqActions?.qzone?.enabled === true && !!adapter?.qzone
       : name === 'simQzoneInteract' && options.getSection().qzone?.enabled === true && !!adapter?.qzone
-  }
+  })
   const deferredHostCurrent = () => isRunning() && options.isDeferredActionsCurrent?.() !== false
   const deferredMode = (target: ConversationAddress): 'simulation' | 'text' | 'private' | undefined => {
     if (!isRunning() || !conversationEnabled(target) || !adapterFor(target)?.isReady() || !bindingFor(target)) return undefined
@@ -1332,7 +1337,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       ...(options.deferredActions?.enabled === true && deferredHostCurrent() ? [deferredReminderTool] : []), ...(options.toolRegistry?.builtIn ?? [])] },
     get custom() { return options.toolRegistry?.custom ?? [] },
   }, {
-    signal: toolCancellation.signal, diagnostics,
+    signal: toolCancellation.signal, diagnostics, checkCurrent: checkToolCurrent,
     ...(options.allowsToolInput ? { allowsInput: options.allowsToolInput } : {}),
     onStart(event, cancel) {
       const target = (event as AgentBindingTurn)._agentBinding!.target
@@ -1342,7 +1347,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       pendingTools.set(key, callbacks)
       return () => { callbacks.delete(cancel); if (!callbacks.size) pendingTools.delete(key) }
     },
-    context(event) {
+    context(event, name, origin) {
       const incoming = event as AgentBindingTurn & {
         simulationActor?: { kind?: string; userId?: string }
         _ensureAgentToolCurrent?: () => Promise<void>
@@ -1374,11 +1379,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           (actor.kind === 'user' && !isPlatformIdentifier(actor.userId))) return undefined
       const target = binding.target
       const expected = agentBindingToken(binding)
-      const isCurrent = () => {
-        try { return isRunning() && allowsConversationAI(target) && adapterFor(target)?.isReady() === true && conversationEnabled(target) &&
-          !textInboxFor(target) && incoming._isAgentBindingCurrent?.() === true && bindingIsCurrent(target, expected) }
+      const isCurrent = () => checkToolCurrent(() => {
+        try {
+          if (!isRunning() || !allowsConversationAI(target) || adapterFor(target)?.isReady() !== true || !conversationEnabled(target) ||
+              textInboxFor(target) || incoming._isAgentBindingCurrent?.() !== true || !bindingIsCurrent(target, expected)) return false
+          const section = options.getSection()
+          if (actor.kind !== 'user' && (origin !== 'builtin' || !isAutonomousExtraToolAllowed(name, section.autonomousTools))) return false
+          return resolveSimToolSurface({ policy: normalizeSimToolPolicy(section.toolPolicy), builtInNames: origin === 'builtin' ? [name] : [],
+            extraTools: Array.isArray(section.extraTools) ? section.extraTools : [], groupId: target.id }).includes(name)
+        }
         catch { return false }
-      }
+      })
       if (!isCurrent()) return undefined
       return {
         binding: Object.freeze({ ...binding, target: Object.freeze({ ...target, account: Object.freeze({ ...target.account }) }) }),
@@ -1473,8 +1484,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           listFiles: (input: { readonly query?: string; readonly folderPath?: string }, guard: () => boolean, signal: AbortSignal) => incoming._listAgentFiles!(input, () => isCurrent() && guard(), signal),
         } : {}),
         ...(actor.kind === 'user' && target.kind === 'group' ? {
-          readMember: (userId: string, guard: () => boolean, signal: AbortSignal) => readGroupMember(target, userId, signal, () => isCurrent() && guard()),
-          listMembers: (guard: () => boolean, signal: AbortSignal) => readGroupMembers(target, signal, () => isCurrent() && guard()),
+          ...(adapterFor(target)?.readConversationMember ? {
+            readMember: (userId: string, guard: () => boolean, signal: AbortSignal) => readGroupMember(target, userId, signal, () => isCurrent() && guard()),
+          } : {}),
+          ...(adapterFor(target)?.listConversationMembers ? {
+            listMembers: (guard: () => boolean, signal: AbortSignal) => readGroupMembers(target, signal, () => isCurrent() && guard()),
+          } : {}),
           ...(typeof incoming._sendAgentToolMessage === 'function' ? {
             async sendMessage(message: AgentToolMessage, guard: () => boolean, signal: AbortSignal): Promise<DeliveryReceipt> {
               const current = () => !signal.aborted && isCurrent() && guard()
@@ -1559,8 +1574,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       ...(options.groupMemory?.enabled === true ? [groupKnowledge] : [])] : [],
     async readQuotedMessage(target, messageId, guard) {
       const adapter = adapterFor(target)
-      const isCurrent = () => isRunning() && adapter?.isReady() === true && conversationEnabled(target) &&
-        !textInboxFor(target) && guard.isCurrent?.() !== false
+      const isCurrent = () => checkToolCurrent(() => isRunning() && adapter?.isReady() === true && conversationEnabled(target) &&
+        !textInboxFor(target) && guard.isCurrent?.() !== false)
       if (!isMessageId(messageId) || !adapter?.readMessage || !isCurrent() || await inbox.isRecalled(target, messageId) || !isCurrent()) return undefined
       const source = await adapter.readMessage(target, messageId, { isCurrent })
       if (!source || source.messageId !== messageId || conversationAddressKey(source.conversation) !== conversationAddressKey(target) ||
@@ -1649,8 +1664,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     async readMessageVideo(target, messageId, guard) {
       const adapter = adapterFor(target)
       if (!adapter?.readMessageVideo || target.kind !== 'group') return undefined
-      const isCurrent = () => !guard.signal.aborted && isRunning() && adapterFor(target) === adapter && adapter.isReady() &&
-        conversationEnabled(target) && !textInboxFor(target) && guard.isCurrent()
+      const isCurrent = () => checkToolCurrent(() => !guard.signal.aborted && isRunning() && adapterFor(target) === adapter && adapter.isReady() &&
+        conversationEnabled(target) && !textInboxFor(target) && guard.isCurrent())
       const canRead = async () => isCurrent() && await inbox.canReply(target, messageId) && isCurrent()
       const ensureCurrent = async () => { await guard.ensureCurrent?.(); if (!await canRead()) throw new Error('视频来源已失效') }
       if (!await canRead()) return undefined
@@ -1885,7 +1900,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   // individual tool's signal ends. Weak ownership lasts only for this turn.
   const textInteractionQuotes = new WeakMap<IncomingMessage, { token: string; author: PlatformUserRef; text: string; at: number }>()
   const textConversation = createTextConversation({
-    inbox, actions: messageActions, personMemory, diagnostics,
+    inbox, actions: messageActions, personMemory, diagnostics, checkToolCurrent,
     ...(options.failureNoticeFallback ? { fallbackText: options.failureNoticeFallback } : {}),
     bindingToken: textBindingToken,
     groupToolNames: target => options.groupTextTools?.(target) ?? [],
@@ -1898,17 +1913,23 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (!session || session.source.messageId !== incoming.messageId || platformAccountKey(session.source.author) !== platformAccountKey(incoming.sender)) return undefined
       return session.generation
     },
-    scopedTools: target => adapterFor(target)?.readMessage ? [
-      ...(target.kind === 'group' && magnetSearchCurrent() ? (options.toolRegistry?.builtIn ?? []).filter(tool => tool.name === 'searchMagnetTool') : []),
-      ...(target.kind === 'group' ? qqActions.builtIn.filter(tool => supportsQqAction(target, tool.name)) : []),
-      ...(target.kind === 'group' && options.isVideoSearchCurrent?.() !== false ? (options.toolRegistry?.builtIn ?? []).filter(tool =>
-        groupTextVideoToolNames.some(name => name === tool.name) && (tool.name === 'searchVideoTool' ||
-          tool.name === 'videoShareTool' && !!adapterFor(target)?.actions.sendVideoCard || tool.name === 'videoDownloadTool' && !!adapterFor(target)?.actions.sendMediaRelay)) : []),
-      ...(interactionsCurrent() && adapterFor(target)?.actions.interact ? interactionTools.filter(tool =>
-        (target.kind === 'group' || (tool.name === 'likeTool' || tool.name === 'recallTool') && options.privateTextTools?.includes(tool.name)) &&
-        (!['jinyanTool', 'changeCardTool'].includes(tool.name) || !!adapterFor(target)?.readConversationMember && !!adapterFor(target)?.listConversationMembers) &&
-        (tool.name !== 'recallTool' || !!adapterFor(target)?.readOwnMessage)) : []),
-    ] : [],
+    scopedTools(target, toolName) {
+      const adapter = adapterFor(target)
+      if (!adapter?.readMessage) return []
+      const matches = (tool: AgentTool) => toolName === undefined || tool.name === toolName
+      const group = target.kind === 'group'
+      const builtIn = group ? (options.toolRegistry?.builtIn ?? []).filter(matches) : []
+      const magnet = builtIn.filter(tool => tool.name === 'searchMagnetTool' && magnetSearchCurrent())
+      const qq = group ? qqActions.builtIn.filter(tool => matches(tool) && supportsQqAction(target, tool.name)) : []
+      const video = builtIn.filter(tool => groupTextVideoToolNames.some(name => name === tool.name) &&
+        (tool.name === 'searchVideoTool' || tool.name === 'videoShareTool' && !!adapter.actions.sendVideoCard ||
+          tool.name === 'videoDownloadTool' && !!adapter.actions.sendMediaRelay) && options.isVideoSearchCurrent?.() !== false)
+      const interactions = adapter.actions.interact ? interactionTools.filter(tool => matches(tool) &&
+        (group || (tool.name === 'likeTool' || tool.name === 'recallTool') && options.privateTextTools?.includes(tool.name)) &&
+        (!['jinyanTool', 'changeCardTool'].includes(tool.name) || !!adapter.readConversationMember && !!adapter.listConversationMembers) &&
+        (tool.name !== 'recallTool' || !!adapter.readOwnMessage) && interactionsCurrent()) : []
+      return [...magnet, ...qq, ...video, ...interactions]
+    },
     scopedContext(incoming, binding, turnCurrent, ensureTurn, signal) {
       const target = binding.target, adapter = adapterFor(target), token = textBindingToken(binding), peer = privatePeerFor(target, adapter)
       if (!adapter?.readMessage || !incoming.messageId ||
@@ -1916,12 +1937,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           target.kind === 'private' && (!peer || incoming.sender.id !== peer) ||
           [...adapters.values()].some(row => samePlatformNamespace(row.account, incoming.sender) &&
             [row.account.id, row.botUserId].includes(incoming.sender.id))) return undefined
-      const current = () => {
+      const current = () => checkToolCurrent(() => {
         try { const live = bindingFor(target); return !signal.aborted && turnCurrent() &&
           adapterFor(target) === adapter && adapter.isReady() && !!live && textBindingToken(live.binding) === token &&
           (target.kind !== 'private' || !!peer && privatePeerFor(target, adapter) === peer && incoming.sender.id === peer) }
         catch { return false }
-      }
+      })
       const available = async (source: { readonly messageId: string; readonly author: PlatformUserRef }, expected?: Pick<IncomingMessage, 'text' | 'occurredAt'>) => {
         try {
           await ensureTurn()
@@ -1983,14 +2004,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         binding, actor: { kind: 'user', user: incoming.sender }, botUserId: adapter.botUserId,
         ...(target.kind === 'private' && peer ? { privatePeer: Object.freeze({ ...target.account, id: peer }) } : {}),
         request, signal, isCurrent: current,
-        ...(target.kind === 'group' && qqActions.builtIn.some(tool => supportsQqAction(target, tool.name)) ? {
+        ...(target.kind === 'group' && adapter.readConversationMember ? {
           readMember: async (userId: string) => { await ensureInteraction(); return readGroupMember(target, userId, signal, current) },
+        } : {}),
+        ...(target.kind === 'group' && adapter.listConversationMembers ? {
           listMembers: async () => { await ensureInteraction(); return readGroupMembers(target, signal, current) },
         } : {}),
         ensureCurrent: async () => { await ensure(); if (textInteractionQuotes.get(incoming)?.token === token) await ensureInteractionQuote() }, isSourceAvailable: available,
         ...(interactionsCurrent() && adapter.actions.interact ? {
-          readMember: async (userId: string) => { await ensureInteraction(); return readGroupMember(target, userId, signal, current) },
-          listMembers: async () => { await ensureInteraction(); return readGroupMembers(target, signal, current) },
           interact: async (plan: AgentInteractionPlan) => { await ensureInteraction(); return performInteractions({ target, binding, identity: 'human:' + incoming.messageId,
             source: { messageId: incoming.messageId!, author: incoming.sender, occurredAt: incoming.occurredAt, text: incoming.text },
             plan, signal, isCurrent: current, ensureCurrent: ensureInteraction }) },

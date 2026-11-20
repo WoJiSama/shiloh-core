@@ -103,12 +103,13 @@ export function createAgentImageTools(options: AgentImageToolsOptions = {}): Age
     endpoint(backend, editOnly)
     tools.push({
       name: editOnly ? 'googleImageEditTool' : 'bananaTool',
+      effect: input => ({ required: input.sourceSeq === undefined ? ['sendImage'] : ['sendImage', 'readImages'] }),
       description: editOnly ? '按用户要求编辑图片，须提供公开 HTTP(S) 图片地址或本轮可见带图消息 sourceSeq。成功回执表示图片已发到当前会话。' :
         '按用户要求生成一张图片，可使用公开 HTTP(S) 参考图或本轮可见带图消息 sourceSeq。成功回执表示图片已发到当前会话；不要在正文重复输出图片数据。',
       timeoutMs: 240_000,
       parameters: { type: 'object', properties: {
         prompt: { type: 'string', minLength: 1, maxLength: 4000, description: '用户要求的图片内容或修改要求' },
-        images: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 2048 }, description: '公开参考图片的 HTTP(S) 地址；编辑时须提供 images 或 sourceSeq' },
+        images: { type: ['array', 'null'], maxItems: 10, items: { type: 'string', maxLength: 2048 }, description: '公开参考图片的 HTTP(S) 地址；编辑时须提供 images 或 sourceSeq' },
         sourceSeq: { type: 'integer', minimum: 1, description: '本轮可见的带图消息序号，读取已核验的附图或引用图；可替代公开图片地址' },
         provider: { type: 'string', maxLength: 200, description: '用户明确指定时填写配置的图片模型名称' },
         aspectRatio: { type: 'string', enum: ratios, description: '用户要求的画布比例' },

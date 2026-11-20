@@ -32,13 +32,14 @@ function exactId(text: string, id: string): boolean {
   return new RegExp('(?:^|[^A-Za-z0-9_/-])' + escaped + '(?:$|[^A-Za-z0-9_/-])', 'u').test(text)
 }
 const names = (member: ConversationMember) => [...new Set([member.displayName, member.profile?.nickname, member.profile?.conversationName].filter((value): value is string => typeof value === 'string' && !!value.trim()))]
+const selfTargets = ['我', '自己', '本人']
 function selfRequest(text: string): boolean { return /(?:送|赠)(?:给)?我(?=$|[\s，,.。!！？?吧呀呗]|一|个|份|件|香槟|风暴战锤|遨游太空|蹦迪派对|露营|龙腾万里|超级跑车|直升机|礼物)|给我\s*(?:送|赠)/u.test(text) }
 async function target(context: AgentToolContext, requested: unknown, positive: readonly string[]): Promise<PlatformUserRef> {
   if (requested !== undefined && (typeof requested !== 'string' || !requested.trim() || requested.length > 240)) throw giftInvalid()
   const text = positive.join('，'), selected = typeof requested === 'string' ? requested.trim() : undefined
   const mentions = context.request!.mentions.filter(user => samePlatformNamespace(user, context.binding.target.account))
   let recipient: PlatformUserRef | undefined
-  if (selected && ['我', '自己', '本人'].includes(selected)) {
+  if (selected && selfTargets.includes(selected)) {
     if (!selfRequest(text)) throw giftInvalid()
     recipient = context.actor.user
   } else if (selected && /^[1-9][0-9]*$/u.test(selected) && exactId(text, selected)) recipient = giftUser({ ...context.binding.target.account, id: selected })
@@ -70,6 +71,11 @@ export function createAgentGiftTools(options: { readonly enabled?: boolean; read
   const execute = options.execute
   const tool: AgentTool = {
     name: 'sendGiftTool', description: '按本条真人明确请求，在当前QQ群展示固定礼物效果；不是付费赠礼或扣费接口，仅由当前机器人署名。',
+    effect(input) {
+      const selected = typeof input.targetQQ === 'string' ? input.targetQQ.trim() : ''
+      return { actor: 'user', conversation: 'group', required: ['runQqAction', 'readMember'], metadata: ['request'],
+        optional: selected && !selfTargets.includes(selected) ? ['listMembers'] : [] }
+    },
     parameters: { type: 'object', properties: {
       targetQQ: { type: 'string', description: '本条明确请求中的真实群成员QQ号或精确显示名；可从当前真实@或引用定位。' },
       giftType: { type: 'string', enum: Object.keys(AGENT_GIFT_CATALOG), default: 'champagne', description: '固定礼物展示类型。' },

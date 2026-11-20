@@ -20,10 +20,10 @@ function fixture(options = {}) {
   const account = { platform: 'fixture', namespace: 'text-failures', id: 'bot' }
   const target = { account, kind: options.privateChat ? 'private' : 'group', id: 'room' }, sender = { ...account, id: 'human' }
   const binding = { source: 'configured', id: 'binding', revision: 'revision', personaId: 'default', agentId: 'role', connectionId: 'connection', target }
-  const now = Date.now(), controller = new AbortController(), diagnostics = [], requests = [], sends = [], history = [], episodes = [], learning = [], actions = []
+  const now = Date.now(), controller = new AbortController(), diagnostics = [], requests = [], sends = [], history = [], historyReads = [], episodes = [], learning = [], actions = []
   let receipt = 'pending', resultText, version = 'initial', invalidatedAt = 0, current = true, toolCalls = 0
   const observe = event => diagnostics.push({ stage: event.stage, operation: event.operation, outcome: event.outcome, code: event.code })
-  const f = { target, binding, requests, sends, history, episodes, learning, diagnostics, actions, controller,
+  const f = { target, binding, requests, sends, history, historyReads, episodes, learning, diagnostics, actions, controller,
     get toolCalls() { return toolCalls }, get receipt() { return receipt },
     revoke(kind = 'binding') { if (kind === 'privacy') invalidatedAt++; else if (kind === 'recall') version = 'recalled'; else current = false },
   }
@@ -32,7 +32,10 @@ function fixture(options = {}) {
       async isTextReplyPending() { return receipt === 'pending' }, async isTextReplyConfirmed() { return receipt === 'confirmed' },
       async textActionReceipt() { return receipt === 'action' ? '' : receipt === 'result' ? resultText : undefined },
       async textRecallVersion() { return version }, async loadTextHistory() { return undefined },
-      async claimTextAction() { if (receipt !== 'pending') return false; receipt = 'action'; actions.push('claimed'); return true },
+      async claimTextAction() {
+        if (receipt !== 'pending') return false
+        receipt = 'action'; actions.push('claimed'); await options.onActionClaim?.(); return true
+      },
       async finishTextAction(_target, _id, expectedVersion, text) {
         if (expectedVersion !== version || receipt !== 'action') return false
         resultText = text; receipt = 'result'; actions.push('finished'); return true
@@ -45,23 +48,24 @@ function fixture(options = {}) {
       async saveTextHistory(_target, _version, entry) { if (options.postSendThrows) throw Error(privateError); history.push(entry) },
     },
     actions: { async send(action) { sends.push(action); if (options.sendThrows) throw Error(privateError); return options.sendReceipt ?? { state: 'sent', messageId: 'reply' } } },
-    personMemory: { async getSceneRedactions() { return { invalidatedAt } }, async query() { return { items: [] } } },
+    personMemory: { async getSceneRedactions() { await options.onRedactions?.(); return { invalidatedAt } }, async query() { return { items: [] } } },
     bindingToken: () => 'text-binding', groupToolNames: () => options.tools ?? ['commitmentTool'],
     groupTools: options.groupTools ?? { definitions: () => [{ type: 'function', function: { name: 'commitmentTool', parameters: { type: 'object', properties: {}, required: [] } } }],
       async execute(_call, _allowed, context) { toolCalls++; if (options.attempted) assert.equal(await context.claimAction(), true); return options.toolResult ?? { text: '已完成原有操作。', attempted: false } } },
     isPrivatePeer: () => true, allowsText: text => !text.includes('PRIVATE') && !text.includes('SECRET'),
+    ...(options.allowsToolInput ? { allowsToolInput: options.allowsToolInput } : {}),
     async reserveGroupTurn() { return true }, now: () => now,
     diagnostics: { emit: observe, traceId: () => 'fixture-trace' }, ...(options.fallbackText ? { fallbackText: options.fallbackText } : {}),
     async recordGroupReply() { if (options.postSendThrows) throw Error(privateError) },
     async recordEpisode(value) { if (options.postSendThrows) throw Error(privateError); episodes.push(value) },
     async learnConfirmed() { learning.push(true) },
-    ...(options.history ? { async readHistory() { return { text: '本轮允许查看的历史证据', async isCurrent() { return current } } } } : {}),
+    ...(options.history ? { async readHistory(_incoming, input) { historyReads.push(input); return { text: '本轮允许查看的历史证据', async isCurrent() { return current } } } } : {}),
     async model(request, _target, _signal, guard, ensure) {
       assert.equal(guard(), true); await ensure?.(); requests.push(request)
       return options.model ? options.model(request, requests.length, f) : answer(safeNotice)
     },
   })
-  const incoming = { version: 1, conversation: target, sender, messageId: 'trigger', occurredAt: now, text: '请处理这次请求',
+  const incoming = { version: 1, conversation: target, sender: options.sender?.(sender) ?? sender, messageId: 'trigger', occurredAt: now, text: '请处理这次请求',
     parts: [{ kind: 'text', text: '请处理这次请求' }], mentions: [], directedToAccount: true }
   return Object.assign(f, { reply: () => runtime.reply(incoming, { binding, persona: { name: '测试角色' }, systemContent: '说话简短自然' }, () => current, controller.signal) })
 }
@@ -81,8 +85,24 @@ test('history-followup model failure explains once without repeating the history
   await f.reply()
   assert.equal(f.requests.length, 3); assert.equal(f.sends.length, 1)
   assert.equal(JSON.stringify(f.requests[2]).includes('本轮允许查看的历史证据'), false)
+  assert.deepEqual(f.historyReads, [{ question: '历史', source: 'recent' }])
   assert.deepEqual(f.history, []); assert.deepEqual(f.episodes, [])
   assert.ok(f.diagnostics.some(event => event.operation === 'text_history_model' && event.outcome === 'failed'))
+})
+
+test('history schema and host credential checks block both group and private reader dispatch', async () => {
+  for (const privateChat of [false, true]) {
+    for (const args of [JSON.stringify({ question: '历史', limit: '1' }), '{"question":"PRIVATE_TOKEN"}', '{"question":"\\u0050RIVATE_TOKEN"}']) {
+      const f = fixture({ privateChat, history: true, allowsToolInput: text => !text.includes('PRIVATE_TOKEN'), model(_request, index) {
+        const response = call('chatHistoryTool', { question: '历史' })
+        response.choices[0].message.tool_calls[0].function.arguments = args
+        return index === 1 ? response : answer(safeNotice)
+      } })
+      await f.reply()
+      assert.deepEqual(f.historyReads, []); assert.deepEqual(f.actions, [])
+      assert.equal(f.requests.length, 2); assert.equal(f.sends.length, 1)
+    }
+  }
 })
 
 test('unavailable explanation records a terminal diagnostic and only uses an explicitly configured fallback', async () => {
@@ -150,7 +170,8 @@ test('failure helper rejects tool calls, forbidden output and empty content, and
 })
 
 function actualGroupTools({ execute, knowledge, diagnostics } = {}) {
-  const parameters = { type: 'object', properties: { action: { type: 'string', enum: ['list', 'create', 'notify'] }, static_message: { type: 'string' } }, required: ['action'] }
+  const parameters = { type: 'object', properties: { action: { type: 'string', enum: ['list', 'create', 'cancel', 'notify'] },
+    commitment_id: { type: 'string' }, static_message: { type: 'string', maxLength: 100 } }, required: ['action'] }
   const base = { parameters, description: 'fixture', validateParameters: () => true }
   return createGroupTextTools({ commitment: { ...base, executeWithReceipt: execute, managePrivateReminder: execute },
     memory: { ...base, executeForOwner: execute }, ...(knowledge ? { knowledge: { ...base, executeForRequest: knowledge } } : {}), diagnostics })
@@ -158,7 +179,9 @@ function actualGroupTools({ execute, knowledge, diagnostics } = {}) {
 
 test('group tool read throws and write throws produce safe classified failures with diagnostics', async () => {
   const events = [], tools = actualGroupTools({ execute: async () => { throw Error(privateError) }, diagnostics: { emit: event => events.push(event.code), traceId: () => 'fixture' } })
-  const context = { binding: { target: { account: { platform: 'fixture', namespace: 'group-tool', id: 'bot' }, kind: 'group', id: 'room' } }, speakerId: 'human', userText: '创建提醒',
+  const account = { platform: 'fixture', namespace: 'group-tool', id: 'bot' }
+  const context = { binding: { target: { account, kind: 'group', id: 'room' } }, actor: { kind: 'user', user: { ...account, id: 'human' } },
+    userText: '创建提醒', request: { messageId: 'source', text: '创建提醒', mentions: [] },
     isCurrent: () => true, allowsText: () => true, claimAction: async () => true }
   for (const action of ['list', 'create']) {
     const result = await tools.execute(call('commitmentTool', { action, ...(action === 'create' ? { static_message: '通知正文' } : {}) }).choices[0].message.tool_calls[0], ['commitmentTool'], context)
@@ -166,6 +189,44 @@ test('group tool read throws and write throws produce safe classified failures w
     assert.equal(result.attempted, action === 'create'); assert.equal(result.text.includes('PRIVATE'), false)
   }
   assert.equal(events.filter(code => code === 'tool_execution_failed').length, 2)
+})
+
+test('static group and private inputs are checked before the handler can take a write claim', async () => {
+  const groupTools = actualGroupTools({ execute: async () => assert.fail('invalid call reached a static action') })
+  for (const settings of [
+    { input: { action: 'create', static_message: '字'.repeat(101) } },
+    { input: { action: 'create', static_message: '喝水', deliver: 'agent' } },
+    { input: { action: 'create', static_message: '喝水' }, sender: sender => ({ ...sender, id: 'bot' }) },
+    { privateChat: true, input: { action: 'cancel', commitment_id: 123 } },
+    { privateChat: true, input: { action: 'cancel', commitment_id: 'reminder', static_message: '群工具字段' } },
+    { privateChat: true, input: { action: 'create', static_message: '喝水' } },
+    { privateChat: true, input: { action: 'cancel', commitment_id: 'HOST_TOKEN' } },
+    { raw: '{"action":"create","static_message":"\\u0048OST_TOKEN"}' },
+  ]) {
+    const f = fixture({ ...settings, groupTools, allowsToolInput: text => !text.includes('HOST_TOKEN'), model(_request, index) {
+      const response = call('commitmentTool', settings.input)
+      if (settings.raw) response.choices[0].message.tool_calls[0].function.arguments = settings.raw
+      return index === 1 ? response : answer(safeNotice)
+    } })
+    await f.reply()
+    assert.deepEqual(f.actions, [], JSON.stringify(settings))
+    assert.equal(f.sends.length, 1)
+  }
+})
+
+test('static group tools recheck grants after async permission checks and after claiming', async () => {
+  for (const revokeAt of ['permission', 'claim']) {
+    let armed = false, checks = 0
+    const options = { tools: ['commitmentTool'], groupTools: actualGroupTools({ execute: async () => assert.fail('revoked call reached a static write') }),
+      model(_request, index) { if (index === 1) armed = true; return call('commitmentTool', { action: 'create', static_message: '喝水' }) },
+      async onRedactions() { if (armed && ++checks === 3 && revokeAt === 'permission') options.tools = [] },
+      async onActionClaim() { if (revokeAt === 'claim') options.tools = [] },
+    }
+    const f = fixture(options)
+    await f.reply()
+    assert.deepEqual(f.actions, revokeAt === 'claim' ? ['claimed'] : [])
+    assert.deepEqual(f.sends, [])
+  }
 })
 
 test('a group workflow unknown transport result suppresses all follow-up messages and models', async () => {

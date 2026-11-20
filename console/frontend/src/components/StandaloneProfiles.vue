@@ -225,6 +225,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="page-stack">
     <PageHeader
+      v-if="!embedded"
       title="人物记忆"
       description="本人对人物的已有记录，按当前来源会话展示。删除只作用于所选来源，不清空其他会话。"
     />

@@ -63,6 +63,7 @@ interface Account {
   container?: string
   running?: boolean
 }
+const props = defineProps<{ initialPersonaId?: string }>()
 const fields: SchemaFieldDefinition[] = [
   {
     field: 'identity',
@@ -456,7 +457,7 @@ onBeforeUnmount(() => {
         ></template
       ></PageHeader
     >
-    <StandalonePersonaConfig v-if="view?.mode === 'standalone'" :initial="view as unknown as StandaloneLibraryView" />
+    <StandalonePersonaConfig v-if="view?.mode === 'standalone'" :initial="view as unknown as StandaloneLibraryView" :initial-persona-id="props.initialPersonaId" />
     <PageState v-else :loading="loading && !view" :error="!view ? error : ''" @retry="load()">
       <template v-if="view">
         <div class="panel persona-summary">

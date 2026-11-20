@@ -244,30 +244,34 @@ export function createAgentMediaOutbox(options: {
           await entry.session.close(sent.state === 'sent' ? 'completed' : 'failed'); return
         }
         const binding = record.binding
-        const relay = (name: 'forward' | 'forwardRetry' | 'directVideo', plan: AgentMediaRelayPlan) => effect(entry, name,
+        const relay = (name: 'forward' | 'forwardRetry' | 'directIntro' | 'directVideo', plan: AgentMediaRelayPlan) => effect(entry, name,
           async () => options.actions.sendMediaRelay ? options.actions.sendMediaRelay({ version: 1, kind: 'media-relay.send',
-            target: binding.target, binding, mode: name === 'directVideo' ? 'direct-video' : 'forward', plan },
+            target: binding.target, binding, mode: name === 'forward' || name === 'forwardRetry' ? 'forward' : 'direct-video', plan },
           { signal: entry.cancel.signal, isCurrent: () => sendCurrent(entry) }) : { state: 'failed', code: 'media_relay_unavailable' })
         const videos: AgentMediaRelayPlan = { version: 1, items: value.plan.items.flatMap(item => item.parts.flatMap(part => part.kind === 'video' ? [{ parts: [part] }] : [])) }
-        let result = await relay('forward', value.plan)
-        if (result.state === 'sent') { await entry.session.close('completed'); return }
-        if (result.state === 'failed' && result.code === 'video_thumbnail_missing') {
+        // NapCat 的伪造合并转发把视频节点在接收端渲染成未注册轻应用卡片（“应用未上架”），
+        // 而 API 回执仍为成功无法感知；带视频的计划改为两条普通消息直接发送
+        // （介绍/卡片条 + 视频条），合并转发仅保留给纯图文计划。
+        if (videos.items.length) {
+          const introParts = value.plan.items.flatMap(item => item.parts.flatMap(part => part.kind !== 'video' ? [part] : []))
+          if (introParts.length) {
+            const intro = await relay('directIntro', { version: 1, items: [{ parts: introParts }] })
+            if (intro.state !== 'sent') {
+              const linked = await text(entry, 'link', linkText(value))
+              await entry.session.close(linked.state === 'sent' ? 'completed' : 'failed'); return
+            }
+          }
+          const direct = await relay('directVideo', videos)
+          if (direct.state === 'sent') { await entry.session.close('completed'); return }
           const linked = await text(entry, 'link', linkText(value))
           await entry.session.close(linked.state === 'sent' ? 'completed' : 'failed'); return
         }
+        let result = await relay('forward', value.plan)
+        if (result.state === 'sent') { await entry.session.close('completed'); return }
         if (result.state !== 'failed' || result.code !== 'media_resource_preprocessing_failed') { await entry.session.close('failed'); return }
         result = await relay('forwardRetry', value.plan)
         if (result.state === 'sent') { await entry.session.close('completed'); return }
         if (result.state !== 'failed' || result.code !== 'media_resource_preprocessing_failed') { await entry.session.close('failed'); return }
-        if (!videos.items.length) {
-          const linked = await text(entry, 'link', linkText(value))
-          await entry.session.close(linked.state === 'sent' ? 'completed' : 'failed'); return
-        }
-        const intro = await text(entry, 'directIntro', `${value.infoText}\n${value.pageUrl}\n（合并转发上传失败，视频改为直接发送）`)
-        if (intro.state === 'sent') {
-          const direct = await relay('directVideo', videos)
-          if (direct.state === 'sent') { await entry.session.close('completed'); return }
-        }
         const linked = await text(entry, 'link', linkText(value))
         await entry.session.close(linked.state === 'sent' ? 'completed' : 'failed')
       } catch (error) {

@@ -52,6 +52,7 @@ export function createAgentPixivTools(config: AgentPixivToolsConfig, options: Ag
     if (typeof value !== 'string' || !value.trim() || value.length > maximum || /[\u0000-\u001f\u007f]/u.test(value) || !safe(value)) throw failure()
     return value.trim()
   }
+  const artworkId = /^[1-9]\d{4,11}$/u
   const repeat = (state: string): AgentToolResult => state === 'sent' ? { status: 'succeeded', content: '这条 Pixiv 请求已确认投递，请不要重复发送。' }
     : state === 'failed' ? { status: 'failed', content: '这条 Pixiv 请求已处理且未确认投递成功，本轮不会重复执行。' } : unknown()
   const available = async (context: AgentToolContext, selected: AgentPixivSession): Promise<void> => {
@@ -82,6 +83,7 @@ export function createAgentPixivTools(config: AgentPixivToolsConfig, options: Ag
   }
   return { builtIn: [{
     name: 'pixivSearchTool', timeoutMs: 90_000,
+    effect: { actor: 'user', optional: ['sendImage'], metadata: ['request'] },
     description: '搜索 Pixiv 插画或画师作品，发送前8项缩略图列表，保存5分钟供「下载 序号」选择。newest=最新、oldest=最早、popular=人气；画师查询用artist。',
     parameters: { type: 'object', additionalProperties: false, required: ['keyword'], properties: {
       keyword: { type: 'string', minLength: 1, maxLength: 200 }, searchType: { type: 'string', enum: ['artworks', 'artist'] },
@@ -131,6 +133,9 @@ export function createAgentPixivTools(config: AgentPixivToolsConfig, options: Ag
     },
   }, {
     name: 'pixivDownloadTool', timeoutMs: 240_000,
+    effect: input => typeof input.target === 'string' && artworkId.test(input.target.trim())
+      ? { actor: 'user', conversation: 'group', required: ['sendMediaRelay'], optional: ['isSourceAvailable'], metadata: ['request'] }
+      : { actor: 'user', conversation: 'group', required: ['sendMediaRelay', 'isSourceAvailable'], metadata: ['request'] },
     description: '将 Pixiv 作品的完整前5张可用图片一次合并发送到当前群。target是最近5分钟列表的序号1..8，或5..12位作品ID；受限作品默认不搬运。',
     parameters: { type: 'object', additionalProperties: false, required: ['target'], properties: { target: { type: 'string', minLength: 1, maxLength: 32 } } },
     async execute(input, context) {
@@ -144,7 +149,7 @@ export function createAgentPixivTools(config: AgentPixivToolsConfig, options: Ag
         if (!context.sendMediaRelay) throw failure()
         const raw = object(input, ['target']), target = string(raw.target, 32)
         let id: string
-        if (/^[1-9]\d{4,11}$/u.test(target)) {
+        if (artworkId.test(target)) {
           id = target
           // A direct ID is independent of a prior search. Its optional renewal
           // snapshot never participates in the download's source authorization.

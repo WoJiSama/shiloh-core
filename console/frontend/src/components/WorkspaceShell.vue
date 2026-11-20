@@ -16,7 +16,13 @@ import {
 } from 'lucide-vue-next'
 import { api, authState, clearToken } from '../lib/api'
 import { workspace } from '../lib/workspace'
-import { workspaceFeatures, workspaceNavigation } from '../lib/navigation'
+import {
+  workspaceFeatureEntries,
+  workspaceFeaturePath,
+  workspaceFeatures,
+  workspaceNavigation,
+  type WorkspaceFeature
+} from '../lib/navigation'
 import { accountLabel, conversationLabel, robotLabel, robotLocation } from '../lib/workspaceModel'
 import { confirmLeave, installUnsavedDialog } from '../composables/useUnsavedGuard'
 import { useOpsResource } from '../lib/operations'
@@ -42,39 +48,73 @@ const searchInput = ref<InstanceType<typeof NInput> | null>(null)
 const build = __CONSOLE_BUILD__
 installUnsavedDialog()
 useOpsResource((signal) => workspace.load(signal), 30000)
+const sectionLabels = Object.fromEntries(workspaceNavigation.map((item) => [item.path, item.label]))
+function sectionForPath(path: string) {
+  if (path.startsWith('/robots')) return '/robots'
+  if (path.startsWith('/connections')) return '/connections'
+  if (path.startsWith('/observe')) return '/runtime'
+  const feature = workspaceFeatures[path.slice(1) as keyof typeof workspaceFeatures]
+  if (feature) return feature.group
+  return workspaceNavigation.some((item) => item.path === path) ? path : '/'
+}
 const active = computed(() => {
-  const feature = workspaceFeatures[route.path.slice(1) as keyof typeof workspaceFeatures]
-  const path =
-    feature?.group ??
-    (route.path.startsWith('/robots/')
-      ? '/robots'
-      : route.path.startsWith('/connections/')
-        ? '/connections'
-        : route.path)
+  const path = sectionForPath(route.path)
   return workspaceNavigation.find((item) => item.path === path) ?? workspaceNavigation[0]!
 })
-const selectedAgent = computed(() => data.value?.agents.find((item) => item.id === route.params.id))
+const selectedAgent = computed(() =>
+  route.path.startsWith('/robots/')
+    ? data.value?.agents.find((item) => item.id === route.params.id)
+    : undefined
+)
+const subnavItems = computed(() => workspaceFeatureEntries(active.value.path))
+function featureTarget(feature: WorkspaceFeature) {
+  if ((feature === 'person-profiles' || feature === 'trusteeship') && selectedAgent.value) {
+    return {
+      path: `/robots/${encodeURIComponent(selectedAgent.value.id)}/${feature === 'person-profiles' ? 'self' : 'actions'}`,
+      query: { ...route.query, panel: feature }
+    }
+  }
+  return { path: workspaceFeaturePath(feature) }
+}
+function featureActive(feature: WorkspaceFeature) {
+  const path = workspaceFeaturePath(feature)
+  if (feature === 'person-profiles' && route.params.tab === 'self' && route.query.panel === feature)
+    return true
+  if (feature === 'groups' && route.path.startsWith('/connections')) return true
+  if (feature === 'observe' && route.path.startsWith('/observe')) return true
+  return route.path === path || route.path.startsWith(path + '/')
+}
 const results = computed(() => {
   const choices = [
     ...workspaceNavigation.map((item) => ({
       label: item.label,
       hint: item.hint,
+      keywords: '',
       to: { path: item.path }
+    })),
+    ...Object.entries(workspaceFeatures).map(([key, item]) => ({
+      label: item.label,
+      hint: `${sectionLabels[item.group] || item.group} · ${item.hint}`,
+      keywords: item.keywords,
+      to: featureTarget(key as WorkspaceFeature)
     })),
     ...(data.value?.agents ?? []).map((item) => ({
       label: robotLabel(item, data.value?.agents ?? []),
       hint: `机器人 · ${item.personaName}`,
+      keywords: '',
       to: robotLocation(item)
     })),
     ...(data.value?.connections ?? []).map((item) => ({
       label: item.id,
       hint: `连接 · ${accountLabel(item.account)}`,
+      keywords: '',
       to: { path: `/connections/${encodeURIComponent(item.id)}` }
     })),
     ...(data.value?.agents ?? []).flatMap((agent) =>
       agent.conversations.map((row) => ({
         label: `${robotLabel(agent, data.value?.agents ?? [])} · ${conversationLabel(row)}`,
         hint: `${row.binding.connectionId} · ${accountLabel(row.binding.target.account)}`,
+        keywords: '',
         to: robotLocation(agent, 'conversations', row)
       }))
     )
@@ -84,7 +124,9 @@ const results = computed(() => {
     .filter(
       (item) =>
         !q ||
-        `${item.label} ${item.hint} ${JSON.stringify(item.to)}`.toLocaleLowerCase().includes(q)
+        `${item.label} ${item.hint} ${item.keywords} ${JSON.stringify(item.to)}`
+          .toLocaleLowerCase()
+          .includes(q)
     )
     .slice(0, 60)
 })
@@ -214,10 +256,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keydown))
         <div class="topbar-tools">
           <button
             class="search-trigger"
-            aria-label="搜索机器人、连接或会话"
+            aria-label="搜索模块、机器人、连接或会话"
             @click="searchOpen = true"
           >
-            <Search :size="15" /><span>搜索机器人、连接或会话</span><kbd>⌘ K</kbd></button
+            <Search :size="15" /><span>搜索模块、机器人、连接或会话</span><kbd>⌘ K</kbd></button
           ><NButton quaternary circle aria-label="刷新工作区" :loading="loading" @click="refresh"
             ><template #icon><RefreshCw :size="17" /></template></NButton
           ><NButton
@@ -241,6 +283,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keydown))
         </div>
       </header>
       <main id="main-content" class="workspace-content">
+        <nav v-if="subnavItems.length" class="workspace-subnav" aria-label="当前分类功能">
+          <RouterLink
+            v-for="[key, item] in subnavItems"
+            :key="key"
+            :to="featureTarget(key as WorkspaceFeature)"
+            :class="{ active: featureActive(key as WorkspaceFeature) }"
+            :aria-current="featureActive(key as WorkspaceFeature) ? 'page' : undefined"
+            >{{ item.label }}</RouterLink
+          >
+        </nav>
         <NAlert v-if="workspaceError" type="warning" title="工作区刷新失败" class="workspace-error"
           >{{ workspaceError }}。下方保留上次读取内容，请刷新后再操作。</NAlert
         ><RouterView v-slot="{ Component, route: current }"
@@ -266,13 +318,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keydown))
     <NModal
       v-model:show="searchOpen"
       preset="card"
-      title="查找机器人与会话"
+      title="查找模块、机器人与会话"
       class="search-modal"
       @after-enter="searchInput?.focus()"
       ><NInput
         ref="searchInput"
         v-model:value="query"
-        placeholder="名字、连接或完整会话标识"
+        placeholder="模块、名字、连接或完整会话标识"
         clearable
       />
       <div class="search-results">

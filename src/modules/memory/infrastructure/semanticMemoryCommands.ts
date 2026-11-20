@@ -1,5 +1,5 @@
-// 语义记忆管理命令:状态/查询调试/全量重建/在线评估(recall@k 消融)。
-// 重建与评估会产生 embedding/LLM 调用,限主人或群主(与聊天记录查询权限口径一致)。
+// 语义记忆管理命令:状态/查询调试/全量重建/评估迁移指引。
+// 查询与重建会产生 embedding 调用,限主人或群主(与聊天记录查询权限口径一致)。
 import type {SemanticRuntime} from './semanticRuntime.js'
 import { runRetrievalEval } from './retrievalEval.js'
 
@@ -65,6 +65,7 @@ class SemanticMemoryPlugin extends PluginBase {
       await e.reply('语义记忆管理命令仅主人或群主可用')
       return true
     }
+    if (/^(评估|eval)$/i.test(action)) return await this.evaluate(e)
     const runtime = requireRuntime(e)
     if (!runtime) return true
 
@@ -74,7 +75,6 @@ class SemanticMemoryPlugin extends PluginBase {
       if (/^(忘记|forget)$/i.test(action)) return await this.forgetChunk(e, runtime, text)
       if (/^(想起|强化|reinforce)$/i.test(action)) return await this.reinforceChunk(e, runtime, text)
       if (/^(重建|回填|rebuild)$/i.test(action)) return await this.rebuild(e, runtime, text)
-      if (/^(评估|eval)$/i.test(action)) return await this.evaluate(e, runtime, text)
       await e.reply([
         '用法:',
         '  .语义记忆                状态',
@@ -82,7 +82,7 @@ class SemanticMemoryPlugin extends PluginBase {
         '  .语义记忆 忘记 第N条|<id>  删除一条记忆(查询后按序号)',
         '  .语义记忆 想起 <分块id>  强化一条记忆(本群)',
         '  .语义记忆 重建 [群=xxx]  全量回填索引',
-        '  .语义记忆 评估 [N=20]    在线评估 recall@k'
+        '  .语义记忆 评估            Core v2 离线评估指引(旧在线评估已停用)'
       ].join('\n'))
       return true
     } catch (error) {
@@ -176,31 +176,11 @@ class SemanticMemoryPlugin extends PluginBase {
     return true
   }
 
-  async evaluate(e:CommandEvent, runtime:SemanticRuntime, text:string) {
-    const countMatch = text.match(/N[=:：]?\s*(\d+)/)
-    const sampleCount = Math.min(50, Math.max(3, Number(countMatch?.[1]) || 20))
-    await e.reply(`开始在线评估:抽样 ${sampleCount} 个分块生成问答对,衡量 recall@k(纯向量 vs 混合召回)…`)
-    const report = await runRetrievalEval(runtime, { sampleCount })
-    if (!report) {
-      await e.reply('评估失败:没有可用的索引分块,先执行 .语义记忆 重建')
-      return true
-    }
-    const rerankLine = report.recallAt5Rerank !== undefined
-      ? `recall@5 混合+重排 ${pct(report.recallAt5Rerank)} | recall@10 重排 ${pct(report.recallAt10Rerank)} | 重排生效 ${report.rerankApplied}/${report.samples}`
-      : '重排未启用'
-    const lines = [
-      `评估样本:${report.samples} | recall@5 向量 ${pct(report.recallAt5Vector)} / 混合 ${pct(report.recallAt5Hybrid)} | recall@10 混合 ${pct(report.recallAt10Hybrid)}`,
-      rerankLine,
-      `检索延迟 P50 ${report.latencyP50Ms}ms / P95 ${report.latencyP95Ms}ms | 问题生成失败 ${report.questionFailures}`
-    ]
-    await e.reply(lines.join('\n'))
-    logger.info(`[SemanticMemory] 评估报告 ${JSON.stringify(report)}`)
+  async evaluate(e:CommandEvent) {
+    const result = await runRetrievalEval()
+    await e.reply(`${result.message}\n${result.command}`)
     return true
   }
-}
-
-function pct(value:unknown) {
-  return `${Math.round(Number(value) * 100)}%`
 }
 
 return {SemanticMemoryPlugin,resolveForgetTarget}

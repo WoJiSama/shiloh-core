@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent } from 'vue'
+import { useRoute } from 'vue-router'
 import { workspace } from '../lib/workspace'
 import { workspaceFeatures, type WorkspaceFeature } from '../lib/navigation'
+import { robotLocation, selectConversation } from '../lib/workspaceModel'
 import CapabilityGate from '../components/CapabilityGate.vue'
 import SchemaPage from './SchemaPage.vue'
 import WorkspaceConnections from './WorkspaceConnections.vue'
 const props = defineProps<{ feature: WorkspaceFeature }>()
 const mode = workspace.mode
+const route = useRoute()
 const components = {
   persona: defineAsyncComponent(() => import('./PersonaPage.vue')),
   ai: defineAsyncComponent(() => import('./AiPage.vue')),
@@ -28,6 +31,47 @@ const components = {
   groups: defineAsyncComponent(() => import('./GroupsPage.vue'))
 }
 const feature = computed(() => workspaceFeatures[props.feature])
+const contextAgent = computed(() =>
+  typeof route.query.agentId === 'string'
+    ? workspace.data.value?.agents.find((item) => item.id === route.query.agentId)
+    : undefined
+)
+const backTarget = computed(() => {
+  const returnTab =
+    typeof route.query.returnTab === 'string' &&
+    ['home', 'conversations', 'self', 'actions', 'boundaries'].includes(route.query.returnTab)
+      ? route.query.returnTab
+      : 'home'
+  const agent = contextAgent.value
+  if (agent) {
+    try {
+      const selected = selectConversation(agent, route.query)
+      const location = robotLocation(agent, returnTab, selected)
+      if (
+        !selected &&
+        typeof route.query.connection === 'string' &&
+        agent.conversations.some((row) => row.binding.connectionId === route.query.connection)
+      )
+        return { path: location.path, query: { connection: route.query.connection } }
+      return location
+    } catch {
+      return robotLocation(agent, returnTab)
+    }
+  }
+  return { path: feature.value.group, query: route.query }
+})
+const componentProps = computed<Record<string, unknown>>(() => {
+  if (props.feature === 'risk') return { kind: 'riskControl' }
+  if (props.feature === 'persona') return { initialPersonaId: contextAgent.value?.personaId }
+  if (props.feature === 'simulation') {
+    return {
+      initialScopeKey: typeof route.query.scopeKey === 'string' ? route.query.scopeKey : undefined,
+      initialBindingToken:
+        typeof route.query.bindingToken === 'string' ? route.query.bindingToken : undefined
+    }
+  }
+  return {}
+})
 const groupLabels: Record<string, string> = {
   '/resources': '资源库',
   '/runtime': '运行中心',
@@ -35,11 +79,14 @@ const groupLabels: Record<string, string> = {
   '/connections': '连接',
   '/robots': '机器人'
 }
+const backLabel = computed(() =>
+  backTarget.value.path.startsWith('/robots/') ? '机器人' : groupLabels[feature.value.group]
+)
 </script>
 <template>
   <template v-if="mode === 'standalone'"
     ><div class="feature-breadcrumb">
-      <RouterLink :to="feature.group">← 返回{{ groupLabels[feature.group] }}</RouterLink>
+      <RouterLink :to="backTarget">← 返回{{ backLabel }}</RouterLink>
     </div>
     <WorkspaceConnections v-if="props.feature === 'groups'" /><CapabilityGate
       v-else
@@ -47,12 +94,6 @@ const groupLabels: Record<string, string> = {
       ><SchemaPage v-if="props.feature === 'commands'" kind="dice" /><component
         v-else
         :is="components[props.feature]"
-        v-bind="
-          props.feature === 'risk' ? { kind: 'riskControl' } : {}
-        " /></CapabilityGate></template
-  ><component
-    v-else
-    :is="components[props.feature]"
-    v-bind="props.feature === 'risk' ? { kind: 'riskControl' } : {}"
-  />
+        v-bind="componentProps" /></CapabilityGate></template
+  ><component v-else :is="components[props.feature]" v-bind="componentProps" />
 </template>

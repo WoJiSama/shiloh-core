@@ -25,6 +25,7 @@ export function reportBilibiliCleanupFailure(code: BilibiliCleanupFailureCode, o
   try { if (observer) { void Promise.resolve(observer(code)).catch(terminal); return } } catch { /* Fall back without exposing the observer's error. */ }
   terminal()
 }
+const monitoredContexts = new WeakSet<AgentMediaResourceContext>()
 export function bilibiliGuard(context: AgentMediaResourceContext, timeoutMs: number, onCleanupFailure?: BilibiliCleanupObserver) {
   const cancel = new AbortController()
   let signal: AbortSignal
@@ -32,16 +33,23 @@ export function bilibiliGuard(context: AgentMediaResourceContext, timeoutMs: num
   catch { throw bilibiliFailure() }
   const check = () => { try { if (signal.aborted || context.isCurrent() !== true) throw bilibiliFailure() } catch { throw bilibiliFailure() } }
   const timer = setTimeout(() => cancel.abort(), timeoutMs); timer.unref()
-  let checking = false
-  const watcher = setInterval(() => {
+  // Nested requests inherit the turn's live monitor and keep their own deadlines.
+  // An explicit checkpoint always runs a fresh authorization check.
+  const inheritsMonitor = monitoredContexts.has(context)
+  let sourceChecks = 0
+  const ensureCurrent = context.ensureCurrent && (inheritsMonitor ? () => context.ensureCurrent!() : async () => {
+    sourceChecks++
+    try { await context.ensureCurrent!() } finally { sourceChecks-- }
+  })
+  const watcher = inheritsMonitor ? undefined : setInterval(() => {
     try {
       check()
-      if (context.ensureCurrent && !checking) {
-        checking = true
-        void Promise.resolve().then(() => context.ensureCurrent!()).catch(() => cancel.abort()).finally(() => { checking = false })
-      }
+      if (ensureCurrent && sourceChecks === 0) void ensureCurrent().catch(() => cancel.abort())
     } catch { cancel.abort() }
-  }, 20); watcher.unref()
+  }, 20).unref()
+  const guardedContext = Object.freeze({ signal, isCurrent: () => { try { check(); return true } catch { return false } },
+    ...(ensureCurrent ? { ensureCurrent } : {}) })
+  monitoredContexts.add(guardedContext)
   const wait = <T>(operation: Promise<T>, late?: (value: T) => unknown): Promise<T> => new Promise((resolve, reject) => {
     let settled = false
     const abort = () => { settled = true; signal.removeEventListener('abort', abort); reject(bilibiliFailure()) }
@@ -52,9 +60,8 @@ export function bilibiliGuard(context: AgentMediaResourceContext, timeoutMs: num
     }, () => { settled = true; signal.removeEventListener('abort', abort); reject(bilibiliFailure()) })
     if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true })
   })
-  return { signal, check, wait, async ensure() { check(); if (context.ensureCurrent) await wait(Promise.resolve().then(() => context.ensureCurrent!())); check() },
-    context: { signal, isCurrent: () => { try { check(); return true } catch { return false } }, ...(context.ensureCurrent ? { ensureCurrent: () => context.ensureCurrent!() } : {}) },
-    close() { clearTimeout(timer); clearInterval(watcher); cancel.abort() } }
+  return { signal, check, wait, async ensure() { check(); if (ensureCurrent) await wait(Promise.resolve().then(ensureCurrent)); check() }, context: guardedContext,
+    close() { clearTimeout(timer); if (watcher) clearInterval(watcher); cancel.abort() } }
 }
 const label = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u
 export function bilibiliOfficialUrl(input: string, kind: BilibiliRequestKind): URL {

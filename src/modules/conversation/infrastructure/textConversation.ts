@@ -10,6 +10,8 @@ import type { AgentGiftResult } from '../../../contracts/agentQqGift.js'
 import type { AgentQzoneResult } from '../../../contracts/agentQzone.js'
 import type { AgentRedPacketResult } from '../../../contracts/agentQqRedPacket.js'
 import { createAgentHistoryTool } from '../../tools/infrastructure/agentHistoryTool.js'
+import { authorizeAgentToolContext } from '../../tools/infrastructure/agentToolAuthorization.js'
+import { parseAgentToolArguments, validateAgentToolInput } from '../../tools/infrastructure/agentToolSchema.js'
 import type { IncomingMessage, MessageActionPort } from '../../../contracts/platformMessage.js'
 import { formatPersonMemoryFacts, personMemoryAddress } from '../../memory/infrastructure/personMemoryContext.js'
 import { agentPersonaScopeId, conversationAddressKey, samePlatformNamespace } from '../../runtime/domain/agentBindings.js'
@@ -55,10 +57,13 @@ export function createTextConversation(ports: {
   groupToolNames(target: ConversationAddress): readonly GroupTextToolName[]
   privateToolNames?: readonly ('likeTool' | 'recallTool')[]
   groupTools: ReturnType<typeof createGroupTextTools>
-  scopedTools?(target: ConversationAddress): readonly AgentTool[]
+  checkToolCurrent?(check: () => boolean): boolean
+  scopedTools?(target: ConversationAddress, name?: string): readonly AgentTool[]
   videoSelection?(incoming: IncomingMessage, binding: AgentBindingSnapshot): Promise<string | undefined>
   allowsToolInput?(text: string): boolean
-  scopedContext?(incoming: IncomingMessage, binding: AgentBindingSnapshot, isCurrent: () => boolean, ensureCurrent: () => Promise<void>, signal: AbortSignal): AgentToolContext | undefined
+  /** The scope checks the supplied turn fence before and after reading live source evidence. */
+  scopedContext?(incoming: IncomingMessage, binding: AgentBindingSnapshot, isCurrent: () => boolean, ensureCurrent: () => Promise<void>, signal: AbortSignal):
+    (AgentToolContext & Required<Pick<AgentToolContext, 'ensureCurrent'>>) | undefined
   isPrivatePeer(target: ConversationAddress, sender: PlatformUserRef): boolean
   allowsText(text: string): boolean
   reserveGroupTurn(target: ConversationAddress, now: number): Promise<boolean>
@@ -180,7 +185,13 @@ export function createTextConversation(ports: {
         return
       }
     }
-    const allowed: readonly GroupTextToolName[] = isPrivateChat ? ['commitmentTool', ...(ports.privateToolNames ?? [])] : ports.groupToolNames(target)
+    const allowedToolNames = (): readonly GroupTextToolName[] => isPrivateChat
+      ? ['commitmentTool', ...(ports.privateToolNames ?? [])] : ports.groupToolNames(target)
+    const allowed = [...allowedToolNames()]
+    const requestContext: AgentToolContext = {
+      binding, actor: { kind: 'user', user: incoming.sender }, signal: signal ?? new AbortController().signal,
+      request: { messageId, text: incoming.text, mentions: incoming.mentions, occurredAt: incoming.occurredAt }, isCurrent,
+    }
     const historyTool = ports.readHistory ? createAgentHistoryTool() : undefined
     const historyDefinition = historyTool && { type: 'function', function: { name: historyTool.name, description: historyTool.description, parameters: historyTool.parameters } }
     const scopedTools = ports.scopedContext ? (ports.scopedTools?.(target) ?? []).filter(tool =>
@@ -212,6 +223,7 @@ export function createTextConversation(ports: {
         personaOverride: buildPersonaStyleOverride(snapshot.persona),
         ...(time ? { runtimeData: { currentTime: time, schedulerTimeZone: 'Asia/Shanghai' } } : {}),
         isPrivateChat,
+        useHistoricalEvidence: Boolean(recallSection || narrative?.digest || narrative?.episodes || semantic?.text || groupMemory || historyTool),
         platformCapabilities: isPrivateChat ? `当前会话提供一对一文字回复。回答时以对话里实际提供的文字为依据。历史资料仅供参考，按当前消息判断是否需要调用工具。${tools.length
           ? '可以应对方要求列出或取消已经接续的本人一次性提醒，工具结果由系统直接回复。仅在本轮列出对应工具时，可以给当前好友本人资料点赞或撤回当前绑定下机器人已确认发送的消息；撤回须引用具体消息或写明消息ID，不能撤回对方的消息。一次只执行一项明确动作，成功后结束本轮，未知结果不重试、不另发确认文字。'
           : ''}`
@@ -306,34 +318,36 @@ export function createTextConversation(ports: {
     // Read-only history can be paged within a bounded model loop. Evidence and
     // all subsequent model output remain ephemeral, including failure results.
     for (let round = 0; round < 3 && output.tool_calls?.length === 1 && output.tool_calls[0]?.function?.name === 'chatHistoryTool'; round++) {
-      if (!historyTool || !ports.readHistory) return
+      const readHistory = ports.readHistory
+      if (!historyTool || typeof readHistory !== 'function') return
       const call = output.tool_calls[0]!
       const callId = (call as { id?: unknown }).id
       if (typeof callId !== 'string' || !callId.trim() || callId.length > 200) return
-      let input: Record<string, unknown>
-      try {
-        const raw = call.function?.arguments
-        if (typeof raw !== 'string' || raw.length > 16_000) return
-        input = JSON.parse(raw) as Record<string, unknown>
-      } catch (error) {
-        log('tool', 'text_history', 'failed', 'invalid_tool_arguments', error)
+      const raw = call.function?.arguments
+      const input = parseAgentToolArguments(raw)
+      if (typeof raw !== 'string' || !validateAgentToolInput(historyTool, input) || ports.allowsToolInput?.(raw) === false ||
+          ports.allowsToolInput?.(JSON.stringify(input)) === false) {
+        log('tool', 'text_history', 'failed', 'invalid_tool_arguments')
         await reportFailure('tool', 'failed', '历史查询参数无效，本次没有查询。'); return
       }
-      usedHistory = true
-      let outcome
-      try {
-        log('tool', 'text_history', 'started', 'tool_execution_started')
-        outcome = await historyTool.execute(input, {
-        binding, actor: { kind: 'user', user: incoming.sender }, signal: signal ?? new AbortController().signal,
-        request: { messageId, text: incoming.text, mentions: incoming.mentions }, isCurrent,
-        ensureCurrent: async () => { if (!await modelContextCurrent()) throw new Error('历史查询来源已改变') },
-        async readHistory(query) {
-          const projection = await ports.readHistory!(incoming, query, isCurrent, signal)
+      const historyCurrent = () => isCurrent() && ports.readHistory === readHistory
+      const context = authorizeAgentToolContext(historyTool, input, {
+        ...requestContext, isCurrent: historyCurrent,
+        ensureCurrent: async () => { if (!await modelContextCurrent() || !historyCurrent()) throw new Error('历史查询来源已改变') },
+        async readHistory(query: Record<string, unknown>) {
+          if (!historyCurrent()) throw new Error('历史查询来源已改变')
+          const projection = await readHistory.call(ports, incoming, query, historyCurrent, signal)
           historyProjections.push(projection)
           if (!await projection.isCurrent()) throw new Error('历史查询结果已失效')
           return projection.text
         },
-        })
+      })
+      if (!context || !historyCurrent()) return
+      usedHistory = true
+      let outcome
+      try {
+        log('tool', 'text_history', 'started', 'tool_execution_started')
+        outcome = await historyTool.execute(input, context)
       } catch (error) {
         log('tool', 'text_history', 'failed', 'history_read_failed', error)
         await reportFailure('tool', 'failed', '历史查询没有获得可确认结果。'); return
@@ -353,63 +367,65 @@ export function createTextConversation(ports: {
     for (let round = 0; round < 3 && output.tool_calls?.length === 1 && groupTextScopedToolNames.some(name => name === output!.tool_calls![0]!.function?.name); round++) {
       if (usedHistory) return
       const call = output.tool_calls[0]!, tool = scopedTools.find(tool => tool.name === call.function?.name)
-      if (!tool || !ports.scopedContext || !(ports.scopedTools?.(target) ?? []).includes(tool)) return
-      const id = (call as { id?: unknown }).id, sending = tool.name !== 'searchVideoTool'
+      if (!tool || !ports.scopedContext || !(ports.scopedTools?.(target, tool.name) ?? []).includes(tool)) return
+      const id = (call as { id?: unknown }).id, videoSearch = tool.name === 'searchVideoTool'
       const interaction = groupTextInteractionToolNames.some(name => name === tool.name)
       const qqAction = groupTextQqActionToolNames.some(name => name === tool.name)
       const nonMessage = interaction || qqAction
-      const operation = qqAction ? 'text_qq_action' : interaction ? 'text_interaction' : 'text_video'
-      if (!sending) videoSelection = undefined
-      let input: Record<string, unknown>
-      try {
-        const raw = call.function?.arguments
-        const type = (call as { type?: unknown }).type
-        if (type !== undefined && type !== 'function' || typeof id !== 'string' || !id.trim() || id.length > 200 ||
-            typeof raw !== 'string' || raw.length > 4096 || !ports.allowsText(raw) || ports.allowsToolInput?.(raw) === false) throw new Error('工具参数无效')
-        input = JSON.parse(raw) as Record<string, unknown>
-        if (!input || typeof input !== 'object' || Array.isArray(input) || ports.allowsToolInput?.(JSON.stringify(input)) === false) throw new Error('工具参数无效')
-      } catch (error) { log('tool', operation, 'failed', 'invalid_tool_arguments', error); await reportFailure('tool', 'failed'); return }
+      const operation = qqAction ? 'text_qq_action' : interaction ? 'text_interaction' : tool.name === 'searchMagnetTool' ? 'text_magnet_search' : 'text_video'
+      if (videoSearch) videoSelection = undefined
+      const raw = call.function?.arguments, type = (call as { type?: unknown }).type
+      const input = parseAgentToolArguments(raw, 4096)
+      if (type !== undefined && type !== 'function' || typeof id !== 'string' || !id.trim() || id.length > 200 ||
+          typeof raw !== 'string' || raw.length > 4096 || !ports.allowsText(raw) || ports.allowsToolInput?.(raw) === false ||
+          !validateAgentToolInput(tool, input) || ports.allowsToolInput?.(JSON.stringify(input)) === false) {
+        log('tool', operation, 'failed', 'invalid_tool_arguments')
+        await reportFailure('tool', 'failed'); return
+      }
       usedScoped = true
       let actionClaimed = false
-      const scopedCurrent = async () => isCurrent() && !signal?.aborted && await ports.inbox.textRecallVersion(target) === recallVersion &&
-        await memoryAndGroupCurrent() && (ports.scopedTools?.(target) ?? []).includes(tool) &&
+      const currentToolIsAllowed = () => isCurrent() && !signal?.aborted && allowedToolNames().some(name => name === tool.name) &&
+        (ports.scopedTools?.(target, tool.name) ?? []).includes(tool)
+      const toolCurrent = () => ports.checkToolCurrent ? ports.checkToolCurrent(currentToolIsAllowed) : currentToolIsAllowed()
+      const scopedCurrent = async () => toolCurrent() && await ports.inbox.textRecallVersion(target) === recallVersion &&
+        await memoryAndGroupCurrent() &&
         (videoSelection === undefined || await ports.videoSelection?.(incoming, binding) === videoSelection) &&
-        (actionClaimed || textReplyClaimed || await ports.inbox.isTextReplyPending(target, messageId))
+        (actionClaimed || textReplyClaimed || await ports.inbox.isTextReplyPending(target, messageId)) && toolCurrent()
       const ensure = async () => { if (!await scopedCurrent()) throw new Error('工具来源已失效') }
+      const scopeMatchesRequest = (scope: AgentToolContext) =>
+        conversationAddressKey(scope.binding.target) === conversationAddressKey(target) && ports.bindingToken(scope.binding) === bindingToken &&
+        scope.actor.kind === 'user' && scope.actor.user?.id === incoming.sender.id && samePlatformNamespace(scope.actor.user, incoming.sender) &&
+        scope.request?.messageId === messageId && scope.request.text === incoming.text
       scopedNoticeCurrent = async () => {
         try {
-          const scope = ports.scopedContext!(incoming, binding, isCurrent, ensure, signal ?? new AbortController().signal)
-          if (!scope || !await scopedCurrent()) return false
+          const scope = ports.scopedContext!(incoming, binding, toolCurrent, ensure, requestContext.signal)
+          if (!scope || !scopeMatchesRequest(scope) || !await scopedCurrent()) return false
           await scope.ensureCurrent?.()
-          return await scopedCurrent()
+          return await scopedCurrent() && scope.isCurrent()
         } catch { return false }
       }
       if (!await scopedCurrent()) return
-      if (sending) {
-        actionClaimed = await ports.inbox.claimTextAction(target, messageId, recallVersion)
-        if (!actionClaimed || !await scopedCurrent()) return
-      }
       const controller = new AbortController(), deadline = tool.timeoutMs ?? 45_000
       const toolSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(Math.min(240_000, Math.max(1, deadline))), ...(signal ? [signal] : [])])
       let outcome
+      let sending = false
+      let claimStarted = false
       let qqStarted = false, qqEntered = false, qqResult: AgentGiftResult | AgentQzoneResult | AgentRedPacketResult | undefined
       try {
-        const scope = ports.scopedContext(incoming, binding, () => isCurrent() && !toolSignal.aborted, ensure, toolSignal)
-        if (!scope) throw new Error('工具不可用')
+        const scope = ports.scopedContext(incoming, binding, () => toolCurrent() && !toolSignal.aborted, ensure, toolSignal)
+        if (!scope || !scopeMatchesRequest(scope)) { log('tool', operation, 'cancelled', 'authorization_changed'); return }
+        const scopeCurrent = () => !toolSignal.aborted && scope.isCurrent() && scopeMatchesRequest(scope)
         const scopedEnsure = async () => {
-          if (toolSignal.aborted || !scope.isCurrent()) throw new Error('QQ动作来源已失效')
-          await ensure(); await scope.ensureCurrent?.(); await ensure()
-          if (toolSignal.aborted || !scope.isCurrent()) throw new Error('QQ动作来源已失效')
+          if (!scopeCurrent()) throw new Error('工具来源已失效')
+          await scope.ensureCurrent()
+          if (!scopeCurrent()) throw new Error('工具来源已失效')
         }
         const runQqAction: AgentQqActionRunner = async (kind, run) => {
           const expected = tool.name === 'sendGiftTool' ? 'gift' : tool.name === 'grabRedBagTool' ? 'red-packet' : 'qzone'
-          if (!qqAction || kind !== expected || qqStarted || !actionClaimed || isPrivateChat ||
-              conversationAddressKey(scope.binding.target) !== conversationAddressKey(target) || ports.bindingToken(scope.binding) !== bindingToken ||
-              scope.actor.kind !== 'user' || !scope.actor.user || scope.actor.user.id !== incoming.sender.id ||
-              !samePlatformNamespace(scope.actor.user, incoming.sender) || scope.request?.messageId !== messageId || scope.request.text !== incoming.text) throw new Error('QQ动作未获本轮授权')
+          if (!qqAction || kind !== expected || qqStarted || !actionClaimed || isPrivateChat || !scopeCurrent()) throw new Error('QQ动作未获本轮授权')
           qqStarted = true
           await scopedEnsure(); qqEntered = true
-          const result = await run({ signal: toolSignal, isCurrent: () => isCurrent() && !toolSignal.aborted && scope.isCurrent(), ensureCurrent: scopedEnsure })
+          const result = await run({ signal: toolSignal, isCurrent: scopeCurrent, ensureCurrent: scopedEnsure })
           qqResult = result
           return result
         }
@@ -426,12 +442,28 @@ export function createTextConversation(ports: {
             await scopedEnsure(); return true
           } catch { return false }
         }
-        const context: AgentToolContext = qqAction ? { ...scope, runQqAction, reviewQqText } : scope
+        const context = authorizeAgentToolContext(tool, input, {
+          ...scope, signal: toolSignal, isCurrent: scopeCurrent, ensureCurrent: scopedEnsure,
+          ...(qqAction ? { runQqAction, reviewQqText } : {}),
+        }, { custom: true })
+        if (!context) { log('tool', operation, 'cancelled', 'authorization_changed'); return }
+        sending = tool.effect === undefined
+          ? !videoSearch && tool.name !== 'searchMagnetTool' && !(tool.name === 'grabRedBagTool' && input.confirm === false)
+          : !!(context.sendVideoCard || context.sendMediaRelay || context.interact || context.runQqAction)
+        await scopedEnsure()
+        if (!scopeCurrent()) return
+        if (sending) {
+          claimStarted = true
+          actionClaimed = await ports.inbox.claimTextAction(target, messageId, recallVersion)
+          if (!actionClaimed) return
+          await scopedEnsure()
+          if (!scopeCurrent()) return
+        }
         log('tool', operation, 'started', 'tool_execution_started')
         outcome = await tool.execute(input, context)
         log('tool', operation, outcome.status === 'succeeded' ? 'succeeded' : outcome.status, 'tool_result_ready')
       } catch (error) {
-        log('tool', operation, sending ? 'unknown' : 'failed', 'tool_execution_failed', error)
+        log('tool', operation, claimStarted ? 'unknown' : 'failed', 'tool_execution_failed', error)
         if (!sending) await reportFailure('tool', 'failed')
         return
       } finally { controller.abort() }
@@ -464,13 +496,15 @@ export function createTextConversation(ports: {
       if (!await scopedCurrent()) return
       if (outcome.status !== 'succeeded') { await reportFailure('tool', outcome.status === 'unknown' ? 'unknown' : 'failed', outcome.content); return }
       if (!outcome.content || outcome.content.length > 16_000 || !ports.allowsText(outcome.content) || ports.allowsToolInput?.(outcome.content) === false) { await reportFailure('tool', 'failed'); return }
-      if (ports.videoSelection) {
+      if (videoSearch && ports.videoSelection) {
         videoSelection = await ports.videoSelection(incoming, binding)
         if (!videoSelection) { log('tool', operation, 'cancelled', 'search_list_replaced'); return }
       }
       messages.push({ ...output, role: 'assistant' }, { role: 'tool', tool_call_id: id as string, name: tool.name, content: outcome.content })
-      output = await modelReply({ ...buildChatRequestData({ useTools: true }, messages, round < 2 ? scopedDefinitions : []), max_tokens: 1_000 }, 'text_video_model')
+      const nextTools = videoSearch && round < 2 ? scopedDefinitions : []
+      output = await modelReply({ ...buildChatRequestData({ useTools: nextTools.length > 0 }, messages, nextTools), max_tokens: 1_000 }, videoSearch ? 'text_video_model' : 'text_tool_result_model')
       if (!output) return
+      if (!nextTools.length) break
     }
     let toolReply: string | undefined
     let actionAttempted = false
@@ -481,17 +515,23 @@ export function createTextConversation(ports: {
       if (!call) {
         toolReply = '一次只处理一项提醒或记忆，请先告诉我想处理哪一项。'
       } else {
+        const raw = call.function?.arguments
+        if (typeof raw !== 'string' || raw.length > 4096 || ports.allowsToolInput?.(raw) === false) {
+          log('tool', 'group_text_tool', 'failed', 'invalid_tool_arguments')
+          await reportFailure('tool', 'failed'); return
+        }
         let actionClaimed = false
         let outcome
+        const staticCurrent = () => isCurrent() && allowedToolNames().some(name => name === call.function?.name)
         try { outcome = await ports.groupTools.execute(call, allowed, {
-          binding, speakerId: incoming.sender.id, userText: user, isCurrent, requestMessageId: messageId,
+          ...requestContext, userText: user, isCurrent: staticCurrent,
           ensureCurrent: async () => { if (!await memoryAndGroupCurrent() || !await scopedEvidenceCurrent()) throw new Error('文字工具来源已失效') },
-          ...(signal ? { signal } : {}),
           allowsText: ports.allowsText,
+          ...(ports.allowsToolInput ? { allowsToolInput: ports.allowsToolInput } : {}),
           claimAction: async () => {
-            if (!await memoryCurrent()) return false
+            if (!await memoryCurrent() || !staticCurrent()) return false
             actionClaimed = await ports.inbox.claimTextAction(target, messageId, recallVersion)
-            return actionClaimed && await memoryCurrent()
+            return actionClaimed && await memoryCurrent() && staticCurrent()
           },
         }) } catch (error) {
           log('tool', 'group_text_tool', actionClaimed ? 'unknown' : 'failed', 'tool_execution_failed', error)

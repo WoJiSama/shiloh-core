@@ -221,6 +221,7 @@ export function createAgentInteractionTools(config: { readonly enabled: boolean 
   if (!config.enabled) return Object.freeze([])
   const poke: AgentTool = {
     name: 'pokeTool', description: '按本条真人请求戳当前群明确成员。target支持真实@、明确本人或原话中的准确ID/唯一姓名；重名须澄清。仅原话明确随机时可random，不猜目标。每人1至10次，最多20人和100次，部分完成或未知不能重试。',
+    effect: { actor: 'user', conversation: 'group', required: ['interact', 'listMembers', 'readMember'], metadata: ['request', 'botUserId'] },
     timeoutMs: 240_000,
     parameters: schema({ target: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, maxItems: 20 }] }, times: { type: 'integer', minimum: 1, maximum: 10 }, random: { type: 'boolean' } }),
     async execute(input, context) {
@@ -252,6 +253,9 @@ export function createAgentInteractionTools(config: { readonly enabled: boolean 
   }
   const like: AgentTool = {
     name: 'likeTool', description: '按本条真人请求给明确成员的资料点赞；好友私聊仅支持当前对方明确给本人点赞。群聊qq为真实@、明确本人或原话中的准确ID/唯一姓名；留空须能确定对象。random仅用于原话明确随机给群友点赞，排除请求者和机器人。count默认10，为1至20。',
+    effect: (input, conversation) => conversation === 'private' && input.random !== true
+      ? { actor: 'user', conversation: 'private', required: ['interact'], metadata: ['request', 'botUserId', 'privatePeer'] }
+      : { actor: 'user', conversation: 'group', required: ['interact', 'listMembers', 'readMember'], metadata: ['request', 'botUserId'] },
     parameters: schema({ qq: { type: 'string' }, count: { type: 'integer', default: 10, minimum: 1, maximum: 20 }, random: { type: 'boolean' } }),
     async execute(input, context) {
       try {
@@ -287,6 +291,7 @@ export function createAgentInteractionTools(config: { readonly enabled: boolean 
   }
   const reaction: AgentTool = {
     name: 'reactionTool', description: '给当前真人群请求中的消息贴表情。message_id仅可使用本条触发消息、被引用消息或原话精确写出的消息ID；count为1至20，表情由可信运行时随机选择。未知或部分完成不能重试。',
+    effect: { actor: 'user', conversation: 'group', required: ['interact'], metadata: ['request'] },
     parameters: schema({ message_id: { type: 'string' }, count: { type: 'integer', minimum: 1, maximum: 20 } }),
     async execute(input, context) {
       try {
@@ -306,6 +311,7 @@ export function createAgentInteractionTools(config: { readonly enabled: boolean 
   }
   const recall: AgentTool = {
     name: 'recallTool', description: '仅按本条真人明确请求撤回当前会话中本角色已确认发出的自有消息。message_id只能用本条原话精确写出的ID或可信引用消息ID；省略仅使用可信引用，不猜当前触发消息或最近消息。所有权由运行时复验，结果未知不能重试。',
+    effect: { actor: 'user', required: ['interact'], metadata: ['request'] },
     parameters: schema({ message_id: { type: 'string' } }),
     async execute(input, context) {
       try {
@@ -322,6 +328,7 @@ export function createAgentInteractionTools(config: { readonly enabled: boolean 
   }
   const mute: AgentTool = {
     name: 'jinyanTool',
+    effect: { actor: 'user', conversation: 'group', required: ['interact', 'listMembers', 'readMember'], metadata: ['request', 'botUserId'] },
     description: '仅按当前真人明确请求禁言或解禁当前群成员。target为准确ID、真实@或唯一姓名，最多20人、每人一次；不猜目标。time默认300秒，解禁必须0，禁言必须正整数，上限30天。random仅在本条同分句明确随机且无指定目标时使用。全体target="all"须明确全体禁言/解禁；开启须confirm=true，仅设置开关，不支持定时自动解除。请求者和机器人须当前群主/管理员，个人目标须普通成员；自主决定不执行。',
     timeoutMs: 240_000,
     parameters: schema({ target: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, maxItems: 20 }] },
@@ -380,6 +387,7 @@ export function createAgentInteractionTools(config: { readonly enabled: boolean 
   }
   const card: AgentTool = {
     name: 'changeCardTool',
+    effect: { actor: 'user', conversation: 'group', required: ['interact', 'listMembers', 'readMember'], metadata: ['request', 'botUserId'] },
     description: '仅按当前真人明确请求修改当前群的一位成员的群名片。target取准确ID、真实@、唯一姓名；我/本人是请求者，你/机器人须原话明确指机器人。cardName须精确来自本条正向改名请求，最多60码点，空串仅用于明确清空名片。普通成员只能请求改自己；改他人须群主/管理员。机器人改他人也须管理员，改自己可普通成员。角色未知或姓名重名应澄清。',
     parameters: { ...schema({ target: { type: 'string' }, cardName: { type: 'string', maxLength: 60 } }), required: ['cardName'] },
     async execute(input, context) {

@@ -14,24 +14,26 @@ export function unquoteJsonString(value: unknown): unknown {
   return value
 }
 
-/** 宽容地把 unknown 归一成 string[]：单字符串、JSON 数组字符串、真数组都接受；全不合法返回 null。 */
-export function coerceStringArray(value: unknown, opts: { maxLength: number; itemMaxChars: number }): string[] | null {
-  let candidate: unknown = unquoteJsonString(value)
+/** Unwrap the known legacy string encodings without changing any array item types. */
+export function normalizeStringArrayInput(value: unknown): unknown {
+  const candidate = unquoteJsonString(value)
   if (typeof candidate === 'string') {
     const text = candidate.trim()
     if (text.startsWith('[')) {
       try {
         const parsed = JSON.parse(text)
-        if (Array.isArray(parsed)) candidate = parsed
+        if (Array.isArray(parsed)) return parsed
       } catch { /* 保留原字符串 */ }
     }
+    return [candidate]
   }
-  const list = Array.isArray(candidate)
-    ? candidate
-    : typeof candidate === 'string' && candidate.trim()
-      ? [candidate]
-      : null
-  if (!list) return null
+  return candidate
+}
+
+/** 宽容地把 unknown 归一成 string[]：单字符串、JSON 数组字符串、真数组都接受；全不合法返回 null。 */
+export function coerceStringArray(value: unknown, opts: { maxLength: number; itemMaxChars: number }): string[] | null {
+  const list = normalizeStringArrayInput(value)
+  if (!Array.isArray(list)) return null
   const cleaned = list
     .map(item => String(unquoteJsonString(item) ?? '').replace(/\s+/g, ' ').trim())
     .filter(Boolean)
