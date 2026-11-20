@@ -8,6 +8,8 @@ import { buildVisibleFailureDetail } from "../../models/domain/visibleFailure.js
 export class AbstractTool {
  /** Captured only by the platform-neutral host tool bridge. */
  agentDataPolicy?: 'ephemeral';
+ /** Optional Core host admission before action receipts or temporary-data handling. */
+ agentPreflight?(input: Record<string, unknown>, event: unknown): string | undefined;
  name:string;parameters:ToolParameters;description:string;skill:Record<string,unknown>|null;
   constructor() {
     this.name = '';

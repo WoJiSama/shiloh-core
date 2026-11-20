@@ -26,6 +26,7 @@ const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x
 const MP4 = Buffer.alloc(128, 0x23); MP4.writeUInt32BE(24); MP4.write('ftyp', 4); MP4.write('isom', 8); MP4.write('isom', 16); MP4.write('isom', 20)
 const MP4_SECOND = Buffer.from(MP4); MP4_SECOND.fill(0x24, 24)
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
+const attachmentWaitMs = 90_000
 const completion = (name, input, id) => JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(input) } }] } }], usage: { total_tokens: 15 } })
 async function waitFor(probe, label, timeout = 25000) { const until = Date.now() + timeout; while (Date.now() < until) { if (await probe()) return; await delay(25) }; assert.fail(`timed out: ${label}`) }
 async function files(directory) {

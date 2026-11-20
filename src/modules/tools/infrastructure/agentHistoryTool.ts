@@ -34,7 +34,8 @@ function boundedInput(input: Record<string, unknown>): boolean {
 /** History scope, target resolution and privacy projection belong to the Core reader. */
 export function createAgentHistoryTool(): AgentTool {
   return {
-    name: 'chatHistoryTool',
+    name: 'chatHistoryTool', dataPolicy: 'ephemeral',
+    effect: { actor: 'user', required: ['readHistory'], metadata: ['request'] },
     description: '检索当前场景的原始发言和有来源记忆；与本人私聊时可查询宿主授权群中的本人历史。支持时间、主题、分来源分页及真实记忆ID详情。只根据返回证据回答，未命中不代表从未发生，转发内容不等于转发者说过。',
     parameters: { type: 'object', properties: {
       question: { type: 'string', minLength: 1, maxLength: 2000, description: '当前用户要回忆或查证的问题。' },
@@ -42,8 +43,8 @@ export function createAgentHistoryTool(): AgentTool {
       start_time: { type: 'string', maxLength: 100, description: '含时区的ISO 8601或北京时间日期YYYY-MM-DD，包含开始边界。' },
       end_time: { type: 'string', maxLength: 100, description: '含时区的ISO 8601或北京时间日期YYYY-MM-DD，日期包含当天整日。' },
       keywords: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 100 }, description: '原文主题词；不传时由查询服务从问题提取。' },
-      limit: { type: 'number', minimum: 1, maximum: 50, description: '每类来源默认20条，最多50条。' },
-      offset: { type: 'number', minimum: 0, maximum: 100000, description: '默认0；按返回next_offsets选来源继续分页。' },
+      limit: { type: 'integer', minimum: 1, maximum: 50, description: '每类来源默认20条，最多50条。' },
+      offset: { type: 'integer', minimum: 0, maximum: 100000, description: '默认0；按返回next_offsets选来源继续分页。' },
       source: { type: 'string', enum: sources, description: '默认all；recent为当前会话，archive仅私聊本人授权群原文，memory为有来源长期记忆。' },
       memory_ids: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 200 }, description: '展开已返回memory_index中的真实ID，不能猜测ID扩大范围。' },
     }, required: ['question'], additionalProperties: false },

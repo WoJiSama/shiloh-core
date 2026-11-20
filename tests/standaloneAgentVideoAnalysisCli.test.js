@@ -31,6 +31,9 @@ const completion = (name, input, id) => JSON.stringify({ choices: [{ message: { 
 const video = () => ({ type: 'video', data: { file: nativeFileId, url: nativeUrl, file_size: bytes.length } })
 const text = value => ({ type: 'text', data: { text: value } })
 
+// Full analysis includes guarded downloads and a second model turn.
+const videoTurnWaitMs = 60_000
+
 async function waitFor(probe, label, timeout = 15000) {
   const deadline = Date.now() + timeout
   while (Date.now() < deadline) { if (await probe()) return; await delay(25) }
@@ -195,7 +198,7 @@ async function fixture(t, { enabled = true, hold = '' } = {}) {
       log = ''; phase = 'run'; launch(false)
       await waitFor(() => { if (child.exitCode !== null) assert.fail(`CLI exited early: ${log}`); return log.includes('已启动') && websocket }, 'CLI readiness')
     },
-    async run(kind) { const source = ingress(kind); await waitFor(() => finished, `${kind} video analysis reaches final send`); await waitFor(drained, `${kind} turn drains`); assert.deepEqual(errors, []); return source },
+    async run(kind) { const source = ingress(kind); await waitFor(() => finished, `${kind} video analysis reaches final send`, videoTurnWaitMs); await waitFor(drained, `${kind} turn drains`); assert.deepEqual(errors, []); return source },
     async pureVideo() {
       const source = { post_type: 'message', message_type: 'group', sub_type: 'normal', self_id: BOT, group_id: GROUP, user_id: USER + 99,
         sender: { user_id: USER + 99, nickname: '仅发送视频的其他群友' }, message_id: 98099, time: now, message: [video()], raw_message: '' }
@@ -222,7 +225,7 @@ async function fixture(t, { enabled = true, hold = '' } = {}) {
   }
 }
 
-test('actual CLI directed current video without text, verified reply and nested forward use an independent exact-byte video model and ephemeral normal replies', { timeout: 90000 }, async t => {
+test('actual CLI directed current video without text, verified reply and nested forward use an independent exact-byte video model and ephemeral normal replies', { timeout: 240_000 }, async t => {
   const run = await fixture(t); await run.start()
   const current = await run.run('current')
   assert.deepEqual(current.message.map(part => part.type), ['at', 'video']); assert.equal(current.raw_message, '')
@@ -251,9 +254,9 @@ test('actual CLI recalled video aborts the pending independent model socket with
   await run.stop(); await run.clean()
 })
 
-test('actual CLI host revision change aborts a pending video-derived main continuation and permits zero late sends', { timeout: 45000 }, async t => {
+test('actual CLI host revision change aborts a pending video-derived main continuation and permits zero late sends', { timeout: 90_000 }, async t => {
   const run = await fixture(t, { hold: 'main' }); await run.start(); run.ingress('current')
-  await waitFor(() => run.results.length === 1, 'video analysis is held at the main continuation'); await run.invalidateConfig()
+  await waitFor(() => run.results.length === 1, 'video analysis is held at the main continuation', videoTurnWaitMs); await run.invalidateConfig()
   await waitFor(() => run.mainAborted === 1, 'video-derived main HTTP socket aborted'); await waitFor(run.settled, 'changed revision releases the execution lock')
   run.releaseMain(); await delay(150)
   assert.equal(run.videos.length, 1); assert.equal(run.deliveries.length, 0); assert.equal(run.models.length, 2); assert.equal(run.finished, false)

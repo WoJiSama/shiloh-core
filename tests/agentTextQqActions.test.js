@@ -5,6 +5,7 @@ import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 const { createTextConversation } = await load('modules/conversation/infrastructure/textConversation.js')
 const { groupTextScopedToolNames, groupTextQqActionToolNames, createGroupTextTools } = await load('modules/conversation/infrastructure/groupTextTools.js')
 const { isToolActionDenied } = await load('modules/conversation/domain/toolActionPolicy.js')
+const { createAgentRedPacketTools } = await load('modules/tools/infrastructure/agentRedPacketTools.js')
 const names = ['sendGiftTool', 'grabRedBagTool', 'qqZoneTool']
 const requests = { sendGiftTool: '请送给我一个香槟', grabRedBagTool: '请抢这个红包', qqZoneTool: '请发布一条QQ空间说说' }
 const kinds = { sendGiftTool: 'gift', grabRedBagTool: 'red-packet', qqZoneTool: 'qzone' }
@@ -27,7 +28,9 @@ function fixture(settings = {}) {
   const now = Date.now(), signal = new AbortController().signal, models = [], effects = [], sends = [], history = [], learning = [], episodes = [], receipts = [], reviews = []
   let state = 'pending', recall = 'one', current = true, invalidatedAt = 0, resultText, calls = 0
   let f
-  const scoped = names.map(toolName => ({ name: toolName, description: '可信QQ业务动作组合服务', parameters: { type: 'object', properties: { text: { type: 'string' } }, required: [], additionalProperties: false },
+  const scoped = names.map(toolName => settings.tool?.name === toolName ? settings.tool : ({
+    name: toolName, description: '可信QQ业务动作组合服务', parameters: { type: 'object', properties: { text: { type: 'string' } }, required: [], additionalProperties: false },
+    effect: settings.effect ?? { actor: 'user', conversation: 'group', metadata: ['request'], required: ['runQqAction'], optional: ['reviewQqText'] },
     async execute(input, context) {
       calls++
       if (settings.execute) return settings.execute(toolName, input, context, f)
@@ -46,7 +49,10 @@ function fixture(settings = {}) {
     async isTextReplyPending() { return state === 'pending' }, async isTextReplyConfirmed() { return state === 'confirmed-text' },
     async textActionReceipt() { return state === 'action' || state === 'confirmed-action' ? '' : state === 'result' ? resultText : undefined },
     async textRecallVersion() { return recall }, async loadTextHistory() { return undefined },
-    async claimTextAction(_target, id, expected) { if (expected !== recall || state !== 'pending') return false; state = 'action'; receipts.push(['claim', id]); return true },
+    async claimTextAction(_target, id, expected) {
+      if (expected !== recall || state !== 'pending') return false
+      state = 'action'; receipts.push(['claim', id]); await settings.onClaim?.(f); return true
+    },
     async confirmTextInteraction(_target, id, expected) { if (expected !== recall || state !== 'action') return false; state = 'confirmed-action'; receipts.push(['interaction', id]); return true },
     async confirmTextMedia() { receipts.push(['unexpected-media']); return true },
     async finishTextAction(_target, _id, expected, text) { if (expected !== recall || state !== 'action') return false; state = 'result'; resultText = text; return true },
@@ -115,6 +121,48 @@ test('QQ tools require each group grant, a current positive request, and never a
     const f = fixture(settings); await f.reply(); assert.equal(f.calls, 0, JSON.stringify(settings)); assert.deepEqual(f.effects, [])
     assert.ok(!(f.models[0].tools ?? []).some(tool => tool.function.name === 'sendGiftTool'))
   }
+})
+
+test('invalid arguments, a missing action port or an unverified actor never take the QQ write claim', async () => {
+  for (const settings of [{ input: { text: 9 } }, { input: { unexpected: true } }, { effect: {
+    actor: 'user', conversation: 'group', required: ['runQqAction', 'readMember'], metadata: ['request'],
+  } }, { wrongActor: true }]) {
+    const f = fixture(settings)
+    if (settings.wrongActor) {
+      const scopedContext = f.ports.scopedContext
+      f.ports.scopedContext = (...args) => ({ ...scopedContext(...args), actor: { kind: 'autonomous' } })
+    }
+    await f.reply()
+    assert.equal(f.calls, 0); assert.deepEqual(f.receipts, []); assert.deepEqual(f.effects, [])
+  }
+})
+
+test('the group allowlist is checked again after source permission and after the QQ action claim', async () => {
+  for (const revokeAt of ['permission', 'claim']) {
+    const f = fixture({ onClaim(owner) { if (revokeAt === 'claim') owner.ports.groupToolNames = () => [] } })
+    if (revokeAt === 'permission') {
+      const scopedContext = f.ports.scopedContext
+      f.ports.scopedContext = (...args) => {
+        const scope = scopedContext(...args)
+        return { ...scope, async ensureCurrent() { await scope.ensureCurrent(); f.ports.groupToolNames = () => [] } }
+      }
+    }
+    await f.reply()
+    assert.equal(f.calls, 0); assert.deepEqual(f.effects, []); assert.deepEqual(f.sends, [])
+    assert.deepEqual(f.receipts, revokeAt === 'claim' ? [['claim', 'human-trigger']] : [])
+  }
+})
+
+test('literal red-packet cancellation returns a tool-free text continuation without a QQ attempt or an action claim', async () => {
+  const [tool] = createAgentRedPacketTools({ enabled: true, execute: async () => assert.fail('red-packet cancellation must stay local') })
+  const f = fixture({ name: 'grabRedBagTool', tool, input: { confirm: false } })
+  await f.reply(); await f.reply()
+  assert.equal(f.models.length, 2)
+  assert.equal(f.models[1].tools?.length ?? 0, 0)
+  assert.equal(f.models[1].messages.find(row => row.role === 'tool') &&
+    JSON.parse(f.models[1].messages.find(row => row.role === 'tool').content).state, 'cancelled')
+  assert.deepEqual(f.receipts, []); assert.deepEqual(f.effects, []); assert.equal(f.sends.length, 1)
+  assert.deepEqual(f.learning, []); assert.deepEqual(f.history[0][2].turns, [])
 })
 
 test('QQ runner rejects a second action and a different action kind from the same model-selected tool', async () => {

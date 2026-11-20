@@ -166,7 +166,6 @@ export function createAgentRedPacketRuntime(options: AgentRedPacketRuntimeOption
     }
     try {
       if (!allowed(currentPolicy())) return result('failed', 'red_packet_not_authorized')
-      await ensure()
       if (automatic) {
         const candidate = validateAgentRedPacketSnapshot(input, now())
         if (conversationAddressKey(candidate.target) !== conversationAddressKey(selected.target)) throw redPacketError()
@@ -215,10 +214,10 @@ export function createAgentRedPacketRuntime(options: AgentRedPacketRuntimeOption
         const draw = () => { const value = random(); if (!Number.isFinite(value) || value < 0 || value >= 1) throw redPacketError(); return value }
         const probability = 0.3 + draw() * 0.5
         if (draw() >= probability) return result('skipped', 'red_packet_probability_skipped')
-        await ensure()
+        if (!current()) throw redPacketError()
         if (!await bounded(ledger.claimAutomaticCooldown(selected))) return result('skipped', 'red_packet_cooldown')
+        await ensure()
       }
-      await ensure()
       const claim = await bounded(ledger.claim(selected, packet))
       if (claim.state === 'duplicate') {
         const uncertain = claim.record.state === 'active' || claim.record.state === 'unknown'
@@ -239,7 +238,6 @@ export function createAgentRedPacketRuntime(options: AgentRedPacketRuntimeOption
         catch { return Object.freeze({ ...result('unknown', 'red_packet_password_settlement_unknown', session), passwordConfirmed: true }) }
         await ensure()
         await bounded(Promise.resolve().then(() => wait(500, signal)))
-        await ensure()
       }
       await fresh()
       await bounded(session.begin('grab_pending'))

@@ -409,13 +409,14 @@ function delegatedColumnsFor(): DataTableColumns<DelegatedRow> {
 <template>
   <div class="page">
     <PageHeader
+      v-if="!embedded"
       title="托付数据"
-      subtitle="群友托付给机器人的定时事务（承诺账本）与「帮我记住」的原话（委托记忆）——透明化与被遗忘权，只读+删除，数据不出机"
+      description="查看按来源会话保存的定时承诺与委托记忆。"
     />
     <NButton :loading="loading" :disabled="acting" @click="load">重新读取</NButton>
     <PageState :loading="loading && !overview" :error="error" @retry="load" />
     <template v-if="overview">
-      <NAlert type="default" :show-icon="false" style="margin-bottom: 12px">
+      <NAlert v-if="!embedded" type="default" :show-icon="false" style="margin-bottom: 12px">
         托付数据属于托付人：群友可随时在群里让机器人取消/忘掉自己的托付；此页为主人提供总览与清理。
         上限：每群 {{ overview.config.maxActivePerGroup }} 个承诺 / 每人
         {{ overview.config.maxPerCreator }} 个 / 默认

@@ -61,8 +61,11 @@ const schema = (properties: Record<string, unknown>, required: readonly string[]
 /** Both surfaces are opt-in. qqZoneTool remains restricted by the host allow/extra policy. */
 export function createAgentQzoneTools(options: { readonly enabled?: boolean; readonly simulationEnabled?: boolean } = {}): readonly AgentTool[] {
   const tools: AgentTool[] = []
-  if (options.enabled === true) tools.push(Object.freeze({
+  if (options.enabled === true) tools.push(Object.freeze<AgentTool>({
     name: 'qqZoneTool', timeoutMs: 60_000,
+    // The QQ coordinator injects qzone after the host scopes the context.
+    effect: input => ({ actor: 'user', conversation: 'group', metadata: ['request'],
+      required: input.type === true ? ['runQqAction'] : ['runQqAction', 'reviewQqText'] }),
     description: '按当前真人的明确请求，以机器人自己的人设发表纯文字 QQ 空间说说，或删除本角色已确认发表的说说。发布传 text；删除传 type:true 和已知稳定 postId。不能按列表位置删除，不支持图片或可见范围。需要宿主显式授权；自主与承诺不可用。',
     parameters: schema({ text: { type: 'string', description: '机器人自己的纯文字说说，最多2000个UTF-16单位；不能冒充请求者或管理员。' },
       type: { type: 'boolean', default: false, description: 'true表示删除本角色已发表的稳定postId。' }, postId: { type: 'string', description: '删除目标的稳定ID，来自已确认发布回执，且须在当前请求中指明。' } }),
@@ -80,8 +83,13 @@ export function createAgentQzoneTools(options: { readonly enabled?: boolean; rea
       } catch { return failed() }
     },
   }))
-  if (options.simulationEnabled === true) tools.push(Object.freeze({
+  if (options.simulationEnabled === true) tools.push(Object.freeze<AgentTool>({
     name: 'simQzoneInteract', dataPolicy: 'ephemeral', timeoutMs: 60_000,
+    effect: input => ({ actor: 'user', conversation: 'group', metadata: ['request'], optional: ['qzoneAffinity'],
+      required: ['qzone', 'runQqAction',
+        ...(input.action === 'visit' && input.userId === undefined ? ['qzoneCandidates' as const] : []),
+        ...(input.action === 'comment' ? ['reviewQqText' as const] : []),
+      ] }),
     description: '在获授权的当前真人群聊回合偶尔查看好感达标群友的 QQ 空间。action=visit返回本次visitId及稳定tid；like/comment必须同时传原visitId、userId和tid。评论为短评，最多120个UTF-16单位并脱敏。默认关闭，保留冷却和每日限额，自主或承诺回合禁止使用。',
     parameters: schema({ action: { type: 'string', enum: ['visit', 'like', 'comment'] }, userId: { type: 'string', description: '当前群友ID，visit省略时由宿主候选选择。' },
       tid: { type: 'string', description: '本回合可信visit结果中的稳定说说ID。' }, visitId: { type: 'string', description: '同一真人来源回合内有效的visit凭证。' }, text: { type: 'string', description: 'comment的一句纯文字短评。' } }, ['action']),

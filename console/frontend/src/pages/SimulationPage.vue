@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NAlert, NButton, NCheckbox, NDataTable, NDrawer, NDrawerContent, NInput, NInputNumber, NSelect, NSwitch, NTag, useDialog, type DataTableColumns } from 'naive-ui'
 import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
@@ -26,9 +26,9 @@ interface CharacterView {
   receipts: { id: string; toolName: string; status: string; summary: string; at: number; goalId?: string }[]
 }
 interface GroupRow {
+  groupId: string
   scopeKey?: string
   bindingToken?: string
-  groupId: string
   conversation?: { id: string; kind: string; account: { id: string; platform: string; namespace: string } }
   active: boolean
   running: boolean
@@ -48,6 +48,7 @@ interface GroupRow {
 interface Overview { enabled: boolean; allGroups: boolean; disabled: string[]; budgetDefaultCny: number; groups: GroupRow[]; groupNames?: Record<string, string> }
 
 const overview = ref<Overview | null>(null)
+const props = defineProps<{ initialScopeKey?: string; initialBindingToken?: string }>()
 const dialog = useDialog()
 const loading = ref(false)
 const error = ref('')
@@ -72,8 +73,20 @@ const characterMessage = ref('')
 const activityBusy = ref(false)
 const activityMessage = ref('')
 const forgetting = useForgetReceipt()
+const initialDetailOpened = ref(false)
 let detailRequest = 0
 let timer: number | null = null
+
+function selector(groupId: string, bindingToken?: string): Record<string, string> {
+  const token = bindingToken || (groupId === props.initialScopeKey ? props.initialBindingToken : undefined)
+  return token ? { scopeKey: groupId, bindingToken: token } : { group: groupId }
+}
+function selectorQuery(groupId: string, bindingToken?: string) {
+  return new URLSearchParams(selector(groupId, bindingToken)).toString()
+}
+function selectorBody(groupId: string, body: Record<string, unknown>, bindingToken?: string) {
+  return { ...selector(groupId, bindingToken), ...body }
+}
 
 async function load() {
   loading.value = true
@@ -86,6 +99,29 @@ async function load() {
   } finally {
     loading.value = false
   }
+  if (
+    !initialDetailOpened.value &&
+    overview.value &&
+    (props.initialScopeKey || props.initialBindingToken)
+  ) {
+    initialDetailOpened.value = true
+    if (!props.initialScopeKey || !props.initialBindingToken) {
+      initialDetailOpened.value = false
+      error.value = '会话链接缺少完整的绑定版本，请从会话列表重新打开'
+      return
+    }
+    if (!overview.value.groups.some((row) => row.groupId === props.initialScopeKey)) {
+      initialDetailOpened.value = false
+      error.value = '指定会话已失效或不在当前可见范围内，请从会话列表重新打开'
+      return
+    }
+    try {
+      await openDetail(props.initialScopeKey, props.initialBindingToken)
+    } catch (cause: any) {
+      initialDetailOpened.value = false
+      error.value = cause?.message || '无法打开指定会话'
+    }
+  }
 }
 onMounted(() => {
   void load()
@@ -94,10 +130,25 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer)
 })
+watch(
+  () => [props.initialScopeKey, props.initialBindingToken],
+  () => {
+    forgetting.reset()
+    initialDetailOpened.value = false
+    drawerOpen.value = false
+    detail.value = null
+    detailId.value = ''
+    detailRequest++
+    void load()
+  }
+)
 
 async function toggle(row: GroupRow) {
   try {
-    await api('/api/simulation/group', { method: 'POST', body: JSON.stringify({ group: row.groupId, action: row.active ? 'disable' : 'enable' }) })
+    await api('/api/simulation/group', {
+      method: 'POST',
+      body: JSON.stringify(selectorBody(row.groupId, { action: row.active ? 'disable' : 'enable' }, row.bindingToken))
+    })
     await load()
   } catch (e: any) {
     error.value = e?.message || '操作失败'
@@ -108,10 +159,14 @@ const replyModeOptions = [
   { label: '自主', value: 'auto' },
   { label: '活跃', value: 'active' },
 ]
-const replyModeLabels: Record<string, string> = { atOnly: '仅@', auto: '自主', active: '活跃' }
 async function setReplyMode(row: GroupRow, value: string) {
   try {
-    await api('/api/simulation/group', { method: 'POST', body: JSON.stringify({ group: row.groupId, action: 'reply-mode', mode: value }) })
+    await api('/api/simulation/group', {
+      method: 'POST',
+      body: JSON.stringify(selectorBody(row.groupId, { action: 'reply-mode', mode: value }, row.bindingToken))
+    })
+    if (detail.value && detailId.value === row.groupId && detail.value.bindingToken === row.bindingToken)
+      detail.value.replyMode = value as GroupRow['replyMode']
     await load()
   } catch (e: any) {
     error.value = e?.message || '切换回复模式失败'
@@ -119,27 +174,36 @@ async function setReplyMode(row: GroupRow, value: string) {
   }
 }
 async function resetGroup(groupId: string) {
+  const bindingToken = detail.value?.bindingToken
+  const request = detailRequest
   dialog.warning({
     title: '重置仿真会话',
     content: `将清空 ${detail.value ? conversationLabel(detail.value) : groupId} 的回合历史、未读水位与今日预算（长期记忆与好感度保留）。此操作不可撤销，确定继续吗？`,
     positiveText: '重置',
     negativeText: '取消',
-    onPositiveClick: () => doResetGroup(groupId),
+    onPositiveClick: () => detailId.value === groupId && request === detailRequest
+      ? doResetGroup(groupId, bindingToken) : undefined,
   })
 }
-async function doResetGroup(groupId: string) {
+async function doResetGroup(groupId: string, bindingToken?: string) {
+  const request = detailRequest
   try {
-    await api('/api/simulation/group', { method: 'POST', body: JSON.stringify({ group: groupId, action: 'reset' }) })
-    await openDetail(groupId)
+    await api('/api/simulation/group', {
+      method: 'POST',
+      body: JSON.stringify(selectorBody(groupId, { action: 'reset' }, bindingToken))
+    })
+    if (detailId.value === groupId && request === detailRequest)
+      await openDetail(groupId, bindingToken)
     await load()
   } catch (e: any) {
     error.value = e?.message || '重置失败'
   }
 }
-async function openDetail(groupId: string) {
-  if (detailId.value !== groupId) forgetting.reset()
+async function openDetail(groupId: string, bindingToken?: string) {
+  if (detailId.value !== groupId || detail.value?.bindingToken !== selector(groupId, bindingToken).bindingToken)
+    forgetting.reset()
   const request = ++detailRequest
-  const result = await api<GroupRow>(`/api/simulation/group?group=${encodeURIComponent(groupId)}`)
+  const result = await api<GroupRow>(`/api/simulation/group?${selectorQuery(groupId, bindingToken)}`)
   if (request !== detailRequest) return
   detail.value = result
   detailId.value = groupId
@@ -168,18 +232,27 @@ function characterTime(at: number) {
 async function controlCharacter(operation: CharacterOperation, id?: string) {
   if (!detailId.value || characterBusy.value) return
   const group = detailId.value
+  const bindingToken = detail.value?.bindingToken
   const request = detailRequest
   characterBusy.value = true
   characterMessage.value = ''
   try {
     const selected = detail.value
     const result = await api<{ message?: string }>('/api/simulation/group', {
-      method: 'POST', body: JSON.stringify({ group, action: 'character', operation, ...(id ? { id } : {}), ...(operation === 'delete-memory' ? { requestId: forgetRequestId() } : {}) })
+      method: 'POST',
+      body: JSON.stringify(
+        selectorBody(
+          group,
+          { action: 'character', operation, ...(id ? { id } : {}),
+            ...(operation === 'delete-memory' ? { requestId: forgetRequestId() } : {}) },
+          bindingToken
+        )
+      )
     })
     if (detailId.value !== group || request !== detailRequest) return
     forgetting.capture(result, { scopeKey: selected?.scopeKey || group,
-      bindingToken: selected?.bindingToken, isCurrent: () => detailId.value === group })
-    await openDetail(group)
+      bindingToken, isCurrent: () => detailId.value === group && detail.value?.bindingToken === bindingToken })
+    await openDetail(group, bindingToken)
     if (detailId.value === group) characterMessage.value = result.message || '角色管理操作已提交'
   } catch (e: any) {
     if (detailId.value === group) characterMessage.value = e?.message || '角色管理操作失败'
@@ -189,8 +262,9 @@ async function controlCharacter(operation: CharacterOperation, id?: string) {
 }
 async function refreshCharacter() {
   const group = detailId.value
+  const bindingToken = detail.value?.bindingToken
   try {
-    await openDetail(group)
+    await openDetail(group, bindingToken)
   } catch (e: any) {
     if (detailId.value === group) characterMessage.value = e?.message || '刷新角色状态失败'
   }
@@ -206,15 +280,23 @@ function removeCharacterMemory(id: string) {
 async function controlActivity(operation: ActivityOperation, id?: string, payload?: { revision: number }) {
   if (!detailId.value || activityBusy.value) return
   const group = detailId.value
+  const bindingToken = detail.value?.bindingToken
   const request = detailRequest
   activityBusy.value = true
   activityMessage.value = ''
   try {
     const result = await api<{ message: string }>('/api/simulation/group', {
-      method: 'POST', body: JSON.stringify({ group, action: 'activity', operation, ...(id ? { id } : {}), ...(payload ? { payload } : {}) })
+      method: 'POST',
+      body: JSON.stringify(
+        selectorBody(
+          group,
+          { action: 'activity', operation, ...(id ? { id } : {}), ...(payload ? { payload } : {}) },
+          bindingToken
+        )
+      )
     })
     if (detailId.value !== group || request !== detailRequest) return
-    await openDetail(group)
+    await openDetail(group, bindingToken)
     if (detailId.value === group) activityMessage.value = result.message
   } catch (e: any) {
     if (detailId.value === group && request === detailRequest) activityMessage.value = e?.message || '角色活动操作失败'
@@ -225,12 +307,21 @@ function confirmActivity(operation: ActivityOperation, id: string, title: string
   dialog.warning({ title, content, positiveText: '确认', negativeText: '取消', onPositiveClick: () => detailId.value === group ? controlActivity(operation, id) : undefined })
 }
 async function savePrompt() {
+  if (!detailId.value) return
+  const group = detailId.value
+  const bindingToken = detail.value?.bindingToken
+  const request = detailRequest
   savingPrompt.value = true
   try {
-    const result = await api<{ message: string }>('/api/simulation/group', { method: 'POST', body: JSON.stringify({ group: detailId.value, action: 'initial-prompt', text: initPromptDraft.value }) })
-    promptMessage.value = result.message
+    const result = await api<{ message: string }>('/api/simulation/group', {
+      method: 'POST',
+      body: JSON.stringify(
+        selectorBody(group, { action: 'initial-prompt', text: initPromptDraft.value }, bindingToken)
+      )
+    })
+    if (detailId.value === group && request === detailRequest) promptMessage.value = result.message
   } catch (e: any) {
-    promptMessage.value = e?.message || '保存失败'
+    if (detailId.value === group && request === detailRequest) promptMessage.value = e?.message || '保存失败'
   } finally {
     savingPrompt.value = false
   }
@@ -251,31 +342,45 @@ async function saveDefaultCap() {
 }
 async function saveTurns() {
   if (!detailId.value) return
+  const group = detailId.value
+  const bindingToken = detail.value?.bindingToken
+  const request = detailRequest
   savingTurns.value = true
   turnsMessage.value = ''
   try {
     const cap = turnsUnlimited.value ? -1 : (turnsDraft.value || 0)
-    const result = await api<{ message: string }>('/api/simulation/group', { method: 'POST', body: JSON.stringify({ group: detailId.value, action: 'turns', cap }) })
-    await openDetail(detailId.value)
+    const result = await api<{ message: string }>('/api/simulation/group', {
+      method: 'POST',
+      body: JSON.stringify(selectorBody(group, { action: 'turns', cap }, bindingToken))
+    })
+    if (detailId.value !== group || request !== detailRequest) return
+    await openDetail(group, bindingToken)
     await load()
-    turnsMessage.value = result.message
+    if (detailId.value === group) turnsMessage.value = result.message
   } catch (e: any) {
-    turnsMessage.value = e?.message || '保存失败'
+    if (detailId.value === group) turnsMessage.value = e?.message || '保存失败'
   } finally {
     savingTurns.value = false
   }
 }
 async function saveCap() {
   if (!detailId.value) return
+  const group = detailId.value
+  const bindingToken = detail.value?.bindingToken
+  const request = detailRequest
   savingCap.value = true
   capMessage.value = ''
   try {
-    const result = await api<{ message: string }>('/api/simulation/group', { method: 'POST', body: JSON.stringify({ group: detailId.value, action: 'budget', cap: capDraft.value || 0 }) })
-    await openDetail(detailId.value)
+    const result = await api<{ message: string }>('/api/simulation/group', {
+      method: 'POST',
+      body: JSON.stringify(selectorBody(group, { action: 'budget', cap: capDraft.value || 0 }, bindingToken))
+    })
+    if (detailId.value !== group || request !== detailRequest) return
+    await openDetail(group, bindingToken)
     await load()
-    capMessage.value = result.message
+    if (detailId.value === group) capMessage.value = result.message
   } catch (e: any) {
-    capMessage.value = e?.message || '保存失败'
+    if (detailId.value === group) capMessage.value = e?.message || '保存失败'
   } finally {
     savingCap.value = false
   }
@@ -306,7 +411,7 @@ const columns: DataTableColumns<GroupRow> = [
   { title: '最近唤醒', key: 'lastWakeReason', width: 110, render: row => row.lastWakeReason || '—' },
   { title: '梗/待办', key: 'memes', width: 90, render: row => `${row.memes.length}/${row.pendingEvents.length}` },
   { title: '仿真开关', key: 'toggle', width: 100, render: row => h(NSwitch, { value: row.active, size: 'small', onUpdateValue: () => void toggle(row) }) },
-  { title: '', key: 'ops', width: 90, render: row => h(NButton, { size: 'tiny', onClick: () => void openDetail(row.groupId) }, { default: () => '详情' }) },
+  { title: '', key: 'ops', width: 90, render: row => h(NButton, { size: 'tiny', onClick: () => void openDetail(row.groupId, row.bindingToken) }, { default: () => '详情' }) },
 ]
 import { h } from 'vue'
 const rows = computed(() => overview.value?.groups || [])
@@ -336,9 +441,37 @@ const detailTitle = computed(() => `${detail.value ? conversationLabel(detail.va
     <NDrawer v-model:show="drawerOpen" width="min(420px, 100vw)">
       <NDrawerContent :title="detailTitle" closable>
         <div v-if="detail" class="detail">
-          <div class="kv"><span>回复模式（管理员设定）</span><b>{{ replyModeLabels[detail.replyMode || 'auto'] || '自主' }}</b></div>
+          <div class="kv"><span>回复模式（管理员设定）</span><NSelect :value="detail.replyMode || 'auto'" :options="replyModeOptions" size="small" style="width: 130px" @update:value="(value: string) => setReplyMode(detail!, value)" /></div>
           <div class="kv"><span>AI 自设状态（它给自己定的）</span><b>{{ detail.mode === 'active' ? '活跃观察期' : '潜水（低主动）' }}</b></div>
           <div class="kv"><span>回合历史</span><b>{{ detail.historyLength }} 条</b></div>
+          <div class="block">
+            <h4>本群每日消耗上限（元） <small v-if="detail.budget.capOverridden">（按群覆盖）</small><small v-else>（跟随默认）</small></h4>
+            <div class="row">
+              <NInputNumber v-model:value="capDraft" :min="0" :max="10000" :step="1" size="small" style="width: 130px" placeholder="0=跟随默认" />
+              <NButton size="small" type="primary" :loading="savingCap" @click="saveCap">保存</NButton>
+              <NButton size="small" quaternary @click="() => { capDraft = 0; void saveCap() }">清除覆盖</NButton>
+            </div>
+            <div v-if="capMessage" class="msg">{{ capMessage }}</div>
+          </div>
+          <div class="block">
+            <h4>本群每日回合上限 <small v-if="detail.budget.turnsCapOverridden">（按群覆盖）</small><small v-else>（跟随默认）</small></h4>
+            <div class="row">
+              <NInputNumber v-model:value="turnsDraft" :min="1" :max="10000" :step="1" size="small" style="width: 130px" :disabled="turnsUnlimited" placeholder="回合数" />
+              <NCheckbox size="small" :checked="turnsUnlimited" @update:checked="(v: boolean) => (turnsUnlimited = v)">不限（永不耗尽）</NCheckbox>
+              <NButton size="small" type="primary" :loading="savingTurns" @click="saveTurns">保存</NButton>
+              <NButton size="small" quaternary @click="() => { turnsUnlimited = false; turnsDraft = 0; void saveTurns() }">清除覆盖</NButton>
+            </div>
+            <div v-if="turnsMessage" class="msg">{{ turnsMessage }}</div>
+          </div>
+          <div class="block">
+            <h4>会话初始提示词 <small>（会话重置后的首次唤醒注入一次）</small></h4>
+            <NInput v-model:value="initPromptDraft" type="textarea" :rows="4" maxlength="2000" show-count placeholder="这个群是什么圈子、常见话题、忌讳……" />
+            <div class="row">
+              <NButton size="small" type="primary" :loading="savingPrompt" @click="savePrompt">保存</NButton>
+              <NButton size="small" quaternary type="error" @click="resetGroup(detailId)">重置仿真会话</NButton>
+            </div>
+            <div v-if="promptMessage" class="msg">{{ promptMessage }}</div>
+          </div>
           <div v-if="detail.character" class="block character-block" aria-label="角色与自主目标">
             <h4>角色与自主目标</h4>
             <div class="character-meta">机器人 {{ detail.character.scope.botId }} · 人设 {{ detail.character.scope.personaId }}</div>
@@ -441,34 +574,6 @@ const detailTitle = computed(() => `${detail.value ? conversationLabel(detail.va
               <div class="character-title"><b>{{ capability.name }}</b><NTag size="small" :type="capability.available ? 'success' : 'default'">{{ capability.available ? '可用' : '未接入' }}</NTag></div>
               <p>{{ capability.description }}</p>
             </div>
-          </div>
-          <div class="block">
-            <h4>本群每日消耗上限（元） <small v-if="detail.budget.capOverridden">（按群覆盖）</small><small v-else>（跟随默认）</small></h4>
-            <div class="row">
-              <NInputNumber v-model:value="capDraft" :min="0" :max="10000" :step="1" size="small" style="width: 130px" placeholder="0=跟随默认" />
-              <NButton size="small" type="primary" :loading="savingCap" @click="saveCap">保存</NButton>
-              <NButton size="small" quaternary @click="() => { capDraft = 0; void saveCap() }">清除覆盖</NButton>
-            </div>
-            <div v-if="capMessage" class="msg">{{ capMessage }}</div>
-          </div>
-          <div class="block">
-            <h4>本群每日回合上限 <small v-if="detail.budget.turnsCapOverridden">（按群覆盖）</small><small v-else>（跟随默认）</small></h4>
-            <div class="row">
-              <NInputNumber v-model:value="turnsDraft" :min="1" :max="10000" :step="1" size="small" style="width: 130px" :disabled="turnsUnlimited" placeholder="回合数" />
-              <NCheckbox size="small" :checked="turnsUnlimited" @update:checked="(v: boolean) => (turnsUnlimited = v)">不限（永不耗尽）</NCheckbox>
-              <NButton size="small" type="primary" :loading="savingTurns" @click="saveTurns">保存</NButton>
-              <NButton size="small" quaternary @click="() => { turnsUnlimited = false; turnsDraft = 0; void saveTurns() }">清除覆盖</NButton>
-            </div>
-            <div v-if="turnsMessage" class="msg">{{ turnsMessage }}</div>
-          </div>
-          <div class="block">
-            <h4>会话初始提示词 <small>（会话重置后的首次唤醒注入一次）</small></h4>
-            <NInput v-model:value="initPromptDraft" type="textarea" :rows="4" maxlength="2000" show-count placeholder="这个群是什么圈子、常见话题、忌讳……" />
-            <div class="row">
-              <NButton size="small" type="primary" :loading="savingPrompt" @click="savePrompt">保存</NButton>
-              <NButton size="small" quaternary type="error" @click="resetGroup(detailId)">重置仿真会话</NButton>
-            </div>
-            <div v-if="promptMessage" class="msg">{{ promptMessage }}</div>
           </div>
           <div class="block">
             <h4>本群专属梗</h4>

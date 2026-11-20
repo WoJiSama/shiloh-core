@@ -1,6 +1,8 @@
 import type {AgentTool,AgentToolContext} from '../../../contracts/agentTool.js'
 import type {createAgentDeferredActionRuntime} from '../../runtime/infrastructure/agentDeferredActionRuntime.js'
 import {formatCommitmentLine,parseOnceTime} from '../../commitments/domain/commitments.js'
+import {authorizeAgentToolContext} from './agentToolAuthorization.js'
+import {validateAgentToolInput} from './agentToolSchema.js'
 
 /** Keep this in the human simulation registry; text mode keeps the static commitmentTool. */
 export function createAgentDeferredActionTool(options:{
@@ -8,8 +10,9 @@ export function createAgentDeferredActionTool(options:{
   /** Time from the verified original human message, not a model argument. */
   sourceAt(context:AgentToolContext):number
 }):AgentTool {
-  return {
+  const tool:AgentTool = {
     name:'reminderTool',
+    effect:{actor:'user',metadata:['request']},
     description:'登记一次性固定提醒及明确授权的附加工具动作。extra_action 参数在登记时冻结，到期只尝试一次，不会重新规划。只能使用宿主明确允许延期的工具；群文字仍用 commitmentTool 登记固定文字，私聊仅可查看和取消已接续提醒。',
     parameters:{type:'object',properties:{
       action:{type:'string',enum:['create','list','cancel']},
@@ -21,7 +24,8 @@ export function createAgentDeferredActionTool(options:{
     },required:['action'],additionalProperties:false},
     async execute(input,context){
       const creator=context.actor.user,request=context.request
-      if(context.actor.kind!=='user'||!creator||!request?.messageId||context.binding.source!=='configured'||!context.isCurrent()||context.signal.aborted)return {status:'failed',content:'延期提醒需要当前真人请求，未操作。'}
+      if(!validateAgentToolInput(tool,input))return {status:'failed',content:'延期提醒参数无效，未操作。'}
+      if(!creator||!request||context.binding.source!=='configured'||!context.isCurrent()||context.signal.aborted||!authorizeAgentToolContext(tool,input,context))return {status:'failed',content:'延期提醒需要当前真人请求，未操作。'}
       await context.ensureCurrent?.()
       if(!context.isCurrent()||context.signal.aborted)return {status:'failed',content:'当前请求已失效，未操作。'}
       if(input.action==='list'){
@@ -49,4 +53,5 @@ export function createAgentDeferredActionTool(options:{
         :{status:'failed',content:`延期提醒未登记（${result.code}）。当前规则没有授予的工具不能延期调用。`}
     },
   }
+  return tool
 }

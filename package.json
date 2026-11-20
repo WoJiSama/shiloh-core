@@ -8,6 +8,7 @@
     "test": "npm run backend:test",
     "trace:report": "node scripts/turn-trace-report.mjs",
     "eval:tools": "node scripts/tool-exposure-eval.mjs",
+    "eval:memory": "node scripts/semantic-memory-eval.mjs",
     "persona:replay": "node scripts/personaReplay.mjs",
     "console:dev": "npm --prefix console/frontend run dev",
     "console:build": "node scripts/console-build.mjs",

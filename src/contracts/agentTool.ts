@@ -1,4 +1,4 @@
-import type { AgentBindingSnapshot, PlatformUserRef } from './agentBinding.js'
+import type { AgentBindingSnapshot, ConversationKind, PlatformUserRef } from './agentBinding.js'
 import type { DeliveryReceipt } from './delivery.js'
 import type { AgentFileUpload, FileDeliveryReceipt } from './agentFileDelivery.js'
 import type { MessageBundleItem } from './platformMessage.js'
@@ -84,7 +84,7 @@ export interface AgentToolContext {
   qzoneAffinity?(userId: string): number
   qzoneCandidates?(): Promise<readonly string[]>
   reviewQqText?(text: string): Promise<boolean>
-  /** Reauthorize a known source in this binding without disclosing its current contents. */
+  /** Reauthorize the live tool scope and a known source in this binding without disclosing its contents. */
   isSourceAvailable?(source: { readonly messageId: string; readonly author: PlatformUserRef }): Promise<boolean>
   /** Send one bounded bundle to this turn's fixed conversation, using its existing send budget. */
   sendBundle?(items: readonly MessageBundleItem[], guard?: AgentToolDeliveryGuard): Promise<DeliveryReceipt>
@@ -110,10 +110,29 @@ export interface AgentToolResult {
   readonly content: string
 }
 
+export type AgentToolMetadata = 'request' | 'botUserId' | 'privatePeer' | 'persona'
+export type AgentToolCapability = keyof Omit<AgentToolContext,
+  AgentToolMetadata | 'binding' | 'actor' | 'signal' | 'isCurrent' | 'ensureCurrent' | 'recordUsage'>
+
+/** Minimum host access for the action selected by strictly validated arguments. */
+export interface AgentToolAccess {
+  /** Requires a current human request from the bound conversation. */
+  readonly actor?: 'user'
+  readonly conversation?: 'group' | 'private'
+  readonly required?: readonly AgentToolCapability[]
+  readonly optional?: readonly AgentToolCapability[]
+  readonly metadata?: readonly AgentToolMetadata[]
+}
+
+export type AgentToolEffect = 'read' | 'sendMusic' | AgentToolAccess |
+  ((input: Readonly<Record<string, unknown>>, conversation: ConversationKind) => AgentToolAccess)
+
 /** Host implementations receive scoped identities, never a native platform event. */
 export interface AgentTool {
   readonly name: string
   readonly description: string
+  /** Select host capabilities and execution subject. Omission keeps the legacy scoped extension contract. */
+  readonly effect?: AgentToolEffect
   /** Declare temporary source-backed data before execution; grants file ports and prevents durable receipts/derived state. */
   readonly dataPolicy?: 'ephemeral'
   /** Optional execution deadline in milliseconds, from 1 to 240000; defaults to 45000. */
@@ -123,7 +142,10 @@ export interface AgentTool {
     readonly properties: Record<string, unknown>
     readonly required: readonly string[]
     readonly additionalProperties?: boolean
+    readonly [keyword: string]: unknown
   }
+  /** Canonical schema when a provider needs a simplified model-facing projection. */
+  readonly inputSchema?: Readonly<Record<string, unknown>>
   execute(input: Record<string, unknown>, context: AgentToolContext): Promise<AgentToolResult>
 }
 

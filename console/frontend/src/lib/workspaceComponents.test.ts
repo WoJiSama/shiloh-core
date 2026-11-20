@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { flushPromises, mount, shallowMount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterLink } from 'vue-router'
-import { NButton } from 'naive-ui'
+import { NButton, NInput } from 'naive-ui'
 import RobotScene from '../components/RobotScene.vue'
 import WorkspaceRobots from '../pages/WorkspaceRobots.vue'
 import WorkspaceRobot from '../pages/WorkspaceRobot.vue'
 import WorkspaceOverview from '../pages/WorkspaceOverview.vue'
 import WorkspaceShell from '../components/WorkspaceShell.vue'
 import StandaloneProfiles from '../components/StandaloneProfiles.vue'
+import StandalonePersonaConfig from '../components/StandalonePersonaConfig.vue'
 import TrusteeshipPage from '../pages/TrusteeshipPage.vue'
+import ConsoleFeaturePage from '../pages/ConsoleFeaturePage.vue'
+import EmbeddedPage from '../pages/EmbeddedPage.vue'
 import CapabilityGate from '../components/CapabilityGate.vue'
 import { workspace } from './workspace'
 import { consoleRestart } from './consoleRestart'
@@ -18,6 +21,7 @@ const { warning, notice } = vi.hoisted(() => ({ warning: vi.fn(), notice: vi.fn(
 vi.mock('./api', async () => ({
   api: vi.fn(),
   authState: (await vi.importActual<typeof import('vue')>('vue')).ref(null),
+  imageUrl: (path: string) => path,
   clearToken: vi.fn()
 }))
 vi.mock('naive-ui', async () => ({
@@ -401,6 +405,197 @@ describe('robot workspace components', () => {
     expect((tabs[0]?.props('to') as { query: { bindingToken: string } }).query.bindingToken).toBe(
       scene().bindingToken
     )
+  })
+  it('restores scoped memory and trusteeship panels from URLs and clears panels on tab changes', async () => {
+    const row = scene()
+    workspace.data.value!.capabilities.push({
+      operation: 'trusteeship.read',
+      scope: 'global',
+      effect: 'read',
+      status: 'available',
+      reason: ''
+    })
+    vi.mocked(api).mockImplementation(async (path) => {
+      if (path === '/api/person-profiles') return { profiles: [profile(row)] }
+      if (path === '/api/trusteeship/overview') return trusteeship()
+      return result(row)
+    })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/robots/:id/:tab', component: { template: '<div />' } },
+        { path: '/:pathMatch(.*)*', component: { template: '<div />' } }
+      ]
+    })
+    const location = robotLocation(workspace.data.value!.agents[0]!, 'self', row)
+    await router.push({ ...location, query: { ...location.query, panel: 'person-profiles' } })
+    await router.isReady()
+    let wrapper = page(WorkspaceRobot, {}, [router])
+    await flushPromises()
+    expect(wrapper.findComponent(StandaloneProfiles).props('conversationScopes')).toEqual([row])
+    expect(wrapper.findAll('h1')).toHaveLength(1)
+    await wrapper
+      .findAllComponents(RouterLink)
+      .find((link) => link.text() === '查看全部会话')!
+      .trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ panel: 'person-profiles' })
+    expect(wrapper.findComponent(StandaloneProfiles).exists()).toBe(true)
+    await router.push({ ...location, query: { ...location.query, panel: 'person-profiles' } })
+    await flushPromises()
+    await wrapper
+      .findAllComponents(RouterLink)
+      .find((link) => link.text() === '行动')!
+      .trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual(location.query)
+    expect(wrapper.findAllComponents(NButton).some((button) => button.text() === '收起')).toBe(
+      false
+    )
+    await wrapper
+      .findAllComponents(NButton)
+      .find((button) => button.text() === '托付与承诺')!
+      .trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ ...location.query, panel: 'trusteeship' })
+    wrapper.unmount()
+    wrapper = page(WorkspaceRobot, {}, [router])
+    await flushPromises()
+    expect(wrapper.findComponent(TrusteeshipPage).props('conversationScopes')).toEqual([row])
+    expect(wrapper.findAll('h1')).toHaveLength(1)
+    await wrapper
+      .findAllComponents(NButton)
+      .find((button) => button.text() === '收起')!
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent(TrusteeshipPage).exists()).toBe(false)
+    expect(router.currentRoute.value.query).toEqual(location.query)
+  })
+  it.each(['conversations', 'self', 'actions'])(
+    'links %s status to full management with the displayed binding and robot return path',
+    async (tab) => {
+      vi.mocked(api).mockResolvedValue(result())
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [
+          { path: '/robots/:id/:tab', component: { template: '<div />' } },
+          { path: '/:pathMatch(.*)*', component: { template: '<div />' } }
+        ]
+      })
+      const location = robotLocation(workspace.data.value!.agents[0]!, tab, scene())
+      await router.push(location)
+      await router.isReady()
+      const wrapper = page(WorkspaceRobot, {}, [router])
+      await flushPromises()
+      const manage = wrapper
+        .findAllComponents(RouterLink)
+        .find((link) => link.text() === '管理此会话 →')!
+      expect(manage.props('to')).toEqual({
+        path: '/simulation',
+        query: { agentId: 'alice', returnTab: tab, ...location.query }
+      })
+      const privateView = page(RobotScene, {
+        conversation: scene('alice', '19001111', 'private'),
+        section: 'conversations',
+        manageTo: '/simulation'
+      })
+      expect(privateView.text()).not.toContain('管理此会话')
+    }
+  )
+  it('returns from shared resources to the same robot and rejects stale or foreign selectors', async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }]
+    })
+    const location = robotLocation(workspace.data.value!.agents[0]!, 'boundaries', scene())
+    await router.push({
+      path: '/persona',
+      query: { agentId: 'alice', returnTab: 'boundaries', ...location.query }
+    })
+    await router.isReady()
+    const wrapper = page(ConsoleFeaturePage, { feature: 'persona' }, [router])
+    expect(wrapper.findComponent(RouterLink).props('to')).toEqual(location)
+    expect(wrapper.findComponent(RouterLink).text()).toContain('返回机器人')
+    await router.push({
+      path: '/persona',
+      query: {
+        agentId: 'alice',
+        returnTab: 'boundaries',
+        ...robotLocation(workspace.data.value!.agents[1]!, 'home', scene('bob', '19002222')).query
+      }
+    })
+    await flushPromises()
+    expect(wrapper.findComponent(RouterLink).props('to')).toEqual({
+      path: '/robots/alice/boundaries',
+      query: {}
+    })
+    await router.push({
+      path: '/persona',
+      query: { agentId: 'missing', returnTab: 'https://example.test' }
+    })
+    await flushPromises()
+    expect((wrapper.findComponent(RouterLink).props('to') as { path: string }).path).toBe(
+      '/resources'
+    )
+  })
+  it('opens the linked robot persona instead of the first template in the library', () => {
+    const wrapper = shallowMount(StandalonePersonaConfig, {
+      props: {
+        initial: {
+          mode: 'standalone',
+          processEpoch: 'p1',
+          configRevision: 'r1',
+          revision: 'library-r1',
+          personas: [
+            { id: 'other', name: '其他模板' },
+            { id: 'shared', name: '当前机器人的模板' }
+          ],
+          defaultPersona: {}
+        },
+        initialPersonaId: 'shared'
+      },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
+    })
+    wrappers.push(wrapper)
+    expect(wrapper.find('.template-editor h2').text()).toBe('当前机器人的模板')
+  })
+  it('keeps module navigation and search available and assigns observation details to runtime', async () => {
+    const snapshot = data()
+    vi.mocked(api).mockResolvedValue(snapshot)
+    vi.stubGlobal('__CONSOLE_BUILD__', { revision: 'test', at: '2026-11-18T00:00:00Z' })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }]
+    })
+    await router.push('/observe/details')
+    await router.isReady()
+    const shell = mount(WorkspaceShell, {
+      props: { appearance: 'light' },
+      attachTo: document.body,
+      global: { plugins: [router], stubs: { RouterView: true } }
+    })
+    wrappers.push(shell)
+    await flushPromises()
+    expect(shell.find('.navigation .active').text()).toBe('运行中心')
+    expect(shell.find('.workspace-subnav .active').text()).toBe('运行观测')
+    expect(shell.find('.workspace-subnav').text()).toContain('托付与承诺')
+    await router.push('/ai')
+    expect(shell.find('.workspace-subnav .active').text()).toBe('模型资源')
+    expect(shell.find('.workspace-subnav').text()).toContain('记忆检索')
+    await shell.find('.search-trigger').trigger('click')
+    await flushPromises()
+    shell
+      .findAllComponents(NInput)
+      .find((input) => input.props('placeholder') === '模块、名字、连接或完整会话标识')!
+      .vm.$emit('update:value', '费用')
+    await flushPromises()
+    expect(document.querySelector('.search-results')?.textContent).toContain('模型用量')
+    ;(document.querySelector('.search-results button') as HTMLButtonElement).click()
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/tokens')
+    const details = page(EmbeddedPage, {}, [router])
+    expect(details.find('iframe').exists()).toBe(false)
+    expect(details.text()).toContain('尚未提供完整运行明细')
   })
 })
 function profile(row = scene(), text = '喜欢天文') {

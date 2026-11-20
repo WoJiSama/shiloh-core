@@ -7,6 +7,7 @@ import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 const { createAgentRuntime } = await load('core/agentRuntime.js')
 const { createAgentDiagnostics } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
 const { createAgentBindingDirectory, conversationAddressKey, platformAccountKey } = await load('modules/runtime/domain/agentBindings.js')
+const { createAgentMagnetSearchTools } = await load('modules/tools/infrastructure/agentMagnetSearchTools.js')
 const redisTest = { skip: !redisAvailable, timeout: 15_000 }
 const textOf = action => action.parts.filter(part => part.kind === 'text').map(part => part.text).join('')
 let fixtureId = 0
@@ -36,24 +37,32 @@ async function fixture(t, settings = {}) {
       sends.push(structuredClone(action)); return { state: 'sent', messageId: `reply-${++sequence}` }
     } },
   }
+  const provider = { async search(input, context) {
+    searches.push({ input, context })
+    return settings.search ? settings.search(input, context) : 'Ubuntu magnet:?xt=urn:btih:' + 'a'.repeat(40)
+  } }
   host = createAgentRuntime({ storage: redis.storage, adapters: [adapter], diagnostics, isExecutionCurrent: redis.isCurrent,
     privateChatEnabled: true, useTextGroup: () => settings.mode !== 'simulation',
     ...(settings.groupLog ? { groupLog: { enabled: true, masters: [user] } } : {}),
+    ...(settings.model ? { groupTextTools: target => target.id === group.id ? ['searchMagnetTool'] : [],
+      toolRegistry: createAgentMagnetSearchTools({ enabled: true }, { provider }) } : {}),
     magnetSearch: { enabled: settings.enabled !== false },
-    magnetSearchProvider: { async search(input, context) { searches.push({ input, context }); return settings.search ? settings.search(input, context) : 'Ubuntu magnet:?xt=urn:btih:' + 'a'.repeat(40) } },
+    magnetSearchProvider: provider,
     resolvePersona(target) { const binding = directory.resolve(target); return binding && { binding, persona: { name: 'fixture' }, systemContent: 'test' } },
     getSection: () => ({ enabled: true, reflection: { enabled: false }, rhythm: { enabled: false }, mood: { enabled: false },
       personProfile: { enabled: false }, meme: { enabled: false }, userStyle: { enabled: false }, lifeThreads: { enabled: false },
       wake: { probability: 0, proactiveProbability: 0, batchWindowMs: 1000 }, turn: { minSendGapMs: 0 } }),
     getExecutionConfig: () => ({ providers: 'openai', useTools: true }),
-    logger: { info() {}, warn() {}, error() {} }, async YTapi(request) { models.push(request); return { choices: [{ message: { content: 'model' } }] } },
+    logger: { info() {}, warn() {}, error() {} }, async YTapi(request) {
+      models.push(structuredClone(request)); return settings.model?.(request, models.length) ?? { choices: [{ message: { content: 'model' } }] }
+    },
   })
   await host.start()
   const queueKeys = ['group-log', 'group-text', 'private', 'privacy', 'simulation'].map(kind => redis.prefix + `agent:inbox:${kind}:${platformAccountKey(account)}`)
   const f = { host, group, other, privateTarget, searches, sends, models, diagnosticsRows,
     async emit(text, target = group) {
       const message = { version: 1, conversation: target, sender: user, messageId: `command-${++sequence}`, occurredAt: Date.now(),
-        text, parts: [{ kind: 'text', text }], mentions: [], directedToAccount: target.kind === 'private' }
+        text, parts: [{ kind: 'text', text }], mentions: [], directedToAccount: target.kind === 'private' || !!settings.model }
       sources.set(key(target, message.messageId), structuredClone(message)); await accept({ kind: 'message', message }); return message
     },
     async recall(source) { sources.delete(key(source.conversation, source.messageId)); await accept({ kind: 'recall', target: source.conversation, messageId: source.messageId }) },
@@ -74,6 +83,27 @@ for (const mode of ['text', 'simulation']) test(`explicit Core ${mode} magnet co
   assert.ok(f.diagnosticsRows.some(row => row.operation === 'magnet_search' && row.traceId === receipt.traceId && row.scope.messageId === source.messageId))
   await f.emit('.磁力'); await f.drained(); assert.match(textOf(f.sends.at(-1)), /默认 10 条/u)
   assert.equal(f.searches.length, 1); assert.equal(f.models.length, 0)
+})
+
+test('Core group text magnet tool uses the read result for one tool-free reply without a video selection or download', redisTest, async t => {
+  const evidence = '公开索引包含一个 Ubuntu 安装镜像条目。'
+  const f = await fixture(t, { search: () => evidence, model(request, round) {
+    if (round === 1) {
+      assert.ok(request.tools?.some(tool => tool.function.name === 'searchMagnetTool'))
+      return { choices: [{ message: { content: '', tool_calls: [{ id: 'magnet-text-call', type: 'function', function: {
+        name: 'searchMagnetTool', arguments: JSON.stringify({ keyword: 'Ubuntu', limit: 2 }),
+      } }] } }] }
+    }
+    assert.deepEqual(request.tools ?? [], [])
+    assert.ok(request.messages.some(message => message.role === 'tool' && message.content === evidence))
+    return { choices: [{ message: { content: evidence } }] }
+  } })
+  await f.emit('请在公开索引查一下 Ubuntu 的镜像条目'); await f.drained()
+  assert.deepEqual(f.searches.map(call => call.input), [{ keyword: 'Ubuntu', limit: 2 }])
+  assert.equal(f.searches[0].context.interact, undefined)
+  assert.equal(f.searches[0].context.sendMediaRelay, undefined)
+  assert.equal(f.models.length, 2)
+  assert.equal(f.sends.length, 1); assert.equal(textOf(f.sends[0]), evidence)
 })
 
 test('group recording forwarding retains whitespace and original command source', redisTest, async t => {

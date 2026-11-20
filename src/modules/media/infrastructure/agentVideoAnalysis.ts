@@ -116,6 +116,7 @@ export function createAgentVideoAnalysisTool(config: AgentVideoAnalysisConfig, o
   const allows = (value: string): boolean => { try { return secretCheck(value) && options.allowsText?.(value) !== false } catch { return false } }
   return {
     name: 'videoAnalysisTool', dataPolicy: 'ephemeral', timeoutMs: 240_000,
+    effect: { actor: 'user', conversation: 'group', required: ['readVideo'], metadata: ['request'] },
     description: '分析当前真人群消息、其引用或嵌套转发中的首个已核验视频。可说明总结、识别或解读诉求；不接受视频URL、路径、来源身份或服务端点参数。视频和分析只用于当前回合。',
     parameters: { type: 'object', properties: { prompt: { type: 'string', maxLength: 4000, description: '视频分析诉求；缺省使用当前真人请求，仍为空时分析视频内容' } }, required: [], additionalProperties: false },
     async execute(input, context) {

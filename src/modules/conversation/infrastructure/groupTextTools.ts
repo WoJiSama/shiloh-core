@@ -1,4 +1,4 @@
-import type { AgentBindingSnapshot } from '../../../contracts/agentBinding.js'
+import type { AgentTool, AgentToolContext } from '../../../contracts/agentTool.js'
 import type { ChatResponseMessage, ChatTool } from '../../../contracts/modelGateway.js'
 import type { createCommitmentRuntime } from '../../commitments/infrastructure/commitmentTool.js'
 import type { createDelegateMemoryRuntime } from '../../memory/infrastructure/delegateMemoryTool.js'
@@ -7,6 +7,8 @@ import type { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool
 import type { createGroupKnowledgeTool } from '../../memory/infrastructure/groupKnowledgeTool.js'
 import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { classifyToolResult, isUnknownToolResult } from '../../tools/domain/toolResultGrounding.js'
+import { authorizeAgentToolContext } from '../../tools/infrastructure/agentToolAuthorization.js'
+import { parseAgentToolArguments, validateAgentToolInput } from '../../tools/infrastructure/agentToolSchema.js'
 
 export const groupTextVideoToolNames = ['searchVideoTool', 'videoShareTool', 'videoDownloadTool'] as const
 export const groupTextInteractionToolNames = ['pokeTool', 'likeTool', 'reactionTool', 'recallTool', 'jinyanTool', 'changeCardTool'] as const
@@ -21,17 +23,13 @@ export function isTextRegistryToolName(value: unknown): value is string {
 }
 export type GroupTextToolName = string
 
-export interface GroupTextToolContext {
-  binding: AgentBindingSnapshot
-  speakerId: string
+export interface GroupTextToolContext extends Pick<AgentToolContext, 'binding' | 'actor' | 'request' | 'isCurrent' | 'ensureCurrent'> {
   userText: string
   requestMessageId?: string
   requestAt?: number
   signal?: AbortSignal
-  isCurrent(): boolean
-  /** Rechecks asynchronous source/binding fences after waits before external I/O. */
-  ensureCurrent?(): Promise<void>
   allowsText(text: string): boolean
+  allowsToolInput?(text: string): boolean
   claimAction(): Promise<boolean>
 }
 
@@ -42,7 +40,7 @@ type ModelCall = NonNullable<ChatResponseMessage['tool_calls']>[number] & { type
 const unavailable = '本轮没有可用的调用结果。'
 const uncertain = '这次工具操作的结果未确认，可能已经生效。请先核实再操作。'
 
-function propertiesFor(name: GroupTextToolName, parameters: ToolParameters): ToolParameters {
+function propertiesFor(name: GroupTextToolName, parameters: ToolParameters): AgentTool['parameters'] {
   const properties = { ...parameters.properties }
   if (name === 'commitmentTool') {
     delete properties.deliver
@@ -51,7 +49,7 @@ function propertiesFor(name: GroupTextToolName, parameters: ToolParameters): Too
     delete properties.due_time
     properties.content = {type: 'string', description: '用户本条消息中要记住的原文，最多 300 字'}
   }
-  return {...parameters, properties}
+  return { ...parameters, type: 'object', properties, additionalProperties: false }
 }
 
 export function createGroupTextTools(options: {
@@ -77,15 +75,15 @@ export function createGroupTextTools(options: {
     }
     return [[name, {instance, parameters, definition}] as const]
   }))
-  const privateActions = ['list', 'cancel']
+  const privateSchema: Pick<AgentTool, 'parameters'> = { parameters: {
+    type: 'object', properties: {
+      action: { type: 'string', enum: ['list', 'cancel'], description: 'list 查看，cancel 取消' },
+      commitment_id: { type: 'string', description: '取消时填 list 返回的提醒编号' },
+    }, required: ['action'], additionalProperties: false,
+  } }
   const privateDefinition: ChatTool = { type: 'function', function: {
     name: 'commitmentTool', description: '查看或取消已接续到此私聊的本人一次性提醒。',
-    parameters: {
-      type: 'object', properties: {
-        action: { type: 'string', enum: privateActions, description: 'list 查看，cancel 取消' },
-        commitment_id: { type: 'string', description: '取消时填 list 返回的提醒编号' },
-      }, required: ['action'], additionalProperties: false,
-    },
+    parameters: privateSchema.parameters,
   } }
 
   async function execute(call: ModelCall, allowed: readonly GroupTextToolName[], context: GroupTextToolContext): Promise<GroupTextToolResult | undefined> {
@@ -118,39 +116,41 @@ export function createGroupTextTools(options: {
     }
     const rejected = (text = unavailable) => reply(text, false, 'failed')
     const privateChat = context.binding.target.kind === 'private'
-    if (!name || !tool || (call.type !== undefined && call.type !== 'function')) return rejected('这项工具在当前会话没有开放。')
-    try { await ensureContextCurrent() } catch { return undefined }
-    const args = call.function?.arguments || '{}'
-    let params: Record<string, unknown>
-    try {
-      if (typeof args !== 'string' || args.length > 4_096) return rejected()
-      const parsed: unknown = JSON.parse(args)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return rejected()
-      params = parsed as Record<string, unknown>
-    } catch (error) { log('failed', 'invalid_tool_arguments', error); return rejected() }
-    if (Object.keys(params).some(key => !Object.hasOwn(tool.parameters.properties, key))) return rejected()
-    if (Object.values(params).some(value => typeof value !== 'string')) return rejected()
+    if (!name || !tool || (privateChat && name !== 'commitmentTool') || (call.type !== undefined && call.type !== 'function')) {
+      return rejected('这项工具在当前会话没有开放。')
+    }
+    let params = parseAgentToolArguments(call.function?.arguments, 4_096)
+    if (!validateAgentToolInput(privateChat ? privateSchema : tool, params) || context.allowsToolInput?.(JSON.stringify(params)) === false) {
+      log('failed', 'invalid_tool_arguments')
+      return rejected()
+    }
+    if (!authorizeAgentToolContext({ effect: { actor: 'user', metadata: ['request'] } }, params, context)) return rejected()
+    const { request, actor } = context
+    if (!request || !actor.user) return rejected()
     const validation = tool.instance.validateParameters(params)
     if (validation !== true) return rejected(String(validation))
     const action = params.action
-    if (typeof action !== 'string' || !tool.parameters.properties.action?.enum?.includes(action)) return rejected()
     immediateDelivery = name === 'groupKnowledgeTool' && action === 'notify'
-    if (privateChat && (name !== 'commitmentTool' || !privateActions.includes(action) || Object.keys(params).some(key => !['action', 'commitment_id'].includes(key)))) {
-      return rejected()
+    const begin = async (mutating: boolean) => {
+      try { await ensureContextCurrent() } catch { return false }
+      if (!context.isCurrent()) return false
+      if (mutating) {
+        if (!await context.claimAction()) return false
+        try { await ensureContextCurrent() } catch { return false }
+      }
+      return context.isCurrent()
     }
     if (name === 'groupKnowledgeTool') {
-      if (!options.knowledge || !context.requestMessageId || !context.signal || !context.isCurrent()) return rejected()
+      const knowledge = options.knowledge
+      if (typeof knowledge?.executeForRequest !== 'function' || !context.signal) return rejected()
       const attempted = action !== 'list'
-      if (attempted && (!await context.claimAction() || !context.isCurrent())) return undefined
-      try { await ensureContextCurrent() } catch { return undefined }
+      if (!await begin(attempted) || !context.isCurrent()) return undefined
       log('started', 'tool_execution_started')
       try {
-        const result = await options.knowledge.executeForRequest(params, {
-        binding: context.binding, actor: { kind: 'user', user: { ...context.binding.target.account, id: context.speakerId } },
-        signal: context.signal, requestMessageId: context.requestMessageId, userText: context.userText,
-        isCurrent: context.isCurrent, allowsText: context.allowsText,
-        ensureCurrent: ensureContextCurrent,
-      })
+        const result = await knowledge.executeForRequest(params, {
+          binding: context.binding, actor, signal: context.signal, requestMessageId: request.messageId, userText: context.userText,
+          isCurrent: context.isCurrent, allowsText: context.allowsText, ensureCurrent: ensureContextCurrent,
+        })
         await ensureContextCurrent()
         return reply(result, attempted)
       } catch (error) {
@@ -161,19 +161,20 @@ export function createGroupTextTools(options: {
     }
     const lookup = action === 'recall' || action === 'list'
     const event = {
-      group_id: context.binding.target.id, user_id: context.speakerId, self_id: context.binding.target.account.id,
+      group_id: context.binding.target.id, user_id: actor.user.id, self_id: context.binding.target.account.id,
       _agentBinding: context.binding, _isAgentBindingCurrent: context.isCurrent,
       _ensureAgentToolCurrent: ensureContextCurrent,
-      _agentToolRequest: { occurredAt: context.requestAt },
+      _agentToolRequest: { occurredAt: request.occurredAt ?? context.requestAt },
     }
-    if (!context.isCurrent()) return undefined
-
-    const runCommitment = () => privateChat ? options.commitment.managePrivateReminder(params, event)
-      : options.commitment.executeWithReceipt(params, event)
+    const owner = name === 'delegateMemoryTool' ? options.memory : options.commitment
+    const execute = name === 'delegateMemoryTool' ? options.memory.executeForOwner
+      : privateChat ? options.commitment.managePrivateReminder : options.commitment.executeWithReceipt
+    if (typeof execute !== 'function') return rejected()
     if (lookup) {
+      if (!await begin(false) || !context.isCurrent()) return undefined
       log('started', 'tool_execution_started')
       try {
-        const result = name === 'delegateMemoryTool' ? await options.memory.executeForOwner(params, event) : await runCommitment()
+        const result = await execute.call(owner, params, event)
         await ensureContextCurrent()
         if (typeof result !== 'string') return rejected()
         return reply(result)
@@ -190,12 +191,11 @@ export function createGroupTextTools(options: {
       if (!content || content.length > 300 || !context.userText.includes(content)) return rejected('请指出你想让我原样记住的那句话。')
       params = {...params, content}
     }
-    if (!context.isCurrent() || !await context.claimAction() || !context.isCurrent()) return undefined
-    try { await ensureContextCurrent() } catch { return undefined }
+    if (!await begin(true) || !context.isCurrent()) return undefined
     log('started', 'tool_execution_started')
     try {
       if (name === 'commitmentTool') {
-        const result = await runCommitment()
+        const result = await execute.call(owner, params, event)
         await ensureContextCurrent()
         if (typeof result !== 'string') return reply(result.confirmation, true)
         return reply(result, true, action === 'create' ? 'failed' : undefined)

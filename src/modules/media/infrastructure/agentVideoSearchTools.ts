@@ -9,7 +9,7 @@ import { isPlatformAccount, isPlatformIdentifier, samePlatformNamespace } from '
 import { sanitizeFinalReplyText } from '../../conversation/domain/replySanitizer.js'
 import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agentSecretText.js'
 import { validateAgentVideoCard } from './agentVideoCard.js'
-import { douyinGuard } from './agentDouyinRelayHttp.js'
+import { bilibiliGuard } from './agentBilibiliRelayHttp.js'
 import { createAgentVideoSearchStore, type AgentVideoSearchSession, type AgentVideoSearchTicket, type AgentVideoShareAttempt, type AgentVideoShareState } from './agentVideoSearchStore.js'
 import { captureAgentToolSourceGuard } from '../../runtime/infrastructure/agentToolSourceGuard.js'
 
@@ -65,7 +65,7 @@ export function createAgentVideoSearchTools(config: AgentVideoSearchToolsConfig,
   const source = (context: AgentToolContext) => ({ messageId: context.request!.messageId, author: context.actor.user! })
   const guardFor = (context: AgentToolContext, selected: () => AgentVideoSearchTicket | undefined, timeoutMs = 45_000) => {
     const owned = captureAgentToolSourceGuard(context)
-    return douyinGuard({
+    return bilibiliGuard({
       signal: context.signal, isCurrent: () => context.isCurrent(),
       async ensureCurrent() {
         // The owned validator reads the complete current request on every call.
@@ -100,6 +100,9 @@ export function createAgentVideoSearchTools(config: AgentVideoSearchToolsConfig,
     }
     return {
       name: download ? 'videoDownloadTool' : 'videoShareTool', timeoutMs: download ? 240_000 : 45_000,
+      effect: download
+        ? { actor: 'user', conversation: 'group', required: ['isSourceAvailable', 'sendMediaRelay'], metadata: ['request', 'botUserId'] }
+        : { actor: 'user', required: ['isSourceAvailable', 'sendVideoCard'], metadata: ['request', 'botUserId'] },
       description: download
         ? '将一个B站视频的完整匿名低清附件及说明一次发送到当前群，最多两段且每段30MiB。id/index只能选择最近5分钟搜索列表；url/query必须在当前真人请求中明确提供，四选一。查询不自动下载，高清仍用专用授权命令。'
         : '发送一个B站视频卡片到当前会话：id/index只能选择最近5分钟搜索列表；url/query必须由当前真人请求明确提供。一次请求只发送一次。',
@@ -132,6 +135,7 @@ export function createAgentVideoSearchTools(config: AgentVideoSearchToolsConfig,
             }
           }
           guard = guardFor(context, () => selected, download ? 240_000 : 45_000)
+          await guard.wait(Promise.resolve().then(() => context.ensureCurrent?.()))
           await guard.ensure()
           let card: AgentVideoCard | undefined
           if (!direct) {
@@ -188,6 +192,7 @@ export function createAgentVideoSearchTools(config: AgentVideoSearchToolsConfig,
   }
   const searchTools: AgentTool[] = [{
     name: 'searchVideoTool', timeoutMs: 45_000,
+    effect: { actor: 'user', required: ['isSourceAvailable'], metadata: ['request', 'botUserId'] },
     description: '查询B站视频，按相关度返回最多8个结果，第一条为首选，保存5分钟供明确选择；查询本身不会发送视频卡片。',
     parameters: { type: 'object', additionalProperties: false, required: ['keyword'], properties: { keyword: { type: 'string', minLength: 1, maxLength: 200 } } },
     async execute(input, context) {
@@ -196,6 +201,7 @@ export function createAgentVideoSearchTools(config: AgentVideoSearchToolsConfig,
         human(context)
         const row = object(input, ['keyword']), keyword = string(row.keyword, 200)
         guard = guardFor(context, () => ticket)
+        await guard.wait(Promise.resolve().then(() => context.ensureCurrent?.()))
         await guard.ensure()
         ticket = await guard.wait(store.begin(context.binding, source(context)))
         await guard.ensure()

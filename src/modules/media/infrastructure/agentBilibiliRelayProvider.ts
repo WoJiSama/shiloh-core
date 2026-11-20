@@ -24,6 +24,8 @@ export interface AgentBilibiliRelayProviderOptions {
   readonly lookup?: AgentBilibiliLookup
   readonly request?: AgentBilibiliRequest
   readonly thumbnail?: AgentBilibiliThumbnail
+  /** Optional rendered card image replacing the plain text/cover intro in automatic relays. */
+  readonly cardRenderer?: { render(view: Readonly<import('./agentBilibiliCardRenderer.js').AgentBilibiliCardView>, context: AgentMediaResourceContext): Promise<{ mime: string; base64: string }> }
   /** Metadata only: upstream errors, URLs, credentials and local paths are never emitted. */
   readonly diagnostics?: Pick<AgentDiagnostics, 'emit'>
   /** May shorten each API stage's 10s and download candidate's 10min deadlines. */
@@ -382,7 +384,27 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       const outputAllowed = (value: string) => allowed(value) && outputCheck(value)
       const infoText = safe(lines.join('\n')), pageUrl = safe(meta.pageUrl)
       if (!outputAllowed(infoText) || !outputAllowed(pageUrl) || actualQualities.some(value => !outputAllowed(value.label))) throw bilibiliFailure()
-      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover } as const] : [])] }, ...mediaItems] }, { allowsText: outputAllowed })
+      // The rendered card carries the metadata visually; failures keep the plain text+cover intro.
+      let introParts: readonly ({ kind: 'text', text: string } | { kind: 'image', artifact: AgentMediaArtifact })[] | undefined
+      if (!strict && options.cardRenderer) {
+        try {
+          let coverData: { readonly mime: string; readonly bytes: Buffer } | undefined
+          if (cover) {
+            const reader = await options.artifacts.open(cover, guard.context)
+            try { const chunks: Buffer[] = []; for await (const bytes of reader.chunks) chunks.push(Buffer.from(bytes)); coverData = { mime: cover.mime, bytes: Buffer.concat(chunks) } } finally { await reader.close?.() }
+          }
+          const statLabels: Record<string, string> = { view: '播放', like: '点赞', coin: '投币', favorite: '收藏', share: '转发', reply: '评论', danmaku: '弹幕' }
+          const image = await options.cardRenderer.render({ title: meta.title, owner: meta.owner, durationText: durationText(meta.duration),
+            partText: meta.partCount > 1 ? `${meta.partCount}个分P` : '', publishedText: meta.published ? new Date(meta.published * 1000).toISOString().slice(0, 10) : '',
+            pageUrl: meta.pageUrl, stats: Object.fromEntries(Object.entries(statLabels).filter(([key]) => meta.stats[key] !== undefined).map(([key, label]) => [label, meta.stats[key]!.toLocaleString('zh-CN')])),
+            description: meta.description.slice(0, 300), episode: meta.episode, ...(coverData ? { cover: coverData } : {}) }, guard.context)
+          const bytes = Buffer.from(image.base64, 'base64')
+          const lease = await guard.wait(options.artifacts.stage({ kind: 'image', mime: image.mime, chunks: (async function* () { yield bytes })() }, guard.context), late => releaseLeases([late]))
+          leases.push(lease)
+          introParts = [{ kind: 'text', text: safe(`《${meta.title}》\n${meta.pageUrl}`) }, { kind: 'image', artifact: lease.artifact }]
+        } catch { diagnose('bilibili_provider_card', 'card_unavailable', context); await guard.ensure() }
+      }
+      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: introParts ?? [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover } as const] : [])] }, ...mediaItems] }, { allowsText: outputAllowed })
       await guard.ensure()
       let released: Promise<void> | undefined
       const result = Object.freeze({ status, pageUrl, infoText, plan, requestedQuality: profile.quality, actualQualities, release() {

@@ -145,8 +145,8 @@ test('merged prompt uses JSON context while the original main text owns legacy t
   const data = JSON.parse(context.content.slice(context.content.indexOf('\n') + 1))
   assert.deepEqual(data, [{ messageId: 'earlier', speakerId: source.sender.id, text: source.text }])
   assert.equal(messages.at(-1).content, text)
-  assert.equal(f.toolContexts[0].userText, text); assert.equal(f.toolContexts[0].requestMessageId, 'main')
-  assert.equal(f.toolContexts[0].speakerId, f.incoming.sender.id)
+  assert.equal(f.toolContexts[0].userText, text); assert.equal(f.toolContexts[0].request.messageId, 'main')
+  assert.deepEqual(f.toolContexts[0].actor, { kind: 'user', user: f.incoming.sender })
 })
 
 test('merged requests cannot supply a QQ action authorization missing from the main message', async () => {

@@ -260,10 +260,50 @@ test('builtin bridge keeps a commitment actor and rejects injected old human ide
   assert.equal(selected.botUserId, '90001')
 })
 
+test('builtin deferred schemas are strict when issuing a grant and when dispatching an existing grant', async () => {
+  const f = fixture()
+  const context = await f.context()
+  let calls = 0
+  const tool = { name: f.action.tool, description: '', parameters: { type: 'object',
+    properties: { key: { type: 'string', minLength: 20 } }, required: ['key'], additionalProperties: false },
+  async execute() { calls++; return { status: 'succeeded', content: '' } } }
+  const definition = createAgentDeferredToolDefinition({ tool, executor: 'builtin', definitionId: f.action.definitionId,
+    isCurrent: () => true, validate: () => true })
+  f.values.definitions = [definition]
+  assert.equal(await f.policy.issue(f.request), undefined)
+  assert.equal((await f.executor.execute(f.action, context)).status, 'failed')
+  assert.equal((await definition.execute(f.action.params, context)).status, 'failed')
+  assert.equal(calls, 0)
+})
+
+test('builtin deferred authorization projects the selected action before executing with a commitment actor', async () => {
+  for (const effect of [input => ({ required: input.key === 'frozen-value' ? ['sendMessage'] : [] }),
+    { conversation: 'private' }, { actor: 'user' }, 'read']) {
+    const f = fixture()
+    let executions = 0
+    const tool = { name: f.action.tool, description: '', effect, parameters: { type: 'object', properties: {}, required: [] },
+      async execute(_input, context) {
+        executions++
+        assert.deepEqual(context.actor, { kind: 'commitment' })
+        assert.equal(context.request, undefined)
+        assert.equal(context.readMember, undefined)
+        return { status: 'succeeded', content: '' }
+      } }
+    f.values.definitions = [createAgentDeferredToolDefinition({ tool, executor: 'builtin', definitionId: f.action.definitionId,
+      isCurrent: () => true, validate: () => true, capabilities: () => ({
+        actor: { kind: 'user', user: creator }, request: { messageId: 'stale', text: 'stale', mentions: [] },
+        readMember: async () => assert.fail('unselected capability invoked'),
+      }) })]
+    const result = await f.executor.execute(f.action, await f.context())
+    assert.equal(result.status, effect === 'read' ? 'succeeded' : 'failed')
+    assert.equal(executions, effect === 'read' ? 1 : 0)
+  }
+})
+
 test('builtin bridge rechecks before each native capability and stops after revocation', async () => {
   const f = fixture()
   let sends = 0
-  const tool = { name: f.action.tool, description: '', parameters: { type: 'object', properties: {}, required: [] },
+  const tool = { name: f.action.tool, description: '', effect: { required: ['sendMessage'] }, parameters: { type: 'object', properties: {}, required: [] },
     async execute(_input, context) { await context.sendMessage({ text: 'one' }); await context.sendMessage({ text: 'two' }); return { status: 'succeeded', content: '' } } }
   f.values.definitions = [createAgentDeferredToolDefinition({ tool, executor: 'builtin', definitionId: f.action.definitionId,
     isCurrent: () => true, validate: () => true, capabilities: () => ({ sendMessage: async () => { sends++; f.values.authority = 'denied'; return { state: 'sent', messageId: 'one' } } }) })]

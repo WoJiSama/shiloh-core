@@ -14,6 +14,9 @@ const account = { platform: 'fixture', namespace: 'legacy-guard', id: 'bot' }, t
 const binding = { source: 'configured', id: conversationAddressKey(target), revision: 'v1', agentId: 'daily', personaId: 'default', connectionId: 'main', target }
 const params = { action: 'create', intent: '提醒喝水', schedule_kind: 'once', schedule_time: '2026-11-17T12:10:00+08:00', deliver: 'static', static_message: '喝水' }
 const call = (name, input) => ({ id: 'legacy-guard', type: 'function', function: { name, arguments: JSON.stringify(input) } })
+const textContext = (userText, ensureCurrent) => ({ binding, userText, actor: { kind: 'user', user: { ...account, id: 'human' } },
+  request: { messageId: 'source', text: userText, mentions: [] }, signal: new AbortController().signal,
+  isCurrent: () => true, ensureCurrent, allowsText: () => true, claimAction: async () => true })
 const entry = id => ({ id, owner: 'human', ownerName: '真人', content: '托付原文', status: 'active', createdAt: at, updatedAt: at, dueAt: 0 })
 const commitment = id => ({ id, group_id: 'room', creator_id: 'human', creator_name: '真人', intent: '提醒喝水', schedule: { kind: 'once', time: at + 600_000 },
   deliver: 'static', static_message: '喝水', expiry_at: at + 86400_000, next_run_at: at + 600_000, status: 'active', last_run_at: 0, last_result: '', retry_count: 0, created_at: at, bot_id: 'bot', scope: { agentId: binding.agentId, target }, bindingIdentity: agentBindingIdentity(binding) })
@@ -140,16 +143,14 @@ test('group knowledge passes the original async source fence into nested operati
   const registry = createGroupTextTools({ commitment: base, memory: base, knowledge: { ...base, async executeForRequest(_input, context) {
     guard.revoke(); await context.ensureCurrent(); effects.push('private-read'); return '资料'
   } } })
-  const result = await registry.execute(call('groupKnowledgeTool', { action: 'list' }), ['groupKnowledgeTool'], { binding, speakerId: 'human', userText: '查看资料', requestMessageId: 'source', signal: new AbortController().signal,
-    isCurrent: () => true, ensureCurrent: guard.ensure, allowsText: () => true, claimAction: async () => true })
+  const result = await registry.execute(call('groupKnowledgeTool', { action: 'list' }), ['groupKnowledgeTool'], textContext('查看资料', guard.ensure))
   assert.equal(result, undefined); assert.deepEqual(effects, [])
 })
 
 test('group legacy memory forwards the async source fence all the way to its CAS', async () => {
   const f = delegated({ get(guard) { guard.revoke() } }), c = commitments()
   const registry = createGroupTextTools({ commitment: c.tool, memory: f.tool })
-  const outcome = await registry.execute(call('delegateMemoryTool', { action: 'remember', content: '托付原文' }), ['delegateMemoryTool'], { binding, speakerId: 'human', userText: '请记住托付原文',
-    isCurrent: () => true, ensureCurrent: f.guard.ensure, allowsText: () => true, claimAction: async () => true })
+  const outcome = await registry.execute(call('delegateMemoryTool', { action: 'remember', content: '托付原文' }), ['delegateMemoryTool'], textContext('请记住托付原文', f.guard.ensure))
   assert.equal(outcome, undefined); assert.equal(f.operations.some(row => row[0] === 'cas'), false)
 })
 
@@ -157,7 +158,7 @@ test('group legacy commitment forwards the async source fence through its locked
   const f = commitments({ set(key, guard) { if (key === COMMITMENT_LOCK_KEY) guard.revoke() } }), d = delegated()
   const registry = createGroupTextTools({ commitment: f.tool, memory: d.tool })
   const outcome = await registry.execute(call('commitmentTool', { action: 'create', schedule_kind: 'once', schedule_time: params.schedule_time, static_message: '喝水' }), ['commitmentTool'],
-    { binding, speakerId: 'human', userText: '十分钟后提醒我喝水', isCurrent: () => true, ensureCurrent: f.guard.ensure, allowsText: () => true, claimAction: async () => true })
+    textContext('十分钟后提醒我喝水', f.guard.ensure))
   assert.equal(outcome, undefined); assert.equal(f.operations.some(row => row[0] === 'write'), false); assert.equal(f.data.has(COMMITMENT_LOCK_KEY), false)
 })
 

@@ -1,76 +1,65 @@
 #!/usr/bin/env node
-// 语义记忆离线工具:全量回填索引 / 检索质量评估(recall@k 消融)。
-// 与线上命令共用同一套模块,可在 yunzai 根目录独立运行:
-//   node plugins/shiloh-plugin/scripts/semantic-memory-eval.mjs --rebuild
-//   node plugins/shiloh-plugin/scripts/semantic-memory-eval.mjs --samples 30
-//   node plugins/shiloh-plugin/scripts/semantic-memory-eval.mjs --group 763694201 --rebuild
-import fs from "node:fs"
-import path from "node:path"
-import YAML from "yaml"
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const cwd = process.cwd()
+const root = fileURLToPath(new URL('../', import.meta.url))
 const args = process.argv.slice(2)
-const flag = name => {
-  const index = args.indexOf(`--${name}`)
-  return index >= 0 ? args[index + 1] : ""
-}
+const help = `Core semantic retrieval evaluation v2 (fixed, isolated offline corpus)
+Usage: node scripts/semantic-memory-eval.mjs [options]
+  --dataset FILE   Fixed v2 dataset (default: bundled tests/fixtures/semantic-retrieval-benchmark.v2.json)
+  --output FILE    JSON report destination (default: stdout)
+  --backend FILE   Explicit ES module exporting metadata and createBackend(); default: synthetic regression backend
+  --cache MODE     isolated-client (default) or warm-client; server cache remains uncontrolled
+  --history FILE   Explicitly append v2 NDJSON; no production directory is discovered
+  --help           Print this help without loading configuration or models
 
-function readPluginSettings() {
-  const userPath = path.join(cwd, "plugins/shiloh-plugin/config/message.yaml")
-  const defaultPath = path.join(cwd, "plugins/shiloh-plugin/config_default/message.yaml")
-  for (const file of [userPath, defaultPath]) {
-    try {
-      const settings = YAML.parse(fs.readFileSync(file, "utf8"))?.pluginSettings
-      if (settings?.semanticMemory) return settings
-    } catch {}
+Build backend first: npm run backend:build
+Synthetic results verify regression mechanics, not real semantic retrieval quality.
+The legacy --rebuild/--group/--samples interface is retired. Use the plugin's explicit rebuild command for indexing.`
+
+async function main() {
+  if (args.includes('--help') || args.includes('-h')) { console.log(help); return }
+  const options = {}
+  for (let index = 0; index < args.length; index += 2) {
+    const key = args[index], value = args[index + 1]
+    if (!['--dataset', '--output', '--backend', '--cache', '--history'].includes(key) || !value || value.startsWith('--')) throw new Error(`Unsupported or incomplete argument: ${key}\n${help}`)
+    if (Object.hasOwn(options, key)) throw new Error(`Duplicate argument: ${key}`)
+    options[key] = value
   }
-  throw new Error("未找到 semanticMemory 配置(plugins/shiloh-plugin/config/message.yaml)")
-}
-
-const { MessageArchiveManager } = await import("../utils/MessageArchiveManager.js")
-const { installSemanticMemoryRuntime, getSemanticMemoryRuntime } = await import("../domains/semanticMemory/runtime.js")
-const { runRetrievalEval } = await import("../domains/semanticMemory/retrievalEval.js")
-
-const pluginSettings = readPluginSettings()
-const archiveManager = new MessageArchiveManager({ cwd, logger: console })
-const runtime = installSemanticMemoryRuntime({ pluginSettings, archiveManager, logger: console })
-if (!runtime) {
-  console.error("语义记忆不可用:检查 semanticMemory.enabled 与 embeddingAiConfig")
-  process.exit(1)
-}
-
-if (args.includes("--rebuild")) {
-  const group = flag("group")
-  const startedAt = Date.now()
-  const report = group ? [await runtime.indexer.backfillGroup(group)] : await runtime.indexer.backfillAll()
-  const ok = report.filter(item => !item.error)
-  console.log(`回填完成:${ok.length} 群 / 新增 ${ok.reduce((sum, item) => sum + (item.indexed || 0), 0)} 分块 / ${((Date.now() - startedAt) / 1000).toFixed(1)}s`)
-  for (const item of report) {
-    console.log(`  群 ${item.group}: 消息 ${item.messages ?? "-"} → 分块 ${item.chunks ?? "-"}(新增 ${item.indexed ?? 0})${item.error ? ` 失败:${item.error}` : ""}`)
+  const cache = options['--cache'] || 'isolated-client'
+  if (!['isolated-client', 'warm-client'].includes(cache)) throw new Error('Cache must be isolated-client or warm-client')
+  const datasetPath = options['--dataset'] ? path.resolve(options['--dataset']) : path.join(root, 'tests/fixtures/semantic-retrieval-benchmark.v2.json')
+  const datasetText = await fs.readFile(datasetPath, 'utf8')
+  const dataset = JSON.parse(datasetText)
+  const { ensureBackendArtifacts } = await import('../utils/backendArtifactGuard.js')
+  await ensureBackendArtifacts()
+  const manifestText = await fs.readFile(path.join(root, 'dist/backend/manifest.json'), 'utf8')
+  const manifest = JSON.parse(manifestText)
+  const modulePath = path.join(root, 'dist/backend/modules/memory/infrastructure/agentSemanticEvaluation.js')
+  const { runAgentSemanticEvaluation, parseAgentSemanticEvaluationDataset, createSyntheticSemanticEvaluationBackend } = await import(pathToFileURL(modulePath).href)
+  parseAgentSemanticEvaluationDataset(dataset)
+  const backend = options['--backend'] ? await import(pathToFileURL(path.resolve(options['--backend'])).href) : {
+    metadata: { kind: 'synthetic', embedding: { model: 'hashed-lexical-v2', endpoint: 'local' }, rerank: { model: 'lexical-overlap-v2', endpoint: 'local' }, revision: '2' },
+    createBackend: createSyntheticSemanticEvaluationBackend,
   }
-  if (group) process.exit(0)
+  if (typeof backend.createBackend !== 'function' || !backend.metadata || typeof backend.metadata !== 'object') throw new Error('Backend module must export metadata and createBackend()')
+  const report = await runAgentSemanticEvaluation(dataset, { createBackend: backend.createBackend, backendMetadata: backend.metadata, cache })
+  const { createHash } = await import('node:crypto')
+  report.dataset.rawFileHash = createHash('sha256').update(datasetText).digest('hex')
+  report.implementation = { commit: manifest.commit, runtimeNode: process.version, buildNode: manifest.node, compiler: manifest.compiler,
+    manifestHash: createHash('sha256').update(manifestText).digest('hex') }
+  const output = JSON.stringify(report, null, 2) + '\n'
+  for (const [flag, contents] of [['--output', output], ['--history', JSON.stringify(report) + '\n']]) {
+    if (options[flag]) {
+      const file = path.resolve(options[flag])
+      await fs.mkdir(path.dirname(file), { recursive: true })
+      if (flag === '--history') await fs.appendFile(file, contents)
+      else await fs.writeFile(file, contents)
+    }
+  }
+  if (!options['--output']) process.stdout.write(output)
+  else console.log(`Core evaluation v2: ${report.dataset.queries} fixed queries; ${report.evidence}; report ${path.resolve(options['--output'])}`)
+  if (!report.storageUnchanged || Object.values(report.modes).some(mode => mode.errors || mode.timeouts || mode.forbiddenSourceRate > 0)) process.exitCode = 1
 }
-
-const samples = Math.min(50, Math.max(3, Number(flag("samples")) || 30))
-console.log(`开始评估:抽样 ${samples} …`)
-const report = await runRetrievalEval(runtime, { sampleCount: samples })
-if (!report) {
-  console.error("没有可用索引分块,先 --rebuild")
-  process.exit(1)
-}
-const pct = value => `${Math.round(value * 100)}%`
-const rerankLine = report.recallAt5Rerank !== undefined
-  ? `recall@5 混合+重排:${pct(report.recallAt5Rerank)}(重排生效 ${report.rerankApplied}/${report.samples}) | recall@10 重排:${pct(report.recallAt10Rerank)}`
-  : '重排:未启用'
-console.log([
-  `评估样本:${report.samples}(出题失败 ${report.questionFailures})`,
-  `recall@5:纯向量 ${pct(report.recallAt5Vector)} | 混合 ${pct(report.recallAt5Hybrid)}`,
-  `recall@10:混合 ${pct(report.recallAt10Hybrid)}`,
-  rerankLine,
-  `延迟:P50 ${report.latencyP50Ms}ms / P95 ${report.latencyP95Ms}ms`
-].join("\n"))
-const reportPath = path.join(runtime.baseDir, "eval-report.json")
-fs.mkdirSync(runtime.baseDir, { recursive: true })
-fs.writeFileSync(reportPath, JSON.stringify({ generatedAt: new Date().toISOString(), ...report }, null, 2))
-console.log(`报告已写入 ${reportPath}`)
-process.exit(0)
+main().catch(error => { console.error(`Evaluation failed: ${error instanceof Error ? error.message : 'unknown error'}`); process.exitCode = 1 })

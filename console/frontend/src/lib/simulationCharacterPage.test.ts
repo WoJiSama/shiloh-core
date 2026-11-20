@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
-import { NButton } from 'naive-ui'
+import { NButton, NSelect } from 'naive-ui'
 import SimulationPage from '../pages/SimulationPage.vue'
 import { api } from './api'
 
@@ -77,7 +77,99 @@ function mutations() {
   return vi.mocked(api).mock.calls.filter(([, options]) => options?.method === 'POST').map(([, options]) => JSON.parse(String(options!.body)))
 }
 
+async function openScoped() {
+  wrapper.unmount()
+  const scopeKey = '["agent-a","qq","global","10086","group","33001111"]'
+  const bindingToken = 'binding-r1'
+  row.groupId = scopeKey
+  row.bindingToken = bindingToken
+  row.character.scope.groupId = scopeKey
+  wrapper = mount(SimulationPage, {
+    attachTo: document.body,
+    props: { initialScopeKey: scopeKey, initialBindingToken: bindingToken },
+    global: { stubs: { NDataTable: true } }
+  })
+  await flushPromises()
+  return { scopeKey, bindingToken }
+}
+
 describe('character controls in simulation detail', () => {
+  it.each(['character', 'activity', 'reply-mode', 'budget', 'turns', 'initial-prompt'] as const)(
+    'preserves the robot-provided scope and binding on %s management', async action => {
+      const { scopeKey, bindingToken } = await openScoped()
+      if (action === 'character' || action === 'activity') {
+        await button(action === 'character' ? '暂停自主行动' : '归档作品').trigger('click')
+      } else if (action === 'reply-mode') {
+        wrapper.findAllComponents(NSelect).find(item => item.props('size') === 'small')!.vm.$emit('update:value', 'active')
+      } else {
+        const heading = { budget: '每日消耗上限', turns: '每日回合上限', 'initial-prompt': '会话初始提示词' }[action]
+        await wrapper.findAllComponents(NButton).find(item =>
+          item.text() === '保存' && item.element.closest('.block')?.querySelector('h4')?.textContent?.includes(heading)
+        )!.trigger('click')
+      }
+      await flushPromises()
+      expect(mutations()).toHaveLength(1)
+      expect(mutations()[0]).toMatchObject({ action, scopeKey, bindingToken })
+      expect(mutations()[0]).not.toHaveProperty('group')
+      const reads = vi.mocked(api).mock.calls.filter(([path]) => path.startsWith('/api/simulation/group?'))
+      expect(reads.length).toBeGreaterThan(0)
+      expect(reads.every(([path]) => {
+        const query = new URL(path, 'http://console').searchParams
+        return query.get('scopeKey') === scopeKey && query.get('bindingToken') === bindingToken
+      })).toBe(true)
+    }
+  )
+
+  it('reopens the scoped detail when the URL selector changes on the same page', async () => {
+    await openScoped()
+    row.bindingToken = 'binding-r2'
+    await wrapper.setProps({ initialBindingToken: 'binding-r2' })
+    await flushPromises()
+    const latestRead = vi.mocked(api).mock.calls.filter(([path]) => path.startsWith('/api/simulation/group?')).at(-1)![0]
+    expect(new URL(latestRead, 'http://console').searchParams.get('bindingToken')).toBe('binding-r2')
+  })
+
+  it('keeps scoped deletion and its forget receipt on the original binding, then clears it on rebinding', async () => {
+    const { scopeKey, bindingToken } = await openScoped()
+    const receipt = { operationId: 'scoped-role-forget', phase: 'unknown', usage: 'blocked', cleanup: 'unknown',
+      impacts: [{ kind: 'character-memory', id: 'm1', partition: 'character', state: 'completed' }] }
+    const original = vi.mocked(api).getMockImplementation()!
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path.startsWith('/api/forgetting/')) return receipt
+      const result = await original(path, options)
+      return options?.method === 'POST' ? receipt : result
+    })
+    await button('删除记忆').trigger('click')
+    await warning.mock.calls[0]![0].onPositiveClick()
+    await flushPromises()
+    const mutation = mutations()[0]
+    expect(mutation).toMatchObject({ scopeKey, bindingToken, action: 'character', operation: 'delete-memory', id: 'm1' })
+    expect(mutation).not.toHaveProperty('group')
+    expect(mutation.requestId).toMatch(/^[0-9a-f-]{36}$/u)
+    const path = vi.mocked(api).mock.calls.find(([path]) => path.startsWith('/api/forgetting/'))![0]
+    const query = new URL(path, 'http://console').searchParams
+    expect(query.get('scopeKey')).toBe(scopeKey)
+    expect(query.get('bindingToken')).toBe(bindingToken)
+    expect(document.body.textContent).toContain(receipt.operationId)
+    expect(document.body.textContent).toContain('角色记忆 m1')
+    row.bindingToken = 'binding-r2'
+    await wrapper.setProps({ initialBindingToken: 'binding-r2' })
+    await flushPromises()
+    expect(document.body.textContent).not.toContain(receipt.operationId)
+    expect(mutations()).toHaveLength(1)
+  })
+
+  it('shows a missing scoped session instead of opening a different account', async () => {
+    wrapper.unmount()
+    wrapper = mount(SimulationPage, {
+      attachTo: document.body,
+      props: { initialScopeKey: '["missing-account"]', initialBindingToken: 'old-binding' }
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('指定会话已失效或不在当前可见范围内')
+    expect(vi.mocked(api).mock.calls.some(([path]) => path.startsWith('/api/simulation/group?'))).toBe(false)
+  })
+
   it('shows decisions, provenance and uncertain outcomes without presenting plans as success', async () => {
     await open()
     const content = document.querySelector('[aria-label="角色与自主目标"]')!.textContent!

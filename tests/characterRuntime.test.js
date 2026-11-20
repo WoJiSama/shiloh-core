@@ -11,6 +11,10 @@ import { simulationAddressKey } from '../dist/backend/modules/simulation/infrast
 import { SIMULATION_KNOWN_GROUPS_KEY } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
 import { agentBindingToken, agentConversationKey, createAgentBindingDirectory } from '../dist/backend/modules/runtime/domain/agentBindings.js'
 import { decodeQqIncomingMessage } from '../dist/backend/adapters/qqMessage.js'
+import { createCommitmentRuntime } from '../dist/backend/modules/commitments/infrastructure/commitmentTool.js'
+import { createDelegateMemoryRuntime } from '../dist/backend/modules/memory/infrastructure/delegateMemoryTool.js'
+import { createGroupKnowledgeTool } from '../dist/backend/modules/memory/infrastructure/groupKnowledgeTool.js'
+import { createAgentTools } from '../dist/backend/modules/tools/infrastructure/agentTools.js'
 
 const BOT = '3094088525'
 const GROUP = '10086'
@@ -52,7 +56,7 @@ function fixture({
   proactiveProbability = 0, seed = true, maxToolRounds = 8, maxSendsPerTurn, consistencyEnabled,
   runCharacterWorker, recordToolResult, judgeSocialPermission, getPersona, loadDelegatedMemories,
   getSelf, handlesTarget, messageActions, getTodaySpendCny, durableIngress, isAccountReady, readFault,
-  describeImages, fetchImageBase64, getForwardContent,
+  describeImages, fetchImageBase64, getForwardContent, registeredTools = [], boundTools = [],
 } = {}) {
   if (seed) for (const groupId of groups) if (!kv.has(sessionKey(groupId))) seedSession(kv, groupId, botId, clock)
   const calls = []
@@ -60,7 +64,7 @@ function fixture({
   const sent = []
   const errors = []
   const writes = []
-  const toolDefinitions = ['searchInformationTool', 'ownerAdminTool', 'simDangerTool'].map(name => ({
+  const legacyTools = ['searchInformationTool', 'ownerAdminTool', 'simDangerTool'].map(name => ({
     name, description: `测试隔离工具 ${name}`,
     parameters: { type: 'object', properties: {}, required: [] },
     async execute(args, event) {
@@ -68,6 +72,7 @@ function fixture({
       return execute ? await execute(name, args, event) : { ok: true, result: '公开搜索结果' }
     },
   }))
+  const toolDefinitions = [...legacyTools, ...registeredTools]
   const redis = {
     async get(key) { if (readFault) await readFault(key); return kv.has(key) ? kv.get(key) : null },
     async set(key, value) {
@@ -108,6 +113,7 @@ function fixture({
     ...(fetchImageBase64 ? { fetchImageBase64 } : {}),
     ...(getForwardContent ? { getForwardContent } : {}),
     getExtraTools: names => toolDefinitions.filter(tool => names.includes(tool.name)),
+    getBoundTools: () => boundTools,
     async YTapi(request) {
       calls.push(structuredClone(request))
       const message = await script(request, calls.length - 1)
@@ -567,6 +573,134 @@ test('当前请求给出动态阶段、剩余轮数和可见来源，普通聊�
 
 const finishMemory = { kind: 'interest', content: '我对连贯线索设计保持兴趣', epistemic: 'inferred', evidenceRefs: ['message:1'] }
 const finishGoal = { title: '收尾中保存的研究计划', motivation: '这符合我的线索设计兴趣', nextStep: '核对公开介绍', completionCriteria: '取得公开介绍并核对', stopConditions: ['管理员取消', '来源不可用'], evidenceRefs: ['message:1'], nextCheckInMinutes: 30 }
+
+test('invalid tool arguments are rejected before internal simulation reads, intent judgments, receipts or mutations', async t => {
+  const invalidReads = ['', '{', '[]', 'null', 'true', '3', '"text"', undefined, { unencoded: true }].map(argumentsValue => {
+    const call = toolCall('simGetState', {})
+    call.function.arguments = argumentsValue
+    return call
+  })
+  const invalidCalls = [
+    ...invalidReads,
+    toolCall('simGetState', { arbitrary: true }),
+    toolCall('simSendMessage', { messages: '["有效的聊天文字",123]' }),
+    toolCall('simRemember', { action: 'add', kind: 'pendingEvent', content: '下次主动问候', dueInMinutes: '45', welcomeProactiveFollowUp: true }),
+    toolCall('simGoal', { action: 'create', ...finishGoal, nextCheckInMinutes: '30' }),
+    toolCall('simCharacterMemory', { action: 'remember', ...finishMemory, evidenceRefs: [1] }),
+    toolCall('simWorkspace', { action: 'write', title: '公开资料', kind: 'research', content: '不可保存', evidenceRefs: [1] }),
+    toolCall('simSubscription', { action: 'list', unexpected: true }),
+    toolCall('simSharedSelf', { action: 'list', unexpected: true }),
+    toolCall('simWorkerTask', { kind: 'research', instruction: 'a'.repeat(2001), evidenceRefs: ['message:1'] }),
+    toolCall('commitmentTool', { action: 'list', unexpected: true }),
+    toolCall('delegateMemoryTool', { action: 'remember', content: 123 }),
+    toolCall('groupKnowledgeTool', { action: 'list', unexpected: true }),
+  ]
+  const boundTools = [new (createCommitmentRuntime({ redis: {} }).CommitmentTool)(),
+    new (createDelegateMemoryRuntime({ redis: {} }).DelegateMemoryTool)(), createGroupKnowledgeTool({})]
+  const attemptedActions = []
+  for (const tool of boundTools) tool.func = async () => { attemptedActions.push(tool.name) }
+  const validRead = toolCall('simGetState', {})
+  const h = fixture({ boundTools,
+    runCharacterWorker: async () => { attemptedActions.push('worker'); throw Error('unexpected worker dispatch') },
+    judgeSocialPermission: async () => { attemptedActions.push('intent model'); throw Error('unexpected intent judgment') },
+    script: (_request, index) => index === 0 ? tools(...invalidCalls, validRead) : finishSilently(),
+  })
+  t.after(() => h.runtime.stop())
+  await h.ingest(); await idle(h, 2)
+  const result = id => h.calls[1].messages.find(message => message.role === 'tool' && message.tool_call_id === id)?.content
+  for (const call of invalidCalls) assert.match(result(call.id), /^error: 工具参数/u, call.function.name)
+  assert.doesNotMatch(result(validRead.id), /^error:/u)
+  const detail = await h.runtime.describeGroup(GROUP)
+  assert.deepEqual(attemptedActions, [])
+  assert.deepEqual(h.sent, [])
+  assert.deepEqual(detail.character.goals, [])
+  assert.deepEqual(detail.character.memories, [])
+  assert.deepEqual(detail.character.receipts, [])
+  assert.deepEqual(detail.activities.works, [])
+})
+
+test('runtime keeps legacy message and keyword encodings and accepts a full escaped workspace draft', async t => {
+  const content = '"\\'.repeat(6000)
+  const write = toolCall('simWorkspace', { action: 'write', title: '全文转义测试', kind: 'research', content, evidenceRefs: ['message:1'] })
+  assert.ok(write.function.arguments.length > 16_000)
+  const h = fixture({ script: (_request, index) => index === 0 ? tools(write,
+    toolCall('simSetWakeConfig', { keywords: '["独立游戏","解谜"]' }),
+    toolCall('simSendMessage', { messages: '["游戏的第一条说明。","游戏的第二条补充。"]' }),
+  ) : tools(toolCall('simFinishTurn', { choice: 'chat', reason: '补充一个细节', messages: '最后一句仍能正常发送。' })) })
+  t.after(() => h.runtime.stop())
+  await h.ingest(); await idle(h, 2)
+  const detail = await h.runtime.describeGroup(GROUP)
+  assert.equal(detail.activities.works[0]?.versions[0].content, content)
+  assert.deepEqual(JSON.parse(h.kv.get(sessionKey(GROUP))).wakeConfig.triggers.keywords, ['独立游戏', '解谜'])
+  assert.equal(h.sent.length, 3)
+  for (const [index, text] of ['游戏的第一条说明。', '游戏的第二条补充。', '最后一句仍能正常发送。'].entries()) {
+    assert.ok(JSON.stringify(h.sent[index].segments).includes(text))
+  }
+})
+
+test('malformed and nested-schema-invalid finish calls lock closing before judging intent or accepting a same-batch send', async t => {
+  for (const invalid of ['{', 'null', JSON.stringify({ choice: 'schedule', reason: '安排后续', goal: { ...finishGoal, nextCheckInMinutes: '30' } })]) {
+    const finish = toolCall('simFinishTurn', {})
+    finish.function.arguments = invalid
+    const send = toolCall('simSendMessage', { messages: ['不应在保存失败后声称已安排'] })
+    let judgments = 0
+    const h = fixture({
+      judgeSocialPermission: async () => { judgments++; throw Error('unexpected intent judgment') },
+      script: (_request, index) => index === 0 ? tools(finish, send) : finishSilently(),
+    })
+    t.after(() => h.runtime.stop())
+    await h.ingest(); await idle(h, 2)
+    assert.equal(turnContext(h.calls[1]).phase, 'closing')
+    assert.match(storedToolReply(h, finish).content, /^error: 工具参数/u)
+    assert.match(storedToolReply(h, send).content, /仅允许 simFinishTurn/u)
+    assert.equal(judgments, 0)
+    assert.deepEqual(h.sent, [])
+    const { character } = await h.runtime.describeGroup(GROUP)
+    assert.deepEqual(character.goals, [])
+    assert.deepEqual(character.receipts, [])
+  }
+})
+
+test('registered tools use canonical schema and bound actor/port preflight before receipts or ephemeral state', async t => {
+  const displaySchema = { type: 'object', properties: {}, required: [], additionalProperties: false }
+  const proofSchema = { type: 'object', properties: { proof: { type: 'string', const: 'verified' } }, required: ['proof'], additionalProperties: false }
+  const executed = [], observed = []
+  const binding = qqBinding('registered-preflight')
+  const definition = (name, settings) => ({ name, description: name, parameters: displaySchema, ...settings,
+    async execute(input) { executed.push({ name, input }); return { status: 'succeeded', content: '已检查资料' } },
+  })
+  const definitions = [
+    definition('registeredProjection', { effect: 'read', inputSchema: proofSchema }),
+    definition('registeredEphemeral', { effect: 'read', inputSchema: proofSchema, dataPolicy: 'ephemeral' }),
+    definition('registeredAction', { effect: { actor: 'user', conversation: 'group', required: ['sendFile'] } }),
+  ]
+  const registry = createAgentTools({ builtIn: definitions }, {
+    signal: new AbortController().signal,
+    context(event) {
+      assert.equal(event._agentBinding.id, binding.id)
+      assert.equal(event.simulationActor.kind, 'user')
+      assert.equal(event.user_id, 40000)
+      return { binding: event._agentBinding, actor: { kind: 'user', user: { ...binding.target.account, id: event.simulationActor.userId } },
+        request: event._agentToolRequest, isCurrent: event._isAgentBindingCurrent, ensureCurrent: event._ensureAgentToolCurrent,
+      }
+    },
+  })
+  const eligible = toolCall('registeredProjection', { proof: 'verified' })
+  const invalid = toolCall('registeredEphemeral', { proof: 'invalid' })
+  const denied = toolCall('registeredAction', {})
+  const h = fixture({ getPersona: () => ({ personaId: 'agent:daily', persona: { name: '希洛' }, binding }),
+    registeredTools: registry.getExtraTools(definitions.map(tool => tool.name)), recordToolResult: value => observed.push(value),
+    script: (_request, index) => index === 0 ? tools(invalid, denied, eligible, toolCall('simCharacterMemory', { action: 'remember', ...finishMemory })) : finishSilently(),
+  })
+  t.after(() => h.runtime.stop())
+  await h.ingest(); await idle(h, 2)
+  assert.deepEqual(executed, [{ name: 'registeredProjection', input: { proof: 'verified' } }])
+  assert.match(observed.find(result => result.toolCallId === invalid.id)?.content, /^error:.*Schema/u)
+  assert.match(observed.find(result => result.toolCallId === denied.id)?.content, /^error:.*权限/u)
+  const { character } = await h.runtime.describeGroup(GROUP)
+  assert.equal(character.memories[0]?.content, finishMemory.content)
+  assert.deepEqual(character.receipts.map(receipt => receipt.toolName), ['registeredProjection'])
+})
 
 test('correcting a shared source retains the correction through overview cleanup and prevents stale history', async () => {
   const observed = []

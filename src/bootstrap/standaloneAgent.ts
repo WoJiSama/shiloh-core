@@ -575,6 +575,7 @@ export async function main(argv: string[]): Promise<void> {
       },
       isExecutionCurrent: () => storage?.isCurrent() === true && config.isConfigCurrent(),
       observeExecutionCurrent: check => config.observeConfigCurrent(check),
+      checkToolCurrent: check => config.observeConfigCurrent(check),
       signal: executionSignal,
       allowsText: (text, direction) => (direction !== 'outgoing' || allowsSecretText(text)) &&
         (direction === 'outgoing' && config.forbiddenWords.blockOutput === false || !words.findForbiddenWord(text, config.forbiddenWords)),

@@ -24,7 +24,7 @@ if (process.env.BL_CHAT_AGENT_SOURCE_TEST === '1') {
 }
 const { createAgentBilibiliRelayProvider } = await import(providerUrl)
 const { parseAgentBilibiliReference, validateAgentMediaShare } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentBilibiliRelayReference.js')).href)
-const { nativeAgentBilibiliRequest } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentBilibiliRelayHttp.js')).href)
+const { bilibiliGuard, nativeAgentBilibiliRequest } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentBilibiliRelayHttp.js')).href)
 const { createAgentMediaArtifactStore } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentMediaArtifactStore.js')).href)
 const MiB = 1024 * 1024
 const BV = 'BV1H7Gq6zEiC', EP = '1455179'
@@ -188,6 +188,35 @@ test('SPI may never receive a configured host or account secret as its device cr
   })
 })
 
+test('a card renderer replaces the intro with one card image and falls back on failure', async t => {
+  const card = Buffer.from('CARD-IMAGE-BYTES-PRIVATE')
+  const rendered = []
+  await t.test('successful render swaps text+cover for title text plus the card artifact', async t => {
+    const f = await fixture(t, { options: { cardRenderer: { render: async (view, context) => {
+      rendered.push({ view, current: context.isCurrent() })
+      assert.ok(view.title && view.owner && view.pageUrl)
+      assert.ok(view.stats && view.stats['播放'])
+      return { mime: 'image/png', base64: card.toString('base64') }
+    } } } })
+    const result = await f.prepare(); assert.equal(result.status, 'ready')
+    const intro = result.plan.items[0]
+    assert.deepEqual(intro.parts.map(part => part.kind), ['text', 'image'])
+    assert.match(intro.parts[0].text, /《示例视频》\nhttps:\/\/www\.bilibili\.com\/video\//u)
+    assert.deepEqual(await f.read(intro.parts[1].artifact), card)
+    assert.equal(result.plan.items.slice(1).every(item => item.parts.every(part => part.kind === 'video')), true)
+    assert.ok(!f.events.some(event => event.code === 'card_unavailable'))
+    await result.release(); await f.clean()
+  })
+  await t.test('a failing render keeps the plain text and cover intro with one diagnostic', async t => {
+    const f = await fixture(t, { options: { cardRenderer: { render: async () => { throw Error('render down') } } } })
+    const result = await f.prepare(); assert.equal(result.status, 'ready')
+    assert.deepEqual(result.plan.items[0].parts.map(part => part.kind), ['text', 'image'])
+    assert.ok(result.plan.items[0].parts[0].text.includes('示例视频'))
+    assert.ok(f.events.some(event => event.operation === 'bilibili_provider_card' && event.code === 'card_unavailable'))
+    await result.release(); await f.clean()
+  })
+})
+
 test('SPI base64 b_4 tails are accepted while a rejected b_4 degrades to buvid3-only', async t => {
   const b4 = '404E0020-4827-645B-6779-CEDB4921136910568-026111822-wPC5+TsSN7zkqT5/Aufv7rA=='
   await t.test('current b_4 format keeps the full device cookie without diagnostics', async t => {
@@ -313,6 +342,30 @@ test('actual streamed video overflow at 512 MiB and image overflow at 32 MiB cle
   const result = await f.prepare(); assert.equal(result.status, 'metadata-only')
   assert.equal(result.plan.items[0].parts.length, 1); assert.match(result.infoText, /封面暂时获取失败/); assert.match(result.infoText, /未完整获取/)
   await f.clean()
+})
+
+test('nested Bilibili requests share live monitoring and recheck at explicit checkpoints', async t => {
+  const entered = gate(), blocked = gate(), revoked = gate()
+  let checks = 0, allowed = true
+  const parent = bilibiliGuard(context({ async ensureCurrent() {
+    checks++
+    if (checks === 1) { entered.release(); await blocked.promise }
+    if (!allowed) throw new Error('revoked')
+  } }), 1_000)
+  const child = bilibiliGuard(parent.context, 1_000)
+  t.after(() => { blocked.release(); child.close(); parent.close() })
+  const checking = child.ensure()
+  await bounded(entered.promise)
+  await delay(60)
+  assert.equal(checks, 1)
+  blocked.release()
+  await checking
+  await child.ensure()
+  assert.ok(checks >= 2)
+  child.signal.addEventListener('abort', revoked.release, { once: true })
+  allowed = false
+  await bounded(revoked.promise)
+  assert.equal(parent.signal.aborted, true)
 })
 
 for (const cancellation of ['signal', 'current', 'ensure']) test(`${cancellation} cancellation interrupts a hanging real artifact stream and cleans partial bytes`, async t => {

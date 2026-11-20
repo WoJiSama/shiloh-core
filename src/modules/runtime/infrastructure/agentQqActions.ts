@@ -30,6 +30,7 @@ export interface AgentQqActionsOptions {
   isCurrent(binding: AgentBindingSnapshot): boolean
   /** The observation ends before any source read, authorization await or effect. */
   observeCurrent?(check: () => boolean): boolean
+  checkCurrent?(check: () => boolean): boolean
   authorize(name: AgentQqActionToolName, binding: AgentBindingSnapshot, actor: AgentToolContext['actor']): boolean | Promise<boolean>
   sourceAvailable(binding: AgentBindingSnapshot, source: Source, guard: AgentQqActionGuard): Promise<boolean>
   affinity?(binding: AgentBindingSnapshot, userId: string): number
@@ -48,6 +49,7 @@ const failedQzone = (kind: AgentQzoneOperation['kind']): AgentQzoneResult => ({ 
 export function createAgentQqActions(options: AgentQqActionsOptions) {
   const gift = createAgentGiftWorkflow(options.storage), ledger = createAgentQzoneLedger(options.storage)
   const config = () => options.config ?? {}
+  const checkCurrent = options.observeCurrent ?? options.checkCurrent ?? ((check: () => boolean) => check())
   const enabled = (kind: Kind, simulation = false) => kind === 'gift' ? config().gift?.enabled === true
     : kind === 'red-packet' ? config().redPackets?.enabled === true : simulation || config().qzone?.enabled === true
   const diagnostic = (kind: Kind) => {
@@ -76,15 +78,16 @@ export function createAgentQqActions(options: AgentQqActionsOptions) {
           .every((method, index) => method === methods[index])
       const current = () => {
         try {
-          return options.observeCurrent ? options.observeCurrent(evaluateCurrent) === true : evaluateCurrent()
+          return checkCurrent(evaluateCurrent) === true
         } catch { return false }
       }
+      const policyAllows = async () => current() && await options.authorize(tool, binding, actor) === true && current()
       const base = async () => {
         if (!current()) throw unavailable()
         await outer.ensureCurrent()
         if (!current()) throw unavailable()
         if (queue !== outer) await queue.ensureCurrent()
-        if (!current() || await options.authorize(tool, binding, actor) !== true || !current()) throw unavailable()
+        if (!await policyAllows()) throw unavailable()
       }
       const sourceGuard: AgentQqActionGuard = Object.freeze({ signal, isCurrent: current, ensureCurrent: base })
       const sourceAvailable = async (source: Source): Promise<boolean> => {
@@ -108,7 +111,7 @@ export function createAgentQqActions(options: AgentQqActionsOptions) {
         }
         await base()
       }
-      return { binding, adapter, guard: Object.freeze({ signal, isCurrent: current, ensureCurrent: ensure }), sourceAvailable }
+      return { binding, adapter, guard: Object.freeze({ signal, isCurrent: current, ensureCurrent: ensure }), policyAllows, sourceAvailable, ensureAuthority: base }
     }
   }
   function outer(context: AgentToolContext): { guard: AgentQqActionGuard; ensureOwnedSource?: AgentToolSourceProof } {
@@ -145,23 +148,12 @@ export function createAgentQqActions(options: AgentQqActionsOptions) {
           ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}) })
         entered = true
         return runtime.execute({ binding: scope.binding, identity: context.request!.messageId, actor: context.actor, operation, ...scope.guard,
-          authorize: async () => { await scope.guard.ensureCurrent(); return true },
-          readMember: async (userId, guard) => {
-            await scope.guard.ensureCurrent()
-            const read = scope.adapter.readConversationMember
-            if (!read) return undefined
-            const value = await read.call(scope.adapter, scope.binding.target, { ...scope.binding.target.account, id: userId }, guard)
-            await scope.guard.ensureCurrent(); return value
-          },
+          // The Qzone runtime checks the live source around policy and content callbacks.
+          authorize: scope.policyAllows,
+          readMember: async (userId, guard) => scope.adapter.readConversationMember?.(
+            scope.binding.target, { ...scope.binding.target.account, id: userId }, guard),
           affinity: userId => context.qzoneAffinity ? context.qzoneAffinity(userId) : options.affinity?.(scope.binding, userId) ?? Number.NaN,
-          allowsText: async text => {
-            await scope.guard.ensureCurrent()
-            if (typeof context.reviewQqText !== 'function' || typeof options.allowsText !== 'function' ||
-                await context.reviewQqText(text) !== true) return false
-            await scope.guard.ensureCurrent()
-            const allowed = await options.allowsText(text, scope.binding, context)
-            await scope.guard.ensureCurrent(); return allowed === true
-          },
+          allowsText: async text => await context.reviewQqText?.(text) === true && await options.allowsText?.(text, scope.binding, context) === true,
         })
       })
     } catch { diagnostic('qzone'); return entered ? { state: 'unknown', kind, code: 'qzone_outcome_unknown', terminal: true } : failedQzone(kind) }
@@ -177,8 +169,9 @@ export function createAgentQqActions(options: AgentQqActionsOptions) {
         const runtime = createAgentRedPacketRuntime({ storage: options.storage, port: scope.adapter.redPackets!,
           policy: () => config().redPackets ?? { enabled: false }, ...(options.now ? { now: options.now } : {}) })
         entered = true
+        // The wallet runtime checks both the human request and the selected packet through this source port.
         return runtime.execute({ binding: scope.binding, actor: context.actor, ...(context.request ? { request: context.request } : {}),
-          ...scope.guard, isSourceAvailable: scope.sourceAvailable }, request)
+          ...scope.guard, ensureCurrent: scope.ensureAuthority, isSourceAvailable: scope.sourceAvailable }, request)
       })
     } catch { diagnostic('red-packet'); return entered ? { ...failedPacket(), state: 'unknown', code: 'red_packet_outcome_unknown' } : failedPacket() }
   }

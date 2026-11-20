@@ -1,0 +1,1138 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-19",
+  "scenario": "Core group-text replay of the current, original and withdrawn meeting schedule",
+  "runConditions": {
+    "redis": "isolated loopback redis-server for each run",
+    "delivery": "capture adapter",
+    "inference": {
+      "server": "llama.cpp b12122",
+      "weights": "Qwen2.5-3B-Instruct Q4_K_M GGUF",
+      "weightsSha256": "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
+      "contextSize": 4096,
+      "parallelSlots": 1,
+      "jinja": true,
+      "temperature": 0,
+      "maxOutputTokens": 512,
+      "requestTimeoutMs": 25000,
+      "maxHttpCallsPerReplay": 30,
+      "liveRunsPerBuild": 3,
+      "availability": {
+        "openAI": "HTTP 401",
+        "projectModelGateway": "connection failed",
+        "localModel": "HTTP 200"
+      }
+    }
+  },
+  "comparedSourceChanges": [
+    {
+      "file": "src/modules/conversation/domain/systemPromptTemplate.ts",
+      "baselineSha256": "c5efa9644ad2ddc7c054c0216cffe2a81c1c09d8b0e855f90ddb4d0a962b7965",
+      "candidateSha256": "bc3ef0d7ef9e62fb3d8e70da73ee4dc3fcf43a42fd42f8c673891bc6651182d2"
+    },
+    {
+      "file": "src/modules/conversation/infrastructure/textConversation.ts",
+      "baselineSha256": "cc47d202713347302c73104950f0b80283c369e76d3b7ea7c0eabae0879e16c2",
+      "candidateSha256": "c34c8ed2247b9a784d9657b21d514d18e6fea6c8fac552fba13f4873a11ee50d"
+    }
+  ],
+  "answerReview": {
+    "criterion": "现行和原定时间分别正确。撤回后明确表示无法确认现行时间，提及旧时间时只表述为原定安排。",
+    "baseline": {
+      "current": 3,
+      "original": 3,
+      "recalled": 0
+    },
+    "candidate": {
+      "current": 3,
+      "original": 3,
+      "recalled": 3
+    },
+    "intermediatePromptChecks": [
+      {
+        "automaticAnswersPassed": {
+          "current": 3,
+          "original": 3,
+          "recalled": 3
+        },
+        "recalledAnswers": [
+          "项目发布会议改到什么时候了？我这里最新的信息是原定周一上午九点，但具体改到哪天哪几点我不确定，可以查一下最新的安排吗？"
+        ],
+        "review": "把原定时间称为最新信息。"
+      },
+      {
+        "automaticAnswersPassed": {
+          "current": 3,
+          "original": 3,
+          "recalled": 0
+        },
+        "recalledAnswers": [
+          "项目发布会议改到什么时候了？我这里显示的是原定时间，实际情况可能会有变动。"
+        ],
+        "review": "仅说可能有变动，未明确表示现行时间无法确认。"
+      }
+    ]
+  },
+  "baseline": {
+    "schemaVersion": 1,
+    "mode": "live-answer-synthetic-retrieval",
+    "entry": "Core QQ group-text adapter",
+    "fixture": {
+      "id": "core-semantic-benchmark",
+      "revision": "2026-11-18-v2",
+      "sha256": "3702f39ee04000b6b16ac71ca0d2bcde74b59b6f44c04d8925c03f9b4bb05ffa",
+      "clockAt": 1794960000000,
+      "retrieval": {
+        "topK": 5,
+        "minScore": 0.35,
+        "timeoutMs": 1000
+      }
+    },
+    "implementation": {
+      "commit": "17fef9a9a1adfb1f94770ae3f70db998877cf824",
+      "manifestSha256": "ce456a04d1aa40e98aefe50bc1a860c11f15ca46bfb214bc819cdc78fb28c421",
+      "runnerSha256": "726ebb63dfa7dffa33a3559a332f4a7a27779c5ab659f2ce5ef5ce381d38e0b2",
+      "modelAdapterSha256": "d9c43576b6e0ba61708363e5d23295ff36fd866f4f1df63d1f26ab8803536a45",
+      "node": "v24.14.1"
+    },
+    "model": {
+      "model": "qwen2.5-3b-instruct-q4_k_m",
+      "hostname": "127.0.0.1"
+    },
+    "modelCalls": [
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2616,
+          "completion_tokens": 17,
+          "total_tokens": 2633
+        },
+        "elapsedMs": 10944,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2607,
+          "completion_tokens": 12,
+          "total_tokens": 2619
+        },
+        "elapsedMs": 9505,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2643,
+          "completion_tokens": 26,
+          "total_tokens": 2669
+        },
+        "elapsedMs": 10503,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2616,
+          "completion_tokens": 17,
+          "total_tokens": 2633
+        },
+        "elapsedMs": 990,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2607,
+          "completion_tokens": 12,
+          "total_tokens": 2619
+        },
+        "elapsedMs": 716,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2643,
+          "completion_tokens": 26,
+          "total_tokens": 2669
+        },
+        "elapsedMs": 1341,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2616,
+          "completion_tokens": 17,
+          "total_tokens": 2633
+        },
+        "elapsedMs": 1075,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2607,
+          "completion_tokens": 12,
+          "total_tokens": 2619
+        },
+        "elapsedMs": 658,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2643,
+          "completion_tokens": 26,
+          "total_tokens": 2669
+        },
+        "elapsedMs": 1354,
+        "status": 200,
+        "error": null
+      }
+    ],
+    "runs": [
+      [
+        {
+          "id": "current",
+          "question": "项目发布会议改到什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-new",
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [],
+          "evidencePolicyInSystem": false,
+          "modelReceivedCorrection": true,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议改到周三下午两点了，之前的周一安排取消了。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "original",
+          "question": "项目发布会议原定是什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [
+            "current"
+          ],
+          "evidencePolicyInSystem": false,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议原定是周一上午九点。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "recalled",
+          "question": "项目发布会议现在是什么时候？",
+          "recallRecorded": true,
+          "memorySources": [
+            "venue",
+            "meeting-old"
+          ],
+          "priorQuestionsInMemory": [
+            "current",
+            "original"
+          ],
+          "evidencePolicyInSystem": false,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议改到什么时候了？我这里的信息是原定周一上午九点，地点是松林会议室。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": false,
+            "provider": true
+          }
+        }
+      ],
+      [
+        {
+          "id": "current",
+          "question": "项目发布会议改到什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-new",
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [],
+          "evidencePolicyInSystem": false,
+          "modelReceivedCorrection": true,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议改到周三下午两点了，之前的周一安排取消了。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "original",
+          "question": "项目发布会议原定是什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [
+            "current"
+          ],
+          "evidencePolicyInSystem": false,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议原定是周一上午九点。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "recalled",
+          "question": "项目发布会议现在是什么时候？",
+          "recallRecorded": true,
+          "memorySources": [
+            "venue",
+            "meeting-old"
+          ],
+          "priorQuestionsInMemory": [
+            "current",
+            "original"
+          ],
+          "evidencePolicyInSystem": false,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议改到什么时候了？我这里的信息是原定周一上午九点，地点是松林会议室。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": false,
+            "provider": true
+          }
+        }
+      ],
+      [
+        {
+          "id": "current",
+          "question": "项目发布会议改到什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-new",
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [],
+          "evidencePolicyInSystem": false,
+          "modelReceivedCorrection": true,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议改到周三下午两点了，之前的周一安排取消了。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "original",
+          "question": "项目发布会议原定是什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [
+            "current"
+          ],
+          "evidencePolicyInSystem": false,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议原定是周一上午九点。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "recalled",
+          "question": "项目发布会议现在是什么时候？",
+          "recallRecorded": true,
+          "memorySources": [
+            "venue",
+            "meeting-old"
+          ],
+          "priorQuestionsInMemory": [
+            "current",
+            "original"
+          ],
+          "evidencePolicyInSystem": false,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议改到什么时候了？我这里的信息是原定周一上午九点，地点是松林会议室。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": false,
+            "provider": true
+          }
+        }
+      ]
+    ]
+  },
+  "candidate": {
+    "schemaVersion": 1,
+    "mode": "live-answer-synthetic-retrieval",
+    "entry": "Core QQ group-text adapter",
+    "fixture": {
+      "id": "core-semantic-benchmark",
+      "revision": "2026-11-18-v2",
+      "sha256": "3702f39ee04000b6b16ac71ca0d2bcde74b59b6f44c04d8925c03f9b4bb05ffa",
+      "clockAt": 1794960000000,
+      "retrieval": {
+        "topK": 5,
+        "minScore": 0.35,
+        "timeoutMs": 1000
+      }
+    },
+    "implementation": {
+      "commit": "17fef9a9a1adfb1f94770ae3f70db998877cf824",
+      "manifestSha256": "9619cb8fc1af2b4e78dcbb334320c9864f432d0f8d354fd27e4c9a349a38e732",
+      "runnerSha256": "726ebb63dfa7dffa33a3559a332f4a7a27779c5ab659f2ce5ef5ce381d38e0b2",
+      "modelAdapterSha256": "d9c43576b6e0ba61708363e5d23295ff36fd866f4f1df63d1f26ab8803536a45",
+      "node": "v24.14.1"
+    },
+    "model": {
+      "model": "qwen2.5-3b-instruct-q4_k_m",
+      "hostname": "127.0.0.1"
+    },
+    "modelCalls": [
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2694,
+          "completion_tokens": 17,
+          "total_tokens": 2711
+        },
+        "elapsedMs": 11332,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2685,
+          "completion_tokens": 12,
+          "total_tokens": 2697
+        },
+        "elapsedMs": 9982,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2721,
+          "completion_tokens": 28,
+          "total_tokens": 2749
+        },
+        "elapsedMs": 10438,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2694,
+          "completion_tokens": 17,
+          "total_tokens": 2711
+        },
+        "elapsedMs": 857,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2685,
+          "completion_tokens": 12,
+          "total_tokens": 2697
+        },
+        "elapsedMs": 557,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2721,
+          "completion_tokens": 28,
+          "total_tokens": 2749
+        },
+        "elapsedMs": 1250,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2694,
+          "completion_tokens": 17,
+          "total_tokens": 2711
+        },
+        "elapsedMs": 790,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2685,
+          "completion_tokens": 12,
+          "total_tokens": 2697
+        },
+        "elapsedMs": 547,
+        "status": 200,
+        "error": null
+      },
+      {
+        "responseModel": "qwen2.5-3b-instruct-q4_k_m",
+        "usage": {
+          "prompt_tokens": 2721,
+          "completion_tokens": 28,
+          "total_tokens": 2749
+        },
+        "elapsedMs": 1240,
+        "status": 200,
+        "error": null
+      }
+    ],
+    "runs": [
+      [
+        {
+          "id": "current",
+          "question": "项目发布会议改到什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-new",
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [],
+          "evidencePolicyInSystem": true,
+          "modelReceivedCorrection": true,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议改到周三下午两点了，之前的周一安排取消了。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "original",
+          "question": "项目发布会议原定是什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [
+            "current"
+          ],
+          "evidencePolicyInSystem": true,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议原定是周一上午九点。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "recalled",
+          "question": "项目发布会议现在是什么时候？",
+          "recallRecorded": true,
+          "memorySources": [
+            "venue",
+            "meeting-old"
+          ],
+          "priorQuestionsInMemory": [
+            "current",
+            "original"
+          ],
+          "evidencePolicyInSystem": true,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "我目前无法确认，因为没有最新的信息来源。原定是周一上午九点，但具体现在是什么时候我不清楚。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        }
+      ],
+      [
+        {
+          "id": "current",
+          "question": "项目发布会议改到什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-new",
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [],
+          "evidencePolicyInSystem": true,
+          "modelReceivedCorrection": true,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议改到周三下午两点了，之前的周一安排取消了。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "original",
+          "question": "项目发布会议原定是什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [
+            "current"
+          ],
+          "evidencePolicyInSystem": true,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议原定是周一上午九点。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "recalled",
+          "question": "项目发布会议现在是什么时候？",
+          "recallRecorded": true,
+          "memorySources": [
+            "venue",
+            "meeting-old"
+          ],
+          "priorQuestionsInMemory": [
+            "current",
+            "original"
+          ],
+          "evidencePolicyInSystem": true,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "我目前无法确认，因为没有最新的信息来源。原定是周一上午九点，但具体现在是什么时候我不清楚。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        }
+      ],
+      [
+        {
+          "id": "current",
+          "question": "项目发布会议改到什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-new",
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [],
+          "evidencePolicyInSystem": true,
+          "modelReceivedCorrection": true,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议改到周三下午两点了，之前的周一安排取消了。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "original",
+          "question": "项目发布会议原定是什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [
+            "current"
+          ],
+          "evidencePolicyInSystem": true,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "项目发布会议原定是周一上午九点。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "recalled",
+          "question": "项目发布会议现在是什么时候？",
+          "recallRecorded": true,
+          "memorySources": [
+            "venue",
+            "meeting-old"
+          ],
+          "priorQuestionsInMemory": [
+            "current",
+            "original"
+          ],
+          "evidencePolicyInSystem": true,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 1,
+          "answer": "我目前无法确认，因为没有最新的信息来源。原定是周一上午九点，但具体现在是什么时候我不清楚。",
+          "checks": {
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        }
+      ]
+    ]
+  },
+  "scriptedHistoryAfterRecall": {
+    "schemaVersion": 1,
+    "mode": "scripted-answer-synthetic-retrieval",
+    "entry": "Core QQ group-text adapter",
+    "fixture": {
+      "id": "core-semantic-benchmark",
+      "revision": "2026-11-18-v2",
+      "sha256": "3702f39ee04000b6b16ac71ca0d2bcde74b59b6f44c04d8925c03f9b4bb05ffa",
+      "clockAt": 1794960000000,
+      "retrieval": {
+        "topK": 5,
+        "minScore": 0.35,
+        "timeoutMs": 1000
+      }
+    },
+    "implementation": {
+      "commit": "17fef9a9a1adfb1f94770ae3f70db998877cf824",
+      "manifestSha256": "9619cb8fc1af2b4e78dcbb334320c9864f432d0f8d354fd27e4c9a349a38e732",
+      "runnerSha256": "726ebb63dfa7dffa33a3559a332f4a7a27779c5ab659f2ce5ef5ce381d38e0b2",
+      "modelAdapterSha256": "d9c43576b6e0ba61708363e5d23295ff36fd866f4f1df63d1f26ab8803536a45",
+      "node": "v24.14.1"
+    },
+    "model": null,
+    "modelCalls": [],
+    "runs": [
+      [
+        {
+          "id": "current",
+          "question": "项目发布会议改到什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-new",
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [],
+          "evidencePolicyInSystem": true,
+          "modelReceivedCorrection": true,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 0,
+          "answer": "现行安排是周三下午两点。",
+          "checks": {
+            "evidencePolicyInSystem": true,
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "original",
+          "question": "项目发布会议原定是什么时候？",
+          "recallRecorded": null,
+          "memorySources": [
+            "meeting-old",
+            "venue"
+          ],
+          "priorQuestionsInMemory": [
+            "current"
+          ],
+          "evidencePolicyInSystem": true,
+          "modelReceivedCorrection": false,
+          "modelRequests": 1,
+          "historyResponses": 0,
+          "providerCalls": 0,
+          "answer": "原定周一上午九点。",
+          "checks": {
+            "evidencePolicyInSystem": true,
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        },
+        {
+          "id": "recalled",
+          "question": "项目发布会议现在是什么时候？",
+          "recallRecorded": true,
+          "memorySources": [
+            "venue",
+            "meeting-old"
+          ],
+          "priorQuestionsInMemory": [
+            "current",
+            "original"
+          ],
+          "evidencePolicyInSystem": true,
+          "modelReceivedCorrection": false,
+          "modelRequests": 2,
+          "historyResponses": 1,
+          "providerCalls": 0,
+          "answer": "目前无法确认现行安排。",
+          "checks": {
+            "evidencePolicyInSystem": true,
+            "originalAvailable": true,
+            "correctionVisibility": true,
+            "correctionInSemanticMemory": true,
+            "historyAfterRecall": true,
+            "delivery": true,
+            "answer": true,
+            "provider": true
+          }
+        }
+      ]
+    ]
+  },
+  "regression": {
+    "runtimeNode": "v24.14.1",
+    "compiler": "5.9.3",
+    "backendTypecheck": {
+      "exitCode": 0,
+      "command": "npm run backend:typecheck"
+    },
+    "focusedTests": {
+      "passed": 94,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        "tests/systemPromptTemplate.test.js",
+        "tests/agentInitialPrompt.test.js",
+        "tests/agentTextTriggerCore.test.js",
+        "tests/agentSemanticRuntime.test.js",
+        "tests/agentSemanticMemory.test.js",
+        "tests/agentSemanticRetrieval.test.js",
+        "tests/agentSemanticEvaluation.test.js",
+        "tests/agentMemoryPrivacy.test.js",
+        "tests/agentHistoryRuntime.test.js",
+        "tests/agentConversationMemory.test.js"
+      ]
+    },
+    "retrievalV2": {
+      "dataset": {
+        "id": "core-semantic-benchmark",
+        "revision": "2026-11-18-v2",
+        "hash": "837aaebb8b7907342f885e4e8a03cbe9777da3dc436b02d661ace1b6e31f915e",
+        "corpusHash": "08e222cb9068859492e4caa50fb1477e416707861718fd4c46d8a2a2460838a7",
+        "queries": 15,
+        "rawFileHash": "3702f39ee04000b6b16ac71ca0d2bcde74b59b6f44c04d8925c03f9b4bb05ffa"
+      },
+      "backend": {
+        "id": "9aa4fe89affae9fc891c097a8f1cfde3410ee2c677b05a24c6a62132121f94e4",
+        "metadata": {
+          "kind": "synthetic",
+          "embedding": {
+            "model": "hashed-lexical-v2",
+            "endpoint": "local"
+          },
+          "rerank": {
+            "model": "lexical-overlap-v2",
+            "endpoint": "local"
+          },
+          "revision": "2"
+        }
+      },
+      "profiles": {
+        "production": {
+          "enabled": true,
+          "topK": 5,
+          "minScore": 0.35,
+          "timeoutMs": 1000,
+          "retentionDays": 30,
+          "maxMessagesPerConversation": 1000
+        },
+        "comparison": {
+          "enabled": true,
+          "topK": 10,
+          "minScore": 0,
+          "timeoutMs": 5000,
+          "retentionDays": 30,
+          "maxMessagesPerConversation": 1000
+        }
+      },
+      "cache": {
+        "mode": "isolated-client",
+        "serverCache": "uncontrolled",
+        "clientIsolation": "new backend per query and mode; source preparation uses a separate backend"
+      },
+      "method": "core-read-v2",
+      "trials": 75,
+      "nonTimingTrialSha256": "d06c2f83a9a6cd8f738a61dff139462f6c91dcd730edffd447301ad79523cf9a",
+      "identicalNonTimingResults": true,
+      "storageUnchanged": true,
+      "modes": {
+        "vector": {
+          "effectiveTopK": 10,
+          "samples": 15,
+          "answerableSamples": 5,
+          "noAnswerSamples": 10,
+          "latencySamples": 15,
+          "hitAt1": 0.8,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "evidenceRecallAt5": 1,
+          "evidenceRecallAt10": 1,
+          "contextEvidenceRecall": 1,
+          "completeContextRate": 1,
+          "noAnswerCorrectRate": 0.3,
+          "forbiddenSourceRate": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "rerankApplied": 0,
+          "rerankFallback": 0,
+          "rerankUnavailable": 0,
+          "invalidEmbeddings": 0
+        },
+        "bm25": {
+          "effectiveTopK": 10,
+          "samples": 15,
+          "answerableSamples": 5,
+          "noAnswerSamples": 10,
+          "latencySamples": 15,
+          "hitAt1": 1,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "evidenceRecallAt5": 1,
+          "evidenceRecallAt10": 1,
+          "contextEvidenceRecall": 1,
+          "completeContextRate": 1,
+          "noAnswerCorrectRate": 0.9,
+          "forbiddenSourceRate": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "rerankApplied": 0,
+          "rerankFallback": 0,
+          "rerankUnavailable": 0,
+          "invalidEmbeddings": 0
+        },
+        "hybrid": {
+          "effectiveTopK": 10,
+          "samples": 15,
+          "answerableSamples": 5,
+          "noAnswerSamples": 10,
+          "latencySamples": 15,
+          "hitAt1": 1,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "evidenceRecallAt5": 1,
+          "evidenceRecallAt10": 1,
+          "contextEvidenceRecall": 1,
+          "completeContextRate": 1,
+          "noAnswerCorrectRate": 0.3,
+          "forbiddenSourceRate": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "rerankApplied": 0,
+          "rerankFallback": 0,
+          "rerankUnavailable": 0,
+          "invalidEmbeddings": 0
+        },
+        "hybrid-rerank": {
+          "effectiveTopK": 10,
+          "samples": 15,
+          "answerableSamples": 5,
+          "noAnswerSamples": 10,
+          "latencySamples": 15,
+          "hitAt1": 1,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "evidenceRecallAt5": 1,
+          "evidenceRecallAt10": 1,
+          "contextEvidenceRecall": 1,
+          "completeContextRate": 1,
+          "noAnswerCorrectRate": 0.3,
+          "forbiddenSourceRate": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "rerankApplied": 10,
+          "rerankFallback": 0,
+          "rerankUnavailable": 0,
+          "invalidEmbeddings": 0
+        },
+        "production": {
+          "effectiveTopK": 5,
+          "samples": 15,
+          "answerableSamples": 5,
+          "noAnswerSamples": 10,
+          "latencySamples": 15,
+          "hitAt1": 1,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "evidenceRecallAt5": 1,
+          "evidenceRecallAt10": 1,
+          "contextEvidenceRecall": 1,
+          "completeContextRate": 1,
+          "noAnswerCorrectRate": 0.9,
+          "forbiddenSourceRate": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "rerankApplied": 4,
+          "rerankFallback": 0,
+          "rerankUnavailable": 0,
+          "invalidEmbeddings": 0
+        }
+      },
+      "productionNoEvidenceWithContext": [
+        "private-third-party"
+      ]
+    },
+    "integratedWorktreeSnapshot": {
+      "implementation": {
+        "commit": "17fef9a9a1adfb1f94770ae3f70db998877cf824",
+        "runtimeNode": "v24.14.1",
+        "buildNode": "v24.14.1",
+        "compiler": "5.9.3",
+        "manifestHash": "98ab57b48e56e05597734d22d746d38c688e0686ad7f47c60bcf1d76478c7649"
+      },
+      "sourceFilesMatched": 877,
+      "buildExitCode": 0,
+      "backendTypecheckExitCode": 0,
+      "focusedPassed": 94,
+      "focusedFailed": 0,
+      "focusedSkipped": 0,
+      "scriptedHistoryAfterRecall": true,
+      "retrievalTrials": 75,
+      "nonTimingTrialSha256": "d06c2f83a9a6cd8f738a61dff139462f6c91dcd730edffd447301ad79523cf9a"
+    }
+  }
+}

@@ -43,8 +43,13 @@ const selection = computed(() => {
   }
 })
 const query = ref(''),
-  page = ref(1),
-  more = ref(false)
+  page = ref(1)
+const panel = computed(() => {
+  const value = route.query.panel
+  if (tab.value === 'self' && value === 'person-profiles') return value
+  if (tab.value === 'actions' && value === 'trusteeship') return value
+  return undefined
+})
 const rows = computed(
   () =>
     agent.value?.conversations
@@ -71,11 +76,52 @@ const connections = computed(
 function open(row: WorkspaceConversation) {
   if (agent.value) void router.push(robotLocation(agent.value, tab.value, row))
 }
+function simulationLocation(row: WorkspaceConversation) {
+  return {
+    path: '/simulation',
+    query: {
+      agentId: row.binding.agentId,
+      returnTab: tab.value,
+      connection: row.binding.connectionId,
+      scopeKey: row.scopeKey,
+      bindingToken: row.bindingToken
+    }
+  }
+}
+const personaTarget = computed(() => {
+  if (!agent.value) return { path: '/persona', query: {} }
+  const selected = selection.value.selected
+  const location = selected
+    ? robotLocation(agent.value, tab.value, selected)
+    : robotLocation(agent.value, tab.value)
+  return {
+    path: '/persona',
+    query: {
+      agentId: agent.value.id,
+      returnTab: tab.value,
+      ...(typeof route.query.connection === 'string' ? { connection: route.query.connection } : {}),
+      ...(selected ? location.query : {})
+    }
+  }
+})
+function togglePanel(next: 'person-profiles' | 'trusteeship') {
+  const nextQuery = { ...route.query }
+  if (panel.value === next) delete nextQuery.panel
+  else nextQuery.panel = next
+  void router.push({ path: route.path, query: nextQuery })
+}
+function tabQuery(id: string) {
+  const nextQuery = { ...route.query }
+  const panelForTab =
+    (id === 'self' && nextQuery.panel === 'person-profiles') ||
+    (id === 'actions' && nextQuery.panel === 'trusteeship')
+  if (!panelForTab) delete nextQuery.panel
+  return nextQuery
+}
 watch(
   () => [tab.value, query.value, route.query.connection, route.query.scopeKey],
   () => {
     page.value = 1
-    more.value = false
   }
 )
 </script>
@@ -94,7 +140,7 @@ watch(
         <RouterLink
           v-for="item in tabs"
           :key="item.id"
-          :to="{ path: robotLocation(agent, item.id).path, query: route.query }"
+          :to="{ path: robotLocation(agent, item.id).path, query: tabQuery(item.id) }"
           :class="{ active: tab === item.id }"
           :aria-current="tab === item.id ? 'page' : undefined"
           >{{ item.label }}</RouterLink
@@ -125,7 +171,7 @@ watch(
                 <dd>{{ agent.personaId }}</dd>
               </dl>
             </details>
-            <RouterLink to="/persona" class="text-link">查看人设资源 →</RouterLink>
+            <RouterLink :to="personaTarget" class="text-link">查看人设资源 →</RouterLink>
           </section>
           <section class="panel">
             <h2>接入连接</h2>
@@ -188,18 +234,24 @@ watch(
             placeholder="搜索本人的连接或会话"
             aria-label="搜索本人的会话"
             clearable
-          /><RouterLink v-if="selection.selected" :to="robotLocation(agent, tab)"
+          /><RouterLink
+            v-if="selection.selected"
+            :to="{ path: robotLocation(agent, tab).path, query: panel ? { panel } : {} }"
             >查看全部会话</RouterLink
-          ><NButton v-if="tab === 'self' || tab === 'actions'" size="small" @click="more = !more">{{
-            more ? '收起' : tab === 'self' ? '人物记忆' : '托付与承诺'
-          }}</NButton>
+          ><NButton
+            v-if="tab === 'self' || tab === 'actions'"
+            size="small"
+            @click="togglePanel(tab === 'self' ? 'person-profiles' : 'trusteeship')"
+            >{{ panel ? '收起' : tab === 'self' ? '人物记忆' : '托付与承诺' }}</NButton
+          >
         </div>
-        <template v-if="more"
-          ><CapabilityGate v-if="tab === 'self'" operation="profiles.read"
+        <template v-if="panel === 'person-profiles' && tab === 'self'"
+          ><CapabilityGate operation="profiles.read"
             ><PersonProfilesPage
               :conversation-scopes="selection.selected ? [selection.selected] : rows"
-              embedded /></CapabilityGate
-          ><CapabilityGate v-else operation="trusteeship.read"
+              embedded /></CapabilityGate></template
+        ><template v-else-if="panel === 'trusteeship' && tab === 'actions'"
+          ><CapabilityGate operation="trusteeship.read"
             ><TrusteeshipPage
               :conversation-scopes="selection.selected ? [selection.selected] : rows"
               embedded /></CapabilityGate></template
@@ -217,7 +269,8 @@ watch(
             v-for="row in visible"
             :key="row.scopeKey + row.bindingToken"
             :conversation="row"
-            :section="tab as 'conversations' | 'self' | 'actions'" />
+            :section="tab as 'conversations' | 'self' | 'actions'"
+            :manage-to="simulationLocation(row)" />
           <p v-if="!rows.length" class="panel empty-note">没有匹配的会话。</p>
           <NPagination
             v-if="!selection.selected && rows.length > 6"
@@ -232,7 +285,7 @@ watch(
             人设是表达与身份约束的配置资源。参与、预算和实际授权按每个会话独立核验；不同连接不会自动共享访问权限。
           </p>
           <div class="toolbar">
-            <RouterLink to="/persona">人设模板与分配 →</RouterLink
+            <RouterLink :to="personaTarget">人设模板与分配 →</RouterLink
             ><RouterLink :to="robotLocation(agent, 'conversations')">各会话参与边界 →</RouterLink>
           </div>
         </section>

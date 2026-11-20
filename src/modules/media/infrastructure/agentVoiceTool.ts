@@ -56,6 +56,7 @@ export function createAgentVoiceTool(config: AgentVoiceConfig, options: AgentVoi
   const allows = (text: string) => allowsSecretText(text) && options.allowsText?.(text) !== false
   return {
     name: 'voiceTool', timeoutMs: MAX_TOOL_MS,
+    effect: { required: ['sendAudio'], metadata: ['persona', 'request'] },
     description: '发送一条短语音。用户明确要求语音、朗读、念出来，或非常适合用短语音表达时调用。口播必须短而自然，默认最多80字；不要朗读长篇科普、代码、列表或工具结果。可自选normal/shy/tease/serious/sleepy或宿主配置的语气，省略时自动选择。',
     parameters: { type: 'object', additionalProperties: false, properties: {
       text: { type: 'string', minLength: 1, maxLength: 12000, description: '纯口播短句，不要Markdown、代码或舞台动作。' },

@@ -101,6 +101,7 @@ export function createAgentRenderingTools(options: AgentRenderingToolsOptions = 
   }
   if (options.rendering?.textImage?.enabled) tools.push({
     name: 'textImageTool',
+    effect: { required: ['sendImage'] },
     description: '把完整文字、Markdown、代码或 LaTeX 数学公式排版成图片并发送到当前会话。普通短文本使用 chat 气泡，Markdown/代码/公式自动使用 document，知识讲解可选 knowledge。用户要求纯文本或原文时不要擅自转图。',
     timeoutMs: 45_000,
     parameters: { type: 'object', properties: {
@@ -142,6 +143,7 @@ export function createAgentRenderingTools(options: AgentRenderingToolsOptions = 
   })
   if (backend) tools.push({
     name: 'aiMindMapTool',
+    effect: { required: ['sendImage'] },
     description: '按描述生成最多五级的思维导图 PNG 并发送到当前会话。使用已配置的独立模型生成 Markdown，再使用本地资产排版；不能访问网页或外部图片。',
     timeoutMs: 90_000,
     parameters: { type: 'object', properties: {

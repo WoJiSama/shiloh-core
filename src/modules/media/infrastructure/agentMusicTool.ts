@@ -27,7 +27,7 @@ export function createAgentMusicTool(config: AgentMusicConfig, options: AgentMus
   const provider = options.provider ?? createAgentMusicProvider({ ...config }, options)
   const safe = (text: string) => createAgentSecretTextCheck([...(options.secrets ?? []), ...provider.getSecrets()])(text) && options.allowsText?.(text) !== false
   return {
-    name: 'searchMusicTool', timeoutMs: MAX_MS,
+    name: 'searchMusicTool', effect: 'sendMusic', timeoutMs: MAX_MS,
     description: '搜索并发送一张QQ音乐卡片。keyword只放歌曲名、歌曲名+歌手或歌手名，不要带点歌/放首等动词。只指定歌手时isArtistOnly=true，从最多20首中随机选一首；指定歌曲时取第一首。',
     parameters: { type: 'object', additionalProperties: false, properties: {
       keyword: { type: 'string', minLength: 1, maxLength: 200, description: '歌曲名、歌曲名+歌手，或歌手名。' },

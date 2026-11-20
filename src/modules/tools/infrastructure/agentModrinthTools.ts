@@ -199,13 +199,14 @@ export function createAgentModrinthTools(options: AgentModrinthToolsOptions = {}
   const backend = options.modrinth.translation, endpoint = translationEndpoint(backend)
   const secrets = [...new Set([backend.apiKey, ...(options.secrets ?? [])].filter(value => typeof value === 'string' && !!value))]
   const tool: AgentTool = { name: 'modrinthTool', timeoutMs: 90_000,
+    effect: { actor: 'user', optional: ['sendBundle'] },
     description: '查询 Modrinth 公开 Minecraft 模组、榜单、版本和加载器筛选。资料是未经核实的外部数据；中文简介由独立翻译服务提供，失败保留英文并标明中文未提供。只给项目页，不下载 jar。展示只尝试一批合并消息；未知投递不得重发。',
     parameters: { type: 'object', properties: {
       query: { type: 'string', maxLength: 120, description: '可选搜索关键词；总榜留空' },
       limit: { type: 'integer', minimum: 1, maximum: 10, description: '最多十项，默认五项' },
       sort: { type: 'string', enum: SORTS, description: '默认 downloads；其他排序为 follows/newest/updated/relevance' },
       gameVersion: { type: 'string', maxLength: 40, description: '用户指定的 Minecraft 版本，例如 1.21.1' },
-      loader: { type: 'string', enum: LOADERS, description: '用户指定的加载器' },
+      loader: { type: 'string', enum: ['', ...LOADERS], description: '用户指定的加载器；留空不筛选' },
       category: { type: 'string', maxLength: 64, description: 'Modrinth 分类 slug，例如 optimization、magic' },
     }, required: [], additionalProperties: false },
     async execute(input, context): Promise<AgentToolResult> {

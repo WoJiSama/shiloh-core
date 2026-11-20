@@ -8,7 +8,8 @@ import { spawn } from 'node:child_process'
 
 const { importBilibiliHost: load } = await import('./helpers/bilibiliQualitySource.mjs')
 const { readStandaloneAgentSourceSnapshot: snapshot, isStandaloneAgentSourceSnapshotCurrent: current,
-  acquireStandaloneAgentConfigLock: acquire, inspectStandaloneAgentConfigTransaction: inspect } = await load('bootstrap/standaloneAgentConfigSources.js')
+  acquireStandaloneAgentConfigLock: acquire, inspectStandaloneAgentConfigTransaction: inspect,
+  inspectStandaloneAgentSourceSnapshot: observe, withStandaloneAgentConfigObservation: withObservation } = await load('bootstrap/standaloneAgentConfigSources.js')
 
 const guard = (controller = new AbortController()) => ({ signal: controller.signal, ensureCurrent() { assert.equal(controller.signal.aborted, false) } })
 async function fixture(t, library = true) {
@@ -35,6 +36,24 @@ test('source snapshots cover all three files, distinguish absent library and det
   await writeFile(path.join(f.root, 'persona-library.yaml'), 'personas: []\n')
   assert.notEqual(snapshot(f.hostFile).versions.personas, 'absent')
   assert.deepEqual(await leftovers(f.root), [])
+})
+
+test('one synchronous authorization reuses its snapshot and the next observes configuration withdrawal', async t => {
+  const { loaded, hostFile } = await fixture(t)
+  let observed
+  assert.equal(withObservation(loaded, () => {
+    observed = observe(loaded)
+    return withObservation(loaded, () => observe(loaded) === observed && current(loaded))
+  }), true)
+  assert.notEqual(observe(loaded), observed)
+
+  const rejection = new Error('check interrupted')
+  assert.throws(() => withObservation(loaded, () => {
+    assert.equal(current(loaded), true)
+    throw rejection
+  }), err => err === rejection)
+  await writeFile(hostFile, '# changed\nversion: 1\n')
+  assert.equal(withObservation(loaded, () => current(loaded)), false)
 })
 
 test('read-only and unchanged leases remove only their newly created empty claims directory', async t => {

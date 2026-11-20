@@ -1,3 +1,5 @@
+> 本文件按批次保留执行记录，各节“当前”“下一步”属于当时阶段；当前整体交付状态统一见[项目当前状态](docs/project-status.md)。
+
 # 2026-10-03 P0+P1 架构收口（用户"p0p1都做"）
 - P0.1 tests/helpers/pluginSources.js:合同测试统一聚合读取(test.js+apps/lib/*),17 份测试迁移——此后方法搬家合同测试零改动;过程中 4 份测试本有同名本地函数,删除本地定义换 import。
 - P0.2 apps/lib/conversationUtils.js:消除 chatTurn→test.js 循环依赖——delay/limiter/工具暴露过滤簇(含 shouldExposeToolsForMessage/hasMediaNeedingTool/parseToolConfigEntry/toolConfigHasName 依赖链整体随迁)+红包配置。

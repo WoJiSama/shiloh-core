@@ -203,9 +203,20 @@ for (const transport of ['forward-websocket', 'reverse-websocket']) {
     assert.equal(f.nonLogin().some(row => row.action === 'send_qzone_msg'), false)
     const packet = await f.adapter.redPackets.read(target, '-42', guard())
     assert.ok(packet)
-    assert.equal((await f.adapter.redPackets.sendPassword(packet, rejectAt(4))).state, 'failed')
-    assert.equal((await f.adapter.redPackets.grab(packet, rejectAt(6))).state, 'failed')
-    assert.equal(f.nonLogin().some(row => row.action === 'send_group_msg' || row.action === 'grab_red_bag'), false)
+    for (const [method, proofs] of [['sendPassword', ['get_msg']], ['grab', ['get_msg', 'get_group_member_info']]]) {
+      const before = f.nonLogin().length
+      let proofRead = false
+      f.setHandler(request => {
+        const result = f.native(request)
+        if (request.action === proofs.at(-1)) proofRead = true
+        return result
+      })
+      const result = await f.adapter.redPackets[method](packet, guard({
+        async ensureCurrent() { if (proofRead) throw Error('final native authorization denied') },
+      }))
+      assert.equal(result.state, 'failed')
+      assert.deepEqual(f.nonLogin().slice(before).map(row => row.action), proofs)
+    }
   })
 
   test(`${transport} awaiting source checks cannot move an old invocation onto a reauthenticated socket`, { timeout: 12000 }, async t => {

@@ -67,6 +67,8 @@ async function deliver(context: AgentToolContext, members: readonly Conversation
 export function createAgentMemberTools(): readonly AgentTool[] {
   const info: AgentTool = {
     name: 'memberInfoTool',
+    effect: input => ({ actor: 'user', conversation: 'group', required: ['readMember'], metadata: ['request', 'botUserId'],
+      optional: input.nickname === undefined ? [] : ['listMembers'] }),
     description: '查询当前群一名明确成员的昵称、群名片、角色及平台提供的资料。优先本轮真实@、明确本人或被回复成员；也可按本条原话中的姓名查询，重名须澄清。不得猜测ID或把“他”当成提问者。',
     parameters: schema({ user_id: { type: 'string' }, nickname: { type: 'string' } }),
     async execute(input, context) {
@@ -110,6 +112,7 @@ export function createAgentMemberTools(): readonly AgentTool[] {
   }
   const members: AgentTool = {
     name: 'mentionMembersTool',
+    effect: { actor: 'user', conversation: 'group', required: ['listMembers', 'sendMessage'], metadata: ['request'] },
     description: '仅响应本条真人请求，在当前群真实@指定成员并发送通知。targets使用原话中的准确ID、唯一完整名片/昵称或明确要求的“群主”；不能猜测姓名、扩大范围或借用旧请求。工作流通知使用groupKnowledgeTool。',
     parameters: schema({ targets: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 20 }, message: { type: 'string', maxLength: 2000 } }, ['targets']),
     async execute(input, context) {
@@ -136,6 +139,7 @@ export function createAgentMemberTools(): readonly AgentTool[] {
   }
   const admins: AgentTool = {
     name: 'mentionAdminsTool',
+    effect: { actor: 'user', conversation: 'group', required: ['listMembers', 'sendMessage'], metadata: ['request', 'botUserId'] },
     description: '仅在显式放通且本条真人明确要求通知所有管理员/管理员们/全体群管时使用。默认排除机器人和群主；includeOwner=true还须原话明确包含群主。excludeTargets要求准确ID或唯一完整名片/昵称，歧义则整批停止。',
     parameters: schema({ message: { type: 'string', maxLength: 2000 }, includeOwner: { type: 'boolean' }, excludeTargets: { type: 'array', items: { type: 'string' }, maxItems: 20 } }),
     async execute(input, context) {

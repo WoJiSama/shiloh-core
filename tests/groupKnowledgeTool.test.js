@@ -34,7 +34,8 @@ function fixture(options = {}) {
   const placeholder = { parameters: { type: 'object', properties: { action: { type: 'string', enum: ['list'] } }, required: ['action'] }, validateParameters: () => true }
   const tools = createGroupTextTools({ commitment: placeholder, memory: placeholder, knowledge: tool })
   return { tool, tools, sends, checks, mutations, context, notify: { action: 'notify', id: entry.id, requestExcerpt: '请现在通知会议组', content: '明天九点开会' },
-    textContext: { binding: context.binding, speakerId: 'speaker', userText: context.userText, requestMessageId: context.requestMessageId,
+    textContext: { binding: context.binding, actor: context.actor, userText: context.userText,
+      request: { messageId: context.requestMessageId, text: context.userText, mentions: [] },
       signal: context.signal, isCurrent: context.isCurrent, allowsText: context.allowsText, claimAction: async () => { claims++; return claims === 1 } },
     claims: () => claims }
 }

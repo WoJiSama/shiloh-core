@@ -211,12 +211,21 @@ export function createQqRedPacketPort(options: QqRedPacketOptions): QqRedPacketP
     const guard = Object.freeze({ signal: combined, isCurrent, ensureCurrent, timeoutMs: Math.max(1, deadline - Date.now()) })
     const invoke = async (action: QqRedPacketApiAction, params: Record<string, unknown>): Promise<unknown> => {
       await ensureCurrent()
-      return wait(Promise.resolve().then(() => {
-        if (!isCurrent()) throw invalid()
-        return withDeliveryGuard(isCurrent, () => {
-          if (action === 'send_group_msg' || action === 'grab_red_bag') dispatched = true
-          return callApi(action, Object.freeze(params), Object.freeze({ ...guard, timeoutMs: Math.max(1, deadline - Date.now()) }))
+      if (!isCurrent()) throw invalid()
+      return wait(withDeliveryGuard(isCurrent, () => {
+        let enteringTransport = true
+        const transportGuard = Object.freeze({ ...guard, timeoutMs: Math.max(1, deadline - Date.now()),
+          async ensureCurrent() {
+            // The synchronous transport entry can reuse the check immediately above.
+            // A transport that queues or awaits before checking must prove the source again.
+            if (!enteringTransport) await ensureCurrent()
+            else if (!isCurrent()) throw invalid()
+          },
         })
+        try {
+          if (action === 'send_group_msg' || action === 'grab_red_bag') dispatched = true
+          return callApi(action, Object.freeze(params), transportGuard)
+        } finally { enteringTransport = false }
       }))
     }
     try {

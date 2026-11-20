@@ -1,6 +1,6 @@
 import type { SimMemoryEntry, SimMessage, SimMoodState, SimSessionState, SimWakeConfig } from '../../../contracts/simulation.js'
 import type { MessageImage } from '../../../contracts/platformConnection.js'
-import { coerceStringArray, looksLikeToolArguments } from '../domain/paramTolerance.js'
+import { coerceStringArray, looksLikeToolArguments, normalizeStringArrayInput } from '../domain/paramTolerance.js'
 import { stripAIFlavorPhrases } from '../../conversation/domain/replySanitizer.js'
 import { compactSimMessage } from '../domain/messageView.js'
 import { acknowledgeMessages, readThroughSeq, noteModelSeen, unreadSince } from '../domain/watermark.js'
@@ -258,6 +258,12 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
       }
     }
 
+    override normalizeParameters(params: unknown) {
+      const input = super.normalizeParameters(params)
+      if (Object.hasOwn(input, 'messages')) input.messages = normalizeStringArrayInput(input.messages)
+      return input
+    }
+
     async func(opts: Record<string, unknown>) {
       if ((ctx.requireExplicitContinuation || opts.continuation !== undefined) && !['chat', 'interest_only'].includes(String(opts.continuation))) return 'error: continuation 必须为 chat 或 interest_only；需要保存或安排时用 simFinishTurn'
       // Keep a complete protocol-sized batch for quota preflight. One extra item
@@ -351,6 +357,12 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
         required: [],
         additionalProperties: false,
       }
+    }
+
+    override normalizeParameters(params: unknown) {
+      const input = super.normalizeParameters(params)
+      if (Object.hasOwn(input, 'keywords')) input.keywords = normalizeStringArrayInput(input.keywords)
+      return input
     }
 
     async func(opts: Record<string, unknown>) {

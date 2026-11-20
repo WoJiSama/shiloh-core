@@ -217,6 +217,27 @@ test('source revocation between fresh read and dispatch stops every later native
   }
 })
 
+test('transport entry shares the current source check, and an async wait requires fresh proof', async () => {
+  const source = message()
+  let checks = 0, sourceAvailable = true, checkedOnEntry
+  const f = fixture({ async callApi(action, params, scope) {
+    if (checks === 0) return ok(source)
+    await scope.ensureCurrent()
+    checkedOnEntry = checks
+    sourceAvailable = false
+    await scope.ensureCurrent()
+    return ok(source)
+  } })
+  const packet = await f.clearRead()
+  const guard = { ...f.guard, async ensureCurrent() {
+    checks++
+    if (!sourceAvailable) throw new Error('source no longer available')
+  } }
+  assert.equal(await f.port.revalidate(packet, guard), false)
+  assert.equal(checkedOnEntry, 1)
+  assert.equal(checks, 2)
+})
+
 test('captured guard is propagated through the native queue and cancellation prevents a queued effect', async () => {
   let reached, release; const queued = new Promise(resolve => { reached = resolve }), gate = new Promise(resolve => { release = resolve })
   const f = fixture({ async callApi(action, params, scope, own) {

@@ -20,7 +20,7 @@ export function giftGuard() {
 export async function giftRedis(t) {
   // A fresh real local Redis instance; no existing service or built dist is used.
   const directory = await mkdtemp(path.join(tmpdir(), 'agft-')), socket = path.join(directory, 'r.sock')
-  const server = spawn('redis-server', ['--port', '0', '--unixsocket', socket, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
+  const server = spawn('redis-server', ['--port', '0', '--unixsocket', socket, '--save', '', '--appendonly', 'no'], { cwd: directory, stdio: 'ignore' })
   let client, exited = false
   const ended = once(server, 'exit').then(() => { exited = true }, () => {})
   t.after(async () => {

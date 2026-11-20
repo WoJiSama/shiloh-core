@@ -3,7 +3,7 @@ export { AgentManagementError } from '../contracts/agentManagement.js'
 export type { AgentManagementGuard, AgentManagementContext, AgentManagementBindings, AgentManagementModules } from '../contracts/agentManagement.js'
 export { createAgentDiagnostics, type AgentDiagnostics, type AgentDiagnosticInput } from '../modules/runtime/infrastructure/agentDiagnostics.js'
 export type { AgentDiagnosticEvent, AgentDiagnosticScope, AgentDiagnosticSink, AgentOperationJournal } from '../contracts/agentDiagnostics.js'
-export type { AgentTool, AgentToolContext, AgentToolDeliveryGuard, AgentToolResult, AgentToolRegistry, AgentToolMessage, AgentToolRequest, AgentQqActionGuard, AgentQqActionRunner } from '../contracts/agentTool.js'
+export type { AgentTool, AgentToolAccess, AgentToolCapability, AgentToolEffect, AgentToolMetadata, AgentToolContext, AgentToolDeliveryGuard, AgentToolResult, AgentToolRegistry, AgentToolMessage, AgentToolRequest, AgentQqActionGuard, AgentQqActionRunner } from '../contracts/agentTool.js'
 export type { AgentQqActionsConfig } from '../modules/runtime/infrastructure/agentQqActions.js'
 export type {
   AgentDeferredJson, AgentDeferredParams, AgentDeferredExecutorKind, AgentDeferredFrozenAction, AgentDeferredActionSource,

@@ -164,6 +164,15 @@ export function observeStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot, c
     return { current, accepted: current && accepted }
   } catch { return failed }
 }
+/** Compatibility entry point using the complete synchronous configuration observation. */
+export function withStandaloneAgentConfigObservation(snapshot: SourceSnapshot, check: () => boolean): boolean {
+  let failure: { error: unknown } | undefined
+  const result = observeStandaloneAgentSourceSnapshot(snapshot, () => {
+    try { return check() } catch (error) { failure = { error }; return false }
+  })
+  if (failure) throw failure.error
+  return result.accepted
+}
 /** Runtime lock acquisition is bounded and abortable; an abandoned lock is never stolen. */
 export async function acquireStandaloneAgentConfigLock(snapshot: SourceSnapshot, guard: Guard): Promise<StandaloneAgentConfigLock> {
   const root = snapshots.get(snapshot)

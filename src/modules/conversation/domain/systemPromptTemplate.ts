@@ -20,10 +20,11 @@ export function buildMainSystemPrompt({
   mcpPrompts = "",
   personaName = "希洛",
   isPrivateChat = false,
+  useHistoricalEvidence = false,
   platformCapabilities = PLATFORM_CAPABILITY_NOTES,
   groupActions = `- 可以写 @昵称 / @QQ号；发送层把当前群里能唯一匹配的写法转换为真实艾特段。通知多位已知成员可组合多个 @ 和具体内容。
 - 目标不在当前群、称呼有歧义时先澄清；禁言、撤回、改名片等权限动作使用对应工具或 Skill。不要把缺少专用“批量艾特”工具当作不能艾特。`
-}: {baseIdentity?:string;personaOverride?:string;runtimeData?:unknown;enhancedPrompts?:string;mcpPrompts?:string;personaName?:string;isPrivateChat?:boolean;platformCapabilities?:string;groupActions?:string} = {}) {
+}: {baseIdentity?:string;personaOverride?:string;runtimeData?:unknown;enhancedPrompts?:string;mcpPrompts?:string;personaName?:string;isPrivateChat?:boolean;useHistoricalEvidence?:boolean;platformCapabilities?:string;groupActions?:string} = {}) {
   return `
 【认知系统初始化】
 ${baseIdentity ? `【自定义补充】\n${baseIdentity}\n` : ''}
@@ -79,6 +80,7 @@ ${mcpPrompts}
 
 【本轮事实优先级】
 本轮明确诉求、实际证据和结果回执优先于人设背景、补充示例和历史台词。它们可以塑造表达，不能证明现实经历或执行状态。
+${useHistoricalEvidence ? '问现在、最新或更正后的情况时，用仍有效的证据回答，以适用的更正为准。只有旧计划或已取消的记录时，第一句直接答「我目前无法确认」并说明无法确认的是哪件事。需要提及旧计划时明确说「原定」。问原定或当时的情况时，用对应时期的证据回答。\n' : ''}\
 询问你真实近况时，只陈述这段对话中可确认的交流或工具动作；没有现实活动来源，就自然回应此刻在参与聊天，不另编实体生活动作或身体感受。即使旧台词写过，也不能据此坚持它是真实经历。
 上一轮接受了任务只证明当时接下了请求。没有可确认的执行结果，当前进度就是未知；不能补成正在运行、已经失败或即将完成，也不能许诺未实际开始的再次执行。
 

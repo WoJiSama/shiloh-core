@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
-import { createAgentSemanticMemory } from '../dist/backend/modules/memory/infrastructure/agentSemanticMemory.js'
+import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 import { agentSemanticMemoryId, createAgentSemanticMemoryStore } from '../dist/backend/modules/memory/infrastructure/agentSemanticMemoryStore.js'
 import { createPersonMemoryStore } from '../dist/backend/modules/memory/infrastructure/personMemoryStore.js'
 import { personMemoryAddress } from '../dist/backend/modules/memory/infrastructure/personMemoryContext.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
+
+const { createAgentSemanticMemory } = await load('modules/memory/infrastructure/agentSemanticMemory.js')
 
 const redisTest = { skip: !redisAvailable, timeout: 20_000 }
 const DAY = 86_400_000
@@ -120,6 +122,7 @@ async function fixture(t, options = {}) {
           }
         },
         logger: { warn: message => warnings.push(message) },
+        ...(options.retrieval ? { retrieval: options.retrieval } : {}),
       })
       composers.push(composer)
     },
@@ -427,4 +430,51 @@ test('private corpus attribution requires the proven peer and never accepts a di
   assert.equal(state.rows[0].peerId, actor.id)
   assert.equal(state.rows[0].authorId, actor.id)
   assert.deepEqual(f.calls.embed.flatMap(call => call.texts), ['proven private sender'])
+})
+
+test('actual Core read traces complete and partially clipped evidence without changing the public recall contract', redisTest, async t => {
+  let trace
+  const f = await fixture(t, { retrieval: { observe: value => { trace = value } } })
+  const originals = []
+  for (let index = 0; index < 5; index++) originals.push(await f.capture(`source ${index}: ${'retained evidence '.repeat(85)}`))
+  await f.indexed()
+  const recall = await f.read('remember the retained material')
+  assert.deepEqual(Object.keys(recall).sort(), ['isCurrent', 'text'])
+  assert.equal(await recall.isCurrent(), true)
+  assert.equal(trace.mode, 'production')
+  assert.equal(trace.selected.length, 5)
+  assert.equal(trace.projected.length, 4)
+  assert.equal(trace.projected.filter(item => item.complete).length, 3)
+  assert.equal(trace.projected.at(-1).complete, false)
+  const scopeId = agentSemanticMemoryId(f.binding())
+  assert.deepEqual(trace.authorized, originals.map(message => ({ scopeId, messageId: message.messageId })))
+  assert.equal(recall.text.includes(originals[3].text), false)
+  assert.equal(recall.text.includes(originals[4].text), false)
+})
+
+test('BM25 experiment uses actual source guards and never calls the remote query or reranker', redisTest, async t => {
+  let trace
+  const f = await fixture(t, { retrieval: { mode: 'bm25', observe: value => { trace = value } } })
+  const kept = await f.capture('copper observatory handbook')
+  const recalled = await f.capture('copper forbidden observation')
+  await f.indexed()
+  f.recall(room, recalled.messageId)
+  const before = { embed: f.calls.embed.length, rerank: f.calls.rerank.length }
+  const recall = await f.read('copper')
+  assert.match(recall.text, /copper observatory handbook/u)
+  assert.doesNotMatch(recall.text, /forbidden observation/u)
+  assert.deepEqual({ embed: f.calls.embed.length, rerank: f.calls.rerank.length }, before)
+  assert.deepEqual(trace.authorized.map(item => item.messageId), [kept.messageId])
+  assert.equal(trace.embedding, 'not-used')
+  assert.equal(trace.rerank, 'disabled')
+})
+
+test('Core deadline is reported as a timeout and still releases the read lease', redisTest, async t => {
+  const f = await fixture(t, { config: { timeoutMs: 200 } })
+  await f.capture('indexed source for the deadline')
+  await f.indexed()
+  f.behavior.embed = () => new Promise(() => {})
+  await assert.rejects(f.read('unresponsive semantic query'), { code: 'semantic_memory_timeout' })
+  await f.drained()
+  assert.equal(f.activeTurns, 0)
 })

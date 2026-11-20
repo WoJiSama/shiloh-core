@@ -233,6 +233,20 @@ test('Simulation unrelated ephemeral tools cannot lend their temporary sources t
   assert.doesNotMatch(JSON.stringify((await f.session()).agentHistory), /其他临时资料正文/u)
 })
 
+test('Direct Simulation qzone rejects invalid schema or a missing candidate port before marking ephemeral data', options, async t => {
+  for (const [argumentsValue, error] of [[{ action: 'visit', userId: 170001 }, /Schema/u], [{ action: 'visit' }, /QQ 空间权限/u]]) {
+    const rejected = call('simQzoneInteract', argumentsValue)
+    const f = await fixture(t, { members: false, qzone: () => visited, script: round => round === 0 ? response(rejected,
+      call('simCharacterMemory', { action: 'remember', kind: 'interest', epistemic: 'inferred', content: '保留普通群聊记忆', evidenceRefs: ['message:1'] }),
+    ) : response(finish()) })
+    await f.run()
+    assert.deepEqual(f.actions, [])
+    assert.match(f.observations.find(result => result.toolCallId === rejected.id)?.content, error)
+    const { character } = await f.runtime.describeGroup(f.key)
+    assert.equal(character.memories[0]?.content, '保留普通群聊记忆')
+  }
+})
+
 test('Simulation silent and deferred decisions prevent queued QQ provider calls', options, async t => {
   for (const kind of ['silent', 'deferred']) {
     const f = await fixture(t, { script: round => round === 0 ? response(call('simDecide', { kind, reason: '本轮先不执行。' }), call('sendGiftTool')) : response(finish()) })

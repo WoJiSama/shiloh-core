@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import type { RouteLocationRaw } from 'vue-router'
 import { NAlert, NButton, NPagination, NTag, useDialog, useMessage } from 'naive-ui'
 import { api } from '../lib/api'
 import { capability, workspace } from '../lib/workspace'
@@ -17,6 +18,7 @@ import { forgetRequestId, useForgetReceipt } from '../lib/forgetReceipt'
 const props = defineProps<{
   conversation: WorkspaceConversation
   section: 'conversations' | 'self' | 'actions'
+  manageTo?: RouteLocationRaw
 }>()
 interface Memory {
   id: string
@@ -272,7 +274,20 @@ onBeforeUnmount(() => {
           {{ accountLabel(conversation.binding.target.account) }}
         </p>
       </div>
-      <NButton size="small" :loading="loading" :disabled="acting" @click="reread">重新读取</NButton>
+      <span class="toolbar">
+        <RouterLink
+          v-if="
+            props.manageTo &&
+            conversation.binding.target.kind === 'group' &&
+            readCapability.status === 'available'
+          "
+          :to="props.manageTo"
+          >管理此会话 →</RouterLink
+        >
+        <NButton size="small" :loading="loading" :disabled="acting" @click="reread"
+          >重新读取</NButton
+        >
+      </span>
     </div>
     <p v-if="conversation.binding.target.kind !== 'group'" class="empty-note">
       此会话已绑定本人；当前宿主尚未提供此类型会话的自我与行动视图。
