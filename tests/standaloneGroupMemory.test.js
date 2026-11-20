@@ -38,7 +38,7 @@ function completion(content, total = 23) {
   return JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: total - 5, completion_tokens: 5, total_tokens: total } })
 }
 
-async function fixture(t, { instance, enabled = true, backend = true }) {
+async function fixture(t, { instance, enabled = true, backend = true, beforeTeachingResponse }) {
   const directory = await mkdtemp(path.join(tmpdir(), 'standalone-group-memory-'))
   const socketPath = path.join(directory, 'redis.sock')
   const redis = spawn('redis-server', ['--port', '0', '--unixsocket', socketPath, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
@@ -62,6 +62,7 @@ async function fixture(t, { instance, enabled = true, backend = true }) {
           ...(material.mode === 'teaching'
             ? { kind: 'member_definition', subject: '绘图组', targetUserIds: [String(memberId)] }
             : { kind: 'fact', text: factText }) }]
+        if (material.mode === 'teaching') await beforeTeachingResponse?.()
         response.end(completion(JSON.stringify(result), material.mode === 'teaching' ? 31 : 37))
         return
       }
@@ -267,6 +268,26 @@ test('standalone persists human teaching before an unknown reply, learns facts o
     assert.equal(ledger.rows.filter(row => row.scope === 'global' && row.stage === 'api' && row.model === 'standalone-group-extractor' && row.u.total === total).length, count)
   }
   for (const secret of [mainKey, groupKey, oneBotToken]) assert.ok(!ledger.text.includes(secret))
+  run.assertClean()
+})
+
+test('standalone saves slow group teaching in the background while the main reply goes out', {
+  skip: !redisAvailable, timeout: 20_000,
+}, async t => {
+  const replyDelivered = Promise.withResolvers()
+  const run = await fixture(t, { instance: 'standalone-group-teaching-slow',
+    beforeTeachingResponse: () => Promise.all([delay(1_100), replyDelivered.promise]) })
+  await run.start()
+  run.send(teachingText, 87301, { directed: true, mentions: [memberId] })
+  try {
+    await waitFor(() => run.deliveries.length === 1, 'normal reply during slow teaching')
+    assert.equal((await run.state()).entries.length, 0)
+  } finally { replyDelivered.resolve() }
+  const taught = await waitFor(async () => (await run.state())?.entries.find(row => row.subject === '绘图组'), 'slow teaching persisted')
+  assert.equal(taught.source.messageId, '87301')
+  assert.equal(run.extractions.filter(row => row.material.mode === 'teaching').length, 1)
+  assert.equal(run.deliveries.length, 1)
+  await run.stop()
   run.assertClean()
 })
 

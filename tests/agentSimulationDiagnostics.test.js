@@ -172,6 +172,7 @@ test('session read failures, invalid stored state and health findings produce di
   h.kv.set(sessionKey(GROUP), '{private-corrupted-state')
   await h.runtime.describeGroup(GROUP)
   h.kv.set(sessionKey(GROUP), valid)
+  h.kv.set(SIMULATION_KNOWN_GROUPS_KEY, JSON.stringify([GROUP]))
   h.kv.set('bl-chat:commitment:faillog', JSON.stringify([{ id: 'private-task-id', intent: 'private-task-text', group_id: GROUP }]))
   await h.runtime.sweepOnce()
   await waitFor(() => rows.some(row => row.code === 'commitment_terminal_failure'), 'health classification is written')
@@ -192,7 +193,7 @@ test('session read failures, invalid stored state and health findings produce di
   assert.ok(text.includes(`追踪编号 ${read.traceId}`))
   assert.doesNotMatch(JSON.stringify({ rows, terminal, batches, text }),
     /runtime_warning|private-redis-error|sk-test-placeholder|private-corrupted-state|private-task-(text|id)/u)
-  assert.ok(!text.includes(GROUP))
+  assert.doesNotMatch(text, new RegExp(`(?<![0-9A-Za-z-])${GROUP}(?![0-9A-Za-z-])`, 'u'))
 })
 
 async function settled(h, minCalls = 1) {

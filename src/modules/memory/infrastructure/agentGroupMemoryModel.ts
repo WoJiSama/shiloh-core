@@ -1,6 +1,7 @@
 import type { GroupMemoryModel, GroupMemoryModelInput, GroupMemoryProposal } from '../../../contracts/groupMemory.js'
 import type { PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
 import { resolveChatCompletionUrl } from '../../models/domain/chatCompletionUrl.js'
+import { glmFlashJsonOptions } from '../../models/domain/modelGateway.js'
 import { safeTruncateUnicode } from '../../models/domain/unicodeText.js'
 
 export interface AgentGroupMemoryModelOptions {
@@ -183,7 +184,7 @@ export function createAgentGroupMemoryModel(options: AgentGroupMemoryModelOption
         headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: options.name, messages: [
           { role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: JSON.stringify(material) },
-        ], stream: false, temperature: 0.2, max_tokens: 2000 }),
+        ], stream: false, temperature: 0.2, max_tokens: 2000, ...glmFlashJsonOptions(endpoint, options.name) }),
       }), signal)
       assertCurrent(context, signal)
       if (response.redirected) throw new Error(FAILURE)

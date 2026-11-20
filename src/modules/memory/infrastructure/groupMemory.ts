@@ -17,6 +17,8 @@ import { createGroupMemoryStore, groupMemoryId } from './groupMemoryStore.js'
 import { ensureGroupCleanup, groupCleanupCurrent, groupCleanupMatchesScope, groupCleanupSelector } from './groupMemoryCleanup.js'
 
 type MemoryTurn = { signal: AbortSignal; isCurrent(): boolean; release(): void }
+const TEACHING_MODEL_TIMEOUT_MS = 12_000
+const CONSENSUS_MODEL_TIMEOUT_MS = 20_000
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const normalize = (value: string) => value.normalize('NFKC').toLowerCase().replace(/[\s，,。；;：:！!？?、@"“”']/gu, '')
 const integer = (value: number | undefined, fallback: number, min: number, max: number) => typeof value === 'number' && Number.isFinite(value) ? Math.max(min, Math.min(max, Math.floor(value))) : fallback
@@ -170,6 +172,8 @@ export function createGroupMemory(ports: {
   }
   async function runJob(state: GroupMemoryState, agent: GroupMemoryAgentState, job: GroupMemoryJob, cancel: AbortController) {
     const binding = agent.binding, startedAt = now()
+    const teaching = job.mode === 'teaching'
+    const operation = teaching ? 'group_teaching_extract' : 'group_memory_extract'
     let turn: MemoryTurn | undefined, alive = true, used = false
     let step: 'source' | 'model' | 'save' = 'source'
     let timedOut = false
@@ -204,7 +208,7 @@ export function createGroupMemory(ports: {
         signal: cancel.signal, isCurrent, ensureCurrent: () => abortable(ensureCurrent()),
         recordUsage(model: string, usage: unknown) { if (alive && !used) { used = true; try { ports.recordUsage?.({ scope: simulationAddressKey(binding.target), stage: job.mode === 'teaching' ? 'group-teaching' : 'group-memory', model, usage, ms: now() - startedAt }) } catch {} } },
       })
-      const modelTimer = setTimeout(expire, job.mode === 'teaching' ? 900 : 20_000)
+      const modelTimer = setTimeout(expire, teaching ? TEACHING_MODEL_TIMEOUT_MS : CONSENSUS_MODEL_TIMEOUT_MS)
       modelTimer.unref?.()
       const messages = Object.freeze(job.messages.map(row => {
         const copy = structuredClone(row)
@@ -249,7 +253,9 @@ export function createGroupMemory(ports: {
       }
       const commitCurrent = () => isCurrent() && (job.mode !== 'teaching' || Date.now() - roleCheckedAt <= 1500)
       step = 'save'
-      await store.update(state.id, saved => {
+      let completed = false
+      const committed = await store.update(state.id, saved => {
+        completed = false
         const live = saved?.agents.find(item => item.agentId === binding.agentId)
         if (!saved || !live || live.token !== agent.token || !live.jobs.some(item => item.id === job.id && item.cleanupToken === job.cleanupToken)) return saved
         for (const entry of entries) {
@@ -270,12 +276,17 @@ export function createGroupMemory(ports: {
         live.jobs = live.jobs.filter(item => item.id !== job.id)
         if (job.mode === 'consensus') live.consensusDone = boundedIds([...live.consensusDone, ...job.messages.map(row => row.messageId)])
         else live.teachingDone = boundedIds([...live.teachingDone, ...job.messages.map(row => row.messageId)])
+        completed = true
         return saved
       }, commitCurrent)
+      if (committed && completed) {
+        try { ports.diagnostics?.emit({ stage: 'memory', operation, outcome: 'succeeded', code: 'completed', durationMs: now() - startedAt }) }
+        catch { /* Diagnostics cannot change a committed result. */ }
+      }
     } catch (error) {
       if (current(binding)) {
         const codes = { source: 'group_learning_source_unavailable', model: 'group_learning_model_failed', save: 'group_learning_save_failed' } as const
-        reportAgentFailure(ports.diagnostics, { stage: step === 'model' ? 'model' : 'memory', operation: 'group_memory_extract',
+        reportAgentFailure(ports.diagnostics, { stage: step === 'model' ? 'model' : 'memory', operation,
           code: timedOut ? 'group_learning_timeout' : codes[step], durationMs: now() - startedAt, error },
         () => ports.logger.warn('[Agent] 群学习未完成，保留来源等待有限重试'))
       }

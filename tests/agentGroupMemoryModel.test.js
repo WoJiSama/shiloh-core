@@ -69,6 +69,20 @@ test('group memory uses a fixed real HTTP backend with two roles, bounded data a
   assert.deepEqual(usage, [[config.name, { prompt_tokens: 8, completion_tokens: 0, total_tokens: 8 }]])
 })
 
+test('group learning requests disable reasoning only on the supported official GLM Flash route', async () => {
+  for (const [baseUrl, name, expected] of [
+    ['https://open.bigmodel.cn/api/paas/v4', 'glm-5.3-flash', { type: 'disabled' }],
+    ['https://example.test/v1', 'glm-5.3-flash', undefined],
+    ['https://open.bigmodel.cn/api/paas/v4', 'another-model', undefined],
+  ]) {
+    const extract = provider({ baseUrl, name, fetchImpl: async (_url, init) => {
+      assert.deepEqual(JSON.parse(init.body).thinking, expected)
+      return answer()
+    } })
+    assert.deepEqual(await extract(input, context()), [fact])
+  }
+})
+
 test('teaching preserves the complete bounded utterance and validates every proposal kind and owner identity', async () => {
   const taught = [
     { kind: 'alias', sourceIndex: 1, excerpt: '甲哥也是甲', subject: '甲哥', targetUserIds: ['member-a'] },

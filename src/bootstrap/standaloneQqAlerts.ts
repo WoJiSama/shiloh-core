@@ -63,6 +63,7 @@ const operationNames = new Map(Object.entries({
   person_memory_provider_http: '人物记忆请求',
   group_memory_provider_http: '群记忆请求',
   group_memory_extract: '提取群记忆',
+  group_teaching_extract: '提取群知识教学',
   history_capture: '保存历史消息来源',
   history_cleanup: '清理历史消息来源',
   semantic_memory_index: '更新语义记忆索引',
