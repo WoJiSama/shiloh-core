@@ -376,7 +376,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   ports = { ...ports, redis: administration.redis }
   const now = ports.now ?? Date.now
   const random = ports.random ?? Math.random
-  const store: SimSessionStore = createSimSessionStore({ redis: ports.redis, logger, now })
+  const storePorts = { redis: ports.redis, logger, now, ...(ports.diagnostics ? { diagnostics: ports.diagnostics } : {}) }
+  const store: SimSessionStore = createSimSessionStore(storePorts)
   const lifeThreads = ports.lifeThreadProvider ? createAgentLifeThreadRuntime(ports.lifeThreadProvider, now) : undefined
   const videoCardLedger = createSimulationVideoCardLedger(ports.redis, now)
   const initialPromptStore = ports.durableIngress ? createInitialPromptStore(ports.redis) : undefined
@@ -448,7 +449,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return target.account.id === botId && handlesTarget(target) ? scopeFor(groupId, botId) : null
   }
   function scopedStore(scope: CharacterScope, binding?: AgentBindingSnapshot): SimSessionStore {
-    return createSimSessionStore({ redis: ports.redis, logger, now, characterScope: scope,
+    return createSimSessionStore({ ...storePorts, characterScope: scope,
       ...(binding?.source === 'configured' ? { memoryScope: binding } : {}),
     })
   }
@@ -581,7 +582,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     } catch { return [] }
   }
 
-  const diagnose = (event: Parameters<AgentDiagnostics['emit']>[0]) => { try { ports.diagnostics?.emit(event) } catch { /* diagnostics never affect execution */ } }
+  const diagnose = (event: Parameters<AgentDiagnostics['emit']>[0], fallback?: () => void) => {
+    try {
+      if (ports.diagnostics) ports.diagnostics.emit(event)
+      else fallback?.()
+    } catch { /* Diagnostics never affect execution. */ }
+  }
   function modelResponseFailure(response: ChatResponse): string | undefined {
     if (response.error) return 'returned_error'
     const message = record(response.choices?.[0]?.message), calls = message.tool_calls
@@ -898,7 +904,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const state = live ?? await store.load(groupId)
       if (!isCurrent()) return null
       if (state.botId && state.botId !== botId) {
-        logger.warn(`[仿真] 群 ${groupId} 已绑定另一机器人，本账号不接管其会话`)
+        diagnose({ stage: 'inbox', operation: 'simulation_ingest', outcome: 'failed', code: 'session_owned_by_another_bot' },
+          () => logger.warn(`[仿真] 群 ${groupId} 已绑定另一机器人，本账号不接管其会话`))
         return null
       }
       if (!live || state.bindingToken === token) return state
@@ -923,8 +930,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     try {
     if (ports.getSection().enabled === false) return false
     let key: string | null
-    try { key = await conversationKey(target) } catch {
-      logger.warn(`[仿真] 会话 ${target.id} 角色绑定无效，跳过本次入站`)
+    try { key = await conversationKey(target) } catch (error) {
+      diagnose({ stage: 'inbox', operation: 'simulation_ingest', outcome: 'failed', code: 'simulation_binding_unavailable', error },
+        () => logger.warn(`[仿真] 会话 ${target.id} 角色绑定无效，跳过本次入站`))
       return true
     }
     if (!key) {
@@ -960,8 +968,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (incoming.binding && (conversationAddressKey(incoming.binding.target) !== conversationAddressKey(target) || agentBindingToken(incoming.binding) !== capturedBinding)) return true
       scope = characterScopeFor(target, resolved.personaId || 'default')
       if (resolved.binding?.source === 'configured') selfName = String(resolved.persona.name || self.name)
-    } catch {
-      logger.warn(`[仿真] 群 ${groupId} 角色绑定无效，跳过本次入站`)
+    } catch (error) {
+      diagnose({ stage: 'inbox', operation: 'simulation_ingest', outcome: 'failed', code: 'simulation_binding_unavailable', error },
+        () => logger.warn(`[仿真] 群 ${groupId} 角色绑定无效，跳过本次入站`))
       return true
     }
     const bindingCurrent = () => {
@@ -1080,7 +1089,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (message.messageId !== null && message.text && !message.forwardId) {
       try { await scopedStore(scope).registerPersonSource(userId, {
         scene: { kind: 'group', id: scope.groupId }, authorId: userId, messageId: String(message.messageId), at: message.at, excerpt: message.text.slice(0, 400)
-      }) } catch (error) { logger.warn(`[仿真] 人物来源登记失败：${error instanceof Error ? error.message : String(error)}`) }
+      }) } catch (error) {
+        diagnose({ stage: 'memory', operation: 'simulation_person_source', outcome: 'failed', code: 'person_source_not_recorded', error },
+          () => logger.warn('[仿真] 人物来源登记失败'))
+      }
     }
     resetPreSleepWait(state)
 
@@ -1136,7 +1148,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       }
     }
     await store.save(groupId, state)
-    if (!ports.durableIngress) await store.addKnownGroup(groupId).catch(() => logger.warn(`[仿真] 会话 ${groupId} 调度登记失败`))
+    if (!ports.durableIngress) await store.addKnownGroup(groupId).catch(error => diagnose({
+      stage: 'runtime', operation: 'simulation_sweep', outcome: 'failed', code: 'schedule_registration_failed', error,
+    }, () => logger.warn(`[仿真] 会话 ${groupId} 调度登记失败`)))
     notifyWaiters(groupId)
     if (reason) await scheduleWake(groupId, reason, bindingToken, cfg, ports.durableIngress || message.kind === 'text' ? state : undefined)
   }
@@ -1192,7 +1206,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     administration.background(() => {
       const turn = startTurn(groupId, reason, undefined, bindingToken)
       scheduledTurns.add(turn)
-      void turn.catch(error => logger.error('[仿真] 调度回合失败', error)).finally(() => scheduledTurns.delete(turn))
+      void turn.catch(error => diagnose({ stage: 'runtime', operation: 'simulation_sweep', outcome: 'failed', code: 'turn_dispatch_failed', error },
+        () => logger.error('[仿真] 调度回合失败', error))).finally(() => scheduledTurns.delete(turn))
     })
   }
 
@@ -1610,13 +1625,20 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           const limitText = describeBudgetLimit(verdict.reason)
           if (limitText) {
             const announceBudget = () => {
-              logger.warn(`[仿真] 群 ${groupId} 唤醒被预算拦截：${verdict.reason}（今日剩余唤醒不再重试）`)
+              diagnose({ stage: 'runtime', operation: 'simulation_wake_budget', outcome: 'failed',
+                code: verdict.reason.startsWith('dailyTurns:') ? 'daily_turn_limit' : 'daily_cost_limit' },
+              () => logger.warn(`[仿真] 群 ${groupId} 唤醒被预算拦截：${verdict.reason}（今日剩余唤醒不再重试）`))
               const hasAudience = shouldAnnounceBudgetLimit(String(reason.kind), Number(turnState.lastIncomingAt) || 0, now())
               if (hasAudience && limitNoticeDue(limitNoticeAt.get(groupId) || 0, now())) {
                 limitNoticeAt.set(groupId, now())
                 void sendText(`（${limitText}，调用已限额，明天自动恢复喵）`)
-                  .then(receipt => { if (!receipt.ok) logger.warn(`[仿真] 群 ${groupId} 限额提示发送失败: ${receipt.error || ''}`) })
-                  .catch(() => { /* 提示失败不影响主流程 */ })
+                  .then(receipt => {
+                    if (!receipt.ok) diagnose({ stage: 'delivery', operation: 'simulation_budget_notice',
+                      outcome: receipt.unknown ? 'unknown' : 'failed', code: 'budget_notice_not_confirmed' },
+                    () => logger.warn(`[仿真] 群 ${groupId} 限额提示发送失败`))
+                  })
+                  .catch(error => diagnose({ stage: 'delivery', operation: 'simulation_budget_notice', outcome: 'unknown',
+                    code: 'budget_notice_not_confirmed', error }, () => logger.warn(`[仿真] 群 ${groupId} 限额提示发送失败`)))
               }
             }
             if (durableWake) await beginWake(announceBudget)
@@ -1976,7 +1998,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               usedInitialPrompt = true
             }
           } catch (error) {
-            await initial?.restore().catch(() => logger.warn(`[仿真] 群 ${groupId} 未能恢复初始提示词领取`))
+            await initial?.restore().catch(error => diagnose({
+              stage: 'runtime', operation: 'simulation_initial_prompt', outcome: 'failed', code: 'initial_prompt_restore_failed', error,
+            }, () => logger.warn(`[仿真] 群 ${groupId} 未能恢复初始提示词领取`)))
             throw error
           }
           // The durable queue was saved before this claim. A failed or interrupted
@@ -3163,11 +3187,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         const appendToolReply = (toolCallId: string, name: string, content: string) => {
           history.push({ role: 'tool', tool_call_id: toolCallId, name, content })
           if (ports.recordToolResult && !ephemeralRead) {
-            const failed = () => logger.warn(`[仿真] 群 ${groupId} 工具回复观察失败，不影响执行`)
+            const failed = (error: unknown) => diagnose({
+              stage: 'tool', operation: 'simulation_tool_observer', outcome: 'failed', code: 'tool_observer_failed', error,
+            }, () => logger.warn(`[仿真] 群 ${groupId} 工具回复观察失败，不影响执行`))
             try {
               // Give observers an immutable copy, and isolate an accidental async rejection too.
               void Promise.resolve(ports.recordToolResult(Object.freeze({ toolCallId, name, content }))).catch(failed)
-            } catch { failed() }
+            } catch (error) { failed(error) }
           }
         }
         type RawToolCall = NonNullable<SimHistoryMessage['tool_calls']>[number]
@@ -3186,7 +3212,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           const currentContext = personRecall ? `${personRecall}\n\n${context}` : context
           const requestData = buildChatRequestData(providerConfig, [{ role: 'system', content: systemPrompt }, ...requestHistory, { role: 'user', content: currentContext }], simToolsAsFunctions(roundTools), closing ? 'required' : 'auto')
           if (closing && (!requestData.tools?.length || !requestData.tool_choice)) {
-            logger.warn(`[仿真] 群 ${groupId} 模型配置未提供收尾工具，停止本轮`)
+            diagnose({ stage: 'model', operation: 'simulation_turn', outcome: 'failed', code: 'closing_tools_unavailable' },
+              () => logger.warn(`[仿真] 群 ${groupId} 模型配置未提供收尾工具，停止本轮`))
             if (durableWake && rounds === 1) { await discardWake(); return }
             break
           }
@@ -3304,7 +3331,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                   const result = await executeTool(sender, { continuation: 'chat', messages: [text.slice(0, cfg.turn.messageTextMaxChars)] })
                   history.push({ role: 'user', content: classifyCharacterResult(result) === 'succeeded' ? '【系统】已替你把上面那段话发出去了。以后想说的话必须自己调 simSendMessage。' : `【系统】这段文本未确认发送：${result.slice(0, 1000)}` })
                 } catch (error) {
-                  logger.warn(`[仿真] 群 ${groupId} 兜底直发失败: ${error instanceof Error ? error.message : String(error)}`)
+                  diagnose({ stage: 'delivery', operation: 'simulation_fallback_send', outcome: 'unknown', code: 'fallback_send_not_confirmed', error },
+                    () => logger.warn(`[仿真] 群 ${groupId} 兜底直发失败`))
                 }
               }
             } else if (text.length >= 6 && sends === 0) {
@@ -3916,7 +3944,11 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     for (const groupId of groups) {
       if (running.has(groupId) || background.has(groupId) || pendingWakes.has(groupId) || retryTimers.has(groupId)) continue
       let state: SimSessionState
-      try { state = await store.load(groupId) } catch (error) { logger.error(`[仿真] 群 ${groupId} sweep 读取失败`, error); continue }
+      try { state = await store.load(groupId) } catch (error) {
+        diagnose({ stage: 'runtime', operation: 'simulation_sweep', outcome: 'failed', code: 'session_read_failed', error },
+          () => logger.error(`[仿真] 群 ${groupId} sweep 读取失败`, error))
+        continue
+      }
       if (!state.botId && decodeSimulationAddressKey(groupId)) continue
       const target = targetFor(groupId, state.botId || ports.getSelf().id)
       if (!handlesTarget(target) || !allowsConversationAI(target) || (state.botId && state.botId !== target.account.id)) continue
@@ -3925,8 +3957,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       try {
       const cfg = runtimeConfig(groupId)
       let binding: AgentBindingSnapshot | undefined
-      try { binding = personaFor(target).binding } catch {
-        logger.warn(`[仿真] 群 ${groupId} 角色绑定无效，跳过本次调度`)
+      try { binding = personaFor(target).binding } catch (error) {
+        diagnose({ stage: 'runtime', operation: 'simulation_sweep', outcome: 'failed', code: 'simulation_binding_unavailable', error },
+          () => logger.warn(`[仿真] 群 ${groupId} 角色绑定无效，跳过本次调度`))
         continue
       }
       if (running.has(groupId) || background.has(groupId) || pendingWakes.has(groupId) || retryTimers.has(groupId) || ingressQueue.has(groupId)) continue
@@ -3988,7 +4021,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             else if (state.recent.some(message => message.seq > (state.lastProactiveCheckedSeq ?? 0) && message.at > state.lastAiSendAt) &&
               random() < cfg.wake.proactiveProbability) reasons.push({ kind: 'proactiveCheck' })
           } catch (error) {
-            logger.warn(`[仿真] 群 ${groupId} 社交跟进检查失败：${error instanceof Error ? error.message : String(error)}`)
+            diagnose({ stage: 'memory', operation: 'simulation_social_check', outcome: 'failed', code: 'social_check_failed', error },
+              () => logger.warn(`[仿真] 群 ${groupId} 社交跟进检查失败`))
           }
         }
       }
@@ -4000,7 +4034,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           const cutoff = (await personMemory.getSceneRedactions({ identity: scope, scene: { kind: 'group', id: scope.groupId } })).invalidatedAt
           const due = dueCharacterGoal({ ...current, goals: characterMemoryVisibility(current, cutoff).goals }, at)
           if (due) reasons.push({ kind: 'characterGoal', detail: due.id })
-        } catch (error) { logger.warn(`[仿真] 群 ${groupId} 角色目标检查失败：${error instanceof Error ? error.message : String(error)}`) }
+        } catch (error) {
+          diagnose({ stage: 'runtime', operation: 'simulation_goal_check', outcome: 'failed', code: 'goal_check_failed', error },
+            () => logger.warn(`[仿真] 群 ${groupId} 角色目标检查失败`))
+        }
       }
       if (!isCurrent() || running.has(groupId) || background.has(groupId) || pendingWakes.has(groupId) || ingressQueue.has(groupId)) continue
       const hasWake = reasons.length > 0
@@ -4166,7 +4203,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           await workspaceFor(scope).pruneEvidence([...active.map(memory => `memory:${memory.id}`), ...characterMemoryVisibility(reflected, memoryInvalidatedAt).receipts.map(receipt => `receipt:${receipt.id}`)])
         }
       }
-    } catch (error) { logger.warn(`[仿真] 群 ${groupId} 后台活动停止：${error instanceof Error ? error.message : String(error)}`) }
+    } catch (error) {
+      diagnose({ stage: 'runtime', operation: 'simulation_character_background', outcome: 'failed', code: 'character_background_failed', error },
+        () => logger.warn(`[仿真] 群 ${groupId} 后台活动停止`))
+    }
     finally {
       memoryTurn?.release()
       let pending: SimWakeReason[] = []
@@ -4537,20 +4577,31 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       try {
         const memory = await ports.readHealthStyleMemory?.()
         if (memory !== undefined) alerts.push(...checkHealth({ now: now(), styleMemory: memory }))
-      } catch { /* 读不到就跳过 */ }
+      } catch (error) {
+        diagnose({ stage: 'runtime', operation: 'simulation_health_check', outcome: 'failed', code: 'health_style_read_failed', error })
+      }
       try {
         const raw = await ports.redis.get('bl-chat:commitment:faillog')
         if (raw) {
           const parsed: unknown = JSON.parse(raw)
           if (Array.isArray(parsed)) commitmentFailures = parsed.filter(v => v !== null && typeof v === 'object')
         }
-      } catch { /* 读不到就跳过 */ }
+      } catch (error) {
+        diagnose({ stage: 'runtime', operation: 'simulation_health_check', outcome: 'failed', code: 'health_commitment_read_failed', error })
+      }
       alerts.push(...checkHealth({ now: now(), commitmentFailures }))
       // 写 Redis 供控制台展示
       const payload = JSON.stringify({ alerts, checkedAt: now() })
-      try { await ports.redis.set('shiloh:health:alerts', payload) } catch { /* redis 不可用 */ }
-      if (alerts.length) logger.warn(`[健康哨兵] ${formatAlerts(alerts)}`)
-    } catch { /* 哨兵自身失败不影响主流程 */ }
+      try { await ports.redis.set('shiloh:health:alerts', payload) }
+      catch (error) {
+        diagnose({ stage: 'runtime', operation: 'simulation_health_check', outcome: 'failed', code: 'health_snapshot_write_failed', error })
+      }
+      if (ports.diagnostics) {
+        for (const alert of alerts) diagnose({ stage: 'runtime', operation: 'simulation_health_check', outcome: 'failed', code: alert.code })
+      } else if (alerts.length) logger.warn(`[健康哨兵] ${formatAlerts(alerts)}`)
+    } catch (error) {
+      diagnose({ stage: 'runtime', operation: 'simulation_health_check', outcome: 'failed', code: 'health_check_failed', error })
+    }
   }
 
   /** 生活线同步：空闲时拉取真实更新（新集→记笔记），全局共享 */
@@ -4613,8 +4664,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           (await personMemory.getSceneRedactions({ identity: scope, scene: { kind: 'group', id: scope.groupId } })).invalidatedAt > 0 || !isCurrent()) return
       await styleStore.saveUserStyle(groupId, users, isCurrent)
       if (Object.keys(users).length) logger.info(`[仿真] 群 ${groupId} 口头禅库更新：${Object.keys(users).length} 人`)
-    } catch {
-      logger.warn(`[仿真] 群 ${groupId} 口头禅挖掘未完成，已丢弃未提交结果`)
+    } catch (error) {
+      diagnose({ stage: 'memory', operation: 'simulation_style_extraction', outcome: 'failed', code: 'user_style_extraction_failed', error },
+        () => logger.warn(`[仿真] 群 ${groupId} 口头禅挖掘未完成，已丢弃未提交结果`))
     } finally { extraction?.release() }
   }
 
@@ -4634,7 +4686,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (known.length) logger.info(`[仿真] 启动清理：${known.length} 个群的旧回合租约已释放`)
     } catch { /* 清理失败不阻塞启动 */ }
     sweeper = administration.background(() => setInterval(() => {
-      void sweepOnce().catch(error => logger.error('[仿真] 调度检查失败', error))
+      void sweepOnce().catch(error => diagnose({ stage: 'runtime', operation: 'simulation_sweep', outcome: 'failed', code: 'sweep_failed', error },
+        () => logger.error('[仿真] 调度检查失败', error)))
     }, boundedTimerDelay(SIM_SWEEP_INTERVAL_MS, 3_600_000, 5_000)))
     sweeper.unref?.()
     const cfg = runtimeConfig()
@@ -4908,8 +4961,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (!groupActive(runtimeConfig(), groupId)) return false
     if (options?.isCurrent?.() === false) return true
     let binding: AgentBindingSnapshot | undefined
-    try { binding = personaFor(target).binding } catch {
-      logger.warn(`[仿真] 群 ${groupId} 角色绑定无效，跳过本次戳一戳`)
+    try { binding = personaFor(target).binding } catch (error) {
+      diagnose({ stage: 'inbox', operation: 'simulation_poke', outcome: 'failed', code: 'simulation_binding_unavailable', error },
+        () => logger.warn(`[仿真] 群 ${groupId} 角色绑定无效，跳过本次戳一戳`))
       return true
     }
     const bindingToken = binding ? agentBindingToken(binding) : undefined

@@ -185,7 +185,7 @@ test('QQ alerts explain known failures and handle unknown or redacted diagnostic
   assert.match(text, /^【助手运行告警】\n\n唤醒预判失败，共 2 次\n唤醒预判未在规定时间内完成。\n错误码 wake_gate_timeout · 操作标识 simulation_wake_gate\n追踪编号 wake-trace/u)
   assert.match(text, /会话摘要失败，共 1 次\n服务限制了请求频率或额度。\n错误码 http_error · HTTP 状态 429/u)
   assert.match(text, /发送消息结果待确认，共 1 次\n暂时无法确认操作是否完成。/u)
-  assert.match(text, /后台运行出现警告，共 1 次\n后台报告了警告，详情见运行日志。/u)
+  assert.match(text, /后台运行出现警告，共 1 次\n这条兼容日志缺少可确认的原因。/u)
   assert.match(text, /工具执行失败，共 1 次\n等待操作完成超时。\n错误码 constructor · 操作标识 toString/u)
   assert.doesNotMatch(text, /TimeoutError|redacted/u)
 })

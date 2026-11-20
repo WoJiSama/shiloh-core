@@ -15,8 +15,10 @@ import {
 import type {CommitmentData,CommitmentEvent,CommitmentPorts} from '../../../contracts/commitments.js'
 import type {OutgoingPart} from '../../../contracts/platformMessage.js'
 import type {AgentConversationActivityCapture} from '../../runtime/infrastructure/agentConversationActivity.js'
+import {reportAgentFailure,type AgentDiagnostics} from '../../runtime/infrastructure/agentDiagnostics.js'
 
 export interface CommitmentExecutionPorts {
+  diagnostics?:Pick<AgentDiagnostics,'emit'>
   allowsExecution?(target:ConversationAddress):boolean
   captureExecution?(target:ConversationAddress):AgentConversationActivityCapture
 }
@@ -37,7 +39,7 @@ function taskVisible(c:CommitmentData,groupId:string,binding?:AgentBindingSnapsh
 const BINDING_CHANGED = '角色绑定已改变，原承诺已停止'
 
 export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecutionPorts) {
-  const store=createCommitmentStore({redis:ports.redis,logger:ports.logger})
+  const store=createCommitmentStore(ports)
   const now=()=>ports.now?ports.now():Date.now()
   const privatePeerFor=(target:ConversationAddress)=>ports.resolvePrivatePeer ? ports.resolvePrivatePeer(target) : target.id
   const allowsExecution=(target:ConversationAddress|undefined)=>{
@@ -321,7 +323,8 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
       guard=captureTaskGuard(c,target)
       if(guard)await sendTaskText(c,text,target,guard)
     }catch(error){
-      ports.logger.warn(`[承诺] 群 ${c.group_id} 通知发送失败(明说/续约未送达,哨兵会看到失败日志): ${error instanceof Error?error.message:String(error)}`)
+      reportAgentFailure(ports.diagnostics, { stage: 'delivery', operation: 'commitment_notice', code: 'commitment_notice_not_confirmed', error },
+        () => ports.logger.warn(`[承诺] 群 ${c.group_id} 通知发送失败(明说/续约)`))
     }finally{guard?.release()}
   }
 
@@ -357,7 +360,8 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
         }
         ports.logger.info(`[承诺] ${c.id}「${c.intent.slice(0,40)}」续约问询已尝试（不自动重复）`)
       }catch(error){
-        ports.logger.warn(`[承诺] ${c.id} 续约问询失败(不自动重复): ${error instanceof Error?error.message:String(error)}`)
+        reportAgentFailure(ports.diagnostics, { stage: 'runtime', operation: 'commitment_renewal', code: 'commitment_renewal_failed', error },
+          () => ports.logger.warn(`[承诺] ${c.id} 续约问询失败(不自动重复)`))
       }finally{guard?.release()}
     }
   }
@@ -403,7 +407,10 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
       const target=targetFor(c)
       return allowsExecution(target)&&ports.handlesTarget?.(target)!==false
     }
-    await maybeAskRenewals(accountKey??'',handles).catch(error=>ports.logger.warn(`[承诺] 续约扫描失败: ${String(error)}`))
+    await maybeAskRenewals(accountKey??'',handles).catch(error => {
+      reportAgentFailure(ports.diagnostics, { stage: 'runtime', operation: 'commitment_renewal', code: 'commitment_renewal_scan_failed', error },
+        () => ports.logger.warn('[承诺] 续约扫描失败'))
+    })
     const due=await store.takeDueCommitments(now(),handles)
     if(!due.length)return
     // Keep every claim alive while another group/task is executing. Different claims retain identity.
@@ -431,7 +438,8 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
           try { guard=captureTaskGuard(c,target) } catch (error) {
             // An invalid config is recoverable. Leave this claim unstarted so
             // the same task can be considered after the lease and config recover.
-            ports.logger.warn(`[承诺] ${c.id} 暂停领取：${error instanceof Error?error.message:String(error)}`)
+            reportAgentFailure(ports.diagnostics, { stage: 'runtime', operation: 'commitment_tick', code: 'commitment_execution_guard_failed', error },
+              () => ports.logger.warn(`[承诺] ${c.id} 暂停领取`))
             continue
           }
           if(guard===undefined){

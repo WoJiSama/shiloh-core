@@ -23,11 +23,29 @@ const operationNames = new Map(Object.entries({
   host_run: '宿主运行',
   operation_journal: '操作日志写入',
   alert_queue: '告警队列',
+  forbidden_word_config: '违禁词配置',
+  token_ledger_write: '保存令牌用量',
   onebot_disconnect: 'QQ 连接',
   onebot_recovery: 'QQ 重连',
   onebot_admission: '接收 QQ 消息',
   consume_simulation: '处理群消息队列',
   simulation_ingest: '处理群消息',
+  simulation_poke: '处理群戳一戳',
+  simulation_sweep: '检查群聊调度',
+  simulation_session_load: '读取群聊会话',
+  simulation_memory_load: '读取群聊记忆',
+  simulation_affinity_load: '读取群友好感度',
+  simulation_wake_budget: '群聊唤醒',
+  simulation_budget_notice: '发送群聊限额提示',
+  simulation_initial_prompt: '恢复群聊初始说明',
+  simulation_tool_observer: '记录工具回复',
+  simulation_fallback_send: '补发群聊回复',
+  simulation_social_check: '检查群聊社会跟进',
+  simulation_goal_check: '检查角色目标',
+  simulation_character_background: '运行角色后台任务',
+  simulation_health_check: '后台健康检查',
+  simulation_style_extraction: '提取群友口头禅',
+  simulation_person_source: '登记人物记忆来源',
   provider_http: '请求模型服务',
   provider_request: '请求模型服务',
   provider_recovery: '模型服务重试',
@@ -44,6 +62,16 @@ const operationNames = new Map(Object.entries({
   text_person_profile_extract: '提取人物事实',
   person_memory_provider_http: '人物记忆请求',
   group_memory_provider_http: '群记忆请求',
+  group_memory_extract: '提取群记忆',
+  history_capture: '保存历史消息来源',
+  history_cleanup: '清理历史消息来源',
+  semantic_memory_index: '更新语义记忆索引',
+  semantic_memory_sweep: '读取语义记忆来源',
+  delegated_memory_load: '读取委托记忆',
+  commitment_tick: '执行到期托付',
+  commitment_notice: '发送托付通知',
+  commitment_renewal: '处理托付续约',
+  commitment_failure_log: '读取托付失败记录',
   simulation_image_description: '识别消息图片',
   media_prepare: '准备搬运内容',
   media_provider_prepare: '获取搬运内容',
@@ -73,6 +101,56 @@ const failureReasons = new Map(Object.entries({
   inbox_retry_pending: '消息处理未完成，系统会重试。',
   event_not_queued: '收到的消息未能加入处理队列。',
   admission_not_confirmed: '系统未能确认消息已进入队列。',
+  forbidden_regex_invalid: '有违禁词正则无法编译，已按普通词匹配。',
+  token_ledger_write_failed: '本次令牌用量未能写入账本。',
+  session_owned_by_another_bot: '该会话绑定了其他机器人，本账号已跳过处理。',
+  simulation_binding_unavailable: '处理会话时无法确认有效的角色绑定。',
+  session_read_failed: '持久化的会话状态暂时无法读取。',
+  session_decode_failed: '已保存的会话状态格式损坏，本次使用默认状态。',
+  memory_read_failed: '已保存的群聊记忆无法读取或校验，本次按空处理。',
+  affinity_read_failed: '已保存的好感度无法读取或校验，本次按空处理。',
+  person_source_not_recorded: '本次消息未能登记为人物记忆来源。',
+  schedule_registration_failed: '会话未能登记到群聊调度列表。',
+  turn_dispatch_failed: '调度器未能完成群聊回合的派发。',
+  sweep_failed: '定时检查未能完成。',
+  daily_turn_limit: '今日对话回合已达到上限，本次唤醒被拦截。',
+  daily_cost_limit: '今日消耗额度已达到上限，本次唤醒被拦截。',
+  budget_notice_not_confirmed: '群内限额提示未获得成功发送回执。',
+  initial_prompt_restore_failed: '本轮使用的初始说明未能恢复至待领取状态。',
+  tool_observer_failed: '工具回复的记录回调发生异常，原回合继续执行。',
+  closing_tools_unavailable: '模型请求未包含回合收尾工具，本轮已停止。',
+  fallback_send_not_confirmed: '普通文本兜底发送遇到异常，发送状态待确认。',
+  social_check_failed: '本次未能核对群友跟进提醒的状态。',
+  goal_check_failed: '本次未能检查到期的角色目标。',
+  character_background_failed: '角色的订阅检查或独立反思提前停止。',
+  user_style_extraction_failed: '群友口头禅提取未完成，未提交的结果已丢弃。',
+  health_style_read_failed: '健康检查未能读取风格学习状态。',
+  health_commitment_read_failed: '健康检查未能读取或解析托付失败记录。',
+  health_snapshot_write_failed: '健康检查结果未能保存到控制台数据存储。',
+  health_check_failed: '健康检查在生成检查结果时发生异常。',
+  style_summary_repeated_failure: '风格学习自动总结已连续失败多次。',
+  style_summary_stale: '风格学习自动总结已超过 48 小时未成功。',
+  expression_learning_repeated_failure: '群表达学习已连续提取失败多次。',
+  commitment_terminal_failure: '托付账本中存在未完成或结果待确认的记录。',
+  commitment_retry_pending: '到期托付处理遇到异常，调度会继续检查。',
+  commitment_notice_not_confirmed: '未能确认送达失约说明或续约问询。',
+  commitment_renewal_failed: '续约问询未能完成，本次问询会保留尝试记录。',
+  commitment_renewal_scan_failed: '扫描待续约托付时发生异常。',
+  commitment_execution_guard_failed: '领取托付时无法确认当前执行权限，任务仍待处理。',
+  commitment_failure_log_invalid: '托付失败记录格式损坏，本次按空处理。',
+  delegated_memory_decode_failed: '已保存的委托记忆无法解析，本次按空处理。',
+  history_source_write_failed: '本次历史消息来源未能保存。',
+  history_cleanup_failed: '历史消息来源的清理任务未能完成。',
+  semantic_index_unavailable: '语义记忆索引更新失败，稍后重试。',
+  semantic_source_store_unavailable: '语义记忆来源库暂时无法读取。',
+  person_profile_store_unavailable: '人物事实学习的存储操作未能完成。',
+  person_profile_queue_unavailable: '人物事实学习队列暂时无法处理。',
+  group_learning_source_unavailable: '群记忆学习未能完成来源或群成员核验。',
+  group_learning_model_failed: '群记忆学习未能取得可用的模型提取结果。',
+  group_learning_save_failed: '群记忆提取结果未能保存。',
+  group_learning_timeout: '群记忆学习超过了任务执行时限。',
+  group_memory_job_failed: '群记忆后台任务异常退出。',
+  group_memory_queue_unavailable: '群记忆学习队列暂时无法处理。',
   diagnostic_journal_failed: '操作日志未能及时写入。',
   diagnostic_queue_overflow: '等待写入日志的操作过多。',
   alert_group_overflow: '告警种类过多，超出容量的告警已合并计数。',
@@ -130,6 +208,9 @@ const exceptionReasons = new Map<Alert['errorKind'], string>([
   ['RangeError', '处理的数值或长度超出了允许范围。'],
 ])
 
+const warningCodes = new Set(['runtime_warning', 'provider_warning', 'daily_turn_limit', 'daily_cost_limit',
+  'forbidden_regex_invalid', 'style_summary_stale'])
+
 export function resolveStandaloneQqAlertOwner(connectionId: string, connections: readonly PlatformConnection[], masters: readonly PlatformUserRef[]): PlatformUserRef {
   const connection = connections.find(candidate => candidate.id === connectionId)
   const owner = masters[0]
@@ -144,7 +225,7 @@ export function resolveStandaloneQqAlertOwner(connectionId: string, connections:
 export function formatQqOwnerAlerts(batch: AlertBatch): string {
   function format(includeOperation: boolean) {
     const lines = batch.alerts.map(alert => {
-      const warning = alert.code === 'runtime_warning' || alert.code === 'provider_warning'
+      const warning = alert.code !== undefined && warningCodes.has(alert.code)
       const outcome = alert.outcome === 'unknown' ? '结果待确认' : warning ? '出现警告' : '失败'
       const operation = operationNames.get(alert.operation) ?? (alert.operation.startsWith('onebot.') ? '调用 QQ 接口' :
         alert.operation.startsWith('mcp.') ? '连接 MCP 工具服务' : stageNames[alert.stage])
@@ -154,7 +235,7 @@ export function formatQqOwnerAlerts(batch: AlertBatch): string {
         (status >= 500 && status <= 599 ? '外部服务暂时不可用。' : undefined)
       const knownReason = code && failureReasons.get(code)
       const reason = httpReason || knownReason || exceptionReasons.get(alert.errorKind) ||
-        (alert.outcome === 'unknown' ? '暂时无法确认操作是否完成。' : warning ? '后台报告了警告，详情见运行日志。' : '系统未记录更具体的原因，详情见运行日志。')
+        (alert.outcome === 'unknown' ? '暂时无法确认操作是否完成。' : warning ? '这条兼容日志缺少可确认的原因。' : '系统未记录更具体的原因，详情见运行日志。')
       const details = [code && `错误码 ${code}`, status !== undefined && `HTTP 状态 ${status}`,
         includeOperation && alert.operation !== 'redacted' && `操作标识 ${alert.operation}`].filter(Boolean).join(' · ')
       return [`${operation}${outcome}，共 ${alert.count} 次`, reason, details,

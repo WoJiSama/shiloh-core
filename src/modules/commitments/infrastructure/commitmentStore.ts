@@ -3,6 +3,7 @@ import {createHash,randomUUID} from 'node:crypto'
 import type {CommitmentData,CommitmentRedisLike} from '../../../contracts/commitments.js'
 import type {AgentDeferredActionData} from '../../../contracts/agentDeferredAction.js'
 import {agentConversationKey,decodeAgentConversationKey} from '../../runtime/domain/agentBindings.js'
+import {reportAgentFailure,type AgentDiagnostics} from '../../runtime/infrastructure/agentDiagnostics.js'
 import {assertDeferredGrant,decodeAgentDeferredAction} from './agentDeferredActionData.js'
 import type {AgentSourceMemoryCleanupGuard,AgentSourceMemoryPurgeSubject} from '../../../contracts/sourceMemoryCleanup.js'
 import {conversationCleanupAllows,parseConversationCleanup,type ConversationCleanupSelector} from '../../memory/infrastructure/conversationMemoryCleanup.js'
@@ -119,7 +120,7 @@ export interface CommitmentFailure {
   id?:string;intent?:string;group_id?:string;reason?:string;at?:number
 }
 
-export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{warn(message:string):void}}) {
+export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{warn(message:string):void};diagnostics?:Pick<AgentDiagnostics,'emit'>}) {
   const {redis,logger}=ports
   async function withLock<T>(operation:(token:string)=>Promise<T>,ensureCurrent?:()=>Promise<void>):Promise<T> {
     const token=randomUUID(),end=Date.now()+LOCK_ACQUIRE_TIMEOUT
@@ -351,7 +352,14 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
   async function readFailLog():Promise<CommitmentFailure[]>{
     const raw=await redis.get(FAILLOG_KEY)
     if(!raw)return []
-    try{const parsed:unknown=JSON.parse(raw);return Array.isArray(parsed)?parsed.filter(v=>v!==null&&typeof v==='object'):[]}catch{logger.warn('[承诺] 失败日志损坏，按空处理');return []}
+    try {
+      const parsed:unknown=JSON.parse(raw)
+      return Array.isArray(parsed)?parsed.filter(v=>v!==null&&typeof v==='object'):[]
+    } catch (error) {
+      reportAgentFailure(ports.diagnostics, { stage: 'runtime', operation: 'commitment_failure_log', code: 'commitment_failure_log_invalid', error },
+        () => logger.warn('[承诺] 失败日志损坏，按空处理'))
+      return []
+    }
   }
   async function readManagementFailLog(ensureCurrent?:()=>Promise<void>):Promise<unknown[]>{
     return (await readFailureDocument(ensureCurrent)).entries

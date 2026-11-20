@@ -2,6 +2,7 @@
 // 借鉴 qq-bridge token-ledger 的"丢明细不丢总量"思想；自持客户端无快照重放，记录天然幂等（一行一次调用）。
 import fs from 'node:fs'
 import path from 'node:path'
+import { reportAgentFailure, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { costOfUsage, DEFAULT_PRICE_TABLE, mergePriceOverrides, normalizeUsage, type NormalizedUsage, type PriceTable } from '../domain/modelPrices.js'
 
 export interface TokenLedgerEntry {
@@ -20,6 +21,7 @@ export interface TokenLedgerEntry {
 export interface TokenLedgerPorts {
   dataDir: string
   logger?: { warn?(message: string): void }
+  diagnostics?: Pick<AgentDiagnostics, 'emit'>
   now?(): number
   retentionDays?: number
   priceOverrides?: unknown
@@ -106,7 +108,8 @@ export function createTokenLedger(ports: TokenLedgerPorts) {
       try {
         fs.appendFileSync(filePath(ledgerDay(at)), JSON.stringify(entry) + '\n')
       } catch (error) {
-        try { ports.logger?.warn?.(`[令牌账本] 写入失败：${error instanceof Error ? error.message : String(error)}`) } catch { /* 日志不可用 */ }
+        reportAgentFailure(ports.diagnostics, { stage: 'runtime', operation: 'token_ledger_write', code: 'token_ledger_write_failed', error },
+          () => ports.logger?.warn?.(`[令牌账本] 写入失败：${error instanceof Error ? error.message : String(error)}`))
       }
     })
   }

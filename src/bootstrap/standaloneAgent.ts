@@ -298,8 +298,10 @@ export async function main(argv: string[]): Promise<void> {
   let consoleHost: ReturnType<typeof createStandaloneAgentConsole> | undefined
   let consolePersistence: ReturnType<typeof createStandaloneAgentConsolePersistence> | undefined
   let adapters: ReturnType<typeof createOneBotConnection>[] = []
-  const ledger = createTokenLedger({ dataDir: config.dataDir, logger: safeLogger })
-  const words = createForbiddenWordGuard(safeLogger)
+  const ledger = createTokenLedger({ dataDir: config.dataDir, diagnostics })
+  const words = createForbiddenWordGuard({
+    warn() { diagnostics.emit({ stage: 'host', operation: 'forbidden_word_config', outcome: 'failed', code: 'forbidden_regex_invalid' }) },
+  })
   try {
     storage = await openAgentRedis({ url: config.redisUrl, instance: config.instance, onLost: () => fail('[Agent] Redis 执行租约丢失，停止处理') })
     const forgetOperationsStore = createForgetOperationStore({ redis: storage.storage })

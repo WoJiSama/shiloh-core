@@ -92,7 +92,7 @@ export function createAgentDiagnostics(options: {
       ...(configurationRevision ? { configurationRevision } : {}),
       ...(delivery === undefined ? {} : { delivery }),
     }
-    const line = `[Agent] ${event.stage}/${event.operation} ${event.outcome}${event.code ? ` ${event.code}` : ''} trace=${event.traceId}`
+    const line = `[Agent] ${event.stage}/${event.operation} ${event.outcome}${event.code ? ` ${event.code}` : ''} trace=${event.traceId}${event.errorKind ? ` errorKind=${event.errorKind}` : ''}`
     // Console remains observable even when the injected journal is unavailable.
     try { (event.outcome === 'failed' || event.outcome === 'unknown' ? terminal.error : event.outcome === 'cancelled' ? terminal.warn : terminal.info)(line) }
     catch { try { console.error('[Agent] diagnostic_console_failed') } catch { /* No remaining writable terminal. */ } }
@@ -146,3 +146,14 @@ export function createAgentDiagnostics(options: {
 }
 
 export type AgentDiagnostics = ReturnType<typeof createAgentDiagnostics>
+
+export function reportAgentFailure(
+  diagnostics: Pick<AgentDiagnostics, 'emit'> | undefined,
+  failure: Omit<AgentDiagnosticInput, 'outcome'> & { code: string },
+  log: () => void,
+): void {
+  try {
+    if (diagnostics) diagnostics.emit({ ...failure, outcome: 'failed' })
+    else log()
+  } catch { /* Diagnostics cannot interrupt recovery. */ }
+}
