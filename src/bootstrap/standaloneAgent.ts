@@ -571,7 +571,7 @@ export async function main(argv: string[]): Promise<void> {
     const groupMemoryBackend = config.groupMemoryExtraction
     const groupMemoryModel = groupMemoryBackend && createAgentGroupMemoryModel({
       baseUrl: groupMemoryBackend.apiUrl, name: groupMemoryBackend.model, apiKey: groupMemoryBackend.apiKey,
-      secrets: hostSecrets, fetchImpl: observeModelFetch('group_memory_provider_http'),
+      secrets: hostSecrets,
     })
     mcp = await openAgentMcpTools({ ...config.tools.mcp, signal: executionSignal,
       isCurrent: () => storage!.isCurrent() && config.isConfigCurrent(), secrets: hostSecrets,

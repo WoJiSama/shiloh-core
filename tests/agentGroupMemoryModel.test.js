@@ -21,8 +21,14 @@ function answer(content = JSON.stringify([fact]), extra = {}, init) {
   return new Response(JSON.stringify({ choices: [{ message: { content } }], ...extra }), init)
 }
 function provider(options = {}) { return createAgentGroupMemoryModel({ ...config, ...options }) }
-async function rejected(operation) {
-  await assert.rejects(operation, error => { assert.equal(error.message, FAILURE); assert.equal(error.cause, undefined); return true })
+async function rejected(operation, code, httpStatus) {
+  await assert.rejects(operation, error => {
+    assert.equal(error.message, FAILURE)
+    assert.equal(error.cause, undefined)
+    if (code) assert.equal(error.code, code)
+    assert.equal(error.httpStatus, httpStatus)
+    return true
+  })
 }
 async function listen(t, handler) {
   const server = createServer(handler)
@@ -199,17 +205,19 @@ test('group memory requires current revocable authority before requests and befo
 
 test('provider credentials, malformed/tool output and HTTP errors produce one fixed safe failure without retries', async () => {
   const encoded = [...apiKey].map(char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`).join('')
-  for (const fetchImpl of [
-    async () => { throw Error(`private-provider-error ${apiKey}`) }, async () => new Response(`private-error ${apiKey}`, { status: 500 }),
-    async () => answer(JSON.stringify([{ ...fact, text: apiKey }])), async () => answer('[]', { metadata: { credential: encoded } }),
-    async () => answer('[]', { metadata: { credential: Buffer.from(apiKey).toString('base64') } }),
-    async () => answer('[]', { choices: [{ message: { content: '[]', tool_calls: [] } }] }),
-    async () => answer('[]', { choices: [{ message: { content: '[]', function_call: null } }] }),
-    async () => answer('[]', { error: { message: 'private-provider-error' } }),
-    async () => { const response = answer(); Object.defineProperty(response, 'redirected', { value: true }); return response },
+  for (const [fetchImpl, code, httpStatus] of [
+    [async () => { throw Error(`private-provider-error ${apiKey}`) }, 'provider_transport_error'],
+    [async () => new Response(`private-error ${apiKey}`, { status: 500 }), 'http_error', 500],
+    [async () => answer(JSON.stringify([{ ...fact, text: apiKey }])), 'model_response_invalid'],
+    [async () => answer('[]', { metadata: { credential: encoded } }), 'model_response_invalid'],
+    [async () => answer('[]', { metadata: { credential: Buffer.from(apiKey).toString('base64') } }), 'model_response_invalid'],
+    [async () => answer('[]', { choices: [{ message: { content: '[]', tool_calls: [] } }] }), 'model_response_invalid'],
+    [async () => answer('[]', { choices: [{ message: { content: '[]', function_call: null } }] }), 'model_response_invalid'],
+    [async () => answer('[]', { error: { message: 'private-provider-error' } }), 'model_response_invalid'],
+    [async () => { const response = answer(); Object.defineProperty(response, 'redirected', { value: true }); return response }, 'model_response_invalid'],
   ]) {
     let calls = 0
-    await rejected(provider({ fetchImpl: (...args) => { calls++; return fetchImpl(...args) } })(input, context()))
+    await rejected(provider({ fetchImpl: (...args) => { calls++; return fetchImpl(...args) } })(input, context()), code, httpStatus)
     assert.equal(calls, 1)
   }
 })
@@ -220,7 +228,8 @@ test('usage is recorded once before asynchronous stale rejection and invalid pro
     const usage = []
     const run = provider({ fetchImpl: async () => { stale = mode === 'stale'; return answer(mode === 'invalid' ? '{}' : mode === 'secret' ? apiKey : JSON.stringify([fact]),
       { usage: { total_tokens: 9, prompt_tokens: -1, completion_tokens: 'bad', extra: 'private-usage-detail' } }, mode === 'http-error' ? { status: 429 } : undefined) } })
-    await rejected(run(input, context({ ensureCurrent: async () => { if (stale) throw Error('private-stale-detail') }, recordUsage: (...args) => usage.push(args) })))
+    await rejected(run(input, context({ ensureCurrent: async () => { if (stale) throw Error('private-stale-detail') }, recordUsage: (...args) => usage.push(args) })),
+      mode === 'http-error' ? 'http_error' : 'model_response_invalid', mode === 'http-error' ? 429 : undefined)
     assert.deepEqual(usage, [[config.name, { total_tokens: 9 }]])
   }
 })
@@ -266,7 +275,10 @@ test('whole-request deadline and caller cancellation cover real HTTP body reads'
   for (const mode of ['deadline', 'abort']) {
     const controller = new AbortController()
     const timer = mode === 'abort' ? setTimeout(() => controller.abort(), 50) : undefined
-    try { await rejected(provider({ baseUrl, timeoutMs: mode === 'deadline' ? 50 : 1000 })(input, context({ signal: controller.signal }))) }
+    try {
+      await rejected(provider({ baseUrl, timeoutMs: mode === 'deadline' ? 50 : 1000 })(input, context({ signal: controller.signal })),
+        mode === 'deadline' ? 'provider_timeout' : 'request_cancelled')
+    }
     finally { clearTimeout(timer) }
   }
   assert.equal(calls, 2)

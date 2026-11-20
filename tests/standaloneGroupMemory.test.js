@@ -275,12 +275,12 @@ test('standalone persists human teaching before an unknown reply, learns facts o
   run.assertClean()
 })
 
-test('standalone saves slow group teaching without cancelling an in-flight main reply', {
-  skip: !redisAvailable, timeout: 20_000,
+test('standalone saves group teaching after the former 12 second limit and completes the in-flight main reply', {
+  skip: !redisAvailable, timeout: 35_000,
 }, async t => {
   const finishTeaching = Promise.withResolvers(), finishMain = Promise.withResolvers()
   const run = await fixture(t, { instance: 'standalone-group-teaching-slow',
-    beforeTeachingResponse: () => Promise.all([delay(1_100), finishTeaching.promise]),
+    beforeTeachingResponse: () => Promise.all([delay(13_000), finishTeaching.promise]),
     beforeMainResponse: () => finishMain.promise,
   })
   t.after(() => { finishTeaching.resolve(); finishMain.resolve() })
@@ -290,7 +290,7 @@ test('standalone saves slow group teaching without cancelling an in-flight main 
     await waitFor(() => run.mainRequests.length === 1, 'main model starts independently of teaching')
     assert.equal((await run.state()).entries.length, 0)
     finishTeaching.resolve()
-    const taught = await waitFor(async () => (await run.state())?.entries.find(row => row.subject === '绘图组'), 'slow teaching persisted')
+    const taught = await waitFor(async () => (await run.state())?.entries.find(row => row.subject === '绘图组'), 'slow teaching persisted', 18_000)
     assert.equal(taught.source.messageId, '87301')
   } finally { finishTeaching.resolve(); finishMain.resolve() }
   await waitFor(() => run.deliveries.length === 1, 'main reply still delivers after teaching is saved')

@@ -159,6 +159,7 @@ const failureReasons = new Map(Object.entries({
   wake_gate_unavailable: '唤醒预判未能给出有效结果。',
   provider_timeout: '等待外部服务响应超时。',
   provider_transport_error: '与外部服务通信时发生网络错误。',
+  request_invalid: '提取请求未通过配置、参数或来源校验。',
   http_error: '服务返回了错误状态。',
   provider_error: '模型服务返回了错误。',
   provider_warning: '模型服务在请求或重试时报告了异常。',
