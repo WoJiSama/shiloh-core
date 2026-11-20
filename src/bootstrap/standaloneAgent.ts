@@ -8,7 +8,7 @@ import { createAgentRuntime, createLinuxSystemdAgentDiceScriptRunner } from '../
 import { openStandaloneTorrent } from './standaloneTorrent.js'
 import { openStandaloneGroupLog } from './standaloneGroupLog.js'
 import { createStandaloneDiceRuntime } from './standaloneDice.js'
-import { createStandaloneGroupGames } from './standaloneGames.js'
+import { createStandaloneGroupGames, type StandaloneGroupGamesOptions } from './standaloneGames.js'
 import type { AgentRuntimeOptions } from '../core/index.js'
 import { awaitModelRequestAuthority, isModelRequestCurrent, type ExecutionOptions } from '../contracts/modelExecution.js'
 import type { ChatRequestData, ChatResponse } from '../contracts/modelGateway.js'
@@ -71,6 +71,10 @@ import { createStandaloneAgentPipeline } from './standaloneAgentPipeline.js'
 import { createStandaloneAgentConsole } from './standaloneAgentConsole.js'
 import { openStandaloneAgentConsoleAuth } from './standaloneAgentConsoleAuth.js'
 import { createStandaloneAgentConsoleServices } from './standaloneAgentConsoleServices.js'
+import { createStandaloneAgentConsoleImages } from './standaloneAgentConsoleImages.js'
+import { createStandaloneAgentConsoleGames } from './standaloneAgentConsoleGames.js'
+import { createStandaloneAgentConsoleStyle } from './standaloneAgentConsoleStyle.js'
+import { createStandaloneAgentConsoleSemantic } from './standaloneAgentConsoleSemantic.js'
 import { createStandaloneAgentConsoleRuntime } from './standaloneAgentConsoleRuntime.js'
 import { createStandaloneAgentConsolePersistence } from './standaloneAgentConsolePersistence.js'
 import { inspectStandaloneAgentConfigTransaction, isStandaloneAgentSourceSnapshotCurrent, recoverStandaloneAgentConfigTransaction } from './standaloneAgentConfigSources.js'
@@ -639,6 +643,14 @@ export async function main(argv: string[]): Promise<void> {
       model: (request, signal) => runModel(request, { signal, forceChatBackend: true }),
       allowsText: allowsSecretText,
     }) : undefined
+    const gamePorts: StandaloneGroupGamesOptions = {
+      config: config.games, dataDir: config.dataDir, execution: config.execution, executionSignal,
+      isCurrent: () => !executionSignal.aborted && storage?.isCurrent() === true && config.isConfigCurrent(),
+      allowsText: text => allowsSecretText(text) && !words.findForbiddenWord(text, config.forbiddenWords),
+      execute: (request, execution, options) => diagnostics.run(diagnostics.scope(), 'turtle_soup_model',
+        () => executor.YTapi(request, execution, undefined, undefined, options), 'model'),
+      recordTokens: input => ledger.record({ ...input, usage: input.usage }), logger: safeLogger,
+    }
     host = createAgentRuntime({
       storage: storage.storage, adapters, logger: safeLogger, diagnostics,
       managementBindings,
@@ -656,15 +668,7 @@ export async function main(argv: string[]): Promise<void> {
       allowsToolInput: allowsSecretText,
       resolvePersona: config.resolvePersona,
       getSection: () => config.simulation,
-      createGroupGames: ({ authorizeBackground }) => createStandaloneGroupGames({
-        config: config.games, dataDir: config.dataDir, execution: config.execution,
-        executionSignal,
-        isCurrent: () => !executionSignal.aborted && storage?.isCurrent() === true && config.isConfigCurrent(),
-        allowsText: text => allowsSecretText(text) && !words.findForbiddenWord(text, config.forbiddenWords),
-        execute: (request, execution, options) => diagnostics.run(diagnostics.scope(), 'turtle_soup_model',
-          () => executor.YTapi(request, execution, undefined, undefined, options), 'model'),
-        recordTokens: input => ledger.record({ ...input, usage: input.usage }), authorizeBackground, logger: safeLogger,
-      }),
+      createGroupGames: ({ authorizeBackground }) => createStandaloneGroupGames({ ...gamePorts, authorizeBackground }),
       memorySystem: config.memorySystem,
       midtermMemory: config.midtermMemory,
       episodicMemory: config.episodicMemory,
@@ -759,7 +763,8 @@ export async function main(argv: string[]): Promise<void> {
         ...(config.console.legacyUserFile ? { legacyUserFile: config.console.legacyUserFile } : {}),
         allowSetup: config.console.allowSetup,
         secureCookies: config.console.secureCookies,
-        policy: { operations, authorize: async () => 'allowed' },
+        policy: { operations, authorize: async (_principal, operation, binding) =>
+          operation.startsWith('turtle-soup.') && binding?.target.kind !== 'group' ? 'denied' : 'allowed' },
       })
       const runtime = createStandaloneAgentConsoleRuntime({ runtime: host.runtime, bindings, auth: consoleAuth })
       const management = host.management && createStandaloneAgentConsoleManagement({ management: host.management, auth: consoleAuth })
@@ -777,7 +782,15 @@ export async function main(argv: string[]): Promise<void> {
         : undefined
       const installed = createStandaloneAgentConsoleServices({ bindings, auth: consoleAuth, runtime, ledger, ...management, ...(forgetting ? { forgetting } : {}),
         config: persistence.config, persona: persistence.persona, providers: persistence.providers,
-        assignments: persistence.assignments, configuration: persistence.configuration, configState: persistence.state, commits: persistence.commits })
+        assignments: persistence.assignments, configuration: persistence.configuration, configState: persistence.state, commits: persistence.commits,
+        extra: [
+          ...createStandaloneAgentConsoleImages({ ...config.tools.images, secrets: hostSecrets, dataDir: config.dataDir,
+            recordUsage: (model, usage) => ledger.record({ scope: 'global', stage: 'api', model, usage }) }),
+          ...createStandaloneAgentConsoleGames(gamePorts),
+          ...createStandaloneAgentConsoleStyle({ dataDir: config.dataDir, bindings, auth: consoleAuth, allowsText: allowsSecretText }),
+          ...createStandaloneAgentConsoleSemantic({ dataDir: config.dataDir, enabled: config.semanticMemory.enabled,
+            admin: host.semanticMemoryAdmin, allowsText: allowsSecretText }),
+        ] })
       // The workspace describes this process's loaded configuration, including after execution retires.
       const loadedByAddress = new Map(config.loadedBindings.map(binding => [conversationAddressKey(binding.target), binding]))
       const loadedBindings: AgentManagementBindings = { list: () => config.loadedBindings,

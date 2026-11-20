@@ -1,4 +1,5 @@
 import type { AgentTool, AgentToolContext, AgentToolRegistry, AgentToolResult } from '../../../contracts/agentTool.js'
+import type { MessageImage } from '../../../contracts/platformConnection.js'
 import { resolveChatCompletionUrl } from '../../models/domain/chatCompletionUrl.js'
 import { resolveImageAspectRatioIntent, resolveImageProviderSize, isGrokImageModel, assertGrokImageRatio } from '../../image/domain/imageAspectRatio.js'
 import { toImageEditUrl, toImageGenerationUrl, shouldRetryWithoutUrlResponseFormat } from '../../image/domain/providerConfig.js'
@@ -32,8 +33,8 @@ const MAX_RESPONSE = 32 * 1024 * 1024
 const MAX_REFERENCE_BYTES = 40 * 1024 * 1024
 const rejectedStatuses = new Set([400, 404, 405, 413, 415, 422, 429])
 const ratios = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
-const failed = (content: string): AgentToolResult => ({ status: 'failed', content })
-const unknown = (): AgentToolResult => ({ status: 'unknown', content: '图片任务结果尚未确认，请核实后再提交；没有确认图片送达。' })
+const failed = (content: string) => ({ status: 'failed' as const, content })
+const unknown = () => ({ status: 'unknown' as const, content: '图片任务结果尚未确认，请核实后再提交；没有确认图片送达。' })
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const first = (value: unknown) => Array.isArray(value) ? value[0] : undefined
 function identifier(value: unknown): string {
@@ -119,7 +120,7 @@ function imageValue(data: Record<string, unknown>, protocol: 'images' | 'chat'):
   if (/^(?:data:image\/|base64:\/\/|https?:\/\/)/iu.test(text) && !/[\s]/u.test(text)) return text
   return text.match(/!\[[^\]]*\]\((https?:\/\/[^\s)]+|data:image\/[^\s)]+)\)/iu)?.[1]
 }
-function recordUsage(data: Record<string, unknown>, backend: AgentImageBackend, context: AgentToolContext) {
+function recordUsage(data: Record<string, unknown>, backend: AgentImageBackend, context: ImageRequestGuard) {
   const usage = object(data.usage)
   const counts = Object.fromEntries(['prompt_tokens', 'completion_tokens', 'total_tokens', 'input_tokens', 'output_tokens']
     .filter(key => typeof usage[key] === 'number' && Number.isSafeInteger(usage[key]) && Number(usage[key]) >= 0)
@@ -127,15 +128,203 @@ function recordUsage(data: Record<string, unknown>, backend: AgentImageBackend, 
   if (Object.keys(counts).length) context.recordUsage?.(backend.model ?? backend.name, counts)
 }
 
-/** Generation and editing use scoped binary delivery, never a model-visible image payload. */
-export function createAgentImageTools(options: AgentImageToolsOptions = {}): AgentToolRegistry {
-  const tools: AgentTool[] = []
-  const generation = agentImageBackends(options.generation), edit = agentImageBackends(options.edit)
+type ImageRequestGuard = Pick<AgentToolContext, 'signal' | 'isCurrent' | 'ensureCurrent' | 'recordUsage'>
+type ImageOperation = 'generate' | 'edit'
+
+interface ImageRequest {
+  readonly prompt: string
+  readonly provider?: string
+  readonly aspectRatio?: string
+  readonly size?: string
+  readonly quality?: string
+  readonly count?: number
+  readonly references?: (context: ImageRequestGuard, add: (image: MessageImage) => void) => Promise<void>
+}
+
+type ImageResult = ReturnType<typeof failed> | ReturnType<typeof unknown> | {
+  readonly status: 'succeeded'
+  readonly images: readonly MessageImage[]
+  readonly provider: string
+  readonly edited: boolean
+}
+
+function providerLabels(backends: readonly AgentImageBackend[]) {
+  return backends.map((backend, index) => ({
+    label: backend.name,
+    model: backend.model ?? backend.name,
+    host: new URL(backend.baseUrl).host,
+    size: backend.size ?? '(渠道默认)',
+    priority: index + 1,
+  }))
+}
+
+function imageResults(result: Record<string, unknown>, protocol: 'images' | 'chat', count: number): string[] {
+  if (count === 1) {
+    const image = imageValue(result, protocol)
+    return image ? [image] : []
+  }
+  if (protocol === 'images' && Array.isArray(result.data)) {
+    return result.data.slice(0, count).flatMap(value => {
+      const image = imageValue({ data: [value] }, protocol)
+      return image ? [image] : []
+    })
+  }
+  const message = object(object(first(result.choices)).message)
+  if (message.tool_calls || message.function_call) return []
+  if (Array.isArray(message.images) && message.images.length) {
+    return message.images.slice(0, count).flatMap(value => {
+      const image = object(value)
+      const url = object(image.image_url).url ?? image.url
+      return typeof url === 'string' ? [url] : []
+    })
+  }
+  const image = imageValue(result, protocol)
+  return image ? [image] : []
+}
+
+/** Executes the same configured providers for QQ tools and the web console. Delivery belongs to the caller. */
+export function createAgentImageRunner(options: AgentImageToolsOptions = {}) {
+  const generation = agentImageBackends(options.generation)
+  const edit = agentImageBackends(options.edit)
   const secrets = [...new Set([...generation.map(backend => backend.apiKey), ...edit.map(backend => backend.apiKey), ...(options.secrets ?? [])]
     .filter((value): value is string => typeof value === 'string' && !!value))]
-  for (const [editOnly, backends] of [[false, generation], [true, edit]] as const) {
+  const containsSecret = (value: string) => hasSecret(value, secrets)
+  for (const backend of edit) endpoint(backend, true)
+
+  async function run(operation: ImageOperation, request: ImageRequest, context: ImageRequestGuard): Promise<ImageResult> {
+    const { prompt, provider, aspectRatio, size: requestedSize, quality, count = 1 } = request
+    const backends = operation === 'edit' ? edit : generation
+    const selected = provider === undefined ? undefined : backends.find(backend => backend.name === provider)
+      ?? backends.find(backend => backend.aliases?.includes(provider))
+    const candidates = provider === undefined ? backends : selected ? backends.filter(backend => backend.name === selected.name) : []
+    if (!candidates.length || typeof prompt !== 'string' || !prompt.trim() || prompt.length > 4000 || containsSecret(prompt) ||
+      aspectRatio !== undefined && !ratios.includes(aspectRatio) ||
+      quality !== undefined && !['auto', 'low', 'medium', 'high', 'standard', 'hd'].includes(quality) ||
+      !Number.isSafeInteger(count) || count < 1 || count > 4) return failed('图片任务参数无效，或指定的模型未配置。')
+    if (requestedSize !== undefined) {
+      const dimensions = /^([1-9]\d{0,4})x([1-9]\d{0,4})$/u.exec(requestedSize)
+      if (!dimensions || Number(dimensions[1]) > 16_384 || Number(dimensions[2]) > 16_384 ||
+        Number(dimensions[1]) * Number(dimensions[2]) > 64 * 1024 * 1024) return failed('图片画布尺寸无效。')
+    }
+
+    const signal = AbortSignal.any([context.signal, AbortSignal.timeout(boundedAgentWebTimeout(options.timeoutMs, 240_000))])
+    const scoped = { signal, isCurrent: () => context.isCurrent(), ensureCurrent: async () => { await context.ensureCurrent?.() } }
+    const ensure = () => ensureAgentWebCurrent(scoped, signal)
+    let attempted = false
+    let response: Response | undefined
+    try {
+      await ensure()
+      const references: MessageImage[] = []
+      let referenceSize = 0
+      const addReference = (value: MessageImage) => {
+        const reference = validateAgentToolImage(value)
+        const bytes = Buffer.from(reference.base64, 'base64')
+        referenceSize += bytes.length
+        if (referenceSize > MAX_REFERENCE_BYTES || references.length >= 10 || containsSecret(bytes.toString('utf8'))) {
+          throw new Error('参考图片无效或超出上限')
+        }
+        references.push(reference)
+      }
+      if (request.references) await abortableAgentWeb(request.references(scoped, addReference), signal)
+      if (operation === 'edit' && !references.length) return failed('图片编辑需要至少一张可用参考图。')
+      const edited = operation === 'edit' || references.length > 0
+      const intent = resolveImageAspectRatioIntent('', aspectRatio)
+      const unsupported = '图片服务明确拒绝了本次请求，未确认生成图片。'
+      for (const backend of candidates) {
+        await ensure()
+        const model = backend.model ?? backend.name
+        const size = requestedSize || resolveImageProviderSize({
+          model, ...(backend.size ? { size: backend.size, defaultEditSize: backend.size } : {}),
+        }, intent, { operation: edited ? 'edit' : 'generate' })
+        const protocol = backend.protocol ?? 'images'
+        let withFormat = protocol === 'images' && !/^gpt-image/iu.test(model)
+        const sendRequest = async () => {
+          await ensure()
+          const fields: Record<string, string | number> = {
+            model, prompt: prompt.trim(), n: count,
+            ...(size ? { size } : {}),
+            ...(quality || backend.quality ? { quality: quality || backend.quality! } : {}),
+            ...(isGrokImageModel(model) && aspectRatio ? { aspect_ratio: aspectRatio } : {}),
+            ...(withFormat ? { response_format: 'b64_json' } : {}),
+          }
+          const headers: Record<string, string> = { Authorization: 'Bearer ' + backend.apiKey }
+          let body: BodyInit
+          if (protocol === 'chat') {
+            headers['Content-Type'] = 'application/json'
+            const instructions = [prompt.trim(), ...(aspectRatio ? ['画布比例：' + aspectRatio] : []),
+              ...(requestedSize ? ['图像尺寸：' + requestedSize] : []), ...(count > 1 ? ['图片数量：' + count] : [])]
+            body = JSON.stringify({ model, messages: [{ role: 'user', content: [
+              { type: 'text', text: instructions.join('\n') },
+              ...references.map(image => ({ type: 'image_url', image_url: { url: 'data:' + image.mime + ';base64,' + image.base64 } })),
+            ] }], stream: false })
+          } else if (edited) {
+            const form = new FormData()
+            for (const [key, value] of Object.entries(fields)) form.set(key, String(value))
+            for (const [index, image] of references.entries()) form.append('image',
+              new Blob([new Uint8Array(Buffer.from(image.base64, 'base64'))], { type: image.mime }),
+              'reference-' + (index + 1) + '.' + image.mime.split('/')[1])
+            body = form
+          } else {
+            headers['Content-Type'] = 'application/json'
+            body = JSON.stringify(fields)
+          }
+          await ensure()
+          attempted = true
+          response = await abortableAgentWeb((options.fetchImpl ?? fetch)(endpoint(backend, edited), {
+            method: 'POST', headers, body, redirect: 'error', signal,
+          }), signal)
+          if (response.redirected) throw new Error('图片服务重定向')
+          const result = await readResponse(response, signal, secrets)
+          recordUsage(result, backend, context)
+          await ensure()
+          return result
+        }
+        let result = await sendRequest()
+        if (containsSecret(JSON.stringify(result))) return unknown()
+        if (withFormat && response && [400, 422].includes(response.status) &&
+          shouldRetryWithoutUrlResponseFormat(String(object(result.error).message ?? result.detail ?? ''))) {
+          withFormat = false
+          result = await sendRequest()
+        }
+        await ensure()
+        if (containsSecret(JSON.stringify(result))) return unknown()
+        if (!response?.ok) {
+          if (response && rejectedStatuses.has(response.status)) continue
+          return response && response.status >= 400 && response.status < 500 ? failed(unsupported) : unknown()
+        }
+        if (result.error) return unknown()
+
+        const images: MessageImage[] = []
+        for (const value of imageResults(result, protocol, count)) {
+          const inline = value.match(/^data:(image\/[^;,]+);base64,([\s\S]+)$/u)
+          const base64 = value.startsWith('base64://') ? value.slice(9) : inline?.[2]
+          const image = base64 === undefined ? await readAgentPublicImage(value, scoped, options.publicImage)
+            : validateAgentToolImage({ mime: inline?.[1] ?? sniffImageMime(Buffer.from(base64, 'base64')), base64 })
+          await ensure()
+          const bytes = Buffer.from(image.base64, 'base64')
+          if (containsSecret(bytes.toString('utf8'))) return unknown()
+          if (isGrokImageModel(model) && aspectRatio) assertGrokImageRatio({ model, aspectRatio }, readImageDimensions(bytes))
+          images.push(image)
+        }
+        if (!images.length) return unknown()
+        return { status: 'succeeded', images, provider: backend.name, edited }
+      }
+      return failed(unsupported)
+    } catch {
+      return attempted ? unknown() : failed('图片任务在请求前停止：参考图片不可用、超时或授权已改变。')
+    } finally {
+      void response?.body?.cancel().catch(() => {})
+    }
+  }
+  return { list: { generation: providerLabels(generation), edit: providerLabels(edit) }, containsSecret, run }
+}
+
+/** Generation and editing use scoped binary delivery, never a model-visible image payload. */
+export function createAgentImageTools(options: AgentImageToolsOptions = {}): AgentToolRegistry {
+  const runner = createAgentImageRunner(options)
+  const tools: AgentTool[] = []
+  for (const [editOnly, backends] of [[false, runner.list.generation], [true, runner.list.edit]] as const) {
     if (!backends.length) continue
-    for (const backend of backends) endpoint(backend, editOnly)
     tools.push({
       name: editOnly ? 'googleImageEditTool' : 'bananaTool',
       effect: input => ({ required: input.sourceSeq === undefined ? ['sendImage'] : ['sendImage', 'readImages'] }),
@@ -149,122 +338,52 @@ export function createAgentImageTools(options: AgentImageToolsOptions = {}): Age
         provider: { type: 'string', maxLength: 200, description: '用户明确指定时填写配置的图片渠道名称或别名' },
         aspectRatio: { type: 'string', enum: ratios, description: '用户要求的画布比例' },
       }, required: ['prompt'], additionalProperties: false },
-      async execute(input, context) {
+      async execute(input, context): Promise<AgentToolResult> {
         const prompt = input?.prompt, urls = input?.images ?? [], sourceSeq = input?.sourceSeq
         if (!input || Object.keys(input).some(key => !['prompt', 'images', 'sourceSeq', 'provider', 'aspectRatio'].includes(key)) ||
-            typeof prompt !== 'string' || !prompt.trim() || prompt.length > 4000 || hasSecret(prompt, secrets) ||
+            typeof prompt !== 'string' || !prompt.trim() || prompt.length > 4000 || runner.containsSecret(prompt) ||
             !Array.isArray(urls) || urls.length > 10 || editOnly && !urls.length && sourceSeq === undefined ||
             sourceSeq !== undefined && (typeof sourceSeq !== 'number' || !Number.isSafeInteger(sourceSeq) || sourceSeq < 1) ||
-            urls.some(url => typeof url !== 'string' || !/^https?:\/\//iu.test(url) || url.length > 2048 || hasSecret(url, secrets)) ||
+            urls.some(url => typeof url !== 'string' || !/^https?:\/\//iu.test(url) || url.length > 2048 || runner.containsSecret(url)) ||
             input.provider !== undefined && (typeof input.provider !== 'string' || !input.provider || input.provider.length > 200 || /[\u0000-\u001f\u007f]/u.test(input.provider)) ||
             input.aspectRatio !== undefined && (typeof input.aspectRatio !== 'string' || !ratios.includes(input.aspectRatio))) {
           return failed('图片任务参数无效，或指定的模型未配置。')
         }
-        const selected = input.provider === undefined ? undefined : backends.find(backend => backend.name === input.provider)
-          ?? backends.find(backend => backend.aliases?.includes(input.provider as string))
-        const candidates = input.provider === undefined ? backends : selected ? backends.filter(backend => backend.name === selected.name) : []
-        if (!candidates.length) return failed('图片任务参数无效，或指定的模型未配置。')
         if (!context.sendImage) return failed('当前宿主没有可用的图片交付能力。')
         if (sourceSeq !== undefined && !context.readImages) return failed('当前宿主没有可用的消息附图读取能力。')
         const signal = AbortSignal.any([context.signal, AbortSignal.timeout(boundedAgentWebTimeout(options.timeoutMs, 240_000))])
-        const scoped = { ...context, signal }, ensure = () => ensureAgentWebCurrent(scoped, signal)
-        let attempted = false, response: Response | undefined
-        try {
-          await ensure()
-          const references: { mime: string; base64: string }[] = []
-          let referenceSize = 0
-          const addReference = (value: { readonly mime: string; readonly base64: string }) => {
-            const image = validateAgentToolImage(value), bytes = Buffer.from(image.base64, 'base64')
-            if (hasSecret(bytes.toString('utf8'), secrets)) throw new Error('参考图片含凭据')
-            referenceSize += bytes.length
-            if (referenceSize > MAX_REFERENCE_BYTES || references.length >= 10) throw new Error('参考图片超出上限')
-            references.push(image)
-          }
-          if (sourceSeq !== undefined) {
-            await ensure()
-            const images = await abortableAgentWeb(context.readImages!(sourceSeq as number), signal)
-            await ensure()
-            if (!Array.isArray(images) || !images.length || images.length > 10) return failed('本轮可见消息没有可编辑的附图。')
-            for (const image of images) addReference(image)
-          }
-          for (const url of urls) {
-            await ensure()
-            const image = await readAgentPublicImage(url, scoped, options.publicImage)
-            await ensure()
-            addReference(image)
-          }
-          const editing = editOnly || references.length > 0
-          const intent = resolveImageAspectRatioIntent('', typeof input.aspectRatio === 'string' ? input.aspectRatio : '')
-          for (const backend of candidates) {
-            await ensure()
-            const model = backend.model ?? backend.name
-            const size = resolveImageProviderSize({ model, ...(backend.size ? { size: backend.size, defaultEditSize: backend.size } : {}) }, intent, { operation: editing ? 'edit' : 'generate' })
-            const protocol = backend.protocol ?? 'images'
-            let withFormat = protocol === 'images' && !/^gpt-image/iu.test(model)
-            const sendRequest = async () => {
-              await ensure()
-              const fields: Record<string, string | number> = { model, prompt: prompt.trim(), n: 1,
-                ...(size ? { size } : {}), ...(backend.quality ? { quality: backend.quality } : {}),
-                ...(isGrokImageModel(model) && input.aspectRatio ? { aspect_ratio: String(input.aspectRatio) } : {}),
-                ...(withFormat ? { response_format: 'b64_json' } : {}),
+        const scoped = { ...context, signal }
+        let missingSourceImages = false
+        const result = await runner.run(editOnly ? 'edit' : 'generate', {
+          prompt,
+          ...(typeof input.provider === 'string' ? { provider: input.provider } : {}),
+          ...(typeof input.aspectRatio === 'string' ? { aspectRatio: input.aspectRatio } : {}),
+          async references(guard, add) {
+            if (sourceSeq !== undefined) {
+              await ensureAgentWebCurrent(guard)
+              const source = await abortableAgentWeb(context.readImages!(sourceSeq as number), guard.signal)
+              await ensureAgentWebCurrent(guard)
+              if (!Array.isArray(source) || !source.length || source.length > 10) {
+                missingSourceImages = true
+                throw new Error('本轮可见消息没有可编辑的附图')
               }
-              let body: BodyInit, headers: Record<string, string> = { Authorization: `Bearer ${backend.apiKey}` }
-              if (protocol === 'chat') {
-                headers['Content-Type'] = 'application/json'
-                body = JSON.stringify({ model, messages: [{ role: 'user', content: [
-                  { type: 'text', text: `${prompt.trim()}${input.aspectRatio ? `\n画布比例：${input.aspectRatio}` : ''}` },
-                  ...references.map(image => ({ type: 'image_url', image_url: { url: `data:${image.mime};base64,${image.base64}` } })),
-                ] }], stream: false })
-              } else if (editing) {
-                const form = new FormData()
-                for (const [key, value] of Object.entries(fields)) form.set(key, String(value))
-                for (const [index, image] of references.entries()) form.append('image', new Blob([new Uint8Array(Buffer.from(image.base64, 'base64'))], { type: image.mime }), `reference-${index + 1}.${image.mime.split('/')[1]}`)
-                body = form
-              } else { headers['Content-Type'] = 'application/json'; body = JSON.stringify(fields) }
-              await ensure()
-              attempted = true
-              response = await abortableAgentWeb((options.fetchImpl ?? fetch)(endpoint(backend, editing), { method: 'POST', headers, body, redirect: 'error', signal }), signal)
-              if (response.redirected) throw new Error('图片服务重定向')
-              const result = await readResponse(response, signal, secrets)
-              recordUsage(result, backend, context)
-              await ensure()
-              return result
+              for (const image of source) add(image)
             }
-            let result = await sendRequest()
-            if (hasSecret(JSON.stringify(result), secrets)) return unknown()
-            if (withFormat && response && [400, 422].includes(response.status) && shouldRetryWithoutUrlResponseFormat(String(object(result.error).message ?? result.detail ?? ''))) {
-              withFormat = false
-              result = await sendRequest()
-            }
-            await ensure()
-            if (hasSecret(JSON.stringify(result), secrets)) return unknown()
-            if (!response?.ok) {
-              if (response && rejectedStatuses.has(response.status)) continue
-              return response && response.status >= 400 && response.status < 500 ? failed('图片服务明确拒绝了本次请求，未确认生成图片。') : unknown()
-            }
-            if (result.error) return unknown()
-            const value = imageValue(result, protocol)
-            if (!value) return unknown()
-            let image: { mime: string; base64: string }
-            const inline = value.match(/^data:(image\/[^;,]+);base64,([\s\S]+)$/u)
-            const base64 = value.startsWith('base64://') ? value.slice(9) : inline?.[2]
-            if (base64 !== undefined) {
-              const mime = inline?.[1] ?? sniffImageMime(Buffer.from(base64, 'base64'))
-              image = validateAgentToolImage({ mime, base64 })
-            } else image = await readAgentPublicImage(value, scoped, options.publicImage)
-            await ensure()
-            const bytes = Buffer.from(image.base64, 'base64')
-            if (hasSecret(bytes.toString('utf8'), secrets)) return unknown()
-            if (isGrokImageModel(model) && input.aspectRatio) assertGrokImageRatio({ model, aspectRatio: input.aspectRatio }, readImageDimensions(bytes))
-            const receipt = await abortableAgentWeb(context.sendImage(image), signal)
-            await ensure()
-            if (receipt.state === 'sent' && typeof receipt.messageId === 'string' && receipt.messageId.trim()) return { status: 'succeeded', content: editing ? '图片编辑完成，已确认发送到当前会话。' : '图片生成完成，已确认发送到当前会话。' }
-            if (receipt.state === 'failed') return failed('图片已生成，但平台明确拒绝交付；没有确认送达，请勿重新生成来代替核查。')
-            return unknown()
+            for (const url of urls) add(await readAgentPublicImage(url, guard, options.publicImage))
+          },
+        }, scoped)
+        if (missingSourceImages) return failed('本轮可见消息没有可编辑的附图。')
+        if (result.status !== 'succeeded') return result
+        try {
+          await ensureAgentWebCurrent(scoped)
+          const receipt = await abortableAgentWeb(context.sendImage(result.images[0]!), scoped.signal)
+          await ensureAgentWebCurrent(scoped)
+          if (receipt.state === 'sent' && typeof receipt.messageId === 'string' && receipt.messageId.trim()) {
+            return { status: 'succeeded', content: result.edited ? '图片编辑完成，已确认发送到当前会话。' : '图片生成完成，已确认发送到当前会话。' }
           }
-          return failed('图片服务明确拒绝了本次请求，未确认生成图片。')
-        } catch { return attempted ? unknown() : failed('图片任务在请求前停止：参考图片不可用、超时或授权已改变。') }
-        finally { void response?.body?.cancel().catch(() => {}) }
+          if (receipt.state === 'failed') return failed('图片已生成，但平台明确拒绝交付；没有确认送达，请勿重新生成来代替核查。')
+        } catch { return unknown() }
+        return unknown()
       },
     })
   }

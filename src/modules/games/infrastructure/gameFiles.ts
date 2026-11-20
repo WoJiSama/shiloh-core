@@ -85,7 +85,14 @@ export function writeAtomicJson(filePath:string,data:unknown):void {
     fs.closeSync(fd);fd=undefined
     fs.renameSync(temporary,filePath)
     const directory=fs.openSync(path.dirname(filePath),'r')
-    try {fs.fsyncSync(directory)}finally{fs.closeSync(directory)}
+    try {
+      fs.fsyncSync(directory)
+    } catch (error) {
+      // Node cannot flush directory handles on Windows. The replacement file itself is already flushed.
+      if (process.platform !== 'win32' || (error as NodeJS.ErrnoException).code !== 'EPERM') throw error
+    } finally {
+      fs.closeSync(directory)
+    }
   } finally {
     if(fd!==undefined)fs.closeSync(fd)
     if(fs.existsSync(temporary))fs.unlinkSync(temporary)

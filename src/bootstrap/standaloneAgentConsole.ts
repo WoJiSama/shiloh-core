@@ -18,6 +18,7 @@ const methods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
 const authActions = new Set(['setup', 'login', 'logout', 'password'])
 const selectors = new Set(['scopeKey', 'bindingToken'])
 const maximumBody = 20 * 1024 * 1024
+const maximumRequestBody = 60 * 1024 * 1024
 const fail = (code: ConstructorParameters<typeof AgentConsoleError>[0]): never => { throw new AgentConsoleError(code) }
 
 function plain(input: unknown): Record<string, unknown> {
@@ -119,7 +120,8 @@ function compile(service: AgentConsoleService) {
       service.body !== undefined && !['json', 'bytes'].includes(service.body) ||
       service.method === 'GET' && service.body !== undefined ||
       service.handle !== undefined && typeof service.handle !== 'function' ||
-      service.maxBodyBytes !== undefined && (!Number.isSafeInteger(service.maxBodyBytes) || service.maxBodyBytes < 1 || service.maxBodyBytes > maximumBody)) throw new Error('控制台服务定义无效')
+      service.maxBodyBytes !== undefined && (!Number.isSafeInteger(service.maxBodyBytes) || service.maxBodyBytes < 1 ||
+        service.maxBodyBytes > (service.body === 'bytes' ? maximumRequestBody : maximumBody))) throw new Error('控制台服务定义无效')
   const params = new Set<string>()
   const segments = service.path.split('/').slice(1).map(segment => {
     if (!segment || segment === '.' || segment === '..' || segment.includes('%')) throw new Error('控制台服务路径无效')

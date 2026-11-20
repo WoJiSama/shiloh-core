@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, ref } from 'vue'
+import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
 import {
   NButton,
   NCard,
@@ -16,6 +16,7 @@ import {
   type DataTableColumns
 } from 'naive-ui'
 import { api } from '../lib/api'
+import { capability, workspace } from '../lib/workspace'
 import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
 import SchemaPage from './SchemaPage.vue'
@@ -134,7 +135,7 @@ function toggleVersions(id: string) {
 }
 
 const auditingId = ref('')
-const busy = computed(() => overview.value?.generating.running || false)
+const busy = computed(() => writes.value > 0 || overview.value?.generating.running === true)
 const candidateError = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let disposed = false
@@ -239,24 +240,63 @@ const unresolved = computed(() =>
   candidates.value.filter((item) => !['pending', 'recovered'].includes(item.status))
 )
 
+const gameScopeKey = ref('')
+const scopeOptions = computed(() => {
+  const accounts = new Set<string>()
+  return (workspace.data.value?.agents ?? []).flatMap((agent) =>
+    agent.conversations.flatMap((row) => {
+      const { account, kind } = row.binding.target
+      if (kind !== 'group' || capability('turtle-soup.read', row.scopeKey).status !== 'available') return []
+      const partition = JSON.stringify([agent.id, account.platform, account.namespace, account.id])
+      if (accounts.has(partition)) return []
+      accounts.add(partition)
+      return [{ label: agent.name + ' · ' + account.id, value: row.scopeKey, bindingToken: row.bindingToken }]
+    })
+  )
+})
+const gameScope = computed(() => scopeOptions.value.find((row) => row.value === gameScopeKey.value) ?? scopeOptions.value[0])
+const writes = ref(0)
+let scopeAbort = new AbortController()
+
+async function gameApi<T = any>(pathname: string, options: RequestInit = {}): Promise<T> {
+  if (workspace.mode.value !== 'standalone') return api<T>(pathname, options)
+  const scope = gameScope.value
+  if (!scope) throw new Error('请选择具有题库管理权限的机器人与账号')
+  const query = new URLSearchParams({ scopeKey: scope.value, bindingToken: scope.bindingToken })
+  const write = options.method !== undefined && options.method !== 'GET'
+  if (write) {
+    writes.value++
+    if (!pollTimer) pollTimer = setInterval(loadOverview, 5000)
+  }
+  try {
+    const result = await api<T>(pathname + '?' + query, { ...options, signal: scopeAbort.signal })
+    if (write && result && typeof result === 'object' && 'ok' in result && result.ok === false) {
+      throw new Error('任务未全部完成，请查看候选记录')
+    }
+    return result
+  } finally {
+    if (write) writes.value--
+  }
+}
+
 async function loadOverview() {
   const sequence = ++loadSequence
   try {
-    const value = await api<SoupOverview>('/api/games/turtle-soup/overview')
+    const value = await gameApi<SoupOverview>('/api/games/turtle-soup/overview')
     if (disposed || sequence !== loadSequence) return
     overview.value = value
     error.value = ''
     if ((value.generating.running || value.sessions.length) && !pollTimer)
       pollTimer = setInterval(loadOverview, 5000)
-    else if (!value.generating.running && !value.sessions.length) stopPolling()
+    else if (!value.generating.running && !value.sessions.length && !writes.value) stopPolling()
     try {
-      const result = await api<{ candidates: SoupCandidate[] }>('/api/games/turtle-soup/candidates')
+      const result = await gameApi<{ candidates: SoupCandidate[] }>('/api/games/turtle-soup/candidates')
       if (!disposed && sequence === loadSequence) {
         candidates.value = result.candidates
         candidateError.value = ''
       }
     } catch (cause: any) {
-      candidateError.value = cause.message || '候选记录加载失败'
+      if (!disposed && sequence === loadSequence) candidateError.value = cause.message || '候选记录加载失败'
     }
   } catch (cause: any) {
     if (sequence === loadSequence) error.value = cause.message || '题库加载失败'
@@ -270,7 +310,19 @@ function stopPolling() {
 }
 onBeforeUnmount(() => {
   disposed = true
+  scopeAbort.abort()
   stopPolling()
+})
+watch([() => gameScope.value?.value, () => gameScope.value?.bindingToken], () => {
+  scopeAbort.abort()
+  scopeAbort = new AbortController()
+  stopPolling()
+  overview.value = null
+  candidates.value = []
+  selectedId.value = ''
+  action.value = null
+  loading.value = true
+  void loadOverview()
 })
 void loadOverview()
 
@@ -438,18 +490,20 @@ async function submitAction() {
   try {
     const url = `/api/games/turtle-soup/puzzles/${encodeURIComponent(current.id)}`
     if (current.kind === 'status')
-      await api(`${url}/status`, {
+      await gameApi(`${url}/status`, {
         method: 'PUT',
         body: JSON.stringify({ status: current.status, reason, contentHash: current.contentHash })
       })
     else if (current.kind === 'score')
-      await api(`${url}/score`, {
+      await gameApi(`${url}/score`, {
         method: 'PUT',
         body: JSON.stringify({ score: actionScore.value, reason })
       })
-    else await api(`${url}/repair`, { method: 'POST', body: JSON.stringify({ reason }) })
+    else await gameApi(`${url}/repair`, { method: 'POST', body: JSON.stringify({ reason }) })
     message.success(
-      current.kind === 'repair' ? '修复任务已启动，通过审核的新版本将进入待审池' : '已保存'
+      current.kind === 'repair'
+        ? workspace.mode.value === 'standalone' ? '修复版本已进入待审池' : '修复任务已启动'
+        : '已保存'
     )
     action.value = null
     await loadOverview()
@@ -461,7 +515,7 @@ async function submitAction() {
 }
 async function quickScore(row: SoupPuzzle, score: number) {
   try {
-    await api(`/api/games/turtle-soup/puzzles/${row.id}/score`, {
+    await gameApi(`/api/games/turtle-soup/puzzles/${row.id}/score`, {
       method: 'PUT',
       body: JSON.stringify({ score })
     })
@@ -474,7 +528,7 @@ async function quickScore(row: SoupPuzzle, score: number) {
 
 async function clearScore(row: SoupPuzzle) {
   try {
-    await api(`/api/games/turtle-soup/puzzles/${encodeURIComponent(row.id)}/score`, {
+    await gameApi(`/api/games/turtle-soup/puzzles/${encodeURIComponent(row.id)}/score`, {
       method: 'DELETE'
     })
     await loadOverview()
@@ -485,7 +539,7 @@ async function clearScore(row: SoupPuzzle) {
 async function reaudit(row: SoupPuzzle) {
   auditingId.value = row.id
   try {
-    const result = await api<{ eligible: boolean }>(
+    const result = await gameApi<{ eligible: boolean }>(
       `/api/games/turtle-soup/puzzles/${encodeURIComponent(row.id)}/audit`,
       { method: 'POST', body: '{}' }
     )
@@ -500,7 +554,7 @@ async function reaudit(row: SoupPuzzle) {
 }
 async function removePuzzle(row: SoupPuzzle) {
   try {
-    await api(`/api/games/turtle-soup/puzzles/${encodeURIComponent(row.id)}`, { method: 'DELETE' })
+    await gameApi(`/api/games/turtle-soup/puzzles/${encodeURIComponent(row.id)}`, { method: 'DELETE' })
     if (selectedId.value === row.id) selectedId.value = ''
     await loadOverview()
   } catch (cause: any) {
@@ -509,11 +563,11 @@ async function removePuzzle(row: SoupPuzzle) {
 }
 async function startGeneration() {
   try {
-    await api('/api/games/turtle-soup/generate', {
+    await gameApi('/api/games/turtle-soup/generate', {
       method: 'POST',
       body: JSON.stringify({ count: generatingCount.value })
     })
-    message.success('生成任务已启动')
+    message.success(workspace.mode.value === 'standalone' ? '生成完成，查看待审池' : '生成任务已启动')
     await loadOverview()
   } catch (cause: any) {
     message.error(cause.message || '启动失败')
@@ -521,11 +575,11 @@ async function startGeneration() {
 }
 async function recoverCandidate(item: SoupCandidate) {
   try {
-    await api(`/api/games/turtle-soup/candidates/${encodeURIComponent(item.id)}/recover`, {
+    await gameApi(`/api/games/turtle-soup/candidates/${encodeURIComponent(item.id)}/recover`, {
       method: 'POST',
       body: '{}'
     })
-    message.success('已开始处理候选，结果将在待审池或失败原因中更新')
+    message.success(workspace.mode.value === 'standalone' ? '候选已进入待审池' : '已开始处理候选')
     await loadOverview()
   } catch (cause: any) {
     message.error(cause.message || '重试失败')
@@ -550,6 +604,15 @@ const formatTime = (at: number) => new Date(at).toLocaleString()
       ><NTab name="deltaForce">三角洲</NTab>
     </NTabs>
     <template v-if="activeTab === 'turtleSoup'">
+      <NSelect
+        v-if="workspace.mode.value === 'standalone'"
+        :value="gameScope?.value ?? null"
+        :options="scopeOptions"
+        :disabled="writes > 0 || actionSaving"
+        aria-label="题库所属机器人和账号"
+        placeholder="选择题库所属机器人和账号"
+        @update:value="gameScopeKey = $event"
+      />
       <PageState
         :loading="loading && !overview"
         :error="!overview ? error : ''"

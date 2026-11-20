@@ -1,12 +1,12 @@
 import path from 'node:path'
 import type { AgentBindingSnapshot } from '../contracts/agentBinding.js'
 import type { AgentGroupGameContext, AgentGroupGameHandler, AgentGroupGameSendGuard } from '../contracts/agentGames.js'
-import type { ChatRequestData, ChatResponse } from '../contracts/modelGateway.js'
+import type { ChatMessage, ChatRequestData, ChatResponse } from '../contracts/modelGateway.js'
 import type { ExecutionConfig, ExecutionOptions } from '../contracts/modelExecution.js'
 import type { IncomingMessage } from '../contracts/platformMessage.js'
 import type { TurtleSoupLogger } from '../contracts/turtleSoup.js'
 import { createAgentTurtleSoup } from '../modules/games/infrastructure/agentTurtleSoup.js'
-import type { AgentTurtleSoupOptions } from '../modules/games/infrastructure/agentTurtleSoup.js'
+import type { TurtleSoupModelCallOptions } from '../modules/games/infrastructure/turtleSoup/TurtleSoupGenerator.js'
 import { createAgentUmaRaceHandler } from '../modules/games/infrastructure/agentUmaRace.js'
 import { simulationAddressKey } from '../modules/simulation/infrastructure/simulationAddress.js'
 import type { StandaloneGamesConfig } from './standaloneGamesConfig.js'
@@ -38,9 +38,10 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 /** Fixed main-chat provider; game configuration may select only its model name. */
-export function createStandaloneTurtleSoupModel(options: StandaloneGroupGamesOptions): AgentTurtleSoupOptions['callModel'] {
+export function createStandaloneTurtleSoupModel(options: StandaloneGroupGamesOptions) {
   const main = { ...options.execution, chatAiConfig: { ...options.execution.chatAiConfig } }
-  return async (messages, modelOptions, context) => {
+  return async (messages: ChatMessage[], modelOptions: TurtleSoupModelCallOptions,
+    context: Pick<AgentGroupGameContext, 'binding' | 'signal' | 'isCurrent' | 'ensureCurrent'>) => {
     const signal = AbortSignal.any([options.executionSignal, context.signal, AbortSignal.timeout(45_000), ...(modelOptions.signal ? [modelOptions.signal] : [])])
     const isCurrent = () => {
       try { return !signal.aborted && options.isCurrent() && context.isCurrent() } catch { return false }

@@ -159,6 +159,9 @@ function formatHistoryTime(value: string) {
     minute: '2-digit'
   })
 }
+function resultImageUrl(image: { dataUri?: string; file: string }) {
+  return image.dataUri || imageUrl('/img/' + encodeURIComponent(image.file))
+}
 async function generate() {
   if (busy.value || cancelBusy.value) return
   if (!form.prompt.trim()) {
@@ -399,8 +402,8 @@ onBeforeUnmount(() => {
             </div>
             <div class="gallery-images">
               <figure v-for="image in entry.result.images" :key="image.file">
-                <NImage :src="image.dataUri" :alt="entry.payload.prompt" /><a
-                  :href="image.dataUri"
+                <NImage :src="resultImageUrl(image)" :alt="entry.payload.prompt" /><a
+                  :href="resultImageUrl(image)"
                   :download="image.file"
                   ><Download :size="13" />下载 · {{ Math.round(image.bytes / 1024) }} KB</a
                 >

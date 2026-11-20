@@ -307,7 +307,7 @@ export async function readAgentPublicWeb(input: string, context: AgentToolContex
 }
 
 /** Provider-result images may use signed CDN queries; no host credentials or URL are returned. */
-export async function readAgentPublicImage(input: string, context: AgentToolContext, dependencies: AgentPublicWebDependencies = {}): Promise<{ readonly mime: string; readonly base64: string }> {
+export async function readAgentPublicImage(input: string, context: PublicReadGuard, dependencies: AgentPublicWebDependencies = {}): Promise<{ readonly mime: string; readonly base64: string }> {
   try {
     const { response, signal } = await readAgentPublicResponse(input, context, dependencies, IMAGE_POLICY)
     if (!(response.body instanceof Uint8Array)) throw new Error('图片响应不是二进制数据')

@@ -363,7 +363,42 @@ export function createAgentSemanticMemory(ports: {
     await ensureSemanticCleanup(guard)
     return receipt
   }
-  return { capture, read, tick, purgeSubject,
+  const administration = {
+    async cutoff(binding: AgentBindingSnapshot, isCurrent: () => boolean): Promise<number> {
+      if (!isCurrent() || binding.target.kind !== 'group') throw new Error('语义资料会话已失效')
+      const snapshot = await ports.memory.getSceneRedactions({
+        identity: identity(binding), scene: { kind: 'group', id: binding.target.id },
+      })
+      if (!isCurrent()) throw new Error('语义资料会话已失效')
+      return snapshot.invalidatedAt
+    },
+    async records(binding: AgentBindingSnapshot, isCurrent: () => boolean, search: string, offset: number) {
+      if (!isCurrent()) throw new Error('语义资料会话已失效')
+      if (!enabled()) return { enabled: false, total: 0, indexed: 0, rows: [] }
+      return withContext(binding, isCurrent, 10_000, async context => {
+        const state = await store.read(agentSemanticMemoryId(binding))
+        const allowed = await permitted(binding, state?.rows ?? [])
+        const needle = search.trim().toLocaleLowerCase()
+        const matching = allowed.filter(row => !needle || row.text.toLocaleLowerCase().includes(needle))
+          .sort((left, right) => right.at - left.at)
+        const page = matching.slice(offset, offset + 25)
+        await context.ensureCurrent()
+        if (!await present(binding, page) || (await permitted(binding, page)).length !== page.length) {
+          throw new Error('语义资料来源已变化')
+        }
+        await context.ensureCurrent()
+        const indexed = (row: AgentSemanticMemoryRow) => Boolean(row.vector && row.providerId === ports.backend?.id)
+        return { enabled: true, total: matching.length, indexed: matching.filter(indexed).length,
+          rows: page.map(row => ({ id: row.messageId, at: row.at, text: row.text, indexed: indexed(row) })) }
+      })
+    },
+    async recall(binding: AgentBindingSnapshot, query: string, isCurrent: () => boolean, signal: AbortSignal) {
+      const result = await read(binding, query, isCurrent, signal)
+      if (!isCurrent() || !await result.isCurrent()) throw new Error('语义资料来源已变化')
+      return { text: result.text }
+    },
+  }
+  return { capture, read, tick, purgeSubject, administration,
     invalidate(target: ConversationAddress) {
       const key = conversationAddressKey(target)
       for (const request of requests) if (conversationAddressKey(request.target) === key || request.related.some(binding => conversationAddressKey(binding.target) === key)) request.controller.abort()

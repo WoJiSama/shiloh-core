@@ -3799,6 +3799,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     selfProfiles: (id: string) => personal?.profiles(id) ?? [],
     /** Trusted host cleanup only; never installed as a model tool. */
     semanticMemoryCleanup,
+    semanticMemoryAdmin: semanticMemory.administration,
     conversationMemoryCleanup,
     sourceMemoryCleanup,
     groupMemoryCleanup,

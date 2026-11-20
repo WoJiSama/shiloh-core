@@ -13,6 +13,8 @@ interface GroupStyle {
 }
 interface StyleOverview {
   enabled: boolean
+  archive?: boolean
+  imported?: boolean
   autoSummaryEnabled: boolean
   totalSamples: number
   lastSummaryAt?: string
@@ -121,7 +123,10 @@ import { h } from 'vue'
     <PageHeader title="风格学习" subtitle="表达学习系统学到了什么：全局策略规则（可修剪）与各群常用词（可屏蔽）" />
     <PageState :loading="loading && !overview" :error="error" @retry="load" />
     <template v-if="overview">
-      <NAlert v-if="!overview.enabled" type="warning" style="margin-bottom: 12px">
+      <NAlert v-if="overview.archive" type="info" style="margin-bottom: 12px">
+        {{ overview.imported ? '已导入的旧版表达策略与群词库。这里的修剪和屏蔽适用于归档视图。' : '等待导入旧版表达学习资料。' }}
+      </NAlert>
+      <NAlert v-else-if="!overview.enabled" type="warning" style="margin-bottom: 12px">
         globalStyleLearning 处于关闭状态，学习未运行。
       </NAlert>
       <div class="cards">
@@ -134,19 +139,19 @@ import { h } from 'vue'
         <NTabPane name="global" tab="全局表达策略">
           <h4>可吸收（学习到值得用的说话方式）</h4>
           <NAlert v-if="!overview.aiRules.absorb.length" type="default" :show-icon="false" style="margin-bottom: 8px">
-            还没有总结出可吸收规则——观察在积累，达到总结阈值后会自动生成（看上方「最近 AI 总结」确认节奏）。
+            {{ overview.archive ? '暂无可吸收规则。' : '观察在积累，达到总结阈值后会自动生成规则。' }}
           </NAlert>
           <NDataTable v-else :columns="absorbColumns" :data="overview.aiRules.absorb" size="small" :bordered="false" />
           <h4>避开（学习到要避免的）</h4>
           <NDataTable v-if="overview.aiRules.avoid.length" :columns="avoidColumns" :data="overview.aiRules.avoid" size="small" :bordered="false" />
           <div v-else class="line">暂无</div>
-          <details style="margin-top: 12px">
+          <details v-if="!overview.archive" style="margin-top: 12px">
             <summary>当前注入提示词预览</summary>
             <pre class="preview">{{ overview.promptPreview }}</pre>
           </details>
         </NTabPane>
         <NTabPane v-for="g in overview.groups.filter(g => g.expressions)" :key="g.groupId" :name="g.groupId" :tab="groupLabel(g.groupId)">
-          <h4>常用词（点屏蔽后不再学习/注入该词）</h4>
+          <h4>{{ overview.archive ? '归档常用词' : '常用词（点屏蔽后不再学习或注入）' }}</h4>
           <NDataTable :columns="wordColumns(g.groupId)" :data="g.expressions!.words" size="small" :bordered="false" />
           <template v-if="g.expressions!.styleExpressions?.length">
             <h4>场景表达</h4>

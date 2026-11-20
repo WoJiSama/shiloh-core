@@ -13,6 +13,10 @@ import { validateQqBindingAddress } from '../adapters/qqIdentity.js'
 import { normalizePersonaEntry, PERSONA_ENTRY_FIELDS } from '../modules/conversation/infrastructure/personaLibrary.js'
 import { createPersonaReplyGuard } from '../modules/conversation/domain/personaReplyGuard.js'
 import { describeStandaloneAgentTopology, prepareStandaloneAgentTopologyChange } from './standaloneAgentConsoleTopology.js'
+import { deltaForceSchema, turtleSoupSchema, umaRaceSchema } from '../modules/config/domain/schemas/shared/games.js'
+import { resolveTurtleSoupConfig } from '../modules/games/infrastructure/turtleSoup/TurtleSoupStore.js'
+import { DEFAULT_CONFIG as UMA_DEFAULTS } from '../modules/games/infrastructure/uma/umaConstants.js'
+import { TURTLE_NUMBERS, UMA_NUMBERS } from './standaloneGamesConfig.js'
 
 export type ConsoleModelSlot = 'model' | 'vision' | 'personMemoryExtraction' | 'midtermSummary' | 'groupMemoryExtraction' | 'textTriggerModel'
 export interface ConsoleModelView { readonly baseUrl: string; readonly name: string; readonly apiKeyEnv: string; readonly apiKeyConfigured: boolean }
@@ -30,6 +34,17 @@ export interface StandaloneConsolePersistenceOptions {
   validateCandidate(sources: ConfigSources): ValidatedConsoleCandidate
 }
 type Data = Record<string, unknown>
+const gameSettings = {
+  turtleSoup: { prefix: 'games.turtleSoup', title: '海龟汤参数', fields: turtleSoupSchema, ranges: TURTLE_NUMBERS,
+    defaults: { ...resolveTurtleSoupConfig({ miniGames: { enabled: false } }), enabled: false } },
+  umaRace: { prefix: 'games.umaRace', title: '赛马娘参数', fields: umaRaceSchema, ranges: UMA_NUMBERS,
+    defaults: { ...UMA_DEFAULTS, enabled: false } },
+  deltaForce: { prefix: 'tools.deltaForce', title: '三角洲参数', fields: deltaForceSchema, ranges: {},
+    defaults: { enabled: false, apiBaseUrl: '', apiKeyEnv: '', timeoutMs: 10_000, objectCacheEnabled: true, objectCacheRefreshMinutes: 360 } },
+}
+function gameSettingsFor(kind: string) {
+  return kind === 'turtleSoup' || kind === 'umaRace' || kind === 'deltaForce' ? gameSettings[kind] : undefined
+}
 const slots: readonly ConsoleModelSlot[] = ['model', 'vision', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction', 'textTriggerModel']
 const slotTitles: Record<ConsoleModelSlot, string> = { model: '主对话', vision: '图片理解', personMemoryExtraction: '个人记忆提取', midtermSummary: '对话摘要', groupMemoryExtraction: '群记忆提取', textTriggerModel: '主动发言判断' }
 const { normalizeConfig: normalizePersonaGuard } = createPersonaReplyGuard({ isToneCorrectionMessage: () => false })
@@ -175,6 +190,25 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
     capabilities: { requiresRestart: true, atomicMultiFile: true } })
   function schema(snapshot: SourceSnapshot, candidate: ValidatedConsoleCandidate, kind: string): Data {
     let selected: Field[]
+    const settings = gameSettingsFor(kind)
+    if (settings) {
+      const host = document(snapshot.sources.host)
+      const defaults = settings.defaults as unknown as Data
+      const ranges = settings.ranges as Readonly<Record<string, readonly [number, number]>>
+      selected = settings.fields.flatMap(item => {
+        const name = item.field?.split('.').at(-1)
+        if (!name || item.field === 'miniGames.enabled' || kind === 'umaRace' && ['minPlayers', 'maxPlayers'].includes(name)) return []
+        const key = name === 'apiKey' ? 'apiKeyEnv' : name
+        const setting = settings.prefix + '.' + key
+        const current = host.getIn(setting.split('.')) ?? defaults[key] ?? ''
+        const range = ranges[key]
+        const props = range ? { ...item.componentProps, min: range[0], max: range[1] } : item.componentProps
+        return [field(setting, key === 'apiKeyEnv' ? '凭据环境变量名' : item.label ?? key,
+          key === 'apiKeyEnv' ? 'Input' : item.component, current, props)]
+      })
+      return { ...base(snapshot, 'config:' + kind), key: kind, title: settings.title,
+        groups: [{ label: '独立宿主配置', fields: selected }] }
+    }
     if (kind === 'dice') selected = [field('dice.enabled', '启用骰子指令', 'Switch', candidate.dice.enabled),
       field('dice.maxDiceCount', '最大骰子数量', 'InputNumber', candidate.dice.maxDiceCount, { min: 1, max: 10000, step: 1 }),
       field('dice.maxDiceSides', '最大骰子面数', 'InputNumber', candidate.dice.maxDiceSides, { min: 2, max: 100000000, step: 1 }),
@@ -276,6 +310,17 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
         const current = schema(loaded, candidate, kind), existing = ((current.groups as Data[])[0]!.fields as Field[])
         for (const [key, value] of Object.entries(values)) {
           if (equal(value, existing.find(item => item.field === key)!.value)) continue
+          const resource = gameSettingsFor(kind)
+          if (resource) {
+            const defined = existing.find(item => item.field === key)!
+            if (defined.component === 'Switch' ? typeof value !== 'boolean'
+              : defined.component === 'InputNumber' ? typeof value !== 'number' || !Number.isFinite(value)
+                : typeof value !== 'string') return fail()
+            if (state.host.getIn(resource.prefix.split('.')) === undefined) state.host.setIn(resource.prefix.split('.'), { enabled: false })
+            state.host.setIn(key.split('.'), value)
+            changed++
+            continue
+          }
           const [section, name] = key.split('.') as [string, string]
           let next: unknown = value
           if (section === 'dice') {

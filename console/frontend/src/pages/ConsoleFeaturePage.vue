@@ -8,6 +8,7 @@ import CapabilityGate from '../components/CapabilityGate.vue'
 import SchemaPage from './SchemaPage.vue'
 import WorkspaceConnections from './WorkspaceConnections.vue'
 const props = defineProps<{ feature: WorkspaceFeature }>()
+const StandaloneSemanticPage = defineAsyncComponent(() => import('./StandaloneSemanticPage.vue'))
 const mode = workspace.mode
 const route = useRoute()
 const components = {
@@ -91,7 +92,8 @@ const backLabel = computed(() =>
     <WorkspaceConnections v-if="props.feature === 'groups'" /><CapabilityGate
       v-else
       :operation="feature.operation"
-      ><SchemaPage v-if="props.feature === 'commands'" kind="dice" /><component
+      ><SchemaPage v-if="props.feature === 'commands'" kind="dice" />
+      <StandaloneSemanticPage v-else-if="props.feature === 'semantic'" /><component
         v-else
         :is="components[props.feature]"
         v-bind="componentProps" /></CapabilityGate></template
