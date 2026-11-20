@@ -410,12 +410,12 @@ test('private privacy revocation for the origin Agent cancels another Agent repl
     const request = await waitFor(() => f.requests.find(value => value.messages.at(-1)?.content === query), 'Agent B main model loaded shared teaching')
     assert.match(textOf(request), new RegExp(marker))
     await f.send(privateRoom, 'origin-private-disable', commands.disable)
+    await waitFor(async () => (await f.state(group))?.entries.length === 0, 'privacy queue removes the teaching before the old reply finishes')
     gate.resolve()
     await pendingReply
     await f.tick()
     assert.ok(!f.deliveries.some(action => action.replyTo === 'cross-agent-pending-read'))
     assert.ok(!f.attempts.some(action => action.replyTo === 'cross-agent-pending-read'))
-    assert.deepEqual((await f.state(group)).entries, [])
     const after = await f.prompt(group, 'cross-agent-after-disable', 'B再次查询当前资料')
     assert.doesNotMatch(textOf(after), new RegExp(marker))
   })
