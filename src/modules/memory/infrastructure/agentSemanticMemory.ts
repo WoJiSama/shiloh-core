@@ -49,7 +49,7 @@ export function createAgentSemanticMemory(ports: {
   begin(binding: AgentBindingSnapshot): Promise<MemoryTurn>
   isRunning(): boolean
   allowsText(text: string): boolean
-  logger: { warn(message: string): void }
+  logger: { warn(message: string, error?: unknown): void }
   now?(): number
   /** Offline evaluation only; omitted by the host. Public recall and authorization stay unchanged. */
   retrieval?: AgentSemanticRetrievalOptions
@@ -311,11 +311,11 @@ export function createAgentSemanticMemory(ports: {
         if (indexing.size >= 2 || indexing.has(state.id) || (retryAt.get(state.id) ?? 0) > now()) continue
         if (!dirty.has(state.id) && (nextCheck.get(state.id) ?? 0) > now()) continue
         dirty.delete(state.id); nextCheck.set(state.id, now() + 60_000)
-        const work = maintain(state.scope).catch(() => { retryAt.set(state.id, now() + 60_000); ports.logger.warn('[语义记忆] 索引暂时不可用') })
+        const work = maintain(state.scope).catch((error) => { retryAt.set(state.id, now() + 60_000); ports.logger.warn('[语义记忆] 索引暂时不可用', error) })
           .finally(() => { indexing.delete(state.id) })
         indexing.set(state.id, work)
       }
-    })().catch(() => ports.logger.warn('[语义记忆] 来源库暂时不可用')).finally(() => { sweep = undefined })
+    })().catch((error) => ports.logger.warn('[语义记忆] 来源库暂时不可用', error)).finally(() => { sweep = undefined })
     return sweep
   }
   async function maintain(scope: AgentConversationScope) {

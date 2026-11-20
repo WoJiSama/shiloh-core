@@ -127,7 +127,7 @@ export interface SimulationRuntimePorts {
   /** Optional trusted last-resort text when every explanation model is unavailable. */
   failureNoticeFallback?: string
   redis: Parameters<typeof createSimSessionStore>[0]['redis']
-  logger: { info(message: string): void; warn(message: string): void; error(message: string, error?: unknown): void }
+  logger: { info(message: string): void; warn(message: string, error?: unknown): void; error(message: string, error?: unknown): void }
   /** 每次调用重读（config 热更新即时生效） */
   getSection(): SimulationSection
   /** 解码后的宿主执行配置（YTapi 的 config 参数） */
@@ -912,8 +912,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     try {
     if (ports.getSection().enabled === false) return false
     let key: string | null
-    try { key = await conversationKey(target) } catch {
-      logger.warn(`[仿真] 会话 ${target.id} 角色绑定无效，跳过本次入站`)
+    try { key = await conversationKey(target) } catch (error) {
+      logger.warn(`[仿真] 会话 ${target.id} 角色绑定无效，跳过本次入站`, error)
       return true
     }
     if (!key) {
@@ -949,8 +949,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (incoming.binding && (conversationAddressKey(incoming.binding.target) !== conversationAddressKey(target) || agentBindingToken(incoming.binding) !== capturedBinding)) return true
       scope = characterScopeFor(target, resolved.personaId || 'default')
       if (resolved.binding?.source === 'configured') selfName = String(resolved.persona.name || self.name)
-    } catch {
-      logger.warn(`[仿真] 群 ${groupId} 角色绑定无效，跳过本次入站`)
+    } catch (error) {
+      logger.warn(`[仿真] 群 ${groupId} 角色绑定无效，跳过本次入站`, error)
       return true
     }
     const bindingCurrent = () => {

@@ -36,7 +36,7 @@ export function createConversationMemory(ports: {
   begin(binding: AgentBindingSnapshot): Promise<MemoryTurn>
   isRunning(): boolean
   allowsText(text: string): boolean
-  logger: { warn(message: string): void }
+  logger: { warn(message: string, error?: unknown): void }
   recordUsage?(input: { scope: string; stage: string; model?: string; usage?: unknown; ms?: number }): void
   now?(): number
 }) {
@@ -260,12 +260,12 @@ export function createConversationMemory(ports: {
         return { ...saved, summary: { text: text.trim(), updatedAt: now(), coveredSeq, invalidatedAt, ...(cleanupToken ? { cleanupToken } : {}) },
           dueAt: remaining.length >= minMessages() ? now() + debounce() : 0, dueInvalidatedAt: invalidatedAt, attempts: 0, retryAt: 0 }
       }, isCurrent)
-    } catch {
+    } catch (summaryError) {
       const canRecordFailure = () => isCurrent() || timedOut && scopeCurrent()
       if (canRecordFailure() && await store.cleanupToken(binding) === cleanupToken) {
         await store.update(state.id, saved => saved && saved.token === state.token && sameScheduleGeneration(saved, invalidatedAt, cleanupToken) ? { ...saved, attempts: saved.attempts + 1,
           retryAt: now() + Math.min(300_000, 15_000 * 2 ** saved.attempts) } : saved, canRecordFailure).catch(() => {})
-        ports.logger.warn('[会话记忆] 主线摘要未完成，保留来源等待有限重试')
+        ports.logger.warn('[会话记忆] 主线摘要未完成，保留来源等待有限重试', summaryError)
       }
     } finally {
       activeTurn = false; clearTimeout(timer); clearInterval(poll)
@@ -308,10 +308,10 @@ export function createConversationMemory(ports: {
         }
         if (state.dueAt > now()) continue
         const controller = new AbortController()
-        const promise = summarize(state, controller).catch(() => ports.logger.warn('[会话记忆] 主线摘要存储暂时不可用')).finally(() => { active.delete(state.id) })
+        const promise = summarize(state, controller).catch((error) => ports.logger.warn('[会话记忆] 主线摘要存储暂时不可用', error)).finally(() => { active.delete(state.id) })
         active.set(state.id, { ...state.scope, controller, promise })
       }
-    })().catch(() => ports.logger.warn('[会话记忆] 队列暂时不可用')).finally(() => { sweep = undefined })
+    })().catch((error) => ports.logger.warn('[会话记忆] 队列暂时不可用', error)).finally(() => { sweep = undefined })
     return sweep
   }
   async function purgeSubject(input: AgentConversationMemoryPurgeSubject, authority: AgentConversationMemoryCleanupGuard): Promise<AgentConversationMemoryCleanupReceipt> {
