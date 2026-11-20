@@ -265,7 +265,7 @@ export function createGroupMemory(ports: {
         return saved
       }, commitCurrent)
     } catch {
-      if (current(binding)) ports.logger.warn('[Agent] 群学习未完成，保留来源等待有限重试')
+      if (current(binding)) ports.logger.warn('[群学习] 未完成，保留来源等待有限重试')
     } finally {
       alive = false; clearTimeout(timeout); clearInterval(poll)
       turn?.signal.removeEventListener('abort', abort); turn?.release(); cancel.abort()
@@ -309,11 +309,11 @@ export function createGroupMemory(ports: {
             return saved
           }, () => current(agent.binding))
           if (!committed || !claimed) continue
-          const cancel = new AbortController(), promise = runJob(state, agent, job, cancel).catch(() => ports.logger.warn('[Agent] 群学习存储暂时不可用')).finally(() => { active.delete(key) })
+          const cancel = new AbortController(), promise = runJob(state, agent, job, cancel).catch(() => ports.logger.warn('[群学习] 存储暂时不可用')).finally(() => { active.delete(key) })
           active.set(key, { agentId: agent.agentId, target: state.target, cancel, promise })
         }
       }
-    })().catch(() => ports.logger.warn('[Agent] 群学习队列暂时不可用')).finally(() => { sweep = undefined })
+    })().catch(() => ports.logger.warn('[群学习] 队列暂时不可用')).finally(() => { sweep = undefined })
     return sweep
   }
   async function read(binding: AgentBindingSnapshot, guard: () => boolean, includeWorkflows = false): Promise<string> {

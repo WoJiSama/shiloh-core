@@ -196,7 +196,7 @@ export function createTextPersonMemory(ports: {
       if (canRecordFailure()) {
         await store.update(batch.id, saved => saved && ({ ...saved, attempts: saved.attempts + 1,
           retryAt: now() + Math.min(300_000, 15_000 * 2 ** saved.attempts) }), canRecordFailure).catch(() => {})
-        ports.logger.warn('[Agent] 人物事实学习未完成，保留来源等待有限重试')
+        ports.logger.warn('[人物事实] 学习未完成，保留来源等待有限重试')
       }
     } finally {
       active = false
@@ -225,11 +225,11 @@ export function createTextPersonMemory(ports: {
         }
         if (tasks.size >= 4 || tasks.has(batch.id) || batch.attempts >= 3 || now() < batch.retryAt || now() < batch.dueAt || !ports.available(batch.binding.target)) continue
         const controller = new AbortController()
-        const task = run(batch, controller).catch(() => ports.logger.warn('[Agent] 人物事实学习存储暂时不可用'))
+        const task = run(batch, controller).catch(() => ports.logger.warn('[人物事实] 学习存储暂时不可用'))
           .finally(() => { tasks.delete(batch.id) })
         tasks.set(batch.id, { target: batch.binding.target, controller, promise: task })
       }
-    })().catch(() => ports.logger.warn('[Agent] 人物事实学习队列暂时不可用')).finally(() => { sweep = undefined })
+    })().catch(() => ports.logger.warn('[人物事实] 队列暂时不可用')).finally(() => { sweep = undefined })
     return sweep
   }
 

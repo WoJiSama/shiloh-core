@@ -311,11 +311,11 @@ export function createAgentSemanticMemory(ports: {
         if (indexing.size >= 2 || indexing.has(state.id) || (retryAt.get(state.id) ?? 0) > now()) continue
         if (!dirty.has(state.id) && (nextCheck.get(state.id) ?? 0) > now()) continue
         dirty.delete(state.id); nextCheck.set(state.id, now() + 60_000)
-        const work = maintain(state.scope).catch(() => { retryAt.set(state.id, now() + 60_000); ports.logger.warn('[Agent] 语义记忆索引暂时不可用') })
+        const work = maintain(state.scope).catch(() => { retryAt.set(state.id, now() + 60_000); ports.logger.warn('[语义记忆] 索引暂时不可用') })
           .finally(() => { indexing.delete(state.id) })
         indexing.set(state.id, work)
       }
-    })().catch(() => ports.logger.warn('[Agent] 语义记忆来源库暂时不可用')).finally(() => { sweep = undefined })
+    })().catch(() => ports.logger.warn('[语义记忆] 来源库暂时不可用')).finally(() => { sweep = undefined })
     return sweep
   }
   async function maintain(scope: AgentConversationScope) {

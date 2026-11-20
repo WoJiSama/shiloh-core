@@ -3462,7 +3462,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       void diagnostics.run({ kind: 'account', account: queue.account }, `consume_${queue.kind}`, async () => {
         diagnostics.emit({ stage: 'inbox', operation: `consume_${queue.kind}`, outcome: 'failed', code: 'inbox_retry_pending', error })
       }, 'inbox')
-      logger.warn('[Agent] 收件处理失败，保留队列并等待重试')
+      logger.warn('[收件] 处理失败，保留队列并等待重试')
       if (isRunning()) retryTimers.set(key, setTimeout(() => { retryTimers.delete(key); kickInbox(queue) }, 1_000))
     }).finally(() => { consumers.delete(key) })
     consumers.set(key, consumer)

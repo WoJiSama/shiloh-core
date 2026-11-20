@@ -191,7 +191,7 @@ export function createAgentHistory(ports: {
           }
         }, context.isCurrent)
       })
-    } catch { ports.logger.warn('[Agent] 历史原始来源未能保存') }
+    } catch { ports.logger.warn('[历史] 原始来源未能保存') }
   }
   /** Background style extraction consumes only this group's already captured originals. */
   async function readStyleSources(binding: AgentBindingSnapshot, days: number, guard: () => boolean, signal?: AbortSignal): Promise<AgentHistoryStyleSources> {
@@ -438,7 +438,7 @@ export function createAgentHistory(ports: {
         if (!canPrune()) return
         await store.update(item.id, state => state && ({ ...state, rows: state.rows.filter(row => row.at >= now() - retention()).slice(-maxRows()) }), canPrune)
       }
-    })().catch(() => { ports.logger.warn('[Agent] 历史来源清理暂时未完成') }).finally(() => { sweep = undefined })
+    })().catch(() => { ports.logger.warn('[历史] 来源清理暂时未完成') }).finally(() => { sweep = undefined })
     return sweep
   }
   return { capture, read, readStyleSources, invalidate, tick, purgeSubject: store.purgeSubject, async stop() { lifecycle.abort(); for (const request of requests) request.controller.abort(); await sweep } }
