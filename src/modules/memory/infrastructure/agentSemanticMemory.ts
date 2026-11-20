@@ -50,7 +50,7 @@ export function createAgentSemanticMemory(ports: {
   begin(binding: AgentBindingSnapshot): Promise<MemoryTurn>
   isRunning(): boolean
   allowsText(text: string): boolean
-  logger: { warn(message: string): void }
+  logger: { warn(message: string, error?: unknown): void }
   diagnostics?: Pick<AgentDiagnostics, 'emit'>
   now?(): number
   /** Offline evaluation only; omitted by the host. Public recall and authorization stay unchanged. */

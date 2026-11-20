@@ -68,6 +68,9 @@ test('closed descriptor validation never evaluates getters or persists free-form
   for (const item of [getter, nested, { ...event(), detail: 'PRIVATE_ERROR_BODY' }, { ...event(), error: new Error('PRIVATE') }, event(1, { operation: 'https://private/path' }), event(1, { code: 'bad\nline' }), event(1, { durationMs: -1 }), event(1, { httpStatus: 999 }), event(1, { scope: { kind: 'host', account } }), Object.assign(Object.create({}), event())]) assert.equal(await journal.append(item), false)
   assert.equal(accessed, false); assert.deepEqual(await rows(f.directory), []); assert.equal(journal.health().failed, 10); assert.equal(journal.health().degraded, true); assert.equal(await journal.flush(), false)
   assert.ok(emergency.every(([safe, code]) => safe === undefined && code === 'JOURNAL_INVALID_EVENT')); assert.equal(stderr.join('').includes('PRIVATE'), false)
+  assert.equal(await journal.append(event(2, { outcome: 'failed', code: 'runtime_warning', sourceTag: '海龟汤' })), true)
+  assert.equal((await rows(f.directory)).find(row => row.id === 'event-2').sourceTag, '海龟汤')
+  for (const badTag of ['bad<script>', 'x'.repeat(25), 42]) assert.equal(await journal.append(event(3, { sourceTag: badTag })), false)
 })
 
 test('factory and nested event proxies fail without invoking any proxy trap', async t => {

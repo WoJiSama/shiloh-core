@@ -68,6 +68,19 @@ test('receipt classification never invokes getters or Proxy traps', async () => 
   assert.equal(traps, 0); assert.equal(rows.some(row => row.delivery), false)
 })
 
+test('runtime warnings expose only a sanitized bracketed source tag, never the message body', async () => {
+  const rows = [], d = createAgentDiagnostics({ sink: { async append(event) { rows.push(event); return true } }, logger: quiet })
+  d.logger.warn('[海龟汤] 超时检查失败: /private/path?token=SECRET')
+  d.logger.warn('[MCP] 服务器 x 连接异常')
+  d.logger.warn('no leading label stays tag-free even with [brackets] later')
+  d.logger.warn('[bad tag<script>alert(1)</script>] ignored')
+  d.logger.warn('[over-long-' + 'x'.repeat(30) + '] ignored')
+  await d.flush()
+  const warnings = rows.filter(row => row.code === 'runtime_warning')
+  assert.deepEqual(warnings.map(row => row.sourceTag), ['海龟汤', 'MCP', undefined, undefined, undefined])
+  assert.ok(!/SECRET|private\/path|服务器 x|brackets|script/u.test(JSON.stringify(warnings)))
+})
+
 test('compatibility logger never persists raw exceptions, content or credential-bearing first arguments', async () => {
   const rows = [], d = createAgentDiagnostics({ sink: { async append(event) { rows.push(event); return true } }, logger: quiet })
   await d.run({ kind: 'conversation', binding, messageId: '1' }, 'text_turn', async () => {

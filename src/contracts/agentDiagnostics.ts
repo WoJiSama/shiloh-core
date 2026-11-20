@@ -18,6 +18,8 @@ export interface AgentDiagnosticEvent {
   readonly operation: string
   readonly outcome: 'started' | 'succeeded' | 'failed' | 'unknown' | 'cancelled'
   readonly code?: string
+  /** Leading bracketed label of a runtime logger message, e.g. "[海龟汤]"; never the message body. */
+  readonly sourceTag?: string
   readonly durationMs?: number
   readonly errorKind?: 'Error' | 'TypeError' | 'RangeError' | 'SyntaxError' | 'AbortError' | 'TimeoutError' | 'Unknown'
   readonly httpStatus?: number

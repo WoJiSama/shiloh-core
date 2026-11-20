@@ -41,7 +41,7 @@ export function createGroupMemory(ports: {
   begin(binding: AgentBindingSnapshot): Promise<MemoryTurn>
   isRunning(): boolean
   allowsText(text: string): boolean
-  logger: { warn(message: string): void }
+  logger: { warn(message: string, error?: unknown): void }
   diagnostics?: Pick<AgentDiagnostics, 'emit'>
   recordUsage?(input: { scope: string; stage: string; model?: string; usage?: unknown; ms?: number }): void
   now?(): number

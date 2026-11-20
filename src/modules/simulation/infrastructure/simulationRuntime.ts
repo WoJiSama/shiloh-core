@@ -130,7 +130,7 @@ export interface SimulationRuntimePorts {
   /** Optional trusted last-resort text when every explanation model is unavailable. */
   failureNoticeFallback?: string
   redis: Parameters<typeof createSimSessionStore>[0]['redis']
-  logger: { info(message: string): void; warn(message: string): void; error(message: string, error?: unknown): void }
+  logger: { info(message: string): void; warn(message: string, error?: unknown): void; error(message: string, error?: unknown): void }
   /** 每次调用重读（config 热更新即时生效） */
   getSection(): SimulationSection
   /** 解码后的宿主执行配置（YTapi 的 config 参数） */
