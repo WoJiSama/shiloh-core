@@ -29,6 +29,16 @@ const participants = (entry: GroupMemoryEntry) => unique([...entry.targetUserIds
 const teachingDeleted = (state: GroupMemoryState, row: GroupMemoryMessage) =>
   state.teachingDeletedSources?.includes(row.messageId) === true || row.at <= (state.teachingClearedAt ?? 0)
 
+async function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  let reject!: (reason: unknown) => void
+  const stopped = new Promise<never>((_resolve, fail) => { reject = fail })
+  const cancel = () => reject(signal.reason)
+  signal.addEventListener('abort', cancel, { once: true })
+  if (signal.aborted) cancel()
+  try { return await Promise.race([stopped, work]) }
+  finally { signal.removeEventListener('abort', cancel) }
+}
+
 /** Group facts belong to the Agent. Human teaching is shared only inside the full conversation address. */
 export function createGroupMemory(ports: {
   redis: AgentInboxRedis
@@ -177,18 +187,13 @@ export function createGroupMemory(ports: {
     const operation = teaching ? 'group_teaching_extract' : 'group_memory_extract'
     let turn: MemoryTurn | undefined, alive = true, used = false
     let step: 'source' | 'model' | 'save' = 'source'
-    let timedOut = false
-    const expire = () => { timedOut = true; cancel.abort() }
+    let timedOut = false, preparedSave = false
+    const expire = () => { timedOut = true; cancel.abort(new DOMException('Group memory job timed out', 'TimeoutError')) }
     const isCurrent = () => alive && !cancel.signal.aborted && current(binding) && ports.available(binding.target) && turn?.isCurrent() !== false
     const timeout = setTimeout(expire, GROUP_LEARNING_JOB_TIMEOUT_MS), poll = setInterval(() => { if (!isCurrent()) cancel.abort() }, 50)
     timeout.unref?.(); poll.unref?.()
     const abort = () => cancel.abort()
-    const abortable = async <T>(value: Promise<T>): Promise<T> => {
-      let reject!: () => void
-      const stopped = new Promise<never>((_resolve, fail) => { reject = () => fail(new Error('群学习已取消')) })
-      cancel.signal.addEventListener('abort', reject, { once: true }); if (cancel.signal.aborted) reject()
-      try { return await Promise.race([value, stopped]) } finally { cancel.signal.removeEventListener('abort', reject) }
-    }
+    const abortable = <T>(value: Promise<T>) => untilAborted(value, cancel.signal)
     try {
       const acquired = await abortable(ports.begin(binding).then(value => { if (!alive || cancel.signal.aborted) { value.release(); throw new Error('stale group learning') }; return value }))
       turn = acquired
@@ -225,7 +230,7 @@ export function createGroupMemory(ports: {
       const memberIds = new Set(members.map(member => member.id))
       for (const proposal of proposals) {
         const entry = proposalEntry(proposal, job, selected.viewer, memberIds, bot)
-        if (!entry || !await allowed(binding, entry.source, entry.text ?? entry.subject ?? entry.condition ?? '', participants(entry))) continue
+        if (!entry || !await abortable(allowed(binding, entry.source, entry.text ?? entry.subject ?? entry.condition ?? '', participants(entry)))) continue
         if (job.mode === 'teaching') {
           if (!(await Promise.all(participants(entry).filter(id => id !== bot).map(id =>
             abortable(ports.member(binding.target, id, cancel.signal, isCurrent))))).every(Boolean)) continue
@@ -237,7 +242,9 @@ export function createGroupMemory(ports: {
         entries.push(entry)
       }
       await abortable(ensureCurrent())
-      for (const entry of entries) if (!await allowed(binding, entry.source, entry.text ?? entry.subject ?? entry.condition ?? '', participants(entry))) throw new Error('群学习参与者权限已改变')
+      for (const entry of entries) {
+        if (!await abortable(allowed(binding, entry.source, entry.text ?? entry.subject ?? entry.condition ?? '', participants(entry)))) throw new Error('群学习参与者权限已改变')
+      }
       // QQ membership and Redis cannot form one transaction. Refresh immediately
       // before CAS and refuse to dispatch a commit with expired role evidence.
       let roleCheckedAt = Date.now()
@@ -251,9 +258,8 @@ export function createGroupMemory(ports: {
       }
       const commitCurrent = () => isCurrent() && (job.mode !== 'teaching' || Date.now() - roleCheckedAt <= 1500)
       step = 'save'
-      let completed = false
-      const committed = await store.update(state.id, saved => {
-        completed = false
+      const committed = await abortable(store.update(state.id, saved => {
+        preparedSave = false
         const live = saved?.agents.find(item => item.agentId === binding.agentId)
         if (!saved || !live || live.token !== agent.token || !live.jobs.some(item => item.id === job.id && item.cleanupToken === job.cleanupToken)) return saved
         for (const entry of entries) {
@@ -274,10 +280,10 @@ export function createGroupMemory(ports: {
         live.jobs = live.jobs.filter(item => item.id !== job.id)
         if (job.mode === 'consensus') live.consensusDone = boundedIds([...live.consensusDone, ...job.messages.map(row => row.messageId)])
         else live.teachingDone = boundedIds([...live.teachingDone, ...job.messages.map(row => row.messageId)])
-        completed = true
+        preparedSave = true
         return saved
-      }, commitCurrent)
-      if (committed && completed) {
+      }, commitCurrent))
+      if (committed && preparedSave) {
         try { ports.diagnostics?.emit({ stage: 'memory', operation, outcome: 'succeeded', code: 'completed', durationMs: now() - startedAt }) }
         catch { /* Diagnostics cannot change a committed result. */ }
       }
@@ -285,8 +291,10 @@ export function createGroupMemory(ports: {
       if (current(binding) && (timedOut || !cancel.signal.aborted)) {
         const codes = { source: 'group_learning_source_unavailable', model: 'group_learning_model_failed', save: 'group_learning_save_failed' } as const
         const provider = step === 'model' && error instanceof AgentGroupMemoryModelError ? error : undefined
-        reportAgentFailure(ports.diagnostics, { stage: step === 'model' ? 'model' : 'memory', operation,
-          code: timedOut ? 'group_learning_timeout' : provider?.code ?? codes[step],
+        // Entries and the job receipt share one CAS. A missing response cannot identify whether it committed.
+        const unconfirmed = timedOut && preparedSave
+        reportAgentFailure(ports.diagnostics, { stage: step === 'model' ? 'model' : 'memory', operation, outcome: unconfirmed ? 'unknown' : 'failed',
+          code: unconfirmed ? 'group_learning_save_unconfirmed' : timedOut ? 'group_learning_timeout' : provider?.code ?? codes[step],
           ...(provider?.httpStatus === undefined ? {} : { httpStatus: provider.httpStatus }), durationMs: now() - startedAt, error },
         () => ports.logger.warn('[Agent] 群学习未完成，保留来源等待有限重试'))
       }
@@ -298,41 +306,46 @@ export function createGroupMemory(ports: {
   function tick(): Promise<void> {
     if (!learningEnabled() || !ports.isRunning()) return Promise.resolve()
     if (sweep) return sweep
+    const deadline = AbortSignal.timeout(GROUP_LEARNING_JOB_TIMEOUT_MS)
+    const signal = AbortSignal.any([lifecycle.signal, deadline])
+    const sweepCurrent = (binding: AgentBindingSnapshot) => !signal.aborted && current(binding)
+    const wait = <T>(value: Promise<T>) => untilAborted(value, signal)
     sweep = (async () => {
-      for (const state of await store.list()) for (const agent of state.agents) {
-        if (!current(agent.binding) || !ports.available(state.target)) continue
+      for (const state of await wait(store.list())) for (const agent of state.agents) {
+        if (!sweepCurrent(agent.binding) || !ports.available(state.target)) continue
         for (const job of agent.jobs) {
           const key = `${state.id}:${job.id}`
           if (active.has(key)) continue
           if (job.attempts >= 3) {
-            await store.update(state.id, saved => {
+            await wait(store.update(state.id, saved => {
               const live = saved?.agents.find(item => item.agentId === agent.agentId), terminal = live?.jobs.find(item => item.id === job.id)
               if (live?.token !== agent.token || !terminal || terminal.attempts < 3) return saved
               live.jobs = live.jobs.filter(item => item.id !== job.id)
               const field = terminal.mode === 'teaching' ? 'teachingDone' : 'consensusDone'
               live[field] = boundedIds([...live[field], ...terminal.messages.map(row => row.messageId)])
               return saved
-            }, () => current(agent.binding))
+            }, () => sweepCurrent(agent.binding)))
             continue
           }
           if (active.size >= 4 || job.retryAt > now()) continue
-          const invalidatedAt = await epoch(agent.binding)
+          const invalidatedAt = await wait(epoch(agent.binding))
           if (job.invalidatedAt !== invalidatedAt) {
-            await store.update(state.id, saved => {
+            await wait(store.update(state.id, saved => {
               const live = saved?.agents.find(item => item.agentId === agent.agentId)
               if (live?.token === agent.token) live.jobs = live.jobs.filter(item => item.id !== job.id)
               return saved
-            }, () => current(agent.binding)); continue
+            }, () => sweepCurrent(agent.binding)))
+            continue
           }
           let claimed = false
-          const committed = await store.update(state.id, saved => {
+          const committed = await wait(store.update(state.id, saved => {
             claimed = false
             const live = saved?.agents.find(item => item.agentId === agent.agentId), selected = live?.jobs.find(item => item.id === job.id)
             if (live?.token !== agent.token || !selected || selected.attempts !== job.attempts || selected.retryAt > now()) return saved
             selected.attempts++; selected.retryAt = now() + 15_000 * 2 ** job.attempts; claimed = true
             return saved
-          }, () => current(agent.binding))
-          if (!committed || !claimed) continue
+          }, () => sweepCurrent(agent.binding)))
+          if (!committed || !claimed || !sweepCurrent(agent.binding)) continue
           const cancel = new AbortController()
           const promise = runJob(state, agent, job, cancel).catch(error => {
             reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'group_memory_extract', code: 'group_memory_job_failed', error },
@@ -342,7 +355,9 @@ export function createGroupMemory(ports: {
         }
       }
     })().catch(error => {
-      reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'group_memory_extract', code: 'group_memory_queue_unavailable', error },
+      if (lifecycle.signal.aborted) return
+      reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'group_memory_extract',
+        code: deadline.aborted ? 'group_memory_queue_timeout' : 'group_memory_queue_unavailable', error },
         () => ports.logger.warn('[Agent] 群学习队列暂时不可用'))
     }).finally(() => { sweep = undefined })
     return sweep
@@ -416,9 +431,13 @@ export function createGroupMemory(ports: {
   return { capture, read, isReadCurrent, invalidate, tick, purgeSubject,
     async prepare(binding: AgentBindingSnapshot, sourceId: string | undefined, guard: () => boolean) {
       await enqueue(binding, 'teaching', sourceId, guard)
-      await tick()
-      const tasks = [...active.values()].filter(task => conversationAddressKey(task.target) === conversationAddressKey(binding.target))
-      if (tasks.length) await Promise.race([Promise.allSettled(tasks.map(task => task.promise)), new Promise(resolve => { const timer = setTimeout(resolve, 180); timer.unref?.() })])
+      const target = conversationAddressKey(binding.target)
+      const learning = tick().then(() => Promise.allSettled(
+        [...active.values()].filter(task => conversationAddressKey(task.target) === target).map(task => task.promise),
+      ))
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([learning, new Promise(resolve => { timer = setTimeout(resolve, 180); timer.unref?.() })])
+        .finally(() => clearTimeout(timer))
       return await read(binding, guard, sourceId !== undefined)
     },
     async confirmed(binding: AgentBindingSnapshot, guard: () => boolean) { await enqueue(binding, 'consensus', undefined, guard); await tick() },

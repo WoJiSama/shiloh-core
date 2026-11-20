@@ -158,11 +158,11 @@ export type AgentDiagnostics = ReturnType<typeof createAgentDiagnostics>
 
 export function reportAgentFailure(
   diagnostics: Pick<AgentDiagnostics, 'emit'> | undefined,
-  failure: Omit<AgentDiagnosticInput, 'outcome'> & { code: string },
+  failure: Omit<AgentDiagnosticInput, 'outcome'> & { code: string; outcome?: 'failed' | 'unknown' },
   log: () => void,
 ): void {
   try {
-    if (diagnostics) diagnostics.emit({ ...failure, outcome: 'failed' })
+    if (diagnostics) diagnostics.emit({ outcome: 'failed', ...failure })
     else log()
   } catch { /* Diagnostics cannot interrupt recovery. */ }
 }

@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createAgentBindingDirectory, createAgentRuntime } from '../dist/backend/core/index.js'
+import { createGroupMemory } from '../dist/backend/modules/memory/infrastructure/groupMemory.js'
 import { createGroupMemoryStore, groupMemoryId } from '../dist/backend/modules/memory/infrastructure/groupMemoryStore.js'
+import { createPersonMemoryStore } from '../dist/backend/modules/memory/infrastructure/personMemoryStore.js'
+import { personMemoryAddress } from '../dist/backend/modules/memory/infrastructure/personMemoryContext.js'
 import { personMemoryCommandText as commands } from '../dist/backend/modules/memory/domain/personMemoryCommands.js'
 import { agentBindingToken, conversationAddressKey, platformAccountKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
@@ -419,6 +422,125 @@ test('private privacy revocation for the origin Agent cancels another Agent repl
     const after = await f.prompt(group, 'cross-agent-after-disable', 'B再次查询当前资料')
     assert.doesNotMatch(textOf(after), new RegExp(marker))
   })
+})
+
+test('group learning frees four stalled slots, resumes a stalled scan and keeps a committed write with a missing acknowledgement', redisTest, async t => {
+  const redis = await createAgentRedisFixture(t, 'group-learning-stalled-slots')
+  const realTimer = globalThis.setTimeout, realDeadline = AbortSignal.timeout
+  const expireJobs = []
+  t.mock.method(globalThis, 'setTimeout', (callback, ms, ...args) => {
+    if (ms === 35_000) expireJobs.push(() => callback(...args))
+    return realTimer(callback, ms, ...args)
+  })
+  let stallScan = false, expireScan
+  t.mock.method(AbortSignal, 'timeout', ms => {
+    if (!stallScan || ms !== 35_000) return realDeadline(ms)
+    const deadline = new AbortController()
+    expireScan = () => deadline.abort(new DOMException('Queue scan timed out', 'TimeoutError'))
+    return deadline.signal
+  })
+
+  const [modelId, sourceId, writeId, ackId, nextId] = ['stall-model', 'stall-source', 'stall-write', 'stall-ack', 'next-job']
+  const modelGate = Promise.withResolvers(), sourceGate = Promise.withResolvers()
+  const writeGate = Promise.withResolvers(), ackGate = Promise.withResolvers(), scanGate = Promise.withResolvers()
+  const events = [], calls = []
+  let sourceReads, sawSourceWait = false, sawWriteWait = false, sawAckWait = false, lateWriteResult
+  const storage = {
+    get(key) {
+      if (stallScan && key === 'agent:group-memory:v1:catalog') {
+        stallScan = false
+        return scanGate.promise.then(() => redis.storage.get(key))
+      }
+      return redis.storage.get(key)
+    },
+    async eval(script, input) {
+      if (input.keys[1]?.startsWith('agent:group-memory:v1:state:') && input.arguments.length === 9 &&
+          input.arguments[2] === '1' && input.arguments[7] === '1') {
+        const previous = JSON.parse(input.arguments[3]).agents[0].teachingDone
+        const next = JSON.parse(input.arguments[8]).agents[0].teachingDone
+        if (!sawWriteWait && next.includes(writeId) && !previous.includes(writeId)) {
+          sawWriteWait = true
+          await writeGate.promise
+          lateWriteResult = await redis.storage.eval(script, input)
+          return lateWriteResult
+        }
+        if (!sawAckWait && next.includes(ackId) && !previous.includes(ackId)) {
+          const result = await redis.storage.eval(script, input)
+          if (result !== 1) return result
+          sawAckWait = true
+          await ackGate.promise
+          return result
+        }
+      }
+      return redis.storage.eval(script, input)
+    },
+  }
+  const binding = directory().resolve(group), store = createGroupMemoryStore(redis.storage)
+  const readState = () => store.load(groupMemoryId(group))
+  const members = ['speaker-a', 'target-a'].map(id => ({ user: actor(group, id), displayName: id, role: 'member' }))
+  let clock = Date.now()
+  const runtime = createGroupMemory({
+    redis: storage, now: () => clock, memory: createPersonMemoryStore({ redis: storage, now: () => clock }),
+    config: () => ({ enabled: true }), isRunning: () => true, allowsText: () => true, available: () => true,
+    resolve: () => ({ binding, viewer: { botId: personMemoryAddress(group).botId, personaId: 'agent:daily', personaVersion: 'fixture', personaName: '群记忆测试' } }),
+    botUserId: () => 'bot-a',
+    async members(target) { return { target, members, complete: true, observedAt: Date.now() } },
+    async member(target, id) { return { target, member: members.find(row => row.user.id === id), observedAt: Date.now() } },
+    async isRecalled(_target, id) {
+      if (id === sourceId && sourceReads !== undefined && ++sourceReads === 2) {
+        sawSourceWait = true
+        await sourceGate.promise
+      }
+      return false
+    },
+    async begin() { return { signal: new AbortController().signal, isCurrent: () => true, release() {} } },
+    async model(input) {
+      const { messageId, text } = input.messages[0]
+      const first = !calls.includes(messageId)
+      calls.push(messageId)
+      if (first && messageId === sourceId) sourceReads = 0
+      if (first && messageId === modelId) await modelGate.promise
+      return propose(input, text)
+    },
+    diagnostics: { emit: event => events.push(event) }, logger: { warn() {} },
+  })
+  const guard = () => true
+  try {
+    for (const messageId of [modelId, sourceId, writeId, ackId, nextId]) {
+      const text = '测试教学 ' + messageId
+      await runtime.capture({ version: 1, conversation: group, sender: actor(group), messageId, occurredAt: ++clock,
+        text, parts: [{ kind: 'text', text }], mentions: [targetActor(group)] }, binding, guard)
+    }
+    for (const id of [modelId, sourceId, writeId, ackId]) await runtime.prepare(binding, id, guard)
+    await waitFor(() => sawSourceWait && sawWriteWait && sawAckWait, 'all four jobs stalled')
+
+    stallScan = true
+    const sweep = runtime.tick()
+    await runtime.prepare(binding, nextId, guard)
+    assert.deepEqual(calls, [modelId, sourceId, writeId, ackId])
+    assert.ok((await readState()).agents[0].jobs.some(job => job.messages[0].messageId === nextId && job.attempts === 0))
+    expireScan()
+    await sweep
+    assert.ok(events.some(event => event.code === 'group_memory_queue_timeout'))
+    scanGate.resolve()
+
+    assert.equal(expireJobs.length, 4)
+    clock += 35_000
+    for (const expire of expireJobs.slice()) expire()
+    await waitFor(() => events.filter(event => ['group_learning_timeout', 'group_learning_save_unconfirmed'].includes(event.code)).length === 4,
+      'each stalled job reports a deadline')
+    assert.equal(events.filter(event => event.outcome === 'unknown' && event.code === 'group_learning_save_unconfirmed').length, 2)
+    await runtime.tick()
+    await waitFor(async () => (await readState()).entries.some(entry => entry.source.messageId === nextId), 'next job saves after the stalled jobs release their slots')
+    assert.equal(calls.filter(id => id === ackId).length, 1)
+
+    writeGate.resolve()
+    await waitFor(() => lateWriteResult === 0, 'stale save cannot overwrite newer queue state')
+    assert.equal((await readState()).entries.filter(entry => entry.source.messageId === ackId).length, 1)
+  } finally {
+    for (const gate of [modelGate, sourceGate, writeGate, ackGate, scanGate]) gate.resolve()
+    await runtime.stop()
+  }
 })
 
 test('a failed consensus persists its original sources and retries after restart without resending the confirmed reply', redisTest, async t => {
