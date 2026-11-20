@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { types } from 'node:util'
 import WebSocket from 'ws'
 import type { ConversationAddress, PlatformConnection, PlatformUserRef } from '../contracts/agentBinding.js'
+import { QQ_OWNER_ALERT_MAX_LENGTH } from '../contracts/agentDiagnostics.js'
 import type { DeliveryReceipt } from '../contracts/delivery.js'
 import type { ConversationMember, ConversationMemberProfile, ConversationMemberReadOptions, ForwardContent, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
 import type { MessageActionOptions } from '../contracts/platformMessage.js'
@@ -462,7 +463,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
   }
 
   async function sendOwnerAlert(text: string, guard: OwnerAlertGuard): Promise<DeliveryReceipt> {
-    if (!alertTarget || !text || text.length > 3_000) return { state: 'failed', code: 'owner_alert_invalid' }
+    if (!alertTarget || !text || text.length > QQ_OWNER_ALERT_MAX_LENGTH) return { state: 'failed', code: 'owner_alert_invalid' }
     const client = socket
     const current = () => {
       try {

@@ -166,10 +166,44 @@ test('QQ retries a definite failure, logs unknown delivery and does not replay i
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(batches.length, 2)
   assert.deepEqual(batches[0], batches[1])
-  assert.match(formatQqOwnerAlerts(batches[1]), /provider_http 失败 · 1 次\nhttp_error · HTTP 503 · Error\ntrace /)
+  assert.match(formatQqOwnerAlerts(batches[1]), /请求模型服务失败，共 1 次\n外部服务暂时不可用。\n错误码 http_error · HTTP 状态 503 · 操作标识 provider_http\n追踪编号 /)
   assert.doesNotMatch(formatQqOwnerAlerts(batches[1]), /private model response/)
   assert.match(logs[0], /qq_delivery_failed owner_alert_unavailable/)
   assert.match(logs[1], /qq_delivery_unknown batch=/)
+})
+
+test('QQ alerts explain known failures and handle unknown or redacted diagnostics in Chinese', () => {
+  const common = { firstAt: 1000, lastAt: 1000, count: 1 }
+  const text = formatQqOwnerAlerts({ version: 1, id: 'batch', alerts: [
+    { ...common, stage: 'model', operation: 'simulation_wake_gate', outcome: 'failed', code: 'wake_gate_timeout', traceId: 'wake-trace', count: 2 },
+    { ...common, stage: 'model', operation: 'conversation_summary', outcome: 'failed', code: 'http_error', httpStatus: 429 },
+    { ...common, stage: 'delivery', operation: 'send_send', outcome: 'unknown' },
+    { ...common, stage: 'runtime', operation: 'host_log', outcome: 'failed', code: 'runtime_warning' },
+    { ...common, stage: 'tool', operation: 'toString', outcome: 'failed', code: 'constructor', errorKind: 'TimeoutError' },
+    { ...common, stage: 'runtime', operation: 'redacted', outcome: 'failed', code: 'redacted' },
+  ] })
+  assert.match(text, /^【助手运行告警】\n\n唤醒预判失败，共 2 次\n唤醒预判未在规定时间内完成。\n错误码 wake_gate_timeout · 操作标识 simulation_wake_gate\n追踪编号 wake-trace/u)
+  assert.match(text, /会话摘要失败，共 1 次\n服务限制了请求频率或额度。\n错误码 http_error · HTTP 状态 429/u)
+  assert.match(text, /发送消息结果待确认，共 1 次\n暂时无法确认操作是否完成。/u)
+  assert.match(text, /后台运行出现警告，共 1 次\n后台报告了警告，详情见运行日志。/u)
+  assert.match(text, /工具执行失败，共 1 次\n等待操作完成超时。\n错误码 constructor · 操作标识 toString/u)
+  assert.doesNotMatch(text, /TimeoutError|redacted/u)
+})
+
+test('a full QQ batch keeps explanations and trace identifiers within the transport limit', async () => {
+  const { QQ_OWNER_ALERT_MAX_LENGTH } = await load('contracts/agentDiagnostics.js')
+  const alerts = Array.from({ length: 8 }, (_, i) => ({
+    stage: 'runtime', operation: 'a'.repeat(128), outcome: 'failed', code: 'b'.repeat(128),
+    traceId: String(i) + 'c'.repeat(127), count: Number.MAX_SAFE_INTEGER, httpStatus: 503, firstAt: 0, lastAt: 1,
+  }))
+  const text = formatQqOwnerAlerts({ version: 1, id: 'batch', alerts })
+  assert.ok(text.length <= QQ_OWNER_ALERT_MAX_LENGTH)
+  for (const alert of alerts) {
+    assert.ok(text.includes(`追踪编号 ${alert.traceId}`))
+    assert.ok(text.includes(`错误码 ${alert.code}`))
+  }
+  assert.equal(text.match(/外部服务暂时不可用。/gu).length, alerts.length)
+  assert.ok(!text.includes(alerts[0].operation))
 })
 
 test('standalone startup sends a configuration error before Redis opens, and check mode only validates the destination', async t => {
