@@ -1,6 +1,7 @@
 import type { ConversationSummaryModel } from '../../../contracts/conversationMemory.js'
 import type { PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
 import { resolveChatCompletionUrl } from '../../models/domain/chatCompletionUrl.js'
+import { glmFlashJsonOptions } from '../../models/domain/modelGateway.js'
 import { safeTruncateUnicode } from '../../models/domain/unicodeText.js'
 import { describeMemoryTime, finiteTimestamp } from './engine/temporalContext.js'
 
@@ -16,6 +17,11 @@ export interface AgentConversationSummaryOptions {
 
 const MAX_RESPONSE_BYTES = 512 * 1024
 const FAILURE = '会话主线摘要失败：请求已取消、授权失效或模型服务不可用。'
+export class AgentConversationSummaryError extends Error {
+  constructor(readonly code: 'provider_timeout' | 'provider_transport_error' | 'http_error' | 'model_response_invalid', readonly httpStatus?: number) {
+    super(FAILURE)
+  }
+}
 const SUMMARY_SYSTEM_PROMPT = `你是会话主线摘要器。把“已有摘要”与“新增会话记录”合并成一份主线摘要，给一个稍后回来的人补上“最近在聊什么”的上下文。
 要求：
 - 保留正在进行的话题、谁在参与、未说完的事、重要决定、反复出现的梗
@@ -110,10 +116,12 @@ export function createAgentConversationSummary(options: AgentConversationSummary
   const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Math.min(30_000, Math.floor(options.timeoutMs!))) : 30_000
   return async (input, context) => {
     let response: Response | undefined
+    let signal: AbortSignal | undefined
+    let waitingForHeaders = false
     const lifecycle = new AbortController()
     try {
       if (!context) throw new Error(FAILURE)
-      const signal = AbortSignal.any([context.signal, lifecycle.signal, AbortSignal.timeout(timeoutMs)])
+      signal = AbortSignal.any([context.signal, lifecycle.signal, AbortSignal.timeout(timeoutMs)])
       assertCurrent(context, signal)
       const endpoint = new URL(options.baseUrl)
       if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
@@ -134,13 +142,15 @@ export function createAgentConversationSummary(options: AgentConversationSummary
       }
       if (hasSecret(JSON.stringify(material), secrets) || containsSecret(material, secrets)) throw new Error(FAILURE)
       await ensureCurrent(context, signal)
+      waitingForHeaders = true
       response = await abortable((options.fetchImpl ?? fetch)(url, {
         method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: options.name, messages: [
           { role: 'system', content: SUMMARY_SYSTEM_PROMPT }, { role: 'user', content: JSON.stringify(material) },
-        ], stream: false, temperature: 0.2, max_tokens: Math.min(8000, maxChars * 2) }),
+        ], stream: false, temperature: 0.2, max_tokens: Math.min(8000, maxChars * 2), ...glmFlashJsonOptions(endpoint, options.name) }),
       }), signal)
+      waitingForHeaders = false
       assertCurrent(context, signal)
       if (response.redirected) throw new Error(FAILURE)
       const result = await readResponse(response, signal)
@@ -158,7 +168,11 @@ export function createAgentConversationSummary(options: AgentConversationSummary
       const summary = safeTruncateUnicode(content.trim(), maxChars)
       await ensureCurrent(context, signal)
       return summary
-    } catch { throw new Error(FAILURE) }
+    } catch {
+      if (response && !response.ok) throw new AgentConversationSummaryError('http_error', response.status)
+      if (signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError') throw new AgentConversationSummaryError('provider_timeout')
+      throw new AgentConversationSummaryError(waitingForHeaders ? 'provider_transport_error' : 'model_response_invalid')
+    }
     finally {
       lifecycle.abort()
       void response?.body?.cancel().catch(() => {})

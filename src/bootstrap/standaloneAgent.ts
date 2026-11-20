@@ -563,7 +563,7 @@ export async function main(argv: string[]): Promise<void> {
     const summaryBackend = config.midtermSummary
     const summarizeConversation = summaryBackend && createAgentConversationSummary({
       baseUrl: summaryBackend.apiUrl, name: summaryBackend.model, apiKey: summaryBackend.apiKey,
-      secrets: hostSecrets, fetchImpl: observeModelFetch('summary_provider_http'),
+      secrets: hostSecrets,
     })
     const groupMemoryBackend = config.groupMemoryExtraction
     const groupMemoryModel = groupMemoryBackend && createAgentGroupMemoryModel({

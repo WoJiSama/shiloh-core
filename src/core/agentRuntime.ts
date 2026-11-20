@@ -2051,16 +2051,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     ...(options.summarizeConversation ? { summarize: options.summarizeConversation } : {}),
     resolve(target) {
       if (!isRunning() || !conversationEnabled(target)) return undefined
-      const selected = bindingFor(target)
-      if (!selected) return undefined
-      return { binding: selected.binding, viewer: createPersonaSnapshot({ botId: personMemoryAddress(target).botId,
-        personaId: agentPersonaScopeId(selected.binding.agentId), persona: { ...selected.persona, name: String(selected.persona.name ?? '') },
-        systemContent: selected.systemContent, binding: selected.binding }) }
+      const binding = bindingFor(target)?.binding
+      return binding && { binding }
     },
     available: target => isRunning() && allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
     privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, begin: beginMemoryTurn,
+    ...(options.observeExecutionCurrent ? { observeCurrent } : {}),
     isRunning, allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
-    logger, ...(options.recordTokens ? { recordUsage: options.recordTokens } : {}), ...(options.now ? { now: options.now } : {}),
+    logger, diagnostics, ...(options.recordTokens ? { recordUsage: options.recordTokens } : {}), ...(options.now ? { now: options.now } : {}),
   })
   const conversationMemoryCleanup: AgentConversationMemoryCleanup = Object.freeze({
     async purgeSubject(input: AgentConversationMemoryPurgeSubject, authority: AgentConversationMemoryCleanupGuard): Promise<AgentConversationMemoryCleanupReceipt> {
