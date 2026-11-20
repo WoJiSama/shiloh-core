@@ -170,26 +170,34 @@ test('frozen implicit archives require the receiving event, role interval, and b
     sender: { ...f.selected.sender, user_id: sender }, event_id: `v1:${account.id}:message:group:${target.id}:${id}`, ...extra })
   const valid = original('10')
   const rows = [valid, original('11', author, { timestamp: at - 2000 }), original('12', author, { event_id: `v1:19008826:message:group:${target.id}:12` }),
-    original('13', '3308828'), original('14', '3308829'), original('15', author, { recalled: true })]
+    original('13', '3308828'), original('14', '3308829'), original('15', author, { recalled: true }),
+    original('16', '3308830'), original('17', '3308831')]
   const fixtureBytes = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
   const archiveFile = path.join(archiveDir, '2026-11-17.ndjson')
   await writeFile(archiveFile, fixtureBytes)
   await runNode('tar', ['-czf', path.join(backup, 'legacy-config-data.tar.gz'), '-C', source, 'config', 'data'])
   await frozen.set(`ytbot:mem:g:${target.id}:meta`, JSON.stringify({ optedOut: ['3308828'] }))
-  await frozen.save()
+  await frozen.sendCommand(['SAVE'])
   await copyFile(path.join(path.dirname(frozen.options.socket.path), 'dump.rdb'), path.join(backup, 'redis.rdb'))
   const key = JSON.stringify(['shiloh', account.platform, account.namespace, account.id, target.kind, target.id])
   await f.reader.set(`${f.prefix}ytbot:mem:g:agent:${encodeURIComponent(key)}:meta`, JSON.stringify({ optedOut: ['3308829'] }))
+  const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+  const lastForget = subject => {
+    const selector = { agent: digest('shiloh'), account: digest(JSON.stringify([account.platform, account.namespace, account.id])), subject: digest(subject) }
+    return JSON.stringify({ version: 1, entries: [{ ...selector, id: digest(selector), through: at }] })
+  }
+  await f.reader.set(f.prefix + 'agent:history:v1:cleanup', lastForget('3308830'))
+  await f.reader.set(f.prefix + 'agent:semantic-memory:v1:cleanup', lastForget('3308831'))
   await f.reader.set(f.prefix + 'agent:host-lease', 'preview-live-lease')
   const flags = ['--config', f.configFile, '--migrate-legacy-group-archive', '--backup-dir', backup, '--connection', connectionId]
   const before = await f.snapshot(), preview = report(await f.run(flags))
   assert.equal(preview.mode, 'preview')
   const [group] = preview.groups
-  assert.equal(group.scanned, 6)
+  assert.equal(group.scanned, 8)
   assert.equal(group.imported, 1)
   assert.equal(group.semanticSources, 1)
   assert.equal(group.skipped.identity, 2)
-  assert.equal(group.skipped.privacy, 2)
+  assert.equal(group.skipped.privacy, 4)
   assert.equal(group.skipped.recalled, 1)
   assert.deepEqual(await f.snapshot(), before)
   rejected(await f.run([...flags, '--apply']))

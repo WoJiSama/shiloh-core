@@ -6,7 +6,8 @@ import type { AgentBindingSnapshot } from '../contracts/agentBinding.js'
 import type { AgentHistoryConfig } from '../contracts/agentHistory.js'
 import { qqId, validateQqBindingAddress } from '../adapters/qqIdentity.js'
 import { agentConversationKey, agentPersonaScopeId, conversationAddressKey, decodeAgentConversationKey } from '../modules/runtime/domain/agentBindings.js'
-import { agentHistoryId, createAgentHistoryStore, type AgentHistoryRow } from '../modules/memory/infrastructure/agentHistoryStore.js'
+import { agentHistoryId, createAgentHistoryStore, AGENT_HISTORY_CLEANUP_KEY, type AgentHistoryRow } from '../modules/memory/infrastructure/agentHistoryStore.js'
+import { conversationCleanupAllows, parseConversationCleanup } from '../modules/memory/infrastructure/conversationMemoryCleanup.js'
 import { parseSemanticCleanup, semanticCleanupAllows, SEMANTIC_CLEANUP_KEY } from '../modules/memory/infrastructure/agentSemanticMemoryCleanup.js'
 import { createPersonMemoryStore } from '../modules/memory/infrastructure/personMemoryStore.js'
 import { personMemoryAddress } from '../modules/memory/infrastructure/personMemoryContext.js'
@@ -268,9 +269,11 @@ export async function stageStandaloneAgentArchiveMigration(options: StandaloneAg
     await store.getRedactions({ identity, subjectId: binding.target.id })
   }
   const id = agentHistoryId(binding), stateKey = `agent:history:v1:state:${id}`
+  const historyCleanup = parseConversationCleanup(await read(prefix + AGENT_HISTORY_CLEANUP_KEY))
   const history = createAgentHistoryStore({ get: key => read(prefix + key),
     async eval(_script, args) {
-      if (args.arguments.length || args.keys.length !== 2) fail('历史校验器不得执行写操作')
+      if (args.arguments.length || args.keys.length !== 3 || args.keys[0] !== CATALOG ||
+          args.keys[1] !== stateKey || args.keys[2] !== AGENT_HISTORY_CLEANUP_KEY) fail('历史校验器不得执行写操作')
       return Promise.all(args.keys.map(key => read(prefix + key)))
     } })
   const existing = await history.read(id), catalog = await history.listScopes()
@@ -316,7 +319,8 @@ export async function stageStandaloneAgentArchiveMigration(options: StandaloneAg
       for (const base of ['', prefix]) if (await read(base + key) === '1') blocked = 'recalled'
     }
     if (row) {
-      if (disabled || optedOut.has(row.authorId) || semanticCleanup && !semanticCleanupAllows(binding, row, semanticCleanup)) blocked = 'privacy'
+      if (disabled || optedOut.has(row.authorId) || !conversationCleanupAllows(binding, row, historyCleanup) ||
+          semanticCleanup && !semanticCleanupAllows(binding, row, semanticCleanup)) blocked = 'privacy'
       const source = { scene, authorId: row.authorId, messageId: mid, at: row.at, excerpt: row.text }
       for (const [store, owner] of [[sourceMemory, sourceIdentity], [targetMemory, identity]] as const) {
         if (isPersonMemoryRedacted(source, row.text, await store.getRedactions({ identity: owner, subjectId: row.authorId }))) blocked = 'privacy'

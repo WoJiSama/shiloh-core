@@ -33,7 +33,8 @@ interface AgentHistoryRedis {
 
 const PREFIX = 'agent:history:v1'
 const CATALOG_KEY = `${PREFIX}:catalog`
-const CLEANUP_KEY = `${PREFIX}:cleanup`
+export const AGENT_HISTORY_CLEANUP_KEY = `${PREFIX}:cleanup`
+const CLEANUP_KEY = AGENT_HISTORY_CLEANUP_KEY
 const MAX_STATES = 200
 const MAX_ROWS = 2000
 const MAX_ATTEMPTS = 20
