@@ -55,7 +55,7 @@ function fixture({
   getStyleDigest, readSemanticMemory, getSemanticRecall, readConversationMemory, readGroupMemory, wakeGateJudge,
   recordGroupReply, recordEpisode,
   getSelf, handlesTarget, messageActions, getTodaySpendCny, durableIngress, isAccountReady, readFault,
-  describeImages, fetchImageBase64, getForwardContent, diagnostics, rawModel, failureNoticeFallback, ephemeralTools = false, withDiagnosticScope, logger,
+  describeImages, fetchImageBase64, getForwardContent, allowsToolInput, diagnostics, rawModel, failureNoticeFallback, ephemeralTools = false, withDiagnosticScope, logger,
 } = {}) {
   if (seed) for (const groupId of groups) if (!kv.has(sessionKey(groupId))) seedSession(kv, groupId, botId, clock)
   const calls = []
@@ -120,6 +120,7 @@ function fixture({
     ...(describeImages ? { describeImages } : {}),
     ...(fetchImageBase64 ? { fetchImageBase64 } : {}),
     ...(getForwardContent ? { getForwardContent } : {}),
+    ...(allowsToolInput ? { allowsToolInput } : {}),
     getExtraTools: names => toolDefinitions.filter(tool => names.includes(tool.name)),
     async YTapi(request) {
       calls.push(structuredClone(request))
@@ -353,6 +354,50 @@ test('failed host tools remain one execution and return to the main model before
 })
 
 
+test('finish preflight reports fixed rejection reasons to QQ and allows a corrected call', async t => {
+  const params = { choice: 'chat', reason: '群聊收尾', messages: ['修改后成功发送'] }
+  const invalidJson = toolCall('simFinishTurn', params)
+  invalidJson.function.arguments = '{"reason":'
+  const cases = [
+    { code: 'tool_arguments_invalid', cause: /有效 JSON 对象/u, message: tools(invalidJson) },
+    { code: 'tool_schema_invalid', cause: /不符合工具声明/u, message: tools(toolCall('simFinishTurn', { ...params, reason: '' })) },
+    { code: 'tool_content_blocked', cause: /触发了宿主出站内容检查/u, message: tools(toolCall('simFinishTurn', { ...params, reason: 'fixture-private-value' })) },
+    { code: 'finish_read_range_invalid', cause: /throughSeq 超出本轮已读范围/u, message: tools(toolCall('simFinishTurn', { ...params, throughSeq: 999 })) },
+    { code: 'finish_reply_reference_invalid', cause: /replyToSeq 没有指向有效的近期消息/u, message: tools(toolCall('simFinishTurn', { ...params, replyToSeq: 999 })) },
+    { code: 'finish_messages_missing', cause: /需要把正文放进 messages/u,
+      message: { ...tools(toolCall('simFinishTurn', { choice: 'chat', reason: '群聊收尾' })), content: '这一段正文在工具参数外。' } },
+  ]
+  for (const { code, cause, message } of cases) {
+    await t.test(code, async t => {
+      const rows = [], batches = []
+      const alerts = createAgentFailureAlerts({ channel: 'qq', logger: { error() {} },
+        async deliver(batch) { batches.push(batch); return { state: 'confirmed' } },
+      })
+      const diagnostics = createAgentDiagnostics({
+        sink: { async append(row) { rows.push(row); return true } },
+        logger: { info() {}, warn() {}, error() {} }, onFailure: alerts.report,
+      })
+      const h = fixture({ diagnostics, logger: diagnostics.logger, allowsToolInput: value => !value.includes('fixture-private-value'),
+        script: (_request, index) => index === 0 ? message : tools(toolCall('simFinishTurn', params)) })
+      t.after(async () => { h.runtime.stop(); await diagnostics.flush(); await alerts.close() })
+      await h.ingest()
+      await settled(h, 2)
+      await diagnostics.flush()
+      await alerts.close()
+      assert.equal(h.calls.length, 2)
+      assert.equal(h.sent.length, 1)
+      assert.ok(JSON.stringify(h.sent[0]).includes(params.messages[0]))
+      const finishRows = rows.filter(row => row.operation === 'simFinishTurn')
+      assert.deepEqual(finishRows.map(row => [row.outcome, row.code]), [['failed', code], ['started', undefined], ['succeeded', 'completed']])
+      const text = batches.map(formatQqOwnerAlerts).join('\n')
+      assert.match(text, cause)
+      assert.ok(text.includes(`错误码 ${code}`))
+      assert.ok(text.includes(`追踪编号 ${finishRows[0].traceId}`))
+      assert.doesNotMatch(JSON.stringify({ rows, batches, text }), /fixture-private-value|这一段正文在工具参数外|修改后成功发送/u)
+    })
+  }
+})
+
 test('failed closing validation or review cannot be bypassed by a later failure explanation', async t => {
   for (const mode of ['parameters', 'review']) {
     const diagnostics = spy(), h = fixture({ diagnostics, consistencyEnabled: mode === 'review',
@@ -384,11 +429,13 @@ test('ephemeral tool reads stay inside the original model chain without an addit
 test('tool round exhaustion records a terminal diagnostic and attempts one tool-free persisted explanation', async t => {
   const diagnostics = spy(), h = fixture({ diagnostics, maxToolRounds: 4,
     rawModel(request, index) {
-      if (index < 4) return { choices: [{ message: tools(toolCall('missingTool', {})) }] }
+      if (index < 4) return { choices: [{ message: tools(toolCall('privateToolIdentifier123', {})) }] }
       assert.deepEqual(request.tools, []); assert.equal(request.tool_choice, 'none'); return reply(notice)
     } })
   t.after(() => h.runtime.stop()); await h.ingest(); await settled(h, 5)
   assert.equal(h.calls.length, 5); assert.equal(h.events.length, 0); assert.equal(h.sent.length, 1)
+  assert.ok(diagnostics.events.some(row => row.operation === 'simulation_tool' && row.outcome === 'failed' && row.code === 'tool_not_available'))
+  assert.doesNotMatch(JSON.stringify(diagnostics.events), /privateToolIdentifier123/u)
   assert.ok(diagnostics.events.some(row => row.operation === 'simulation_turn' && row.code === 'tool_budget_exhausted' && row.outcome === 'failed'))
 })
 

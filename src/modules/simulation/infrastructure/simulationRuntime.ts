@@ -344,6 +344,8 @@ interface SimTransportReceipt {
   unknown?: boolean
 }
 
+interface SimulationToolObservation { failureReported?: boolean }
+
 interface PendingWake { timer: ReturnType<typeof setTimeout>; reason: SimWakeReason; bindingToken: string | undefined }
 interface CommitmentExecution {
   options: CommitmentRunOptions
@@ -627,13 +629,22 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     }
   }
 
+  // Pass only names of installed tools; a rejected call can carry arbitrary model text.
+  const toolOperation = (name?: string) => name && /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(name) ? name : 'simulation_tool'
+
+  function rejectToolCall(name: string | undefined, code: string, reply: string, observed?: SimulationToolObservation, error?: unknown): string {
+    diagnose({ stage: 'tool', operation: toolOperation(name), outcome: 'failed', code, ...(error === undefined ? {} : { error }) })
+    if (observed) observed.failureReported = true
+    return reply
+  }
+
   /** 工具执行统一包装：事件含 reply 绑定（文本段/段数组归一 + message_id 回执） */
-  async function runSimTool(tool: AbstractTool, args: Record<string, unknown>, event: AgentBindingTurn, observed?: { terminalText?: string }): Promise<string> {
-    const started = Date.now(), operation = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(tool.name ?? '') ? tool.name! : 'simulation_tool'
+  async function runSimTool(tool: AbstractTool, args: Record<string, unknown>, event: AgentBindingTurn, observed?: SimulationToolObservation): Promise<string> {
+    const started = Date.now(), operation = toolOperation(tool.name)
     if (event._isAgentBindingCurrent?.() === false) {
       const text = 'error: 工具所属回合已失效，未执行'
       diagnose({ stage: 'tool', operation, outcome: 'cancelled', code: 'conversation_activity_revoked' })
-      if (observed) observed.terminalText = text
+      if (observed) observed.failureReported = true
       return text
     }
     diagnose({ stage: 'tool', operation, outcome: 'started' })
@@ -641,15 +652,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const result = await tool.execute(args, event)
       const text = typeof result === 'string' ? result : JSON.stringify(result) ?? 'null', status = classifyCharacterResult(text)
       diagnose({ stage: 'tool', operation, outcome: status, code: status === 'succeeded' ? 'completed' : `returned_${status}`, durationMs: Date.now() - started })
-      if (observed && status !== 'succeeded') observed.terminalText = text
+      if (observed && status !== 'succeeded') observed.failureReported = true
       return text
     } catch (error) {
       const uncertain = error && typeof error === 'object' && 'uncertain' in error && error.uncertain === true
       diagnose({ stage: 'tool', operation, outcome: uncertain ? 'unknown' : 'failed', code: 'tool_threw', error, durationMs: Date.now() - started })
+      if (observed) observed.failureReported = true
       if (uncertain) return JSON.stringify({ kind: 'tool_outcome', status: 'unknown', error: { message: safeToolErrorText(String(tool.name || ''), error) } })
-      const text = safeToolErrorText(String(tool.name || ''), error)
-      if (observed) observed.terminalText = text
-      return text
+      return safeToolErrorText(String(tool.name || ''), error)
     }
   }
 
@@ -3148,12 +3158,15 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             return signal.aborted ? 'unclear' : readSocialVerdict(action, triggerMessage.text, response)
           } catch { return 'unclear' }
         }
-        const executeTool = async (tool: AbstractTool, args: Record<string, unknown> | undefined, observed?: { terminalText?: string }, textOutsideTool = false) => {
-          if (turnClosed) return 'error: 回合已结束，未执行'
-          if (requiresClosing && tool !== finishTool) return 'error: 已进入收尾阶段，仅允许 simFinishTurn，未执行'
+        const executeTool = async (tool: AbstractTool, args: Record<string, unknown> | undefined, observed?: SimulationToolObservation, textOutsideTool = false) => {
+          const reject = (code: string, reply: string, error?: unknown) => rejectToolCall(tool.name, code, reply, observed, error)
+          const executionUnavailable = (error: unknown) => reject('tool_execution_guard_failed', safeToolErrorText(tool.name, error), error)
+          const resultUnavailable = (error: unknown) => reject('tool_result_guard_failed', safeToolErrorText(tool.name, error), error)
+          if (turnClosed) return reject('tool_turn_closed', 'error: 回合已结束，未执行')
+          if (requiresClosing && tool !== finishTool) return reject('tool_closing_only', 'error: 已进入收尾阶段，仅允许 simFinishTurn，未执行')
           if (!args) {
             if (tool === finishTool) requiresClosing = true
-            return 'error: 工具参数必须是有效的 JSON 对象，未执行'
+            return reject('tool_arguments_invalid', 'error: 工具参数必须是有效的 JSON 对象，未执行')
           }
           const ephemeralTool = extraTools.includes(tool) && tool.agentDataPolicy === 'ephemeral'
           if (ephemeralRead) {
@@ -3161,27 +3174,29 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             // not turn it (or a model paraphrase) into durable role state/actions.
             if (tool === finishTool) {
               if (args.goal !== undefined || Array.isArray(args.memories) && args.memories.length ||
-                  typeof args.choice === 'string' && ['schedule', 'wait', 'complete', 'abandon'].includes(args.choice)) return `error: 本轮${historyRead ? '历史' : '文件'}资料仅供临时查证，不能保存为记忆、目标或派生作品；请回复或安静收尾`
+                  typeof args.choice === 'string' && ['schedule', 'wait', 'complete', 'abandon'].includes(args.choice)) {
+                return reject('tool_ephemeral_context_restricted', `error: 本轮${historyRead ? '历史' : '文件'}资料仅供临时查证，不能保存为记忆、目标或派生作品；请回复或安静收尾`)
+              }
             } else if (!ephemeralTool && !['chatHistoryTool', 'excelWorkbookTool', 'simSendMessage', 'simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simMarkRead'].includes(tool.name)) {
-              return `error: 本轮${historyRead ? '历史' : '文件'}资料仅供临时查证，请继续查询或回复，不保存派生状态或执行其他动作`
+              return reject('tool_ephemeral_context_restricted', `error: 本轮${historyRead ? '历史' : '文件'}资料仅供临时查证，请继续查询或回复，不保存派生状态或执行其他动作`)
             }
           }
           if (!requiresClosing && tool === finishTool && Array.isArray(args.memories) &&
             args.memories.some(memory => record(memory).kind === 'pendingEvent' || record(memory).kind === 'interaction')) {
-            return 'error: 本群社交记忆未保存。请先单独调用 simRemember 保存 pendingEvent 或 interaction，成功后再用 simFinishTurn 收尾。'
+            return reject('finish_social_memory_requires_remember', 'error: 本群社交记忆未保存。请先单独调用 simRemember 保存 pendingEvent 或 interaction，成功后再用 simFinishTurn 收尾。')
           }
-          if (!allowedTool(tool.name)) return 'error: 自主执行主体没有此工具权限，不能借用群友身份'
+          if (!allowedTool(tool.name)) return reject('tool_authority_denied', 'error: 自主执行主体没有此工具权限，不能借用群友身份')
           const event = makeToolEvent()
           if (tool.agentPreflight) {
             try {
               const error = tool.agentPreflight(args, event)
-              if (error !== undefined) return `error: ${error}`
-            } catch (error) { return safeToolErrorText(tool.name, error) }
+              if (error !== undefined) return reject('tool_preflight_rejected', `error: ${error}`)
+            } catch (error) { return reject('tool_preflight_failed', safeToolErrorText(tool.name, error), error) }
           } else if (internalSchemaTools.has(tool)) {
             const input = prepareSimulationToolInput(tool, args, event)
             if (typeof input === 'string') {
               if (tool === finishTool) requiresClosing = true
-              return `error: ${input}`
+              return reject('tool_schema_invalid', `error: ${input}`)
             }
             args = input
           }
@@ -3189,14 +3204,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (textOutsideTool && args.choice === 'chat' && args.messages === undefined && actor.kind === 'user' &&
                 isDirectAddressKind(reason.kind) && sends === 0 && !nudgedForUnsent && rounds < cfg.turn.maxToolRounds) {
               nudgedForUnsent = true
-              return 'error: 回复正文写在工具参数外，群友看不到，且本次没有提交。请把想发送的正文写进 simFinishTurn 的 messages 再提交；选择安静收尾时无需发送。'
+              return reject('finish_messages_missing', 'error: 回复正文写在工具参数外，群友看不到，且本次没有提交。请把想发送的正文写进 simFinishTurn 的 messages 再提交；选择安静收尾时无需发送。')
             }
             // A failed save cannot subsequently fall through the ordinary-text sender.
             requiresClosing = true
             if (ephemeralRead) args = { ...args, reason: '本轮临时资料仅用于查证' }
           }
-          if (tool.name === 'simWorkerTask' && ports.characterWorkerAvailable?.() === false) return 'error: 工作器连接已停用'
-          try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
+          if (tool.name === 'simWorkerTask' && ports.characterWorkerAvailable?.() === false) return reject('tool_worker_unavailable', 'error: 工作器连接已停用')
+          try { await ensureExecution() } catch (error) { return executionUnavailable(error) }
           if (tool.name === 'simRemember') {
             proactiveSourceSeq = undefined
             if (args.kind === 'pendingEvent' && args.scope !== 'self' && actor.kind === 'user' && actor.userId &&
@@ -3207,7 +3222,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                 triggerMessage && state!.recent.some(message => message.seq === triggerMessage.seq)) {
                 proactiveSourceSeq = triggerMessage.seq
               }
-              try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
+              try { await ensureExecution() } catch (error) { return executionUnavailable(error) }
             }
           }
           const newGoal = tool === finishTool && args.choice === 'schedule' ? args.goal : tool.name === 'simGoal' && args.action === 'create' ? args : undefined
@@ -3215,17 +3230,25 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (await judgeSocial('goal', newGoal) !== 'own_goal') {
               // Nothing has been saved. Allow a valid chat or silent close.
               if (tool === finishTool) requiresClosing = false
-              return 'error: 此安排没有核实为角色自己的目标。社交问候用 simRemember；请正常聊天或安静收尾。'
+              return reject('tool_goal_not_authorized', 'error: 此安排没有核实为角色自己的目标。社交问候用 simRemember；请正常聊天或安静收尾。')
             }
-            try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
+            try { await ensureExecution() } catch (error) { return executionUnavailable(error) }
           }
-          if ((decision === 'silent' || decision === 'deferred') && ['simSendMessage', 'simShareVideoCard', 'simSendPoke', 'simQzoneInteract', 'sendLocalEmojiTool'].includes(tool.name)) return 'error: 本轮已选择沉默或暂缓'
-          if (tool === finishTool && Object.hasOwn(args, 'throughSeq') && (typeof args.throughSeq !== 'number' || !Number.isSafeInteger(args.throughSeq) || args.throughSeq < 0 || args.throughSeq > readThroughSeq(state!))) return 'error: throughSeq 超过了实际看过的范围或不是非负整数，本次未保存'
-          if (tool === finishTool && Object.hasOwn(args, 'replyToSeq') && (typeof args.replyToSeq !== 'number' || !Number.isSafeInteger(args.replyToSeq) || args.replyToSeq < 1 || ![...state!.unread, ...state!.recent].some(message => message.seq === args.replyToSeq))) return 'error: replyToSeq 不是近期消息的有效序号，本次未保存'
+          if ((decision === 'silent' || decision === 'deferred') && ['simSendMessage', 'simShareVideoCard', 'simSendPoke', 'simQzoneInteract', 'sendLocalEmojiTool'].includes(tool.name)) {
+            return reject('tool_decision_blocks_action', 'error: 本轮已选择沉默或暂缓')
+          }
+          if (tool === finishTool && Object.hasOwn(args, 'throughSeq') &&
+              (typeof args.throughSeq !== 'number' || !Number.isSafeInteger(args.throughSeq) || args.throughSeq < 0 || args.throughSeq > readThroughSeq(state!))) {
+            return reject('finish_read_range_invalid', 'error: throughSeq 超过了实际看过的范围或不是非负整数，本次未保存')
+          }
+          if (tool === finishTool && Object.hasOwn(args, 'replyToSeq') &&
+              (typeof args.replyToSeq !== 'number' || !Number.isSafeInteger(args.replyToSeq) || args.replyToSeq < 1 || ![...state!.unread, ...state!.recent].some(message => message.seq === args.replyToSeq))) {
+            return reject('finish_reply_reference_invalid', 'error: replyToSeq 不是近期消息的有效序号，本次未保存')
+          }
           const internal = tool === finishTool || characterTools.includes(tool) || ['simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simMarkRead', 'simWaitForMessages', 'simSetWakeConfig', 'simGetGroupMembers', 'simGetMessageImages', 'simGetForward'].includes(tool.name)
             || (['simRemember', 'simLifeThread'].includes(tool.name) && args.action === 'list')
           const activityRead = ['simWorkspace', 'simSubscription', 'simSharedSelf'].includes(tool.name) && ['list', 'read'].includes(String(args.action))
-          if (uncertainAction && !internal && !activityRead) return 'error: 前序外部动作结果未知，本回合不再执行外部动作，核实前禁止重复提交或发送'
+          if (uncertainAction && !internal && !activityRead) return reject('tool_prior_outcome_unknown', 'error: 前序外部动作结果未知，本回合不再执行外部动作，核实前禁止重复提交或发送')
           if (extraTools.includes(tool) && (ephemeralTool || tool.name === 'excelWorkbookTool' || ports.readHistory && tool.name === 'chatHistoryTool')) {
             // File reads (including failures and directory listings) must bypass
             // durable action receipts before the tool can expose any content.
@@ -3238,13 +3261,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             }
             const result = await runSimTool(tool, args, event, observed)
             if (tool.name === 'grabRedBagTool') ephemeralRead = unrelatedEphemeralRead = true
-            try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
+            try { await ensureExecution() } catch (error) { return resultUnavailable(error) }
             return result
           }
           if (internal) {
             const result = await runSimTool(tool, args, event, observed)
             if (['simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simGetMessageImages', 'simGetForward', 'simWaitForMessages'].includes(tool.name)) {
-              try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
+              try { await ensureExecution() } catch (error) { return resultUnavailable(error) }
             }
             exposeToolResult(tool.name, result.slice(0, 4000))
             return result
@@ -3254,12 +3277,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             character = await characters.update(characterScope, current => focusedGoalId
               ? beginCharacterGoalAction(current, focusedGoalId, { id, toolName: tool.name }, now(), focusedGoalRevision)
               : recordCharacterReceipt(current, { id, toolName: tool.name, status: 'pending', summary: '等待工具回执', at: now() }, now()))
-          } catch (error) { return safeToolErrorText(tool.name, error) }
+          } catch (error) { return reject('tool_receipt_not_prepared', safeToolErrorText(tool.name, error), error) }
           const pending = character.receipts.find(item => item.id === id)!
           // A cancellation arriving while persistence was pending must be observed before the external call.
           try { await ensureExecution() } catch (error) {
             character = await characters.update(characterScope, current => recordCharacterReceipt(current, { ...pending, status: 'failed', summary: '执行前已取消或授权变化，未调用工具', at: now() }, now()))
-            return safeToolErrorText(tool.name, error)
+            return executionUnavailable(error)
           }
           let reported: 'succeeded' | 'failed' | undefined
           const alreadyUnknown = memoryBox.deliveryUnknown
@@ -3477,16 +3500,16 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             const fn = record(callRecord.function)
             const name = String(fn.name || '')
             const tool = tools.find(t => t.name === name)
-            const observed: { terminalText?: string } = {}
+            const observed: SimulationToolObservation = {}
             let resultText: string
             if (turnClosed) {
-              resultText = 'error: 回合已结束，未执行'
+              resultText = rejectToolCall(tool?.name, 'tool_turn_closed', 'error: 回合已结束，未执行', observed)
             } else if (rejectedToolCalls.has(call)) {
-              resultText = 'error: 工具参数包含宿主禁止外发的内容，未执行'
+              resultText = rejectToolCall(tool?.name, 'tool_content_blocked', 'error: 工具参数包含宿主禁止外发的内容，未执行', observed)
             } else if (closing && name !== finishTool.name) {
-              resultText = 'error: 当前仅允许 simFinishTurn 收尾，未执行'
+              resultText = rejectToolCall(tool?.name, 'tool_closing_only', 'error: 当前仅允许 simFinishTurn 收尾，未执行', observed)
             } else if (!tool) {
-              resultText = `error: 未知工具 ${name}`
+              resultText = rejectToolCall(undefined, 'tool_not_available', `error: 未知工具 ${name}`, observed)
             } else {
               const maxChars = tool.agentPreflight ? undefined : internalSchemaTools.has(tool) ? SIMULATION_TOOL_INPUT_MAX_CHARS : Infinity
               const args = parseAgentToolArguments(fn.arguments, maxChars)
@@ -3496,7 +3519,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                 const lastAt = emojiLastSentAt.get(groupId) || 0
                 if (now() - lastAt < cooldownMs) {
                   const waitSec = Math.ceil((cooldownMs - (now() - lastAt)) / 1000)
-                  resultText = `error: 表情包冷却中（还要 ${waitSec} 秒）。请直接用文字回应，本回合不要再发表情。`
+                  resultText = rejectToolCall(tool.name, 'tool_emoji_cooldown',
+                    `error: 表情包冷却中（还要 ${waitSec} 秒）。请直接用文字回应，本回合不要再发表情。`, observed)
                 } else {
                   resultText = await executeTool(tool, args, observed)
                   if (!(typeof resultText === 'string' && resultText.startsWith('error:'))) emojiLastSentAt.set(groupId, now())
@@ -3542,8 +3566,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (managementTerminal || qqActionTerminal) { turnClosed = true; decision = 'silent'; break }
             if (resultText.startsWith('error:')) {
               executionError = '回合包含未完成的工具操作'; failureStage = 'tool'
-              if (observed.terminalText !== resultText) {
-                diagnose({ stage: 'tool', operation: /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(name) ? name : 'simulation_tool', outcome: 'failed', code: 'tool_reply_failed' })
+              if (!observed.failureReported) {
+                diagnose({ stage: 'tool', operation: toolOperation(tool?.name), outcome: 'failed', code: 'tool_reply_failed' })
               }
             }
           }
