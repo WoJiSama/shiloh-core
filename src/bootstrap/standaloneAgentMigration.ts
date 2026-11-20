@@ -619,6 +619,16 @@ for i, key in ipairs(KEYS) do
 end
 return 1`
 
+export async function commitStandaloneTransfer(redis: Pick<Redis, 'eval'>,
+  transferChecks: readonly { key: string; value: string | null; write?: string | null }[]) {
+  if (!transferChecks.some(check => check.write !== undefined)) return
+  const args = transferChecks.flatMap(({ value, write }) => [value === null ? 'missing' : 'value', value ?? '',
+    write === undefined ? 'keep' : write === null ? 'delete' : 'set', write ?? ''])
+  const result = Number(await redis.eval(transfer, { keys: transferChecks.map(check => check.key), arguments: args }))
+  if (result === -1) throw new Error('Redis 账号缺少迁移所需的账本写入权限')
+  if (result !== 1) throw new Error(changeError)
+}
+
 async function migrateStandaloneQqState(options: {
   redis: Redis
   instance: string
@@ -806,11 +816,7 @@ async function migrateStandaloneQqState(options: {
   const transferChecks = [...staged.values()]
   if (options.apply && transferChecks.some(check => check.write !== undefined)) {
     if (controls && dayKey(Date.now()) !== dayKey(now)) throw new Error('迁移期间跨过预算日期，请重新预览')
-    const args = transferChecks.flatMap(({ value, write }) => [value === null ? 'missing' : 'value', value ?? '',
-      write === undefined ? 'keep' : write === null ? 'delete' : 'set', write ?? ''])
-    const result = Number(await redis.eval(transfer, { keys: transferChecks.map(check => check.key), arguments: args }))
-    if (result === -1) throw new Error('Redis 账号缺少迁移所需的账本写入权限')
-    if (result !== 1) throw new Error(changeError)
+    await commitStandaloneTransfer(redis, transferChecks)
   }
   return { ...report, ...(teaching ? { groupTeaching: teaching.report } : {}), ...(deferred ? { deferredReminders: deferred.report } : {}),
     ...(archive ? { messageArchive: archive.report } : {}) }

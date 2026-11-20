@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { agentSemanticMemoryId, createAgentSemanticMemoryStore } from '../dist/backend/modules/memory/infrastructure/agentSemanticMemoryStore.js'
 import { agentConversationKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
+import { commitStandaloneTransfer } from '../dist/backend/bootstrap/standaloneAgentMigration.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
 
 const redisTest = { skip: !redisAvailable, timeout: 20_000 }
@@ -63,6 +64,30 @@ test('semantic sources and vectors survive store recreation with host-prefixed k
   assert.deepEqual(await restarted.list(), [])
   assert.deepEqual(await restarted.listScopes(), [])
   assert.equal(await f.store.update(input.id, () => undefined), true)
+})
+
+test('source import is read-only until CAS and a concurrent cleanup aborts the parent history commit', redisTest, async t => {
+  const f = await fixture(t, 'semantic-store-source-import')
+  const selected = scope(), id = agentSemanticMemoryId(selected)
+  const before = await f.store.planSourceImport(selected, [row(1), row(2, { authorId: 'another-author' }), row(3)], 2)
+  assert.equal(before.imported, 2)
+  assert.deepEqual(await f.store.list(), [])
+  const guard = { signal: new AbortController().signal, isCurrent: () => true, async ensureCurrent() {} }
+  await f.store.purgeSubject({ account: selected.target.account, agentId: selected.agentId,
+    target: selected.target, subjectId: 'real-author', through: epoch + 3 }, guard)
+  const witness = f.prefix + 'history-witness'
+  const commit = staged => commitStandaloneTransfer(f.reader, [
+    { key: witness, value: null, write: 'history' },
+    ...staged.checks.map(check => ({ ...check, key: f.prefix + check.key })),
+  ])
+  await assert.rejects(commit(before))
+  assert.equal(await f.reader.get(witness), null)
+  assert.deepEqual(await f.store.list(), [])
+  const after = await f.store.planSourceImport(selected, [row(1), row(2, { authorId: 'another-author' }), row(3)], 2)
+  assert.equal(after.imported, 1)
+  await commit(after)
+  assert.equal(await f.reader.get(witness), 'history')
+  assert.deepEqual((await f.store.read(id)).rows, [row(2, { authorId: 'another-author' })])
 })
 
 test('scope discovery reads only bounded catalog metadata without loading message or vector state bodies', redisTest, async t => {

@@ -108,7 +108,20 @@ export function createStandaloneAgentConsoleSemantic(options: {
   const handlers: Readonly<Record<string, NonNullable<AgentConsoleService['handle']>>> = {
     'semantic.read': async () => {
       const importReceipt = loadObject(path.join(root, 'manifest.json'))
-      return json({ enabled: options.enabled, legacyImported: importReceipt?.version === 1 })
+      const historyFile = path.join(archive, 'eval-history.ndjson')
+      const evaluations = checkedFile(historyFile, 4 * 1024 * 1024)
+        ? fs.readFileSync(historyFile, 'utf8').split('\n').filter(line => line.trim()).slice(-30).flatMap(line => {
+          try {
+            const row = JSON.parse(line) as Record<string, unknown>
+            const timestamp = typeof row.generatedAt === 'number' || typeof row.generatedAt === 'string'
+              ? new Date(row.generatedAt).getTime() : NaN
+            if (!Number.isFinite(timestamp)) return []
+            const metric = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null
+            return [{ at: timestamp, samples: metric(row.samples), vectorRecall: metric(row.recallAt5Vector),
+              hybridRecall: metric(row.recallAt5Hybrid), rerankRecall: metric(row.recallAt5Rerank) }]
+          } catch { return [] }
+        }).reverse() : []
+      return json({ enabled: options.enabled, legacyImported: importReceipt?.version === 1, evaluations })
     },
     'semantic.records': async (request, context) => {
       if (request.query.source === 'legacy') return archived(request, context)

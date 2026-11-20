@@ -30,7 +30,7 @@ import { createAgentModrinthTools } from '../modules/tools/infrastructure/agentM
 import { createAgentDeltaForceTools } from '../modules/games/infrastructure/agentDeltaForceTools.js'
 import { createAgentDeltaForceReportRenderer } from '../modules/games/infrastructure/agentDeltaForceReportRenderer.js'
 import { createAgentModrinthCardRenderer } from '../modules/media/infrastructure/agentModrinthCardRenderer.js'
-import { agentImageBackends, createAgentImageTools } from '../modules/tools/infrastructure/agentImageTools.js'
+import { createAgentImageTools } from '../modules/tools/infrastructure/agentImageTools.js'
 import { createAgentImageSearchTools } from '../modules/content/infrastructure/agentImageSearchTools.js'
 import { createAgentLocalEmojiRuntime } from '../modules/emoji/infrastructure/agentLocalEmojiRuntime.js'
 import { createAgentLifeThreadProvider } from '../modules/simulation/infrastructure/agentLifeThreadProvider.js'
@@ -45,9 +45,7 @@ import { createAgentBilibiliSearchProvider } from '../modules/media/infrastructu
 import { createAgentVideoSearchTools } from '../modules/media/infrastructure/agentVideoSearchTools.js'
 import { createAgentMagnetSearchProvider } from '../modules/media/infrastructure/agentMagnetSearchProvider.js'
 import { createAgentMagnetSearchTools } from '../modules/tools/infrastructure/agentMagnetSearchTools.js'
-import { standaloneMagnetSearchSecrets } from './standaloneMagnetSearch.js'
 import { createAgentPixivSearchProvider } from '../modules/media/infrastructure/agentPixivSearchProvider.js'
-import { standalonePixivToolsSecrets } from './standalonePixiv.js'
 import { openAgentMusicCookieStore } from './agentMusicCookieStore.js'
 import { createAgentSecretTextCheck } from '../modules/messaging/infrastructure/agentSecretText.js'
 import { createAgentRenderingTools } from '../modules/tools/infrastructure/agentRenderingTools.js'
@@ -58,7 +56,8 @@ import { connectAgentRedis, openAgentRedis } from '../modules/runtime/infrastruc
 import { createStandaloneAgentCandidateValidator, readStandaloneAgentConfig } from './standaloneAgentConfig.js'
 import { runStandaloneQqMigration } from './standaloneAgentMigration.js'
 import { runStandaloneLegacyQqMemoryMigration } from './standaloneAgentLegacyMemoryMigration.js'
-import { openStandaloneMediaRelay, standaloneMediaRelaySecrets } from './standaloneMediaRelay.js'
+import { openStandaloneMediaRelay } from './standaloneMediaRelay.js'
+import { standaloneAgentSecrets } from './standaloneAgentSecrets.js'
 import { openStandaloneBilibiliAuth } from './standaloneBilibiliQuality.js'
 import { createAgentAlertWebhook, parseAgentAlertWebhookUrl } from '../modules/runtime/infrastructure/agentAlertWebhook.js'
 import { createAgentFailureAlerts } from '../modules/runtime/infrastructure/agentFailureAlerts.js'
@@ -75,6 +74,8 @@ import { createStandaloneAgentConsoleImages } from './standaloneAgentConsoleImag
 import { createStandaloneAgentConsoleGames } from './standaloneAgentConsoleGames.js'
 import { createStandaloneAgentConsoleStyle } from './standaloneAgentConsoleStyle.js'
 import { createStandaloneAgentConsoleSemantic } from './standaloneAgentConsoleSemantic.js'
+import { createStandaloneAgentConsoleDirectory } from './standaloneAgentConsoleDirectory.js'
+import { runStandaloneLegacyGroupArchiveMigration } from './standaloneAgentLegacyGroupArchive.js'
 import { createStandaloneAgentConsoleRuntime } from './standaloneAgentConsoleRuntime.js'
 import { createStandaloneAgentConsolePersistence } from './standaloneAgentConsolePersistence.js'
 import { inspectStandaloneAgentConfigTransaction, isStandaloneAgentSourceSnapshotCurrent, recoverStandaloneAgentConfigTransaction } from './standaloneAgentConfigSources.js'
@@ -122,6 +123,7 @@ export async function main(argv: string[]): Promise<void> {
     'inspect-config-transaction': { type: 'boolean' }, 'recover-config': { type: 'boolean' },
     'migrate-qq-state': { type: 'boolean' }, 'source-bindings': { type: 'string' }, 'source-config': { type: 'string' },
     'migrate-legacy-qq-memory': { type: 'boolean' }, 'source-root': { type: 'string' }, 'backup-dir': { type: 'string' },
+    'migrate-legacy-group-archive': { type: 'boolean' },
     'source-data-dir': { type: 'string' }, 'include-agent-commitments': { type: 'boolean' },
     'include-character-state': { type: 'boolean' }, 'include-group-teaching': { type: 'boolean' }, connection: { type: 'string' },
     group: { type: 'string' }, friend: { type: 'string' }, apply: { type: 'boolean' }, 'deferred-reminders': { type: 'string' },
@@ -140,6 +142,7 @@ export async function main(argv: string[]): Promise<void> {
     console.log('用 --deferred-reminders /path/to/explicit-selections.json 指定延期提醒工具映射和迁移授权；缺授权继续留源，默认仅预览')
     console.log('用 --include-message-archive 接续有完整账号、角色和隐私证据的群或私聊原文；缺来源角色证据继续留源，可用 --source-archive-dir 显式覆盖旧归档目录')
     console.log('旧默认人格长期记忆  node scripts/start-agent.mjs --config /path/to/agent-host.yaml --migrate-legacy-qq-memory --source-root /path/to/plugin --backup-dir /path/to/verified-cutover-backup --connection qq-main --group 111111 [--apply]；只接续来源闭包可核验的记忆及已结回执，不迁移执行状态')
+    console.log('旧群原文  node scripts/start-agent.mjs --config /path/to/agent-host.yaml --migrate-legacy-group-archive --backup-dir /path/to/verified-cutover-backup --connection qq-main [--apply]；写入前停止 Core')
     return
   }
   const configPath = path.resolve(values.config ?? 'config/agent-host.yaml')
@@ -179,6 +182,17 @@ export async function main(argv: string[]): Promise<void> {
     const config = readStandaloneAgentConfig(configPath, process.env, { requireCredentials: false })
     const report = await runStandaloneLegacyQqMemoryMigration(config, { sourceRoot, backupDir, connectionId, groupId, apply: values.apply === true })
     console.log(JSON.stringify(report))
+    return
+  }
+  if (values['migrate-legacy-group-archive']) {
+    if (Object.entries(values).some(([key, value]) =>
+      !['config', 'migrate-legacy-group-archive', 'backup-dir', 'connection', 'apply'].includes(key) && value !== undefined && value !== false)) {
+      throw new Error('旧群原文接续：须与其他命令分别运行')
+    }
+    const backupDir = values['backup-dir'], connectionId = values.connection
+    if (!backupDir || !connectionId) throw new Error('旧群原文接续：需要备份目录和连接 ID')
+    const config = readStandaloneAgentConfig(configPath, process.env)
+    console.log(JSON.stringify(await runStandaloneLegacyGroupArchiveMigration(config, { backupDir, connectionId, apply: values.apply === true })))
     return
   }
   if (values['source-root'] !== undefined || values['backup-dir'] !== undefined) throw new Error('旧默认人格来源参数需要 --migrate-legacy-qq-memory')
@@ -377,30 +391,7 @@ export async function main(argv: string[]): Promise<void> {
       return result
     }
     const reviewBackend = config.characterConsistency
-    const musicSeedCookie = config.tools.music?.cookie ?? ''
-    const musicSeedSecrets = musicSeedCookie ? [musicSeedCookie, ...musicSeedCookie.split(';').flatMap(part => {
-      const at = part.indexOf('='), key = part.slice(0, at).trim(), value = part.slice(at + 1).trim()
-      return at > 0 && value && !['uin', 'wxuin', 'login_type', 'tmeLoginType', 'psrf_musickey_createtime'].includes(key) ? [value] : []
-    })] : []
-    const torrentProxy = config.torrentDownload.proxyUrl ? new URL(config.torrentDownload.proxyUrl) : undefined
-    const torrentProxySecrets = torrentProxy ? [torrentProxy.href, torrentProxy.username, torrentProxy.password].flatMap(value => {
-      try { return [value, decodeURIComponent(value)] } catch { return [value] }
-    }) : []
-    const hostSecrets = [reviewBackend?.apiKey, config.execution.chatAiConfig?.chatApiKey, config.vision?.apiKey,
-      config.tools.localEmoji.analysis?.apiKey, config.tools.localEmoji.embedding?.apiKey, config.tools.localEmoji.tools?.apiKey,
-      config.tools.search?.apiKey, config.tools.deltaForce?.apiKey, config.tools.github?.token, config.tools.modrinth?.translation.apiKey, config.personMemoryExtraction?.apiKey, config.midtermSummary?.apiKey, config.groupMemoryExtraction?.apiKey,
-      ...[config.tools.images?.generation, config.tools.images?.edit].flatMap(value => agentImageBackends(value).map(backend => backend.apiKey)),
-      config.tools.rendering?.mindMap?.apiKey,
-      config.semanticMemory.embedding?.apiKey, config.semanticMemory.rerank?.apiKey, config.tools.voice?.accessToken, config.tools.voice?.authorization,
-      ...musicSeedSecrets, config.tools.videoAnalysis?.apiKey, config.textTriggerModel?.apiKey,
-      config.console.tokenEnv ? process.env[config.console.tokenEnv] : undefined,
-      ...standaloneMediaRelaySecrets(config.mediaRelay),
-      ...(config.tools.pixiv ? standalonePixivToolsSecrets(config.tools.pixiv) : []),
-      ...torrentProxySecrets,
-      ...(config.tools.magnetSearch ? standaloneMagnetSearchSecrets(config.tools.magnetSearch) : []),
-      ...Object.values(config.tools.mcp?.servers ?? {}).flatMap(server => [...Object.values(server.headers ?? {}), ...Object.values(server.env ?? {})]),
-      ...config.connections.map(connection => 'accessToken' in connection ? connection.accessToken : undefined)]
-      .filter((key): key is string => typeof key === 'string' && !!key)
+    const hostSecrets = standaloneAgentSecrets(config, process.env)
     if (alerts) allowsAlertLabel = label => createAgentSecretTextCheck(hostSecrets)(label)
     journal = await openAgentOperationJournal({ dataDir: config.dataDir, ...config.operationLogging, allowsText: text => createAgentSecretTextCheck(hostSecrets)(text) })
     diagnostics.emit({ stage: 'host', operation: 'host_start', outcome: 'started' })
@@ -782,10 +773,17 @@ export async function main(argv: string[]): Promise<void> {
           sourceMemoryCleanup: host.sourceMemoryCleanup,
           characters: { describeGroup: runtime.describeGroup, controlCharacter: runtime.controlCharacter } })
         : undefined
+      const directory = createStandaloneAgentConsoleDirectory({ bindings, adapters, auth: consoleAuth,
+        dataDir: config.dataDir, allowsText: allowsSecretText })
+      const accountsService = AGENT_CONSOLE_SERVICES.find(service => service.operation === 'accounts.read')!
       const installed = createStandaloneAgentConsoleServices({ bindings, auth: consoleAuth, runtime, ledger, ...management, ...(forgetting ? { forgetting } : {}),
-        config: persistence.config, persona: persistence.persona, providers: persistence.providers,
+        config: persistence.config, persona: { ...persistence.persona, accounts: directory.accounts },
+        providers: persistence.providers, identities: directory,
         assignments: persistence.assignments, configuration: persistence.configuration, configState: persistence.state, commits: persistence.commits,
         extra: [
+          { ...accountsService, handle: async (_request, context) =>
+            ({ kind: 'json', value: { accounts: (await directory.accounts(context)).map(account =>
+              ({ ...account, account: { ...account.account } })) } }) },
           ...createStandaloneAgentConsoleImages({ ...config.tools.images, secrets: hostSecrets, dataDir: config.dataDir,
             recordUsage: (model, usage) => ledger.record({ scope: 'global', stage: 'api', model, usage }) }),
           ...createStandaloneAgentConsoleGames(gamePorts),

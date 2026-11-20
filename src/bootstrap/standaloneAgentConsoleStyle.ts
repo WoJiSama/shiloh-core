@@ -112,7 +112,7 @@ export function createStandaloneAgentConsoleStyle(options: {
       const current = options.bindings.resolve(target)
       if (!current || agentBindingToken(current) !== token) throw new AgentConsoleError('conflict')
       groupNames[scopeKey] = '群 ' + target.id
-      result.push({ groupId: scopeKey, scopeKey, bindingToken: token, expressions: {
+      result.push({ groupId: scopeKey, displayGroupId: target.id, scopeKey, bindingToken: token, expressions: {
         words: expressions.words.filter(row => safe(row.word)), patterns: expressions.patterns.filter(safe),
         styleExpressions: expressions.styleExpressions.filter(row => safe(row.situation)).map(row =>
           ({ situation: row.situation, expressions: row.expressions.filter(safe) })),

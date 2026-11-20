@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { AgentConversationScope } from '../../../contracts/agentBinding.js'
 import type { AgentSemanticMemoryCleanupGuard, AgentSemanticMemoryCleanupReceipt, AgentSemanticMemoryPurgeSubject } from '../../../contracts/semanticMemory.js'
 import { agentConversationKey, decodeAgentConversationKey, isConversationAddress, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
-import { ensureSemanticCleanup, filterSemanticCleanupRows, parseSemanticCleanup, semanticCleanupCurrent, semanticCleanupMatchesScope, semanticCleanupSelector, SEMANTIC_CLEANUP_MAX_BYTES, SEMANTIC_CLEANUP_MAX_SELECTORS, type SemanticCleanupFences } from './agentSemanticMemoryCleanup.js'
+import { ensureSemanticCleanup, filterSemanticCleanupRows, parseSemanticCleanup, semanticCleanupCurrent, semanticCleanupMatchesScope, semanticCleanupSelector, SEMANTIC_CLEANUP_KEY as CLEANUP_KEY, SEMANTIC_CLEANUP_MAX_BYTES, SEMANTIC_CLEANUP_MAX_SELECTORS, type SemanticCleanupFences } from './agentSemanticMemoryCleanup.js'
 
 export interface AgentSemanticMemoryRow {
   messageId: string
@@ -34,7 +34,6 @@ interface AgentSemanticMemoryRedis {
 
 const PREFIX = 'agent:semantic-memory:v1'
 const CATALOG_KEY = `${PREFIX}:catalog`
-const CLEANUP_KEY = `${PREFIX}:cleanup`
 const MAX_STATES = 200
 const MAX_ROWS = 2000
 const MAX_ATTEMPTS = 20
@@ -174,20 +173,54 @@ export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) 
     }
     return fail()
   }
-  async function commit(saved: Awaited<ReturnType<typeof snapshot>>, id: string, next: AgentSemanticMemoryState | undefined) {
+  function catalogFor(saved: Awaited<ReturnType<typeof snapshot>>, id: string, next: AgentSemanticMemoryState | undefined) {
     const entry = next && { id, scope: next.scope }
     const entries = entry
       ? saved.catalog.some(item => item.id === id) ? saved.catalog.map(item => item.id === id ? entry : item) : [...saved.catalog, entry]
       : saved.catalog.filter(item => item.id !== id)
     if (entries.length > MAX_STATES) fail()
+    return JSON.stringify({ version: 1, entries })
+  }
+  async function commit(saved: Awaited<ReturnType<typeof snapshot>>, id: string, next: AgentSemanticMemoryState | undefined) {
     const arguments_ = [...expected(saved.catalogRaw), ...expected(saved.stateRaw), ...expected(saved.cleanupRaw),
-      JSON.stringify({ version: 1, entries }), ...expected(next ? JSON.stringify(next) : null)]
+      catalogFor(saved, id, next), ...expected(next ? JSON.stringify(next) : null)]
     const result = await redis.eval(COMPARE_AND_SET, { keys: [CATALOG_KEY, stateKey(id), CLEANUP_KEY], arguments: arguments_ })
     if (result !== 0 && result !== 1) fail()
     return result === 1
   }
 
   return {
+    /** Stages previously verified original sources against the same corpus and cleanup snapshots. */
+    async planSourceImport(scope: AgentConversationScope, rows: readonly AgentSemanticMemoryRow[], capacity: number) {
+      if (!validScope(scope) || !Number.isSafeInteger(capacity) || capacity < 1 || capacity > MAX_ROWS) return fail()
+      if (!rows.length) return { imported: 0, checks: [] }
+      const id = agentSemanticMemoryId(scope)
+      const saved = await snapshot(id)
+      const prior = visible(saved.state, saved.cleanup)?.rows ?? []
+      const existing = new Map(saved.state?.rows.map(row => [row.messageId, row]))
+      const nextRows = [...prior]
+      const candidates = filterSemanticCleanupRows(scope, rows, saved.cleanup).sort((a, b) => b.at - a.at)
+      for (const row of candidates) {
+        const previous = existing.get(row.messageId)
+        if (previous) {
+          if (!sameSource(previous, row)) return fail()
+          continue
+        }
+        if (nextRows.length >= capacity) break
+        existing.set(row.messageId, row)
+        nextRows.push(row)
+      }
+      const imported = nextRows.length - prior.length
+      if (!imported) return { imported, checks: [] }
+      const next = { version: 1 as const, id, scope, rows: nextRows.sort((a, b) => a.at - b.at) }
+      const serialized = JSON.stringify(next)
+      parseState(serialized, id)
+      return { imported, checks: [
+        { key: CATALOG_KEY, value: saved.catalogRaw, write: catalogFor(saved, id, next) },
+        { key: stateKey(id), value: saved.stateRaw, write: serialized },
+        { key: CLEANUP_KEY, value: saved.cleanupRaw },
+      ] }
+    },
     async listScopes(): Promise<AgentSemanticMemoryScope[]> {
       try { return parseCatalog(raw(await redis.get(CATALOG_KEY))) } catch { return fail() }
     },

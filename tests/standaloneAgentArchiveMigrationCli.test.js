@@ -3,7 +3,7 @@ import test from 'node:test'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -121,7 +121,7 @@ test('actual release CLI help exposes the archive flags without config, credenti
   t.after(() => rm(directory, { recursive: true, force: true }))
   const result = await cli(['--help'], { cwd: directory })
   assert.equal(result.code, 0, result.stderr)
-  for (const flag of ['--migrate-qq-state', '--include-message-archive', '--source-archive-dir']) assert.ok(result.stdout.includes(flag), flag)
+  for (const flag of ['--migrate-qq-state', '--include-message-archive', '--source-archive-dir', '--migrate-legacy-group-archive']) assert.ok(result.stdout.includes(flag), flag)
   assert.equal(result.stderr.trim(), ''); assert.deepEqual(await readdir(directory), [])
 })
 
@@ -140,6 +140,76 @@ test('actual release CLI rejects each archive-only flag without migrate before s
     }
   }
   assert.deepEqual(await files(f.sourceRoot), disk); await assert.rejects(stat(f.dataDir), { code: 'ENOENT' })
+})
+
+test('frozen implicit archives require the receiving event, role interval, and both privacy snapshots before atomic continuation', settings, async t => {
+  const f = await fixture(t, 'legacy-group')
+  const { storage: frozen } = await createQzoneRedis(t)
+  const destination = path.dirname(f.configFile)
+  const bindingFile = path.join(destination, 'agent-bindings.yaml')
+  const bindings = JSON.parse(await readFile(bindingFile, 'utf8'))
+  bindings.agents[0].id = 'shiloh'
+  for (const binding of bindings.bindings) binding.agentId = 'shiloh'
+  await writeFile(bindingFile, JSON.stringify(bindings))
+  const config = JSON.parse(await readFile(f.configFile, 'utf8'))
+  config.semanticMemory = { enabled: true, groupOnly: true,
+    embedding: { baseUrl: 'http://127.0.0.1:9/v1/embeddings', name: 'unused', apiKeyEnv: 'ARCHIVE_CLI_MODEL_KEY' } }
+  await writeFile(f.configFile, JSON.stringify(config))
+  const source = path.join(f.dataDir, 'legacy-source'), backup = path.join(f.directory, 'backup')
+  const archiveDir = path.join(source, 'data/message_archive/group', target.id)
+  await Promise.all([archiveDir, path.join(source, 'config'), backup].map(directory => mkdir(directory, { recursive: true })))
+  const library = path.join(source, 'config/persona-library.yaml')
+  await writeFile(library, JSON.stringify({ personas: [], groupBindings: {}, accountBindings: {} }))
+  const at = f.selected.timestamp
+  await utimes(library, (at - 1000) / 1000, (at - 1000) / 1000)
+  await writeFile(path.join(source, 'config/message.yaml'), JSON.stringify({
+    pluginSettings: { enabled: true, enableGroupWhitelist: true, allowedGroups: [target.id] },
+  }))
+  const original = (id, sender = author, extra = {}) => ({ ...f.selected, message_id: id,
+    source_bot_id: undefined, source_persona_id: undefined, user_id: sender,
+    sender: { ...f.selected.sender, user_id: sender }, event_id: `v1:${account.id}:message:group:${target.id}:${id}`, ...extra })
+  const valid = original('10')
+  const rows = [valid, original('11', author, { timestamp: at - 2000 }), original('12', author, { event_id: `v1:19008826:message:group:${target.id}:12` }),
+    original('13', '3308828'), original('14', '3308829'), original('15', author, { recalled: true })]
+  const fixtureBytes = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
+  const archiveFile = path.join(archiveDir, '2026-11-17.ndjson')
+  await writeFile(archiveFile, fixtureBytes)
+  await runNode('tar', ['-czf', path.join(backup, 'legacy-config-data.tar.gz'), '-C', source, 'config', 'data'])
+  await frozen.set(`ytbot:mem:g:${target.id}:meta`, JSON.stringify({ optedOut: ['3308828'] }))
+  await frozen.save()
+  await copyFile(path.join(path.dirname(frozen.options.socket.path), 'dump.rdb'), path.join(backup, 'redis.rdb'))
+  const key = JSON.stringify(['shiloh', account.platform, account.namespace, account.id, target.kind, target.id])
+  await f.reader.set(`${f.prefix}ytbot:mem:g:agent:${encodeURIComponent(key)}:meta`, JSON.stringify({ optedOut: ['3308829'] }))
+  await f.reader.set(f.prefix + 'agent:host-lease', 'preview-live-lease')
+  const flags = ['--config', f.configFile, '--migrate-legacy-group-archive', '--backup-dir', backup, '--connection', connectionId]
+  const before = await f.snapshot(), preview = report(await f.run(flags))
+  assert.equal(preview.mode, 'preview')
+  const [group] = preview.groups
+  assert.equal(group.scanned, 6)
+  assert.equal(group.imported, 1)
+  assert.equal(group.semanticSources, 1)
+  assert.equal(group.skipped.identity, 2)
+  assert.equal(group.skipped.privacy, 2)
+  assert.equal(group.skipped.recalled, 1)
+  assert.deepEqual(await f.snapshot(), before)
+  rejected(await f.run([...flags, '--apply']))
+  assert.deepEqual(await f.snapshot(), before)
+  await writeFile(archiveFile, fixtureBytes + '\n')
+  rejected(await f.run(flags))
+  await writeFile(archiveFile, fixtureBytes)
+  await f.reader.del(f.prefix + 'agent:host-lease')
+  assert.deepEqual(report(await f.run([...flags, '--apply'])), { ...preview, mode: 'applied' })
+  const id = createHash('sha256').update(key).digest('hex')
+  const history = JSON.parse(await f.reader.get(f.prefix + 'agent:history:v1:state:' + id))
+  const semantic = JSON.parse(await f.reader.get(f.prefix + 'agent:semantic-memory:v1:state:' + id))
+  assert.deepEqual(history.rows, [{ messageId: valid.message_id, authorId: author, name: valid.sender.nickname, text: valid.raw_message, at }])
+  assert.deepEqual(semantic.rows, history.rows.map(row => ({ ...row, text: row.text.trim() })))
+  const applied = await f.snapshot(), again = report(await f.run([...flags, '--apply']))
+  assert.equal(again.groups[0].alreadyImported, 1)
+  assert.equal(again.groups[0].semanticSources, 0)
+  assert.deepEqual(await f.snapshot(), applied)
+  assert.equal(await readFile(archiveFile, 'utf8'), fixtureBytes)
+  assert.deepEqual(f.actions, [])
 })
 
 test('actual release CLI rejects an archive directory without inclusion and private group-only options before writing', settings, async t => {

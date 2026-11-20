@@ -9,6 +9,7 @@ import { capability, workspace } from '../lib/workspace'
 interface Status {
   enabled: boolean
   legacyImported: boolean
+  evaluations?: { at: number; samples: number | null; vectorRecall: number | null; hybridRecall: number | null; rerankRecall: number | null }[]
 }
 interface Records {
   enabled?: boolean
@@ -135,6 +136,7 @@ onBeforeUnmount(() => {
   request?.abort()
 })
 void load()
+const percent = (value: number | null) => value === null ? '—' : (value * 100).toFixed(1) + '%'
 </script>
 
 <template>
@@ -172,6 +174,14 @@ void load()
     </NCard>
     <NPagination v-if="records && records.total > 25" :page="page" :item-count="records.total" :page-size="25"
       @update:page="(value: number) => { page = value; loadRecords() }" />
+    <details v-if="status?.evaluations?.length">
+      <summary>旧版检索评估记录</summary>
+      <p v-for="evaluation in status.evaluations" :key="evaluation.at">
+        {{ new Date(evaluation.at).toLocaleString('zh-CN') }} · 样本 {{ evaluation.samples ?? '—' }}
+        · 向量 {{ percent(evaluation.vectorRecall) }} · 混合 {{ percent(evaluation.hybridRecall) }}
+        · 重排 {{ percent(evaluation.rerankRecall) }}
+      </p>
+    </details>
   </div>
 </template>
 

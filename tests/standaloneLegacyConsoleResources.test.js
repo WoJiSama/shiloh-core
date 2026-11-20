@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { createStandaloneAgentConsoleGames } from '../dist/backend/bootstrap/standaloneAgentConsoleGames.js'
+import { createStandaloneAgentConsoleDirectory } from '../dist/backend/bootstrap/standaloneAgentConsoleDirectory.js'
 import { createStandaloneAgentConsoleImages } from '../dist/backend/bootstrap/standaloneAgentConsoleImages.js'
 import { createStandaloneAgentConsoleSemantic } from '../dist/backend/bootstrap/standaloneAgentConsoleSemantic.js'
 import { createStandaloneAgentConsoleStyle } from '../dist/backend/bootstrap/standaloneAgentConsoleStyle.js'
@@ -39,6 +40,26 @@ function invoke(services, operation, actor = context(), options = {}) {
   assert.ok(service?.handle, operation)
   return service.handle({ method: service.method, pathname: service.path, params: {}, query: {}, body: {}, ...options }, actor)
 }
+
+test('the restored directory projects only current authorized bindings and the original cached group names', async t => {
+  const dataDir = temp(t)
+  save(dataDir, 'legacy-source/data/group_names.json', { 3011: '原群名', 3012: '未绑定群' })
+  const visible = binding('2001')
+  const hidden = binding('2002')
+  const directory = createStandaloneAgentConsoleDirectory({
+    dataDir, bindings: { list: () => [visible, hidden], resolve: () => visible },
+    adapters: [visible, hidden].map(row => ({
+      account: row.target.account, id: 'qq-' + row.target.account.id, botName: '机器人', isReady: () => true,
+    })),
+    auth: { authorize: async (_principal, _operation, selected) => selected === visible ? 'allowed' : 'denied' },
+    allowsText: allowed,
+  })
+  const result = await directory.read(context())
+  assert.equal(result.groups.length, 1)
+  assert.equal(result.groups[0].name, '原群名')
+  assert.equal(result.groups[0].account.id, '2001')
+  assert.deepEqual(result.bots.map(bot => bot.id), ['2001'])
+})
 
 test('the image console saves real Core output, serves its bytes and keeps the history across process construction', async t => {
   const dataDir = temp(t)

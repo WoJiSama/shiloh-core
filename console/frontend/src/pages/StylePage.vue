@@ -9,6 +9,7 @@ interface RuleRow { key: string; label: string; rule: string; confidence: number
 interface WordRow { word: string; count: number }
 interface GroupStyle {
   groupId: string
+  displayGroupId?: string
   expressions: { words: WordRow[]; patterns: string[]; styleExpressions: { situation: string; expressions: string[] }[]; rhythmPatterns: { layout: string; count: number }[] } | null
 }
 interface StyleOverview {
@@ -82,9 +83,10 @@ function timeAgo(iso?: string) {
   if (hours < 24) return `${hours} 小时前`
   return `${Math.floor(hours / 24)} 天前`
 }
-const groupLabel = (groupId: string) => {
-  const name = overview.value?.groupNames?.[groupId]
-  return name ? `${name}（${groupId}）` : `群 ${groupId}`
+const groupLabel = (group: GroupStyle) => {
+  const name = overview.value?.groupNames?.[group.groupId]
+  const id = group.displayGroupId ?? group.groupId
+  return name && !group.displayGroupId ? `${name}（${id}）` : `群 ${id}`
 }
 const RHYTHM_LABELS: Record<string, string> = {
   single: '完整单条',
@@ -150,7 +152,7 @@ import { h } from 'vue'
             <pre class="preview">{{ overview.promptPreview }}</pre>
           </details>
         </NTabPane>
-        <NTabPane v-for="g in overview.groups.filter(g => g.expressions)" :key="g.groupId" :name="g.groupId" :tab="groupLabel(g.groupId)">
+        <NTabPane v-for="g in overview.groups.filter(g => g.expressions)" :key="g.groupId" :name="g.groupId" :tab="groupLabel(g)">
           <h4>{{ overview.archive ? '归档常用词' : '常用词（点屏蔽后不再学习或注入）' }}</h4>
           <NDataTable :columns="wordColumns(g.groupId)" :data="g.expressions!.words" size="small" :bordered="false" />
           <template v-if="g.expressions!.styleExpressions?.length">
