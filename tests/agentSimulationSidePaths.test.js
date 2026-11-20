@@ -6,6 +6,7 @@ const { createSimulationRuntime } = await load('modules/simulation/infrastructur
 const { createSimSessionStore } = await load('modules/simulation/infrastructure/simSessionStore.js')
 const { createDefaultSimSession } = await load('modules/simulation/domain/simConfig.js')
 const { agentBindingToken } = await load('modules/runtime/domain/agentBindings.js')
+const { AgentSimulationModelError } = await load('modules/simulation/infrastructure/agentSimulationModels.js')
 const at = 1800000000000, bot = '90000', user = '10001', group = '10086'
 const target = { account: { platform: 'qq', namespace: 'global', id: bot }, kind: 'group', id: group }
 const binding = { source: 'configured', id: 'side-binding', revision: 'r1', agentId: 'side-agent', personaId: 'default', connectionId: 'qq-side', target }
@@ -85,6 +86,50 @@ test('meme extraction discards a late recalled result while preserving new ingre
     assert.ok(f.models.some(request => JSON.stringify(request.messages).includes('arrival-during-meme')))
     assert.deepEqual(await f.store(binding).loadMemories(group), [])
   } finally { held.resolve(); await f.runtime.stop(); if (sweep) await sweep; await f.runtime.drain() }
+})
+
+test('a valid empty batch advances its cursor and does not reprocess old messages after cooldown', async () => {
+  const events = []
+  let attempts = 0
+  const f = fixture({ meme: true, diagnostics: { emit: event => events.push(event) },
+    async memeExtract() { attempts++; return '```json\n[]\n```' } })
+  try {
+    await f.runtime.sweepOnce()
+    assert.deepEqual(f.session().memeCursor, { seq: 20, at })
+    assert.equal(f.session().memeRetryAt, undefined)
+    f.clock.at += 600_000
+    await f.runtime.sweepOnce()
+    assert.equal(attempts, 1)
+    assert.ok(events.some(event => event.code === 'meme_batch_empty' && event.outcome === 'succeeded'))
+    assert.deepEqual(await f.store(binding).loadMemories(group), [])
+  } finally { await f.runtime.stop() }
+})
+
+test('a failed meme batch keeps its cursor, reports the HTTP failure once and retries after cooldown', async () => {
+  const events = []
+  let attempts = 0
+  const f = fixture({ meme: true, diagnostics: { emit: event => events.push(event) },
+    async memeExtract() {
+      attempts++
+      if (attempts === 1) throw new AgentSimulationModelError('http_error', 503)
+      return '[]'
+    } })
+  try {
+    await f.runtime.sweepOnce()
+    assert.equal(f.session().memeCursor, undefined)
+    assert.equal(f.session().memeRetryAt, at + 600_000)
+    f.clock.at += 599_999
+    await f.runtime.sweepOnce()
+    assert.equal(attempts, 1)
+    assert.deepEqual(events.filter(event => event.outcome === 'failed').map(event => [event.operation, event.code, event.httpStatus]), [
+      ['simulation_meme_extract', 'http_error', 503],
+    ])
+    f.clock.at++
+    await f.runtime.sweepOnce()
+    assert.equal(attempts, 2)
+    assert.equal(f.session().memeCursor.seq, 20)
+    assert.equal(f.session().memeRetryAt, undefined)
+  } finally { await f.runtime.stop() }
 })
 
 test('style cache separates account and Agent, and revoked originals cannot replace a prior scoped cache', async () => {

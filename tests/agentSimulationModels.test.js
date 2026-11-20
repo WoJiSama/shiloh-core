@@ -45,6 +45,7 @@ test('wake and meme providers use real local JSON HTTP with fixed model budgets 
     assert.equal(req.authorization, `Bearer ${apiKey}`)
     assert.equal(req.data.model, options.name)
     assert.equal(req.data.stream, false)
+    assert.equal(req.data.thinking, undefined)
     assert.deepEqual(req.data.messages.map(message => message.role), ['system', 'user'])
     assert.doesNotMatch(JSON.stringify(req.data), /private-(?:account|group|binding|revision|agent|persona|connection)/u)
   }
@@ -55,6 +56,37 @@ test('wake and meme providers use real local JSON HTTP with fixed model budgets 
   assert.match(received[0].data.messages[0].content, /拿不准时一律 engage=true/u)
   assert.match(received[1].data.messages[1].content, /这个群自己长出来的梗/u)
   assert.deepEqual(usage, Array.from({ length: 2 }, () => [options.name, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }]))
+})
+
+test('official GLM flash side tasks request content without spending the JSON budget on reasoning', async () => {
+  const bodies = []
+  const config = { ...options, baseUrl: 'https://open.bigmodel.cn/api/paas/v4', name: 'glm-5.3-flash',
+    async fetchImpl(_url, init) {
+      const body = JSON.parse(init.body)
+      bodies.push(body)
+      return answer(body.max_tokens === 64 ? '{"engage":false,"reason":"普通闲聊"}' : '[]')
+    } }
+  assert.deepEqual(await createAgentSimulationWakeGate(config)(input, undefined, context()), { engage: false, reason: '普通闲聊' })
+  assert.equal(await createAgentSimulationMemeExtractor(config)(memes, undefined, context()), '[]')
+  assert.deepEqual(bodies.map(body => body.thinking), [{ type: 'disabled' }, { type: 'disabled' }])
+})
+
+test('meme provider failures carry only a fixed label and optional HTTP status', async () => {
+  for (const [fetchImpl, code, status] of [
+    [async () => new Response(`PRIVATE ${apiKey}`, { status: 503 }), 'http_error', 503],
+    [async () => { throw Error(`PRIVATE ${apiKey}`) }, 'provider_transport_error', undefined],
+    [async () => answer('bad result'), 'model_response_invalid', undefined],
+  ]) {
+    const extract = createAgentSimulationMemeExtractor({ ...options, fetchImpl })
+    await assert.rejects(extract(memes, undefined, context()), error => {
+      assert.equal(error.message, FAILURE)
+      assert.equal(error.code, code)
+      assert.equal(error.httpStatus, status)
+      assert.equal(error.cause, undefined)
+      assert.doesNotMatch(JSON.stringify(error), new RegExp(apiKey))
+      return true
+    })
+  }
 })
 
 test('missing binding or mismatched target prevents every provider request', async () => {

@@ -215,6 +215,8 @@ export interface SimSessionState {
   personMemoryInvalidatedAt?: number
   /** 群梗自动提取游标：已提取到哪条消息（seq）、上次提取时间 */
   memeCursor?: { seq: number; at: number }
+  /** 已失败的批次保留原游标，延后下次尝试。 */
+  memeRetryAt?: number
 }
 
 /** 情绪四轴状态（跨群全局，shiloh:sim:mood）：axes 为上次写入的瞬时值（1-10），读取侧按半衰期投影。 */

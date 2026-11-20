@@ -77,6 +77,7 @@ import { checkHealth, formatAlerts, type HealthAlert } from '../domain/healthSen
 import { buildChatRequestData } from '../../models/domain/modelGateway.js'
 import { safeTruncateUnicode } from '../../models/domain/unicodeText.js'
 import { createSimSessionStore, simulationSessionKey, type SimGroupOverrides, type SimSessionStore } from './simSessionStore.js'
+import { AgentSimulationModelError } from './agentSimulationModels.js'
 import { createInitialPromptStore } from './simInitialPrompt.js'
 import { resolveSimulationGroupConfig, seedSimulationOverrides, simulationGroupOverride } from './simulationGroupPolicy.js'
 import { decodeSimulationAddressKey, isQqSimulationAddress, qqSimulationAddress, simulationAddressKey } from './simulationAddress.js'
@@ -518,14 +519,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return out
   }
 
-  async function ensureSideModelSources(scope: CharacterScope, target: ConversationAddress, sources: SimMessage[], isCurrent: () => boolean): Promise<void> {
-    if (!isCurrent()) throw new Error('侧路模型来源已失效')
+  async function sideModelSourcesCurrent(scope: CharacterScope, target: ConversationAddress, sources: SimMessage[], isCurrent: () => boolean): Promise<boolean> {
+    if (!isCurrent()) return false
     const allowed = await redactSceneMessages(scope, sources)
-    if (!isCurrent() || allowed.length !== sources.length) throw new Error('侧路模型来源已失效')
-    for (const source of sources) {
-      if (!isCurrent() || source.messageId && await ports.isMessageRecalled?.(target, String(source.messageId))) throw new Error('侧路模型来源已失效')
-    }
-    if (!isCurrent()) throw new Error('侧路模型来源已失效')
+    if (allowed.length !== sources.length || !isCurrent()) return false
+    const recalled = await Promise.all(sources.map(source => source.messageId ? ports.isMessageRecalled?.(target, String(source.messageId)) : undefined))
+    return !recalled.some(Boolean) && isCurrent()
   }
 
   function withoutResolvedQuote(message: SimMessage): SimMessage {
@@ -607,11 +606,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   }
 
   /** 工具执行统一包装：事件含 reply 绑定（文本段/段数组归一 + message_id 回执） */
-  async function runSimTool(tool: { name?: string; execute(args: Record<string, unknown>, event: unknown): Promise<unknown> }, args: Record<string, unknown>, event: AgentBindingTurn & { group_id?: number; self_id: string }, actor: SimulationActor, reply: (payload: unknown) => Promise<unknown>, report?: (status: 'succeeded' | 'failed') => void, taskId?: string): Promise<string> {
+  async function runSimTool(tool: { name?: string; execute(args: Record<string, unknown>, event: unknown): Promise<unknown> }, args: Record<string, unknown>, event: AgentBindingTurn & { group_id?: number; self_id: string }, actor: SimulationActor, reply: (payload: unknown) => Promise<unknown>, report?: (status: 'succeeded' | 'failed') => void, taskId?: string, observed?: { terminalText?: string }): Promise<string> {
     const started = Date.now(), operation = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(tool.name ?? '') ? tool.name! : 'simulation_tool'
     if (event._isAgentBindingCurrent?.() === false) {
+      const text = 'error: 工具所属回合已失效，未执行'
       diagnose({ stage: 'tool', operation, outcome: 'cancelled', code: 'conversation_activity_revoked' })
-      return 'error: 工具所属回合已失效，未执行'
+      if (observed) observed.terminalText = text
+      return text
     }
     diagnose({ stage: 'tool', operation, outcome: 'started' })
     try {
@@ -626,12 +627,15 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       })
       const text = typeof result === 'string' ? result : JSON.stringify(result) ?? 'null', status = classifyCharacterResult(text)
       diagnose({ stage: 'tool', operation, outcome: status, code: status === 'succeeded' ? 'completed' : `returned_${status}`, durationMs: Date.now() - started })
+      if (observed && status !== 'succeeded') observed.terminalText = text
       return text
     } catch (error) {
       const uncertain = error && typeof error === 'object' && 'uncertain' in error && error.uncertain === true
       diagnose({ stage: 'tool', operation, outcome: uncertain ? 'unknown' : 'failed', code: 'tool_threw', error, durationMs: Date.now() - started })
       if (uncertain) return JSON.stringify({ kind: 'tool_outcome', status: 'unknown', error: { message: safeToolErrorText(String(tool.name || ''), error) } })
-      return safeToolErrorText(String(tool.name || ''), error)
+      const text = safeToolErrorText(String(tool.name || ''), error)
+      if (observed) observed.terminalText = text
+      return text
     }
   }
 
@@ -869,6 +873,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     delete state.lastPlayAlongWakeAt
     state.personProfileCursor = {seq:state.seq, at:0}
     state.memeCursor = {seq:state.seq, at:0}
+    delete state.memeRetryAt
     return true
   }
 
@@ -1674,7 +1679,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           const gateContext: PersonProfileExtractionContext = { target, ...(resolvedPersona.binding ? { binding: resolvedPersona.binding } : {}),
             signal: gateSignal, isCurrent: gateCurrent,
             async ensureCurrent() {
-              try { await assertTriggerCurrent(); await ensureSideModelSources(characterScope, target, gateSources, gateAuthorized) }
+              try {
+                await assertTriggerCurrent()
+                if (!await sideModelSourcesCurrent(characterScope, target, gateSources, gateAuthorized)) throw new Error('唤醒预判来源已失效')
+              }
               catch { gateRevoked = true; throw new Error('唤醒预判来源已失效') }
               gateSignal.throwIfAborted()
             },
@@ -3003,7 +3011,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             return signal.aborted ? 'unclear' : readSocialVerdict(action, triggerMessage.text, response)
           } catch { return 'unclear' }
         }
-        const executeTool = async (tool: typeof tools[number], args: Record<string, unknown>) => {
+        const executeTool = async (tool: typeof tools[number], args: Record<string, unknown>, observed?: { terminalText?: string }) => {
           if (turnClosed) return 'error: 回合已结束，未执行'
           const ephemeralTool = extraTools.includes(tool) && tool.agentDataPolicy === 'ephemeral'
           if (ephemeralRead) {
@@ -3065,13 +3073,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               ephemeralRead = true
               if (tool.name !== 'simQzoneInteract') unrelatedEphemeralRead = true
             }
-            const result = await runSimTool(tool, args, toolEvent, actor, toolReply)
+            const result = await runSimTool(tool, args, toolEvent, actor, toolReply, undefined, undefined, observed)
             if (tool.name === 'grabRedBagTool') ephemeralRead = unrelatedEphemeralRead = true
             try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
             return result
           }
           if (internal) {
-            const result = await runSimTool(tool, args, toolEvent, actor, toolReply)
+            const result = await runSimTool(tool, args, toolEvent, actor, toolReply, undefined, undefined, observed)
             if (['simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simGetMessageImages', 'simGetForward', 'simWaitForMessages'].includes(tool.name)) {
               try { await ensureExecution() } catch (error) { return safeToolErrorText(tool.name, error) }
             }
@@ -3092,7 +3100,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           }
           let reported: 'succeeded' | 'failed' | undefined
           const alreadyUnknown = memoryBox.deliveryUnknown
-          let result = await runSimTool(tool, args, toolEvent, actor, toolReply, status => { reported = status }, tool.name === 'simWorkerTask' ? id : undefined)
+          let result = await runSimTool(tool, args, toolEvent, actor, toolReply, status => { reported = status }, tool.name === 'simWorkerTask' ? id : undefined, observed)
           let status = memoryBox.deliveryUnknown && !alreadyUnknown ? 'unknown' : reported ?? classifyCharacterResult(result)
           if (status === 'unknown') uncertainAction = true
           if (status === 'failed') executionError = '工具执行失败，承诺未完整兑现'
@@ -3293,6 +3301,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             const fn = record(callRecord.function)
             const name = String(fn.name || '')
             const tool = tools.find(t => t.name === name)
+            const observed: { terminalText?: string } = {}
             let resultText: string
             if (turnClosed) {
               resultText = 'error: 回合已结束，未执行'
@@ -3321,11 +3330,11 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                   const waitSec = Math.ceil((cooldownMs - (now() - lastAt)) / 1000)
                   resultText = `error: 表情包冷却中（还要 ${waitSec} 秒）。请直接用文字回应，本回合不要再发表情。`
                 } else {
-                  resultText = await executeTool(tool, args)
+                  resultText = await executeTool(tool, args, observed)
                   if (!(typeof resultText === 'string' && resultText.startsWith('error:'))) emojiLastSentAt.set(groupId, now())
                 }
               } else {
-                resultText = await executeTool(tool, args)
+                resultText = await executeTool(tool, args, observed)
               }
             }
             // simGetMessageImages 的结果带回图片：主模型多为纯文本(实测 glm-5.3 收 image_url 直接 400，
@@ -3363,7 +3372,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (managementTerminal || qqActionTerminal) { turnClosed = true; decision = 'silent'; break }
             if (resultText.startsWith('error:')) {
               executionError = '回合包含未完成的工具操作'; failureStage = 'tool'
-              diagnose({ stage: 'tool', operation: /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(name) ? name : 'simulation_tool', outcome: 'failed', code: 'tool_reply_failed' })
+              if (observed.terminalText !== resultText) {
+                diagnose({ stage: 'tool', operation: /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(name) ? name : 'simulation_tool', outcome: 'failed', code: 'tool_reply_failed' })
+              }
             }
           }
           if (turnClosed) break
@@ -4181,7 +4192,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const token = resolved.binding ? agentBindingToken(resolved.binding) : undefined
     if (state.bindingToken !== token) return
     const cursor = state.memeCursor
-    if (cursor && at - cursor.at < cfg.meme.extractCooldownMs) return
+    if ((state.memeRetryAt ?? 0) > at || cursor && at - cursor.at < cfg.meme.extractCooldownMs) return
     const candidateMessages = () => state.recent.filter(m => m.seq > (cursor?.seq ?? Math.max(0, state.seq - 40)))
       .filter(m => !resolved.binding || m.kind === 'text' && !!m.messageId && !m.forwardId && !m.textTruncated).slice(-40)
     if (candidateMessages().length < cfg.meme.extractMinMessages) return
@@ -4190,29 +4201,40 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     let memoryInvalidatedAt = 0, activityVersion = ''
     let fresh: SimMessage[] = []
     let memoryTurn: Awaited<ReturnType<NonNullable<SimulationRuntimePorts['beginMemoryTurn']>>> | undefined
-    let active = true, bindingCurrent = true, usageRecorded = false, completed = false
-    const signal = AbortSignal.any([controller.signal, extraction.signal, AbortSignal.timeout(15_000)])
-    const isCurrent = () => {
-      try {
-        const live = personaFor(target)
-        bindingCurrent &&= state.botId === target.account.id && state.bindingToken === token &&
-          (live.personaId || 'default') === scope.personaId &&
-          (live.binding ? agentBindingToken(live.binding) : undefined) === token
-        return active && !signal.aborted && memoryTurn?.isCurrent() !== false && !memoryTurn?.signal.aborted &&
-          !stopped && bindingCurrent && extraction.isCurrent() && allowsConversationAI(target) &&
-          handlesTarget(target) && groupActive(runtimeConfig(), groupId) && runtimeConfig(groupId).meme.enabled &&
-          ports.isAccountReady?.(target.account) !== false && ports.isMemoryInputAvailable?.(target.account) !== false &&
-          fresh.every(source => state.recent.some(message => message.seq === source.seq && message.messageId === source.messageId &&
-            message.userId === source.userId && message.at === source.at && message.text === source.text))
-      } catch { return false }
+    let active = true, bindingCurrent = true, usageRecorded = false, revoked = false
+    let processed: 'meme_batch_empty' | 'meme_batch_saved' | undefined
+    let phase: 'prepare' | 'model' | 'save' = 'prepare'
+    const deadline = AbortSignal.timeout(30_000)
+    const signal = AbortSignal.any([controller.signal, extraction.signal, deadline])
+    const scopeCurrent = () => {
+      const live = personaFor(target)
+      bindingCurrent &&= state.botId === target.account.id && state.bindingToken === token &&
+        (live.personaId || 'default') === scope.personaId &&
+        (live.binding ? agentBindingToken(live.binding) : undefined) === token
+      return bindingCurrent && extraction.isCurrent() && allowsConversationAI(target) &&
+        handlesTarget(target) && groupActive(runtimeConfig(), groupId) && runtimeConfig(groupId).meme.enabled &&
+        ports.isAccountReady?.(target.account) !== false && ports.isMemoryInputAvailable?.(target.account) !== false &&
+        fresh.every(source => state.recent.some(message => message.seq === source.seq && message.messageId === source.messageId &&
+          message.userId === source.userId && message.at === source.at && message.text === source.text))
     }
+    const authorized = () => {
+      try {
+        if (!active || stopped || revoked || controller.signal.aborted || extraction.signal.aborted ||
+            memoryTurn?.signal.aborted || memoryTurn?.isCurrent() === false) return false
+        return ports.observeCurrent ? ports.observeCurrent(scopeCurrent) === true : scopeCurrent()
+      }
+      catch { return false }
+    }
+    const isCurrent = () => !deadline.aborted && authorized()
     const ensureCurrent = async () => {
-      await ensureSideModelSources(scope, target, fresh, isCurrent)
-      if (await store.loadActivityVersion(groupId) !== activityVersion || !isCurrent() ||
-          (await personMemory.getSceneRedactions({ identity: scope, scene })).invalidatedAt !== memoryInvalidatedAt || !isCurrent()) {
+      signal.throwIfAborted()
+      if (!await sideModelSourcesCurrent(scope, target, fresh, authorized) || await store.loadActivityVersion(groupId) !== activityVersion ||
+          !authorized() || (await personMemory.getSceneRedactions({ identity: scope, scene })).invalidatedAt !== memoryInvalidatedAt || !authorized() ||
+          (await characters.load(scope)).paused || !authorized()) {
+        revoked = true
         throw new Error('梗提取来源已失效')
       }
-      if ((await characters.load(scope)).paused || !isCurrent()) throw new Error('梗提取所属角色已暂停')
+      signal.throwIfAborted()
     }
     background.add(groupId); liveStates.set(groupId, state)
     backgroundControllers.add(controller); backgroundByGroup.set(groupId, controller)
@@ -4228,6 +4250,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (fresh.length < cfg.meme.extractMinMessages) return
       await ensureCurrent()
       const extractStartedAt = now()
+      phase = 'model'
       const context: PersonProfileExtractionContext = { target, ...(resolved.binding ? { binding: resolved.binding } : {}),
         signal: memoryTurn ? AbortSignal.any([signal, memoryTurn.signal]) : signal, isCurrent, ensureCurrent,
         recordUsage(model, usage) {
@@ -4238,25 +4261,43 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       }
       const raw = await awaitSideModel(() => ports.memeExtract!(fresh.map(m => ({ name: m.name, text: m.text })), isCurrent, context), context.signal, isCurrent)
       if (!usageRecorded) try { ports.recordTokens?.({ scope: groupId, stage: 'meme-extract', ms: now() - extractStartedAt }) } catch { /* 账本不可用 */ }
+      const candidates = parseMemeCandidates(raw, { requireArray: true })
+      phase = 'save'
       await ensureCurrent()
-      const candidates = parseMemeCandidates(raw)
-      if (!candidates.length) return
-      // 回合可能刚改过记忆库：重新加载合并，避免双写者互覆
-      const current = normalizeMemoryList(await memoryStore.loadMemories(groupId), at, isQqSimulationAddress(target) ? undefined : isSimulationUserId)
-      const { memories, newCount } = mergeMemeCandidates(current, candidates, at)
-      await ensureCurrent()
-      await memoryStore.saveMemories(groupId, memories, isCurrent)
-      await ensureCurrent()
-      completed = true
-      if (newCount > 0) logger.info(`[仿真] 群 ${groupId} 梗库新增 ${newCount} 条（提取自 ${fresh.length} 条消息）`)
-    } catch {
-      logger.warn(`[仿真] 群 ${groupId} 梗提取未完成，已丢弃未提交结果`)
+      if (candidates.length) {
+        // 回合可能刚改过记忆库：重新加载合并，避免双写者互覆
+        const current = normalizeMemoryList(await memoryStore.loadMemories(groupId), at, isQqSimulationAddress(target) ? undefined : isSimulationUserId)
+        const { memories, newCount } = mergeMemeCandidates(current, candidates, at)
+        await ensureCurrent()
+        await memoryStore.saveMemories(groupId, memories, isCurrent)
+        await ensureCurrent()
+        if (newCount > 0) logger.info(`[仿真] 群 ${groupId} 梗库新增 ${newCount} 条（提取自 ${fresh.length} 条消息）`)
+      }
+      processed = candidates.length ? 'meme_batch_saved' : 'meme_batch_empty'
+    } catch (error) {
+      if (!authorized()) {
+        diagnose({ stage: 'memory', operation: 'simulation_meme_extract', outcome: 'cancelled', code: 'source_revoked' })
+      } else {
+        state.memeRetryAt = now() + boundedTimerDelay(cfg.meme.extractCooldownMs, 86_400_000, 60_000)
+        const modelError = error instanceof AgentSimulationModelError ? error : undefined
+        const code = deadline.aborted ? 'meme_extract_timeout' : modelError?.code ??
+          (phase === 'model' ? 'meme_result_failed' : phase === 'save' ? 'meme_save_failed' : 'meme_prepare_failed')
+        const httpStatus = modelError?.httpStatus
+        diagnose({ stage: phase === 'model' ? 'model' : 'memory', operation: 'simulation_meme_extract', outcome: 'failed', code,
+          ...(httpStatus === undefined ? {} : { httpStatus }), error, durationMs: now() - at })
+        if (!ports.diagnostics) logger.warn(`[仿真] 群 ${groupId} 梗提取未完成，稍后重试`)
+      }
     } finally {
-      let pending: SimWakeReason[] = [], finalSave: Promise<void> | undefined
+      let pending: SimWakeReason[] = [], finalSave: Promise<void> | undefined, cursorUpdated = false
       try {
         await store.save(groupId, state)
-        if (completed) {
-          try { await ensureCurrent(); state.memeCursor = { seq: fresh.at(-1)!.seq, at } }
+        if (processed) {
+          try {
+            await ensureCurrent()
+            state.memeCursor = { seq: fresh.at(-1)!.seq, at: now() }
+            delete state.memeRetryAt
+            cursorUpdated = true
+          }
           catch { /* Revoked results cannot advance the extraction cursor. */ }
         }
         pending = (bindingCurrent ? state.pendingWakeReasons : []).filter(reason => messageReasonStillPending(reason, state.unread))
@@ -4274,6 +4315,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         background.delete(groupId); liveStates.delete(groupId); notifyWaiters(groupId)
       }
       await finalSave
+      if (processed && cursorUpdated) diagnose({ stage: 'memory', operation: 'simulation_meme_extract', outcome: 'succeeded', code: processed, durationMs: now() - at })
       if (!stopped && pending.length) await scheduleWake(groupId, pending.reduce((a, b) => mergeWakeReason(a, b).reason), state.bindingToken, cfg)
     }
   }

@@ -299,6 +299,7 @@ test('failed closing validation or review cannot be bypassed by a later failure 
     t.after(() => h.runtime.stop()); await h.ingest(); await settled(h, 2)
     assert.equal(h.calls.length, 2, mode); assert.equal(h.sent.length, 0, mode)
     assert.ok(diagnostics.events.some(row => row.operation === 'simulation_failure_notice' && row.code === 'notice_not_authorized'))
+    assert.equal(diagnostics.events.filter(row => row.stage === 'tool' && row.operation === 'simFinishTurn' && row.outcome === 'failed').length, 1, mode)
   }
 })
 

@@ -19,6 +19,11 @@ export interface AgentSimulationWakeInput {
 export interface AgentSimulationMemeMessage { readonly name: string; readonly text: string }
 
 const FAILURE = '仿真侧路模型请求失败：请求已取消、授权失效或模型服务不可用。'
+export class AgentSimulationModelError extends Error {
+  constructor(readonly code: 'provider_timeout' | 'provider_transport_error' | 'http_error' | 'model_response_invalid', readonly httpStatus?: number) {
+    super(FAILURE)
+  }
+}
 const MAX_RESPONSE_BYTES = 512 * 1024
 const WAKE_SYSTEM = [
   '你是群聊机器人的唤醒预判器。主模型进入完整回合开销大，你用极小上下文判断这次唤醒值不值得。',
@@ -103,9 +108,12 @@ function client(options: AgentSimulationModelOptions, deadline: number, maxToken
   return async (input: unknown, prompt: () => readonly { role: string; content: string }[], context: PersonProfileExtractionContext | undefined, isCurrent?: () => boolean) => {
     const lifecycle = new AbortController()
     let response: Response | undefined
+    let signal: AbortSignal | undefined
+    let waitingForHeaders = false
     try {
       assertScope(context)
-      const signal = AbortSignal.any([context.signal, lifecycle.signal, AbortSignal.timeout(timeoutMs)])
+      const requestSignal = AbortSignal.any([context.signal, lifecycle.signal, AbortSignal.timeout(timeoutMs)])
+      signal = requestSignal
       assertCurrent(context, signal, isCurrent)
       const endpoint = new URL(options.baseUrl)
       if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
@@ -114,12 +122,17 @@ function client(options: AgentSimulationModelOptions, deadline: number, maxToken
       const messages = prompt()
       if (hasSecret(JSON.stringify(messages), secrets)) throw new Error(FAILURE)
       await ensureCurrent(context, signal, isCurrent)
+      // This official GLM endpoint otherwise uses the small output budget for reasoning.
+      const disableThinking = endpoint.hostname === 'open.bigmodel.cn' && options.name.trim().toLowerCase() === 'glm-5.3-flash'
       const received = await abortable<Response>(Promise.resolve().then(() => {
-        assertCurrent(context, signal, isCurrent)
-        return (options.fetchImpl ?? fetch)(resolveChatCompletionUrl(endpoint.href), { method: 'POST', redirect: 'error', signal,
+        assertCurrent(context, requestSignal, isCurrent)
+        waitingForHeaders = true
+        return (options.fetchImpl ?? fetch)(resolveChatCompletionUrl(endpoint.href), { method: 'POST', redirect: 'error', signal: requestSignal,
           headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: options.name, messages, stream: false, temperature, max_tokens: maxTokens }) })
+          body: JSON.stringify({ model: options.name, messages, stream: false, temperature, max_tokens: maxTokens,
+            ...(disableThinking ? { thinking: { type: 'disabled' } } : {}) }) })
       }), signal)
+      waitingForHeaders = false
       response = received
       assertCurrent(context, signal, isCurrent)
       if (received.redirected) throw new Error(FAILURE)
@@ -134,7 +147,11 @@ function client(options: AgentSimulationModelOptions, deadline: number, maxToken
       if (!received.ok || result.data.error || 'tool_calls' in message || 'function_call' in message ||
           typeof message.content !== 'string' || !message.content.trim() || message.content.length > 64_000) throw new Error(FAILURE)
       return message.content
-    } catch { throw new Error(FAILURE) }
+    } catch {
+      if (response && !response.ok) throw new AgentSimulationModelError('http_error', response.status)
+      if (signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError') throw new AgentSimulationModelError('provider_timeout')
+      throw new AgentSimulationModelError(waitingForHeaders ? 'provider_transport_error' : 'model_response_invalid')
+    }
     finally { lifecycle.abort(); void response?.body?.cancel().catch(() => {}) }
   }
 }
@@ -179,6 +196,9 @@ export function createAgentSimulationMemeExtractor(options: AgentSimulationModel
           row.note !== undefined && (typeof row.note !== 'string' || row.note.length > 1000)
       })) throw new Error(FAILURE)
       return JSON.stringify(parsed)
-    } catch { throw new Error(FAILURE) }
+    } catch (error) {
+      if (error instanceof AgentSimulationModelError) throw error
+      throw new AgentSimulationModelError('model_response_invalid')
+    }
   }
 }

@@ -345,9 +345,8 @@ export interface MemeCandidate { content: string; origin?: string }
  * 容错解析（qq-bridge 验证过的做法原样移植）：整体 parse 失败则从左到右扫描括号配平的 [...] 候选，
  * 跳过字符串字面量内的括号与转义；优先返回含对象元素的数组（防 "根据 [1] 的分析：[{...}]" 里 [1] 抢先）。
  */
-export function parseMemeCandidates(raw: unknown): MemeCandidate[] {
+export function parseMemeCandidates(raw: unknown, options: { requireArray?: boolean } = {}): MemeCandidate[] {
   const text = String(raw || '').trim()
-  if (!text) return []
   const candidates: string[] = []
   const tryPush = (slice: string) => {
     try {
@@ -381,12 +380,13 @@ export function parseMemeCandidates(raw: unknown): MemeCandidate[] {
       }
     }
   }
-  const best = candidates
-    .map(slice => JSON.parse(slice) as unknown[])
+  const arrays = candidates.map(slice => JSON.parse(slice) as unknown[])
+  const best = arrays
     .filter(list => list.some(item => item && typeof item === 'object'))
-    .sort((a, b) => b.length - a.length)[0] || []
+    .sort((a, b) => b.length - a.length)[0]
+  if (!best && options.requireArray && !arrays.some(list => list.length === 0)) throw new Error('梗提取响应没有有效数组')
   const out: MemeCandidate[] = []
-  for (const item of best.slice(0, 5)) {
+  for (const item of best?.slice(0, 5) ?? []) {
     const record = item && typeof item === 'object' && !Array.isArray(item) ? item as Record<string, unknown> : {}
     const content = String(record.content || '').replace(/\s+/g, ' ').trim().slice(0, 50)
     if (!content || content.length < 2) continue

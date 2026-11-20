@@ -545,7 +545,6 @@ export async function main(argv: string[]): Promise<void> {
     })
     const memeExtract = extractionBackend && createAgentSimulationMemeExtractor({
       baseUrl: extractionBackend.apiUrl, name: extractionBackend.model, apiKey: extractionBackend.apiKey, secrets: hostSecrets,
-      fetchImpl: observeModelFetch('meme_provider_http'),
     })
     const summaryBackend = config.midtermSummary
     const summarizeConversation = summaryBackend && createAgentConversationSummary({
