@@ -1695,6 +1695,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                   .map(m => ({ name: String(m.name || ''), text: String(m.text || '').slice(0, 80), atSelf: Boolean(m.atSelf || m.quoteToSelf) })),
               }, gateCurrent, gateContext), gateSignal, gateCurrent)
               await gateContext.ensureCurrent()
+              if (verdict === null) diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'failed', code: 'wake_gate_unavailable' })
               return verdict
             } finally { gateActive = false }
           }

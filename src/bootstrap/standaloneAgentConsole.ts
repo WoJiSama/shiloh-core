@@ -133,7 +133,10 @@ function compile(service: AgentConsoleService) {
 }
 
 /** HTTP only: services own durable state, current authorization, config CAS and native dispatch. */
-export function createStandaloneAgentConsole(options: AgentConsolePorts & { frontendDir: string; host?: string; port?: number }) {
+export function createStandaloneAgentConsole(options: AgentConsolePorts & {
+  frontendDir: string; host?: string; port?: number
+  onRequestFailure?(status: number, code: string): void
+}) {
   function currentGuard(signal: AbortSignal, isCurrent: () => boolean): AgentConsoleGuard {
     return createSynchronousGuard(signal, () => {
       if (!isCurrent()) fail('conflict')
@@ -171,8 +174,11 @@ export function createStandaloneAgentConsole(options: AgentConsolePorts & { fron
   function hostGuard(signal: AbortSignal): AgentConsoleGuard {
     return currentGuard(signal, () => !signal.aborted && authorityCurrent())
   }
-  function send(res: http.ServerResponse, status: number, body: string | Uint8Array, contentType: string) {
+  function send(res: http.ServerResponse, status: number, body: string | Uint8Array, contentType: string, failureCode: string | false = 'console_http_error') {
     if (res.destroyed || res.writableEnded) return
+    if (status >= 500 && failureCode) {
+      try { options.onRequestFailure?.(status, failureCode) } catch { /* Diagnostics do not affect the response. */ }
+    }
     res.writeHead(status, { 'content-type': contentType, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
       'referrer-policy': 'no-referrer', 'content-length': Buffer.byteLength(body) })
     res.end(body)
@@ -336,7 +342,7 @@ export function createStandaloneAgentConsole(options: AgentConsolePorts & { fron
     await authorize(service.operation, binding)
     const context: AgentConsoleContext = Object.freeze({ principal, ...(binding ? { binding } : {}), ...boundGuard(binding) })
     context.ensureCurrent()
-    if (!service.handle) return fail('unavailable')
+    if (!service.handle) return send(res, 503, JSON.stringify({ error: 'unavailable' }), 'application/json; charset=utf-8', false)
     const request: AgentConsoleRequest = Object.freeze({ method: req.method as AgentConsoleMethod, pathname: url.pathname,
       params: Object.freeze(params), query: Object.freeze(query), body: Object.freeze(body), ...(bytes ? { bytes: Uint8Array.from(bytes), contentType: req.headers['content-type'] ?? '' } : {}) })
     const checkResponse = (serialized: string) => {
@@ -371,7 +377,7 @@ export function createStandaloneAgentConsole(options: AgentConsolePorts & { fron
       if (res.headersSent || res.destroyed) { res.destroy(); return }
       const code = error instanceof AgentConsoleError && Object.hasOwn(statuses, error.code) ? error.code : 'request_failed'
       send(res, statuses[code] ?? 500, JSON.stringify({ error: code, ...(['commit_outcome_unknown', 'configuration_recovery_required'].includes(code) ? { requiresRestart: true } : {}),
-        ...(code === 'configuration_recovery_required' ? { recoveryRequired: true } : {}) }), 'application/json; charset=utf-8')
+        ...(code === 'configuration_recovery_required' ? { recoveryRequired: true } : {}) }), 'application/json; charset=utf-8', code)
     }).finally(() => { controller.abort(); active.delete(controller); res.off('close', disconnect) })
   })
   server.requestTimeout = 30_000

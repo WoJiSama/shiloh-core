@@ -254,7 +254,7 @@ test('real local streamable HTTP MCP sends only explicit headers and executes a 
 
 test('a broken real SSE stream retires custom tools and pending calls without implicit EventSource reconnect', { timeout: 8000 }, async t => {
   const remote = new Server({ name: 'local-sse-mcp-fixture', version: '1.0.0' }, { capabilities: { tools: {} } })
-  const calls = [], requests = [], errors = []
+  const calls = [], requests = [], errors = [], failures = []
   let transport, stream, handle
   remote.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'slow', description: 'SSE local fixture',
     inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
@@ -282,7 +282,7 @@ test('a broken real SSE stream retires custom tools and pending calls without im
     await handle?.close(); await remote.close(); await transport?.close()
     http.closeAllConnections(); await new Promise(resolve => http.close(resolve))
   })
-  handle = await openAgentMcpTools({ servers: { events: { type: 'sse', baseUrl: `http://127.0.0.1:${http.address().port}/sse`,
+  handle = await openAgentMcpTools({ onConnectionFailure: (...event) => failures.push(event), servers: { events: { type: 'sse', baseUrl: `http://127.0.0.1:${http.address().port}/sse`,
     autoReconnect: false, connectTimeoutMs: 2000, toolCallTimeoutMs: 1000,
   } } })
   const captured = handle.registry.custom[0]
@@ -298,5 +298,6 @@ test('a broken real SSE stream retires custom tools and pending calls without im
   assert.equal(requests.filter(request => request.method === 'GET').length, 1, 'EventSource cannot bypass autoReconnect:false')
   assert.equal(calls.length, 1, 'the uncertain remote action is never replayed')
   assert.ok(!result.content.includes('LATE_SSE_RESULT_MUST_NOT_BE_ACCEPTED'))
+  assert.deepEqual(failures, [['events', 'mcp_connection_lost']])
   assert.deepEqual(errors, [])
 })

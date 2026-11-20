@@ -204,7 +204,8 @@ test('optional wake and memory read failures preserve one normal turn with fixed
     const diagnostics = spy(), reads = []
     const unavailable = name => async () => { reads.push(name); throw Error(`private-read-body-${name}`) }
     const h = fixture({ diagnostics, proactiveProbability: 1,
-      wakeGateJudge: unavailable('wake'), loadDelegatedMemories: unavailable('delegated'), getStyleDigest: unavailable('style'),
+      wakeGateJudge: semanticReader === 'current' ? unavailable('wake') : async () => { reads.push('wake'); return null },
+      loadDelegatedMemories: unavailable('delegated'), getStyleDigest: unavailable('style'),
       ...(semanticReader === 'current' ? { readSemanticMemory: unavailable('semantic') } : { getSemanticRecall: unavailable('semantic') }),
       readConversationMemory: unavailable('narrative'), readGroupMemory: unavailable('group'),
       script: () => tools(toolCall('simFinishTurn', { choice: 'silent', reason: '本轮无需发言' })),

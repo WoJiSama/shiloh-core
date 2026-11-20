@@ -430,7 +430,8 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
               }
               return outcome(result.status === 'succeeded' ? 'success' : result.status === 'failed' ? 'error' : 'unknown', result.content.slice(0, usedHistory ? 32_000 : maxChars))
             } catch (error) {
-              diagnose({ stage: 'tool', operation: this.name, outcome: 'unknown', code: signal.aborted ? 'tool_cancelled' : 'tool_threw', error })
+              const timedOut = signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError'
+              diagnose({ stage: 'tool', operation: this.name, outcome: 'unknown', code: timedOut ? 'tool_timeout' : signal.aborted ? 'tool_cancelled' : 'tool_threw', error })
               return outcome('unknown', '工具执行未能确认结果，核实前不重复执行')
             } finally { clearInterval(timer); cancel.abort(); release?.() }
           }

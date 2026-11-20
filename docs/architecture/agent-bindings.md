@@ -158,6 +158,20 @@ npm start -- --config /path/to/agent-host.yaml --check
 
 反向模式的 `--check` 临时监听同一地址，等待客户端在 15 秒内接入，核验后关闭；该监听地址须空闲。
 
+### 运行告警
+
+在独立宿主的 `agent.env` 中设置 `BL_AGENT_ALERT_QQ_OWNER_CONNECTION=qq-main`，并重启，即可通过该 QQ 连接向 `bilibiliQuality.masters` 声明的唯一可信主人发私聊。同一已核验连接须能确认对方为好友。该用途仅授权宿主发送脱敏告警。接收人由配置确定，QQ 告警结果未知时保留待核实记录。连接断开或确认未发出时，宿主保留待发告警并退避重试。
+
+也可设置 `BL_AGENT_ALERT_WEBHOOK_URL=https://alerts.example.com/agent` 使用 Webhook。每个宿主选择一个告警渠道。Webhook 接收端需要接受 JSON `POST` 并以 HTTP 2xx 确认，地址支持 HTTPS 和本机回环 HTTP。`--check` 校验告警配置，跳过告警投递。移除所选环境变量并重启可停用推送。
+
+推送覆盖 Core 记录的工具失败、模型和 OneBot 接口故障、MCP 连接故障、控制台服务端错误、后台任务异常、操作日志故障，以及无法确认结果的操作。正常取消和控制台预期的客户端错误不触发推送。同类故障首次立即提交，随后在 60 秒窗口内累计次数，到期推送汇总。接收端暂不可用时以 5 至 60 秒的间隔退避重试，失败写入服务日志。
+
+Webhook 请求体形如 `{"version":1,"id":"<batch-id>","alerts":[{"stage":"model","operation":"provider_http","outcome":"failed","code":"http_error","httpStatus":503,"traceId":"<trace-id>","firstAt":0,"lastAt":0,"count":1}]}`。时间为 Unix 毫秒。重试沿用批次的 `id` 和 `Idempotency-Key`，接收端可据此去重。QQ 私聊显示同类故障的操作、状态、次数与 trace。用 `traceId` 在运行观测中查找对应操作。外发字段仅含运行元数据，队列有界，溢出汇总附带次数。
+
+待推送队列保存在进程内，正常退出会限时提交剩余告警。重启后的追溯使用 `dataDir/operations` 中已提交的记录。整机宕机、强制终止和进程卡死由独立于宿主的存活监控检测。
+
+### 连接与入站队列
+
 每次连接及重连核对 `get_login_info` 的 QQ 号，收件按账号与显式会话绑定校验。独立宿主在读取仿真上下文期间保留已落入 Redis 的唤醒，在开始模型调用或动作前领取。断线发生在领取期间时，仍有效的唤醒写回待处理队列，重连后重新检查。已开始的仿真回合按实际动作回执结算，发送结果未知时跳过重发。OneBot WebSocket 没有事件确认与补投递协议，断线期间的事件由平台端决定是否送达。`simulation.enabled: false` 停用独立宿主的新消息处理和到期承诺。绑定文件热读取，连接、模型与 `agent-host.yaml` 设置在下次进程启动时读取。 [OneBot v11 正向 WebSocket](https://github.com/botuniverse/onebot-11/blob/master/communication/ws.md)
 
 仿真、群文字和好友私聊分别按完整平台账号排队。仿真消息、撤回和互动在同一账号内按收件顺序处理。一个账号的引用查询或收件重试不阻塞其他账号。升级后首次启动会在连接平台之前分批将旧仿真收件队列移入对应账号队列，沿用原收件回执、绑定版本和互动标识。迁移可以从已经提交的批次继续。
