@@ -280,7 +280,8 @@ export async function openStandaloneMediaRelay(options: {
     let douyin: AgentMediaRelayProvider | undefined
     if (options.config.enabled && options.config.douyin?.enabled) {
       const directory = path.join(run, 'douyin-provider'); await mkdir(directory, { mode: 0o700 })
-      douyin = createAgentDouyinRelayProvider({ directory, artifacts, secrets: options.secrets, allowsText: options.allowsText })
+      douyin = createAgentDouyinRelayProvider({ directory, artifacts, secrets: options.secrets, allowsText: options.allowsText,
+        ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}) })
     }
     let xiaohongshu: AgentMediaRelayProvider | undefined
     if (options.config.enabled && options.config.xiaohongshu?.enabled) {

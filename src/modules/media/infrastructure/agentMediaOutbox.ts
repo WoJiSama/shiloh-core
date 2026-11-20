@@ -23,7 +23,6 @@ interface Prepared {
   readonly infoText: string
   readonly pageUrl: string
   readonly linkOnly: boolean
-  readonly failureDetail?: string
   release(): Promise<void>
 }
 interface Entry {
@@ -36,7 +35,6 @@ interface Entry {
   preparing: boolean
   sending: boolean
   cleanup?: Promise<void>
-  explained?: boolean
 }
 const failure = () => new Error('媒体搬运来源或交付已失效')
 const lane = (record: AgentMediaOutboxRecord) => JSON.stringify([record.binding.connectionId, conversationAddressKey(record.binding.target)])
@@ -50,7 +48,6 @@ const sameSource = (record: AgentMediaOutboxRecord, value: Awaited<ReturnType<Ag
 export function createAgentMediaOutbox(options: {
   readonly diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'>
   withDiagnosticScope?<T>(scope: AgentDiagnosticScope, operation: string, run: () => Promise<T>): Promise<T>
-  explainFailure?(input: { detail: string; isCurrent: () => Promise<boolean> | boolean; signal?: AbortSignal }): Promise<string | undefined>
   readonly storage: AgentInboxRedis
   readonly actions: MessageActionPort
   readonly provider?: AgentMediaRelayProvider
@@ -145,25 +142,9 @@ export function createAgentMediaOutbox(options: {
     return Object.freeze({ plan, infoText: input.infoText, pageUrl: input.pageUrl, linkOnly: false,
       release: () => release.call(input) })
   }
-  async function explain(entry: Entry, detail: string, legacy: string): Promise<string | undefined> {
-    diagnose({ stage: 'notification', operation: 'media_failure_notice', outcome: 'failed', code: 'request_unfulfilled' })
-    if (!options.explainFailure) return legacy
-    const authorized = async () => {
-      if (entry.session.record.effects.some(effect => effect.state === 'pending' || effect.state === 'unknown')) return false
-      try { await current(entry, true); return sendCurrent(entry) } catch { return false }
-    }
-    if (entry.explained || !await authorized()) return undefined
-    entry.explained = true
-    const signal = AbortSignal.any([entry.cancel.signal, entry.context!.signal, AbortSignal.timeout(15_000)])
-    try {
-      const value = await wait(options.explainFailure({ detail, isCurrent: authorized, signal }), signal)
-      if (typeof value === 'string' && value.trim() && value.length <= 1200 && safeText(value) && await authorized()) return value
-      diagnose({ stage: 'notification', operation: 'media_failure_notice', outcome: 'failed', code: 'explanation_unavailable' })
-    } catch (error) { diagnose({ stage: 'notification', operation: 'media_failure_notice', outcome: 'failed', code: 'explanation_failed', error }) }
-    return undefined
-  }
   async function prepare(record: AgentMediaOutboxRecord, entry: Entry) {
     return inScope(entry, 'media_prepare', async () => {
+      let providerReported = false
       try {
         const context = await wait(options.openContext(record, entry.cancel.signal), entry.cancel.signal, async late => { if (late && late !== 'wait') late.release() })
         if (context === 'wait') return
@@ -176,13 +157,21 @@ export function createAgentMediaOutbox(options: {
         await entry.session.preparing()
         await current(entry)
         diagnose({ stage: 'runtime', operation: 'media_provider_prepare', outcome: 'started' })
-        const result = await wait(Promise.resolve().then(() => options.provider!.prepare(record.source.share, prepareContext(entry))).catch(error => { diagnose({ stage: 'runtime', operation: 'media_provider_prepare', outcome: 'failed', code: 'provider_threw', error }); throw error }), entry.cancel.signal, releasePrepared)
+        const result = await wait(Promise.resolve().then(() => options.provider!.prepare(record.source.share, prepareContext(entry))).catch(error => {
+          if (!entry.cancel.signal.aborted) {
+            providerReported = true
+            diagnose({ stage: 'runtime', operation: 'media_provider_prepare', outcome: 'failed', code: 'provider_threw', error })
+          }
+          throw error
+        }), entry.cancel.signal, releasePrepared)
         diagnose({ stage: 'runtime', operation: 'media_provider_prepare', outcome: 'succeeded', code: 'provider_returned' })
         try { entry.prepared = prepared(result, record.source.share) } catch { await releasePrepared(result); throw failure() }
         await current(entry, true)
         entry.readyAt = now()
       } catch (error) {
-        diagnose({ stage: 'runtime', operation: 'media_prepare', outcome: 'failed', code: 'prepare_failed', error })
+        if (!providerReported && !entry.cancel.signal.aborted) {
+          diagnose({ stage: 'runtime', operation: 'media_prepare', outcome: 'failed', code: 'prepare_failed', error })
+        }
         try {
           if (stopped) return
           if (!entry.context?.isCurrent() || entry.cancel.signal.aborted) await entry.session.close('cancelled')
@@ -195,7 +184,7 @@ export function createAgentMediaOutbox(options: {
               : share.provider === 'douyin' ? '抖音作品（媒体资源准备失败）'
                 : share.provider === 'youtube' ? 'YouTube视频（媒体资源准备失败）'
                   : share.provider === 'pixiv' ? 'Pixiv作品（图片资源准备失败）' : '小红书笔记（媒体资源准备失败）'
-            entry.prepared = { pageUrl, infoText, linkOnly: true, failureDetail: '媒体资源准备失败，尚未取得可转发的资源；可以提供已核验的原作品链接',
+            entry.prepared = { pageUrl, infoText, linkOnly: true,
               plan: { version: 1, items: [{ parts: [{ kind: 'text', text: infoText }] }] }, async release() {} }
             entry.readyAt = now()
           }
@@ -232,14 +221,8 @@ export function createAgentMediaOutbox(options: {
     const record = entry.session.record, connection = record.binding.connectionId
     return inScope(entry, 'media_deliver', async () => {
       try {
-        let value = entry.prepared!
-        await current(entry, true)
+        const value = entry.prepared!
         if (value.linkOnly) {
-          if (value.failureDetail) {
-            const infoText = await explain(entry, value.failureDetail, value.infoText)
-            if (!infoText) { await entry.session.close('failed'); return }
-            value = { ...value, infoText }
-          }
           const sent = await text(entry, 'link', linkText(value))
           await entry.session.close(sent.state === 'sent' ? 'completed' : 'failed'); return
         }

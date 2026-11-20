@@ -24,8 +24,11 @@ export async function openAgentDouyinBrowserSession(guard: ReturnType<typeof dou
   if (typeof directory !== 'string' || !path.isAbsolute(directory) || await realpath(directory) !== directory) throw douyinFailure()
   const stat = await lstat(directory)
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.mode & 0o077) throw douyinFailure()
-  const profile = path.join(directory, 'browser-profile')
-  await mkdir(profile, { mode: 0o700 })
+  const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH
+  const privilegedLauncher = process.platform === 'linux' && process.getuid?.() === 0 &&
+    !!executablePath && process.env.BL_AGENT_CHROMIUM_UID !== undefined
+  const profile = privilegedLauncher ? undefined : path.join(directory, 'browser-profile')
+  if (profile) await mkdir(profile, { mode: 0o700 })
   let pending: Promise<Browser> | undefined, closing: Promise<void> | undefined
   const close = (): Promise<void> => closing ??= (async () => {
     try {
@@ -35,22 +38,25 @@ export async function openAgentDouyinBrowserSession(guard: ReturnType<typeof dou
         try { await browser.close() } finally { clearTimeout(kill) }
       }
     } catch { /* A failed or cancelled launch still owns its profile. */ }
-    await rm(profile, { recursive: true, force: true })
+    if (profile) await rm(profile, { recursive: true, force: true })
   })()
   try {
     // Recent Chromium versions can ignore the historical command-line switch.
-    // Seed the actual per-profile preference before the first browser process starts.
-    await mkdir(path.join(profile, 'Default'), { mode: 0o700 })
-    await writeFile(path.join(profile, 'Default', 'Preferences'), JSON.stringify({ webrtc: {
-      ip_handling_policy: 'disable_non_proxied_udp', multiple_routes_enabled: false, nonproxied_udp_enabled: false,
-    } }), { mode: 0o600, flag: 'wx' })
+    // The root launcher seeds Puppeteer's temporary profile before handing it to the browser user.
+    if (profile) {
+      await mkdir(path.join(profile, 'Default'), { mode: 0o700 })
+      await writeFile(path.join(profile, 'Default', 'Preferences'), JSON.stringify({ webrtc: {
+        ip_handling_policy: 'disable_non_proxied_udp', multiple_routes_enabled: false, nonproxied_udp_enabled: false,
+      } }), { mode: 0o600, flag: 'wx' })
+    }
     const puppeteer = await guard.wait(import('puppeteer'))
     await guard.ensure()
-    pending = puppeteer.default.launch({ headless: true, userDataDir: profile,
-      ...(process.env.PUPPETEER_EXECUTABLE_PATH ? { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH } : {}),
+    pending = puppeteer.default.launch({ headless: true, ...(profile ? { userDataDir: profile } : {}),
+      ...(executablePath ? { executablePath } : {}),
       args: ['--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-dev-shm-usage', '--no-first-run',
         '--disable-features=MediaRouter,OptimizationHints,DnsOverHttps', '--disable-quic',
         '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+        ...(privilegedLauncher ? ['--bl-agent-douyin-profile'] : []),
         '--proxy-server=http://127.0.0.1:9', '--proxy-bypass-list=<-loopback>', '--host-resolver-rules=MAP * ~NOTFOUND'] })
     const browser = await guard.wait(pending)
     await guard.ensure()

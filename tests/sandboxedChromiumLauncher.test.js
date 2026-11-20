@@ -87,6 +87,23 @@ test('Linux root launcher execve preserves PID, drops every identity and strips 
   t.diagnostic(`launcher sha256=${createHash('sha256').update(await readFile(launcher)).digest('hex')}`)
 })
 
+test('Linux root launcher gives Douyin a private profile with direct WebRTC UDP disabled', { skip, timeout: 10000 }, async t => {
+  const f = await fixture(t)
+  const outcome = await f.run({ args: [...f.args, '--bl-agent-douyin-profile'] }).result
+  assert.equal(outcome.code, 0, outcome.stderr)
+  const report = JSON.parse(outcome.stdout)
+  assert.deepEqual(report.args, f.args)
+  assert.deepEqual(report.profile, { uid, gid, mode: 0o700, entries: ['Default'] })
+  const defaults = path.join(f.profile, 'Default'), preferences = path.join(defaults, 'Preferences')
+  for (const [file, mode] of [[defaults, 0o700], [preferences, 0o600]]) {
+    const stat = await lstat(file)
+    assert.deepEqual([stat.uid, stat.gid, stat.mode & 0o7777], [uid, gid, mode])
+  }
+  assert.deepEqual(JSON.parse(await readFile(preferences, 'utf8')), { webrtc: {
+    ip_handling_policy: 'disable_non_proxied_udp', multiple_routes_enabled: false, nonproxied_udp_enabled: false,
+  } })
+})
+
 test('Linux root launcher keeps the browser directly killable under the original child PID', { skip, timeout: 10000 }, async t => {
   const f = await fixture(t), { child, result } = f.run({ args: [...f.args, '--hold-for-test'] })
   await new Promise((resolve, reject) => {
@@ -116,6 +133,10 @@ const rejected = [
   ['missing profile', f => ({ args: f.args.filter(arg => !arg.startsWith('--user-data-dir=')) })],
   ['non-temporary profile', f => ({ args: f.args.map(arg => arg.startsWith('--user-data-dir=') ? `--user-data-dir=${f.home}` : arg) })],
   ['occupied profile', async f => { await writeFile(path.join(f.profile, 'existing'), 'preserve existing profile'); return {} }],
+  ['occupied Douyin profile', async f => {
+    await mkdir(path.join(f.profile, 'Default'), { mode: 0o700 })
+    return { args: [...f.args, '--bl-agent-douyin-profile'] }
+  }],
   ['non-private profile', async f => { await chmod(f.profile, 0o755); return {} }],
   ['non-root profile', async f => { await chown(f.profile, uid, gid); return {} }],
   ['symbolic-link profile', async f => {

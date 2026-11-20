@@ -146,6 +146,17 @@ for (const duration of [0, 1801]) test(`video duration ${duration} leaves its pa
   assert.match(result.infoText, duration ? /超过30分钟/ : /时长未通过验证/)
 })
 
+test('unavailable metadata retains the original official page and emits a single sanitized diagnostic', async t => {
+  const diagnostics = []
+  const f = await fixture(t, { item: item({ video: {} }), options: {
+    diagnostics: { emit(event) { diagnostics.push(event) } },
+  } })
+  const result = await f.prepare()
+  assert.equal(result.status, 'metadata-only')
+  assert.equal(result.pageUrl, `https://www.douyin.com/video/${ID}`)
+  assert.deepEqual(diagnostics, [{ stage: 'runtime', operation: 'douyin_provider_prepare', outcome: 'failed', code: 'metadata_unavailable' }])
+})
+
 test('incomplete static metadata uses target-bound browser fallback and scoped anonymous result only', async t => {
   const resolved = douyinMetadata(gallery(2), ID, 'note')
   const f = await fixture(t, { item: item({ video: {} }), browser: async (input, context, read) => {

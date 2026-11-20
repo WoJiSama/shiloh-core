@@ -39,7 +39,8 @@ test('the actual production browser launcher prevents native WebRTC UDP without 
   const f = await fixture(t), guard = douyinGuard(f.context, 12000)
   const session = await openAgentDouyinBrowserSession(guard, f.directory)
   t.after(async () => { guard.close(); await session.close() })
-  assert.equal((await lstat(path.join(f.directory, 'browser-profile'))).mode & 0o077, 0)
+  const profile = session.browser.process().spawnargs.find(arg => arg.startsWith('--user-data-dir=')).slice('--user-data-dir='.length)
+  assert.equal((await lstat(profile)).mode & 0o077, 0)
   const page = await session.browser.newPage(); let httpRequests = 0
   await page.setRequestInterception(true)
   page.on('request', request => { httpRequests++; void request.abort().catch(() => {}) })
@@ -54,7 +55,9 @@ test('the actual production browser launcher prevents native WebRTC UDP without 
   await delay(1800); await page.evaluate(() => globalThis.isolationPeer.close())
   assert.deepEqual(f.packets, [], 'native ICE cannot contact even a loopback STUN socket outside the pinned HTTP port')
   assert.equal(httpRequests, 0, 'the blocked UDP path never depended on page HTTP interception')
-  await session.close(); assert.deepEqual(await readdir(f.directory), [])
+  await session.close()
+  assert.deepEqual(await readdir(f.directory), [])
+  await assert.rejects(lstat(profile), { code: 'ENOENT' })
 })
 
 test('native Douyin browser keeps official scripts and signed detail requests while blocking page, iframe, popup and worker network capabilities', { timeout: 25000 }, async t => {

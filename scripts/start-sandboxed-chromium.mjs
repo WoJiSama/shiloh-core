@@ -6,6 +6,7 @@ import path from 'node:path'
 // Existing root-owned Core installations can drop only the browser identity.
 // execve preserves the browser PID, pipes and Puppeteer's process cleanup.
 const fail = () => { throw new Error('chromium-launch-refused') }
+const douyinProfileFlag = '--bl-agent-douyin-profile'
 function identity(value) {
   if (typeof value !== 'string' || !/^[1-9][0-9]{0,9}$/u.test(value)) fail()
   const result = Number(value)
@@ -49,6 +50,16 @@ try {
   const fd = fs.openSync(profile, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
   try {
     if (!same(before, fs.fstatSync(fd)) || fs.readdirSync(profile).length || !same(before, directory(profile, 0))) fail()
+    if (args.includes(douyinProfileFlag)) {
+      const defaults = path.join(profile, 'Default')
+      const preferences = path.join(defaults, 'Preferences')
+      fs.mkdirSync(defaults, { mode: 0o700 })
+      fs.writeFileSync(preferences, JSON.stringify({ webrtc: {
+        ip_handling_policy: 'disable_non_proxied_udp', multiple_routes_enabled: false, nonproxied_udp_enabled: false,
+      } }), { mode: 0o600, flag: 'wx' })
+      fs.chownSync(preferences, uid, gid)
+      fs.chownSync(defaults, uid, gid)
+    }
     fs.fchownSync(fd, uid, gid)
     if (!same(before, fs.fstatSync(fd)) || !same(before, directory(profile, uid))) fail()
   } finally { fs.closeSync(fd) }
@@ -67,7 +78,7 @@ try {
   process.chdir(home)
   directory(home, uid)
   directory(runtime, uid)
-  process.execve(executable, [executable, ...args], env)
+  process.execve(executable, [executable, ...args.filter(arg => arg !== douyinProfileFlag)], env)
   fail()
 } catch {
   process.stderr.write('[Agent] Sandboxed Chromium launch refused; check the dedicated browser user, private home and temporary profile.\n')
