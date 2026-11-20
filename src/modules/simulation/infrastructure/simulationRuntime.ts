@@ -8,6 +8,8 @@ import type { CommitmentRunOptions, CommitmentRunResult } from '../../../contrac
 import type { ChatRequestData, ChatResponse } from '../../../contracts/modelGateway.js'
 import type { ExecutionOptions } from '../../../contracts/modelExecution.js'
 import type { AgentHistoryRecall, AgentHistoryRequestSource } from '../../../contracts/agentHistory.js'
+import type { CognitionConsolidator, CognitionGuard, CognitionRecall, CognitionTurnProjection } from '../../../contracts/agentCognition.js'
+import { cognitionConsolidationPrompt, parseCognitionProposals } from '../../memory/infrastructure/cognitionConsolidation.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest, ConversationFileCatalog, ConversationFileEntry, ConversationFileReadOptions, FileReadGuard, MessageFileReadOptions } from '../../../contracts/agentFiles.js'
 import type { AgentFileUpload, FileDeliveryReceipt } from '../../../contracts/agentFileDelivery.js'
 import type { AgentMessageVideo, AgentVideoInput, MessageVideoReadOptions } from '../../../contracts/agentVideo.js'
@@ -129,6 +131,9 @@ export interface SimulationRuntimePorts {
   isAccountReady?(account: PlatformAccountRef): boolean
   /** Scope a turn to the current privacy state through its final synchronous transport guard. */
   beginMemoryTurn?(binding: AgentBindingSnapshot): Promise<{ isCurrent(): boolean; release(): void; signal: AbortSignal }>
+  readCognition?(target: ConversationAddress, query: string, guard: CognitionGuard): Promise<CognitionRecall | undefined>
+  projectCognition?(input: CognitionTurnProjection, guard: CognitionGuard): Promise<void>
+  consolidateCognition?(binding: AgentBindingSnapshot, guard: CognitionGuard, model: CognitionConsolidator): Promise<void>
   isMemoryInputAvailable?(account: PlatformAccountRef): boolean
   YTapi(requestData: ChatRequestData, config: unknown, signal?: AbortSignal, isCurrent?: ExecutionOptions['isCurrent'], ensureCurrent?: ExecutionOptions['ensureCurrent']): Promise<ChatResponse>
   /** Dynamic host credential fence before model content or tool arguments enter retained history. */
@@ -1381,8 +1386,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       }
       state.activityVersion = activityVersion
       let character = await characters.update(characterScope, current => expireCharacterGoals(current, now()))
+      const cognitionMessageRefs = () => [...new Map([...state!.recent, ...state!.unread].filter(message => message.messageId != null).map(message => [message.seq, { seq: message.seq, messageId: String(message.messageId) }])).values()]
+      if (resolvedPersona.binding && ports.projectCognition) try {
+        await ports.projectCognition({ agentId: resolvedPersona.binding.agentId, conversation: target, character,
+          messageRefs: cognitionMessageRefs(), expressions: [],
+        }, { isCurrent: canCallModel, signal: turnSignal })
+      } catch (error) { diagnose({ stage: 'memory', operation: 'cognition_project', outcome: 'failed', code: 'cognition_projection_failed', error }) }
       const shared = sharedFor(characterScope)
-      const sharedSnapshot = await shared.contextProjection()
+      const sharedSnapshot = ports.readCognition ? [] : await shared.contextProjection()
       const sharedFingerprint = await shared.fingerprint()
       if (state.sharedSelfFingerprint !== sharedFingerprint) {
         state.agentHistory = []
@@ -1727,6 +1738,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         let semanticRecall = ''
         let semanticRecallIncomplete = false
         let semanticProjection: AgentSemanticMemoryRecall | undefined
+        let cognitionProjection: CognitionRecall | undefined
+        if (ports.readCognition) try {
+          cognitionProjection = await ports.readCognition(target, anchor?.text ?? recallQuery, { isCurrent: canCallModel, signal: turnSignal })
+        } catch (error) { diagnose({ stage: 'memory', operation: 'cognition_read', outcome: 'failed', code: 'cognition_read_failed', error }) }
         if (recallQuery && ports.readSemanticMemory) {
           try {
             semanticProjection = await ports.readSemanticMemory(target, recallQuery, canCallModel, memoryTurn?.signal,
@@ -1770,6 +1785,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           for (const projection of historyProjections) if (!await projection.isCurrent()) throw new Error('显式历史来源已改变，停止使用旧上下文')
           for (const projection of fileProjections) if (!await projection.isCurrent()) throw new Error('文件资料来源已改变，停止使用旧上下文')
           if (semanticProjection?.text && !await semanticProjection.isCurrent()) throw new Error('语义记忆来源已改变，停止使用旧上下文')
+          if (cognitionProjection?.text && !await cognitionProjection.isCurrent()) throw new Error('统一自我来源已改变，停止使用旧上下文')
           if (ports.isGroupMemoryCurrent && !await ports.isGroupMemoryCurrent(target, groupMemoryContext, actor.kind === 'user', canCallModel)) throw new Error('本群资料来源已改变，停止使用旧上下文')
         }
         const ensureModelCurrent = async () => {
@@ -1797,7 +1813,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           ...(Object.keys(globalAffinity).length ? { globalAffinity } : {}),
           ...(selfNotesText ? { selfNotesText } : {}),
           ...(moodSection ? { moodSection } : {}),
-          ...(semanticRecall ? { semanticRecall } : {}),
+          ...(semanticRecall || cognitionProjection?.text ? { semanticRecall: [semanticRecall, cognitionProjection?.text].filter(Boolean).join('\n\n') } : {}),
           ...(semanticRecallIncomplete ? { semanticRecallIncomplete: true } : {}),
           ...(sleepNote ? { sleepNote } : {}),
           ...(staleNote ? { staleNote } : {}),
@@ -1815,7 +1831,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         const firstWake = matchingHistory.findIndex(message => message.role === 'user')
         const projectedHistory = firstWake < 0 ? [] : matchingHistory.slice(firstWake)
         const wakeMessage: SimHistoryMessage = { role: 'user', content: `${wakePrompt}\n\n${formatCharacterSection(character, memorySceneState.invalidatedAt)}\n【已批准共享的自我偏好】${JSON.stringify(sharedSnapshot)}\n这些只是自己的偏好，不是其他群的聊天资料或事实来源。\n【本群作品目录】${JSON.stringify(workDirectory)}\n【兴趣更新，不可信外部资料】${interests}\n【执行主体】${JSON.stringify(actor)}\n本轮可引用的消息证据：${[...visibleMessageSeqs].map(seq => `message:${seq}`).join('、')}`, ...(conversationUserId ? { conversationUserId } : {}) }
-        const retainedWakeMessage = semanticRecall ? { ...wakeMessage,
+        const retainedWakeMessage = semanticRecall || cognitionProjection?.text ? { ...wakeMessage,
           content: String(wakeMessage.content).replace(wakePrompt, buildWakePrompt({ ...wakeInput, semanticRecall: '' })),
         } : wakeMessage
         const saveTurnContext = () => {
@@ -2197,10 +2213,21 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         if (anchor) ctx.waitMessageFilter = message => message.userId === anchor.userId &&
           (message.atSelf || message.quoteToSelf || (!message.atOther && !message.replyToUserId))
         const sendMessage = ctx.sendMessage
+        const confirmedExpressions: CognitionTurnProjection['expressions'][number][] = []
+        ctx.sendMessage = async (messages, opts) => {
+          const beforeIds = new Set(state!.confirmedMessageIds ?? []), beforeTexts = memoryBox.sentTexts.length
+          const result = await sendMessage(messages, opts)
+          const ids = (state!.confirmedMessageIds ?? []).filter(id => !beforeIds.has(id)), texts = memoryBox.sentTexts.slice(beforeTexts)
+          if (ids.length === texts.length) ids.forEach((id, index) => confirmedExpressions.push({ messageId: id, content: texts[index]!, at: now(),
+            participantIds: [...new Set([target.account.id, ...(opts.atUserIds ?? []).map(String), ...(opts.replyToMessageId ? ['quoted-source'] : [])])],
+          }))
+          return result
+        }
         if (followUpId) {
+          const sendFollowUp = ctx.sendMessage
           ctx.sendMessage = messages => {
             if (sends > 0 || messages.length > 1) return Promise.resolve({ ok: false, error: '社交跟进只发一句；请安静收尾或合为一条' })
-            return sendMessage(messages, {})
+            return sendFollowUp(messages, {})
           }
         }
         const visibleCharacterRefs = new Set([
@@ -2250,7 +2277,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         const activityTools = [
           ...createCharacterWorkspaceTools({ workspace, visibleEvidenceRefs, ensureActive: () => ensureExecution(), sharedSourceIds: () => sharedIds }),
           ...createCharacterSubscriptionTools({ subscriptions: subscriptionsFor(characterScope), ensureActive: () => ensureExecution() }),
-          ...createSharedSelfTools({ shared, visibleEvidenceRefs, ensureActive: () => ensureExecution() }),
+          ...(!ports.readCognition ? createSharedSelfTools({ shared, visibleEvidenceRefs, ensureActive: () => ensureExecution() }) : []),
           ...createCharacterWorkerTools({ ensureActive: async () => { await ensureExecution(); if (ports.characterWorkerAvailable?.() === false) throw new Error('工作器连接已停用') }, visibleEvidenceRefs,
             ...(ports.runCharacterWorker && ports.characterWorkerAvailable?.() !== false ? { run: (task: CharacterWorkerTask, signal: AbortSignal) => ports.runCharacterWorker!(task, characterScope, signal) } : {}),
           }),
@@ -3281,20 +3308,27 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         const attachmentRevoked = attachmentSourceIds.size > 0 &&
           (await Promise.all([...attachmentSourceIds].map(id => ports.isMessageRecalled?.(target, id)))).some(Boolean)
         const semanticRevoked = semanticProjection?.text && !await semanticProjection.isCurrent()
+        const cognitionRevoked = cognitionProjection?.text && !await cognitionProjection.isCurrent()
         const historyRevoked = !(await Promise.all(historyProjections.map(projection => projection.isCurrent()))).every(Boolean)
         const filesRevoked = !(await Promise.all(fileProjections.map(projection => projection.isCurrent()))).every(Boolean)
-        const removedSource = attachmentRevoked || semanticRevoked || historyRevoked || filesRevoked || memoryTurn?.isCurrent() === false ||
+        const removedSource = attachmentRevoked || semanticRevoked || cognitionRevoked || historyRevoked || filesRevoked || memoryTurn?.isCurrent() === false ||
           (await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt || revisedSources || [...sourceMemoryIds].some(id => !activeCharacterMemories(latestCharacter).some(memory => memory.id === id)) || await store.loadActivityVersion(groupId) !== activityVersion || await shared.fingerprint() !== sharedFingerprint || !isBindingCurrent()
         // Intermediate model output may echo ephemeral image or initial prompt material.
-        const thisTurn = (semanticRecall || ephemeralRead ? [retainedWakeMessage] : usedImageDescription || usedInitialPrompt || groupMemoryContext ? [wakeMessage] : history.slice(firstCurrentMessage)).map(message => {
+        const thisTurn = (semanticRecall || cognitionProjection?.text || ephemeralRead ? [retainedWakeMessage] : usedImageDescription || usedInitialPrompt || groupMemoryContext ? [wakeMessage] : history.slice(firstCurrentMessage)).map(message => {
           const retained = readForward && message.role === 'tool' && message.name === 'simGetForward'
             ? { ...message, content: '本轮请求查看合并转发，正文需按原消息重新读取' } : message
           return conversationUserId ? { ...retained, conversationUserId } : retained
         })
-        state.agentHistory = removedSource ? [] : failureNoticeTurn ? priorHistory : trimAgentHistory([...priorHistory, ...thisTurn], cfg.turn.historyMaxMessages, cfg.turn.historyMaxChars)
+        state.agentHistory = removedSource || cognitionProjection?.text ? [] : failureNoticeTurn ? priorHistory : trimAgentHistory([...priorHistory, ...thisTurn], cfg.turn.historyMaxMessages, cfg.turn.historyMaxChars)
+        if (!removedSource && resolvedPersona.binding && ports.projectCognition) try {
+          await ports.projectCognition({ agentId: resolvedPersona.binding.agentId, conversation: target, character: latestCharacter,
+            messageRefs: cognitionMessageRefs(), expressions: !semanticRecall && !ephemeralRead && !groupMemoryContext && !usedImageDescription && !usedInitialPrompt && !historyProjections.length && !fileProjections.length ? confirmedExpressions.filter(expression => !expression.participantIds.includes('quoted-source')) : [],
+            contextNodeIds: cognitionProjection?.nodes.map(node => node.id) ?? [],
+          }, { isCurrent: canCallModel, signal: turnSignal })
+        } catch (error) { diagnose({ stage: 'memory', operation: 'cognition_project', outcome: 'failed', code: 'cognition_projection_failed', error }) }
         if (removedSource) delete state.lastConfirmedChat
-        if (groupMemoryContext || semanticRecall || ephemeralRead) delete state.lastConfirmedChat
-        if (sends > 0 && !failureNoticeTurn && !removedSource && !groupMemoryContext && !semanticRecall && !ephemeralRead && actor.kind === 'user' && actor.userId && memoryBox.sentTexts.length) {
+        if (groupMemoryContext || semanticRecall || cognitionProjection?.text || ephemeralRead) delete state.lastConfirmedChat
+        if (sends > 0 && !failureNoticeTurn && !removedSource && !groupMemoryContext && !semanticRecall && !cognitionProjection?.text && !ephemeralRead && actor.kind === 'user' && actor.userId && memoryBox.sentTexts.length) {
           state.lastConfirmedChat = { at: now(), userId: actor.userId, text: memoryBox.sentTexts.slice(-2).join('\n').slice(-500) }
         }
         if (sends > qqActionSends && isBindingCurrent()) state.nextReplyCheckAt = now() + cfg.wake.replyCheckMs
@@ -3302,7 +3336,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         if (sends > qqActionSends && !failureNoticeTurn && !removedSource && !semanticRecall && !ephemeralRead) try { await ports.recordGroupReply?.(target, canCallModel) } catch {
           diagnose({ stage: 'memory', operation: 'simulation_group_reply_record', outcome: 'failed', code: 'group_reply_not_recorded' })
         }
-        if (sends > qqActionSends && !failureNoticeTurn && !removedSource && !groupMemoryContext && !semanticRecall && !ephemeralRead) {
+        if (sends > qqActionSends && !failureNoticeTurn && !removedSource && !groupMemoryContext && !semanticRecall && !cognitionProjection?.text && !ephemeralRead) {
           try {
             const trigger = actor.kind === 'user' ? state.recent.find(message => message.seq === reason.seq) : undefined
             const replyText = memoryBox.sentTexts.slice(0, 2).join(' / ').slice(0, 200)
@@ -3935,7 +3969,27 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       }
       if (!update.updates.length && ports.reflectCharacter && ports.getSection().reflection?.enabled !== false) {
         const reflection = reflectionFor(scope)
-        await reflection.run({ guard, memoryInvalidatedAt, sharedSources: (await shared.contextProjection()).map(item => item.id),
+        if (binding && ports.projectCognition) await ports.projectCognition({ agentId: binding.agentId, conversation: target,
+          character: await characters.load(scope), messageRefs: [...state.recent, ...state.unread].filter(message => message.messageId != null).map(message => ({ seq: message.seq, messageId: String(message.messageId) })), expressions: [],
+        }, { isCurrent: canCallModel, signal: controller.signal, ensureCurrent: guard })
+        await reflection.run({ guard, memoryInvalidatedAt, sharedSources: ports.readCognition ? [] : (await shared.contextProjection()).map(item => item.id),
+          ...(binding && ports.consolidateCognition ? { consolidate: async () => {
+            await ports.consolidateCognition!(binding, { isCurrent: canCallModel, signal: memoryTurn ? AbortSignal.any([controller.signal, memoryTurn.signal]) : controller.signal, ensureCurrent: guard }, async (input, sourceGuard) => {
+              const timeout = AbortSignal.timeout(30_000)
+              const signal = AbortSignal.any([timeout, controller.signal, ...(sourceGuard.signal ? [sourceGuard.signal] : [])])
+              await sourceGuard.ensureCurrent?.()
+              const response = await ports.reflectCharacter!({ messages: [{ role: 'system', content: cognitionConsolidationPrompt(input) }, { role: 'user', content: '只返回本次有依据的认知变更 JSON。' }], temperature: 0.3, max_tokens: 1600 }, ports.getExecutionConfig(), signal, sourceGuard.isCurrent, sourceGuard.ensureCurrent)
+              const usage = record(response.usage)
+              recordWakeTokens(state, Number(usage.total_tokens) || 0)
+              await store.save(groupId, state)
+              ports.recordTokens?.({ scope: groupId, stage: 'cognition-consolidation', model: String(response.model || ''), usage })
+              await sourceGuard.ensureCurrent?.()
+              if (response.error || signal.aborted) throw new Error('认知整理模型调用失败')
+              const content = response.choices?.[0]?.message?.content
+              if (typeof content !== 'string' || content.length > 16_000) throw new Error('认知整理未返回有效结构')
+              return parseCognitionProposals(JSON.parse(content.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')))
+            })
+          } } : {}),
           ...(ports.getSection().consistency?.enabled === true ? { review: async (candidate: Record<string, unknown>, before: CharacterState, evidence: unknown) => {
             await guard()
             if (ports.getSection().consistency?.enabled !== true) return
@@ -4732,7 +4786,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           { name: '作品空间', description: '本群草稿、版本、恢复与来源撤销；分享须走发送工具', available: true },
           { name: '公开兴趣订阅', description: 'RSS、Atom、GitHub releases；有界轮询与更新去重', available: true },
           { name: '独立反思', description: '至少六小时一次、每日最多两次，受群预算与参与边界约束', available: !!ports.reflectCharacter && ports.getSection().reflection?.enabled !== false },
-          { name: '跨群自我偏好', description: '只共享主人批准的角色观点/兴趣，来源撤销时失效', available: true },
+          { name: '跨群自我偏好', description: ports.readCognition ? '同一机器人的普通兴趣与观点可跨场景使用，保留来源与撤销关系' : '只共享主人批准的角色观点/兴趣，来源撤销时失效', available: true },
           { name: '外部工作器', description: '可配置研究、图片或浏览器网关，受任务协议、超时、取消与真实回执约束', available: !!ports.runCharacterWorker && ports.characterWorkerAvailable?.() !== false },
           ...resolveExtraTools(resolveExtraToolNames(runtimeConfig(),groupId)).map(tool => ({ name: tool.name, description: (tool.description || '').slice(0,160), available: ports.isExtraToolAutonomous?.(tool.name) !== false && (AUTONOMOUS_EXTRA_TOOLS.includes(tool.name) || (AUTONOMOUS_CREATIVE_TOOLS.includes(tool.name) && Array.isArray(ports.getSection().autonomousTools) && ports.getSection().autonomousTools!.includes(tool.name))) })),
         ],
@@ -4748,7 +4802,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     administration.ensureCurrent()
     if (action === 'pause' || action === 'delete-memory') backgroundByGroup.get(groupId)?.abort()
     if (action === 'delete-memory') await store.invalidateActivity(groupId)
-    await characters.update(scope, current => {
+    const updatedCharacter = await characters.update(scope, current => {
       if (action === 'pause' || action === 'resume') return setCharacterPaused(current, action === 'pause', now())
       if (!id) throw new Error('缺少记录标识')
       if (action === 'delete-memory') return deleteCharacterMemory(current, id, now())
@@ -4767,6 +4821,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       // A turn may have started after the first invalidation but before the
       // source deletion completed. Invalidate that intermediate view as well.
       await store.invalidateActivity(groupId)
+    }
+    if (ports.projectCognition) {
+      const target = targetFor(groupId, state.botId || ports.getSelf().id), binding = personaFor(target).binding
+      if (binding) await ports.projectCognition({ agentId: binding.agentId, conversation: target, character: updatedCharacter,
+        messageRefs: [...state.recent, ...state.unread].filter(message => message.messageId != null).map(message => ({ seq: message.seq, messageId: String(message.messageId) })), expressions: [],
+      }, { isCurrent: () => { try { administration.ensureCurrent(); return !stopped && personaFor(target).binding?.agentId === binding.agentId } catch { return false } },
+        ensureCurrent: async () => { administration.ensureCurrent() },
+      })
     }
     return '角色状态已更新'
   }

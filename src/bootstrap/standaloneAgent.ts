@@ -499,6 +499,7 @@ export async function main(argv: string[]): Promise<void> {
       episodicMemory: config.episodicMemory,
       groupMemory: config.groupMemory,
       semanticMemory: config.semanticMemory,
+      cognition: config.cognition,
       history: config.history,
       textTrigger: config.textTrigger,
       isTextTriggerCurrent: config.isConfigCurrent,

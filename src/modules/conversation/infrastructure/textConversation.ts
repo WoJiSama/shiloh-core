@@ -5,6 +5,7 @@ import type { PersonMemoryStore } from '../../../contracts/personMemory.js'
 import type { PersonaSnapshot } from '../../../contracts/persona.js'
 import type { AgentSemanticMemoryRecall } from '../../../contracts/semanticMemory.js'
 import type { AgentHistoryRecall } from '../../../contracts/agentHistory.js'
+import type { CognitionGuard, CognitionRecall } from '../../../contracts/agentCognition.js'
 import type { AgentTool, AgentToolContext, AgentQqActionRunner } from '../../../contracts/agentTool.js'
 import type { AgentGiftResult } from '../../../contracts/agentQqGift.js'
 import type { AgentQzoneResult } from '../../../contracts/agentQzone.js'
@@ -69,6 +70,8 @@ export function createTextConversation(ports: {
   learnConfirmed?(incoming: IncomingMessage, binding: AgentBindingSnapshot, isCurrent: () => boolean): Promise<void>
   readConversationMemory?(incoming: IncomingMessage, viewer: PersonaSnapshot, isCurrent: () => boolean): Promise<{ digest: string; episodes: string }>
   readSemanticMemory?(incoming: IncomingMessage, isCurrent: () => boolean, signal?: AbortSignal): Promise<AgentSemanticMemoryRecall | undefined>
+  readCognition?(incoming: IncomingMessage, guard: CognitionGuard): Promise<CognitionRecall | undefined>
+  recordCognitionReply?(incoming: IncomingMessage, binding: AgentBindingSnapshot, reply: string, replyId: string, guard: CognitionGuard, contextNodeIds: readonly string[]): Promise<void>
   readHistory?(incoming: IncomingMessage, input: Record<string, unknown>, isCurrent: () => boolean, signal?: AbortSignal): Promise<AgentHistoryRecall>
   readGroupMemory?(incoming: IncomingMessage, viewer: PersonaSnapshot, isCurrent: () => boolean): Promise<string>
   isGroupMemoryCurrent?(incoming: IncomingMessage, expected: string, guard: () => boolean): Promise<boolean>
@@ -203,6 +206,10 @@ export function createTextConversation(ports: {
     if (!await memoryCurrent()) return
     const groupMemory = !isPrivateChat ? await ports.readGroupMemory?.(incoming, snapshot, isCurrent) : ''
     if (!await memoryCurrent()) return
+    const cognition = await ports.readCognition?.(incoming, { isCurrent, ...(signal ? { signal } : {}),
+      ensureCurrent: async () => { if (!await memoryCurrent()) throw new Error('认知上下文来源已改变') },
+    }).catch(error => { log('runtime', 'text_cognition_read', 'failed', 'memory_read_failed', error); return undefined })
+    if (!await memoryCurrent()) return
     const recallSection = memoryFacts && `【当前对话者的历史资料】只在相关时参考，保留原有证据类型。\n${memoryFacts}`
     const messages: ChatMessage[] = [{
       role: 'system',
@@ -230,6 +237,7 @@ export function createTextConversation(ports: {
     if (narrative?.digest) messages.push({ role: 'user', content: narrative.digest })
     if (narrative?.episodes) messages.push({ role: 'user', content: narrative.episodes })
     if (semantic?.text) messages.push({ role: 'user', content: semantic.text })
+    if (cognition?.text) messages.push({ role: 'user', content: cognition.text })
     if (semanticIncomplete) messages.push({ role: 'user', content: '【历史检索未完成】本轮检索失败或超时，不能据此断言以前没有发生过。' })
     if (groupMemory) messages.push({ role: 'user', content: groupMemory })
     const mergedSources = trigger?.sources.filter(source => source !== incoming) ?? []
@@ -250,6 +258,7 @@ export function createTextConversation(ports: {
     const memoryAndGroupCurrent = async () => {
       if (!await memoryCurrent()) return false
       if (semantic?.text && (!await semantic.isCurrent() || !await memoryCurrent())) return false
+      if (cognition?.text && (!await cognition.isCurrent() || !await memoryCurrent())) return false
       for (const projection of historyProjections) if (!await projection.isCurrent() || !await memoryCurrent()) return false
       if (!isPrivateChat && ports.isGroupMemoryCurrent &&
           (!await ports.isGroupMemoryCurrent(incoming, groupMemory ?? '', isCurrent) || !await memoryCurrent())) return false
@@ -271,8 +280,9 @@ export function createTextConversation(ports: {
       const text = safeTruncateUnicode(sanitizeFinalReplyText(notice, { aiFlavorPhrases }), 600)
       if (!text || !ports.allowsText(text)) { log('runtime', 'failure_notice', 'failed', 'forbidden_notice'); return }
       try {
-        if (actionAttempted && !await ports.inbox.finishTextAction(target, messageId, recallVersion, text)) return
-        await deliver(text, actionAttempted ? text : undefined, sourceCurrent)
+        if (!await current()) return
+        if (actionAttempted && !cognition?.text && !await ports.inbox.finishTextAction(target, messageId, recallVersion, text)) return
+        await deliver(text, actionAttempted ? cognition?.text ? '' : text : undefined, sourceCurrent)
       } catch (error) { log('runtime', 'failure_notice', 'failed', 'notice_delivery_unavailable', error) }
     }
     const modelReply = async (request: ChatRequestData, operation: string): Promise<ChatResponseMessage | undefined> => {
@@ -513,15 +523,21 @@ export function createTextConversation(ports: {
     const text = safeTruncateUnicode(sanitizeFinalReplyText(grounded, { aiFlavorPhrases }), maxMessageLength)
     if (!text) return
 
-    if (!await memoryCurrent()) return
-    if (actionAttempted && !await ports.inbox.finishTextAction(target, messageId, recallVersion, text)) return
-    const receipt = await deliver(text, actionAttempted ? text : undefined, toolReply === undefined
-      ? async () => await memoryAndGroupCurrent() && (!usedScoped || await scopedEvidenceCurrent()) : memoryCurrent)
+    const replyContextCurrent = async () => await memoryAndGroupCurrent() && (!usedScoped || await scopedEvidenceCurrent())
+    if (!await replyContextCurrent()) return
+    // A cognition-derived notification cannot survive as replay text without its revocable provenance.
+    if (actionAttempted && !cognition?.text && !await ports.inbox.finishTextAction(target, messageId, recallVersion, text)) return
+    const receipt = await deliver(text, actionAttempted ? cognition?.text ? '' : text : undefined, replyContextCurrent)
     if (receipt?.state !== 'sent' || !await memoryCurrent()) return
+    if (toolReply === undefined && !mergedSources.length && !groupMemory && !semantic?.text && !usedHistory && !usedScoped && !incoming.quote) try {
+      await ports.recordCognitionReply?.(incoming, binding, text, receipt.messageId, { isCurrent, ...(signal ? { signal } : {}),
+        ensureCurrent: async () => { if (!await memoryAndGroupCurrent()) throw new Error('认知表达来源已改变') },
+      }, cognition?.nodes.map(node => node.id) ?? [])
+    } catch (error) { log('runtime', 'text_cognition_reply', 'failed', 'post_send_record_failed', error) }
     if (toolReply === undefined && !mergedSources.length) {
       if (!semantic?.text && !usedHistory && !usedScoped) try { await ports.recordGroupReply?.(incoming, binding, isCurrent) } catch (error) { log('runtime', 'text_record_group_reply', 'failed', 'post_send_record_failed', error) }
       if (!await memoryCurrent()) return
-      if (!groupMemory && !semantic?.text && !usedHistory && !usedScoped) try { await ports.recordEpisode?.(incoming, snapshot, text, receipt.messageId, isCurrent) } catch (error) { log('runtime', 'text_record_episode', 'failed', 'post_send_record_failed', error) }
+      if (!groupMemory && !semantic?.text && !cognition?.text && !usedHistory && !usedScoped) try { await ports.recordEpisode?.(incoming, snapshot, text, receipt.messageId, isCurrent) } catch (error) { log('runtime', 'text_record_episode', 'failed', 'post_send_record_failed', error) }
       if (!await memoryCurrent()) return
     }
     // Persist confirmation before admission. If admission loses its acknowledgement,
@@ -539,7 +555,7 @@ export function createTextConversation(ports: {
       personaVersion: snapshot.personaVersion,
       personMemoryInvalidatedAt: invalidatedAt,
       ...(historyPeerId === undefined ? {} : { privatePeerId: historyPeerId }),
-      turns: mergedSources.length || groupMemory || semantic?.text || usedHistory || usedScoped ? [] : [...turns, { user: toolReply === undefined ? user : '', reply: toolReply ===undefined ? text : '',
+      turns: mergedSources.length || groupMemory || semantic?.text || cognition?.text || usedHistory || usedScoped ? [] : [...turns, { user: toolReply === undefined ? user : '', reply: toolReply ===undefined ? text : '',
         ...(!isPrivateChat ? {speakerId: incoming.sender.id, replyId: receipt.messageId} : {}) }].slice(-maxHistoryTurns),
     }) } catch (error) { log('runtime', 'text_save_history', 'failed', 'post_send_record_failed', error) }
     // Preserve sent history before admission failure retains the inbox source.

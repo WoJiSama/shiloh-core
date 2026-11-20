@@ -80,6 +80,12 @@ import { createPersonMemoryStore } from '../modules/memory/infrastructure/person
 import { createTextPersonMemory } from '../modules/memory/infrastructure/textPersonMemory.js'
 import { createConversationMemory } from '../modules/memory/infrastructure/conversationMemory.js'
 import { createAgentSemanticMemory } from '../modules/memory/infrastructure/agentSemanticMemory.js'
+import { createAgentCognition, cognitionCharacterReference } from '../modules/memory/infrastructure/agentCognition.js'
+import { createCharacterStore } from '../modules/simulation/infrastructure/characterStore.js'
+import { activeCharacterMemories } from '../modules/simulation/domain/characterState.js'
+import { cognitionSourceId } from '../modules/memory/domain/cognitionState.js'
+import { createCognitionStore } from '../modules/memory/infrastructure/cognitionStore.js'
+import type { AgentCognitionConfig, CognitionGuard, CognitionSource } from '../contracts/agentCognition.js'
 import { createGroupMemory } from '../modules/memory/infrastructure/groupMemory.js'
 import { createGroupMemoryManagement } from '../modules/memory/infrastructure/groupMemoryManagement.js'
 import { createGroupKnowledgeTool } from '../modules/memory/infrastructure/groupKnowledgeTool.js'
@@ -151,6 +157,7 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   groupMemoryModel?: GroupMemoryModel
   semanticMemory?: AgentSemanticMemoryConfig
   semanticMemoryBackend?: AgentSemanticMemoryBackend
+  cognition?: AgentCognitionConfig
   history?: AgentHistoryConfig
   musicExtraction?: AgentMusicExtractionConfig
   groupLog?: AgentGroupLogConfig
@@ -280,6 +287,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
   if (options.semanticMemory?.enabled === true && (!options.semanticMemoryBackend || !/^[a-f0-9]{64}$/u.test(options.semanticMemoryBackend.id))) {
     throw new Error('启用独立语义记忆需要显式后端和有效的向量空间标识')
+  }
+  if (options.cognition !== undefined && (!options.cognition || typeof options.cognition !== 'object' ||
+      Object.keys(options.cognition).some(key => key !== 'enabled') || typeof options.cognition.enabled !== 'boolean')) {
+    throw new Error('统一认知需要显式布尔开关 cognition.enabled')
   }
   const connectionIds = new Set(options.adapters.map(adapter => adapter.id))
   if (connectionIds.size !== options.adapters.length ||
@@ -1527,6 +1538,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       } finally { permission.release() }
     } } : {}),
     beginMemoryTurn,
+    ...(options.cognition?.enabled === true ? {
+      async readCognition(target: ConversationAddress, query: string, guard: CognitionGuard) {
+        const selected = bindingFor(target)
+        return selected ? cognition.recall({ agentId: selected.binding.agentId, conversation: target, text: query, excludeKinds: ['goal'] }, guard) : undefined
+      },
+      projectCognition: (input: import('../contracts/agentCognition.js').CognitionTurnProjection, guard: CognitionGuard) => cognition.projectTurn(input, guard),
+      consolidateCognition: (binding: AgentBindingSnapshot, guard: CognitionGuard, model: import('../contracts/agentCognition.js').CognitionConsolidator) => cognition.consolidate(binding.agentId, binding.target, guard, model),
+    } : {}),
     isMemoryInputAvailable: account => !privacyBlocked(platformAccountKey(account)),
     isAccountReady: account => isRunning() && adapters.get(platformAccountKey(account))?.isReady() === true,
     async readSemanticMemory(target, query, guard, signal, excludeMessageIds) {
@@ -1748,7 +1767,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       guard.ensureCurrent()
       return result
     }
-    async function changeProfile<T>(context: AgentManagementContext, operation: 'profiles.delete' | 'profiles.delete-field',
+    async function changeProfile<T>(context: AgentManagementContext, userId: string, operation: 'profiles.delete' | 'profiles.delete-field',
       action: (guard: AgentManagementContext) => Promise<T>) {
       return invoke(context, async guard => {
         const binding = guard.binding
@@ -1767,15 +1786,35 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         // Invalidate existing source consumers before the first storage await. Future turns wait
         // until the real store has committed its tombstones, then re-read the privacy versions.
         const finishAdmission = beginPrivacyAdmission(binding)
-        try { const result = await action(guard); ensureBinding(); return result }
+        try {
+          const result = await action(guard)
+          ensureBinding()
+          if (result !== false && options.cognition?.enabled === true) {
+            const before = options.now?.() ?? Date.now()
+            let sourceIds: string[] | undefined
+            if (operation === 'profiles.delete-field') {
+              const { botId, scene } = personMemoryAddress(binding.target, privatePeerFor(binding.target))
+              const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: userId })
+              sourceIds = (await cognitionStore.read(binding.agentId)).sources.filter(source => source.status === 'active' && source.authorId === userId &&
+                conversationAddressKey(source.conversation) === conversationAddressKey(binding.target) &&
+                isPersonMemoryRedacted({ scene, authorId: userId, messageId: source.nativeId, at: source.occurredAt, excerpt: source.content }, source.content, redactions)).map(source => source.id)
+            }
+            if (!sourceIds || sourceIds.length) await cognition.invalidate(binding.agentId, {
+              id: `profile:${createHash('sha256').update(JSON.stringify([operation, userId, before, sourceIds ?? null])).digest('hex')}`,
+              authorId: userId, conversation: binding.target, before,
+              ...(sourceIds ? { sourceIds } : {}),
+            }, { isCurrent: () => { try { ensureBinding(); return true } catch { return false } }, signal: guard.signal })
+          }
+          return result
+        }
         finally { finishAdmission() }
       })
     }
     return {
       profiles: {
         list: context => invoke(context, guard => profiles.list(guard)),
-        remove: (userId, context) => changeProfile(context, 'profiles.delete', guard => profiles.remove(userId, guard)),
-        removeField: (userId, field, value, context) => changeProfile(context, 'profiles.delete-field', guard => profiles.removeField(userId, field, value, guard)),
+        remove: (userId, context) => changeProfile(context, userId, 'profiles.delete', guard => profiles.remove(userId, guard)),
+        removeField: (userId, field, value, context) => changeProfile(context, userId, 'profiles.delete-field', guard => profiles.removeField(userId, field, value, guard)),
       },
       trusteeship: {
         overview: context => invoke(context, async guard => ({ ...await trusteeship.overview(guard) })),
@@ -1852,6 +1891,64 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
     logger, ...(options.now ? { now: options.now } : {}),
   })
+  const cognitionCharacters = createCharacterStore({ redis: storage, ...(options.now ? { now: options.now } : {}) })
+  const cognitionStore = createCognitionStore(storage)
+  const cognition = createAgentCognition({
+    redis: storage,
+    async canUseNode(node, guard) {
+      const reference = cognitionCharacterReference(node)
+      if (!reference) return true
+      if (!guard.isCurrent() || guard.signal?.aborted) return false
+      const binding = bindingFor(node.conversation)?.binding
+      if (!binding) return false
+      const { botId, scene } = personMemoryAddress(node.conversation)
+      const character = await cognitionCharacters.load({ botId, personaId: agentPersonaScopeId(binding.agentId), groupId: scene.id })
+      if (reference.kind === 'memory') return activeCharacterMemories(character).some(memory => memory.id === reference.id && memory.content === node.content)
+      if (reference.kind === 'goal') return character.goals.some(goal => goal.id === reference.id && JSON.stringify({ title: goal.title, nextStep: goal.nextStep, status: goal.status, outcome: goal.lastOutcome ?? null }) === node.content)
+      return character.receipts.some(receipt => receipt.id === reference.id && receipt.status !== 'pending' &&
+        JSON.stringify({ toolName: receipt.toolName, status: receipt.status, summary: receipt.summary, goalId: receipt.goalId ?? null }) === node.content)
+    },
+    async canUseSource(source, guard) {
+      const target = source.conversation, selected = bindingFor(target)
+      if (options.cognition?.enabled !== true || !isRunning() || !guard.isCurrent() || guard.signal?.aborted || !selected ||
+          selected.binding.agentId !== source.agentId || adapterFor(target)?.isReady() !== true ||
+          !conversationEnabled(target) || !allowsConversationAI(target) ||
+          privacyBlocked(platformAccountKey(target.account))) return false
+      const { botId, scene } = personMemoryAddress(target, privatePeerFor(target))
+      const identity = { botId, personaId: agentPersonaScopeId(source.agentId) }
+      if (target.kind === 'private' && source.kind === 'message' && privatePeerFor(target) !== source.authorId) return false
+      if (source.kind !== 'receipt' && await inbox.isRecalled(target, source.nativeId)) return false
+      if (source.kind === 'receipt') {
+        const character = await cognitionCharacters.load({ botId, personaId: identity.personaId, groupId: scene.id })
+        if (!source.nativeId.startsWith('receipt:') || !character.receipts.some(receipt => receipt.id === source.nativeId.slice(8) && receipt.status !== 'pending' &&
+          JSON.stringify({ toolName: receipt.toolName, status: receipt.status, summary: receipt.summary, goalId: receipt.goalId ?? null }) === source.content)) return false
+      }
+      const sceneRule = await personMemory.getSceneRedactions({ identity, scene })
+      if (source.occurredAt <= sceneRule.forgottenBefore) return false
+      // A send may have used older profile/summary context without per-line references.
+      // Conservatively retire that derived expression on a privacy epoch change;
+      // raw evidence in unrelated scenes remains available under its own rules.
+      if (source.kind === 'self-expression' && source.occurredAt <= sceneRule.invalidatedAt) return false
+      for (const subjectId of new Set([source.authorId, ...source.participantIds])) {
+        const redactions = await personMemory.getRedactions({ identity, subjectId })
+        if (isPersonMemoryRedacted({ scene, authorId: subjectId, messageId: source.nativeId, at: source.occurredAt, excerpt: source.content }, source.content, redactions)) return false
+      }
+      return guard.isCurrent() && !guard.signal?.aborted && bindingFor(target)?.binding.agentId === source.agentId &&
+        !privacyBlocked(platformAccountKey(target.account))
+    },
+    allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false && options.allowsToolInput?.(text) !== false,
+    ...(options.now ? { now: options.now } : {}),
+  })
+  async function captureCognition(incoming: IncomingMessage, binding: AgentBindingSnapshot, guard: () => boolean): Promise<void> {
+    if (options.cognition?.enabled !== true || !incoming.messageId || !guard() || incoming.parts.some(part => part.kind !== 'text' && part.kind !== 'mention')) return
+    const content = incoming.parts.filter(part => part.kind === 'text').map(part => part.text).join('').trim()
+    if (!content || content.length > 1600 || matchPersonMemoryCommand(content)) return
+    const source: CognitionSource = { id: cognitionSourceId(binding.agentId, binding.target, 'message', incoming.messageId),
+      agentId: binding.agentId, conversation: binding.target, kind: 'message', nativeId: incoming.messageId,
+      authorId: incoming.sender.id, occurredAt: incoming.occurredAt, content, revision: 1,
+      participantIds: [...new Set([incoming.sender.id, ...incoming.mentions.map(user => user.id)])], status: 'active' }
+    await cognition.record([source], { isCurrent: guard })
+  }
   const groupMemory = createGroupMemory({
     redis: storage, memory: personMemory, config: () => options.groupMemory,
     ...(options.groupMemoryModel ? { model: options.groupMemoryModel } : {}),
@@ -2024,6 +2121,22 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           messageId: incoming.messageId, authorId: incoming.sender.id, at: incoming.occurredAt,
         } : undefined) : undefined
     },
+    ...(options.cognition?.enabled === true ? {
+      async readCognition(incoming: IncomingMessage, guard: CognitionGuard) {
+        const selected = bindingFor(incoming.conversation)
+        return selected ? cognition.recall({ agentId: selected.binding.agentId, conversation: incoming.conversation, text: incoming.text }, guard) : undefined
+      },
+      async recordCognitionReply(incoming: IncomingMessage, binding: AgentBindingSnapshot, reply: string, replyId: string, guard: CognitionGuard, contextNodeIds: readonly string[]) {
+        if (!incoming.messageId || incoming.conversation.kind !== 'group') return
+        const { botId, scene } = personMemoryAddress(binding.target)
+        await cognition.projectTurn({ agentId: binding.agentId, conversation: binding.target,
+          character: { schemaVersion: 1, scope: { botId, personaId: agentPersonaScopeId(binding.agentId), groupId: scene.id }, revision: 0, paused: false, memories: [], goals: [], receipts: [] },
+          messageRefs: [{ seq: 0, messageId: incoming.messageId }], contextNodeIds,
+          preserveCharacter: true,
+          expressions: [{ messageId: replyId, content: reply, at: options.now?.() ?? Date.now(), participantIds: [binding.target.account.id] }],
+        }, guard)
+      },
+    } : {}),
     ...(options.history?.enabled === true ? { async readHistory(incoming: IncomingMessage, input: Record<string, unknown>, guard: () => boolean, signal?: AbortSignal) {
       const selected = bindingFor(incoming.conversation)
       if (!selected || !incoming.messageId) throw new Error('历史查询缺少当前真实消息')
@@ -2185,6 +2298,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       for (const invalidate of pendingTools.get(conversationAddressKey(target)) ?? []) invalidate()
       // Each workflow revokes its in-memory owners synchronously. A failing ledger cannot prevent sibling fences.
       const results = await Promise.allSettled([
+        ...(options.cognition?.enabled === true && bindingFor(target) ? [cognition.invalidate(bindingFor(target)!.binding.agentId, {
+          id: `recall:${conversationAddressKey(target)}:${event.messageId}`, before: Number.MAX_SAFE_INTEGER,
+          sourceIds: ['message', 'self-expression'].map(kind => cognitionSourceId(bindingFor(target)!.binding.agentId, target, kind as 'message' | 'self-expression', event.messageId)),
+        }, { isCurrent: isRunning })] : []),
         ...(target.kind === 'group' ? [groupLogs.revokeSource(target, event.messageId), revokeDiceSource(target, event.messageId)] : []),
         ...(mediaRelayConfig.enabled ? [mediaOutbox.cancelSource(target, event.messageId)] : []),
         ...(torrentConfig.enabled ? [torrent.cancelSource(target, event.messageId)] : []),
@@ -2341,6 +2458,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const subject = { account: target.account, agentId: originalAgentId, subjectId: sender.id,
         ...(kind === 'group' ? { target } : {}) }
       const results = await Promise.allSettled([
+        ...(options.cognition?.enabled === true ? [cognition.invalidate(originalAgentId, {
+          id: `privacy:${conversationAddressKey(target)}:${messageId}:${command}`, authorId: sender.id,
+          ...(kind === 'group' ? { conversation: target } : {}), before: options.now?.() ?? Date.now(),
+        }, { isCurrent: isRunning })] : []),
         groupLogs.purgeSubject({ account: target.account, agentId: originalAgentId, subjectId: sender.id,
           ...(kind === 'group' ? { groupId: target.id } : {}) }),
         diceState.purgeSubject(subject), diceLedger.purgeSubject(subject),
@@ -2759,6 +2880,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
                 if (options.allowsText?.(incoming.text, 'incoming') !== false) {
                   await conversationMemory.capture(incoming, persona.binding, isCurrent)
                   await semanticMemory.capture(incoming, persona.binding, isCurrent)
+                  await captureCognition(incoming, persona.binding, isCurrent).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
                   await history.capture(incoming, persona.binding, isCurrent)
                   await groupMemory.capture(incoming, persona.binding, isCurrent)
                   if (target.kind === 'group' && incoming.messageId && options.textTrigger !== undefined) {
@@ -2796,6 +2918,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
               const { quote, ...incoming } = event.message
               await conversationMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
               await semanticMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
+              await captureCognition(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding))).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
               await history.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
               await groupMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
               await diagnostics.run({ kind: 'conversation', binding: persona.binding, ...(incoming.messageId ? { messageId: incoming.messageId } : {}) }, 'simulation_ingest',

@@ -1561,6 +1561,14 @@ NjuGVo 实际 npm 归档为 `/tmp/bl-console-perf-archive-NjuGVo-XcZVkK/bl-chat-
 
 部分媒体、QQ 动作与定时任务 CLI 仍存在耗时超限：性能采样证明嵌套 guard 的 fresh 配置文件复核占据主要执行时间，后台来源复核也会产生大量 get_msg；该证据不证明所有失败均由并发造成。保留授权、未知回执防重和取消边界，不以延长所有超时或跳过失败宣称全量通过。按用户允许先上线测试的决定，此类耗时问题保留为后续修复项；生产启动、认证、实际连接和加载版本另取真实证据。
 
+### 2026-11-18：统一认知开关（独立分支，本地开发）
+
+统一认知首版使用本 Core 的 `AgentBindingSnapshot`、完整 `ConversationAddress`、实例 Redis 与宿主租约，不依赖 Hindsight、Letta、ReMe 服务。进度与验收范围见[统一认知施工方案第 14 节](ai-brain-construction-2026-11-17.md#14-2026-11-18-首版实现与交接)。该分支基于 `4a9b336`，未部署、未改生产数据。
+
+宿主配置 `cognition: { enabled: true }` 显式启用，省略时为 false。启用后，同一 agent 的普通自身兴趣/观点按来源规则在群和私聊连续；群友事实保持来源场景。低频整理复用原仿真反思调度及预算，`simulation.reflection.enabled: false` 仍可停用后台整理。没有新模型渠道或凭据。关闭新认知停止其读写并保留新状态；旧兼容状态保留，最新删除限制继续由原记忆系统执行，不能恢复旧备份绕过撤销。
+
+新状态位于现有实例前缀中的 `agent:cognition:v1:<agentId>`。`scripts/import-cognition.mjs` 仅预览/生成单 agent 的离线状态 JSON，要求规范化真实来源和显式旧 scope 映射，不直接读取旧 Redis、连接新实例或安装生产数据。运行 `--help` 查看文件预览与 hash/revision 应用流程；离线文件不得直接覆盖线上最新撤销状态。
+
 ### 2026-11-18：生产已直接切换至 Core
 
 实现提交 `5acd1eecd2215d9ea0db4c9167beb56ed0f6f384` 已推送到开发分支并快进合并至远端 main。该提交构建的独立发布包包含 650 个清单文件，在服务器完成生产依赖安装与逐文件 SHA-256 校验后部署到 `/opt/bl-chat-agent/releases/5acd1eecd2215d9ea0db4c9167beb56ed0f6f384`，`/opt/bl-chat-agent/current` 指向该版本。后续测试或交付记录的提交不等于运行版本已改变，以实际发布清单为准。

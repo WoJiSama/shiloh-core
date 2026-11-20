@@ -56,6 +56,29 @@ test('reflection waits six hours, consumes inputs once, and cannot sustain itsel
   assert.equal((await h.reflection.read()).runsToday, 1)
 })
 
+test('unified cognition shares the reflection budget and replaces its model call', async () => {
+  const h = harness(); await h.reflection.read(); const input = await h.addInputs()
+  h.clock.value += SIX_HOURS
+  let consolidations = 0
+  assert.equal(await h.run({ consolidate: async () => { consolidations++ } }), true)
+  assert.equal(consolidations, 1)
+  assert.equal(h.counts().reserved, 1)
+  assert.equal(h.counts().calls, 0)
+  assert.ok((await h.reflection.read()).processed.includes(input.memoryRef))
+  assert.equal(await h.run({ consolidate: async () => { consolidations++ } }), false)
+  assert.equal(consolidations, 1)
+})
+
+test('failed cognition consolidation retains unprocessed evidence and cannot immediately retry', async () => {
+  const h = harness(); await h.reflection.read(); await h.addInputs(); h.clock.value += SIX_HOURS
+  await h.run({ consolidate: async () => { throw new Error('consolidation-failed') } })
+  assert.deepEqual((await h.reflection.read()).processed, [])
+  assert.match((await h.reflection.read()).lastOutcome, /consolidation-failed/)
+  assert.equal(h.counts().reserved, 1)
+  assert.equal(h.counts().calls, 0)
+  assert.equal(await h.run({ consolidate: async () => assert.fail('unexpected retry') }), false)
+})
+
 test('two per day cap survives reset and resets only on a later UTC day', async () => {
   const h = harness(); await h.reflection.read(); await h.addInputs()
   h.clock.value += SIX_HOURS
