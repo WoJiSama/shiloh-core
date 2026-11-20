@@ -34,6 +34,7 @@ export interface AgentMcpToolsOptions {
   readonly isCurrent?: () => boolean
   readonly secrets?: readonly string[]
   readonly fetchImpl?: typeof fetch
+  readonly onConnectionFailure?: (name: string, code: 'mcp_connection_lost' | 'mcp_connection_failed') => void
 }
 
 export interface AgentMcpTools {
@@ -195,6 +196,10 @@ export async function openAgentMcpTools(options: AgentMcpToolsOptions = {}): Pro
   const aliases = new Map<string, string>()
   let closed = false, closing: Promise<void> | undefined, currentTimer: ReturnType<typeof setInterval> | undefined
   const active = () => { try { return !closed && !signal.aborted && options.isCurrent?.() !== false } catch { return false } }
+  function reportConnectionFailure(name: string, code: 'mcp_connection_lost' | 'mcp_connection_failed'): void {
+    if (!options.onConnectionFailure || !active()) return
+    try { options.onConnectionFailure(name, code) } catch { /* Observers do not affect MCP sessions. */ }
+  }
   const sessionCurrent = (name: string, session: Session) => active() && sessions.get(name) === session && !session.abort.signal.aborted
   function invalidate(session: Session) { session.tools = []; session.deferred = []; session.generation.abort(); session.generation = new AbortController() }
   function closeSession(session: Session): Promise<void> {
@@ -349,6 +354,7 @@ export async function openAgentMcpTools(options: AgentMcpToolsOptions = {}): Pro
     sessions.set(name, session)
     function reconnect() {
       if (!sessionCurrent(name, session)) return
+      reportConnectionFailure(name, 'mcp_connection_lost')
       invalidate(session); session.abort.abort(); sessions.delete(name)
       void closeSession(session)
       scheduleRetry(name, config, attempt)
@@ -371,7 +377,10 @@ export async function openAgentMcpTools(options: AgentMcpToolsOptions = {}): Pro
       attempt = 0
     } catch {
       const owned = sessions.get(name) === session
-      if (owned) sessions.delete(name)
+      if (owned) {
+        reportConnectionFailure(name, 'mcp_connection_failed')
+        sessions.delete(name)
+      }
       await closeSession(session)
       if (owned && attempt > 0) scheduleRetry(name, config, attempt)
       throw new Error(`MCP 服务 ${name} 未能连接或读取工具列表`)

@@ -7,3 +7,8 @@ export function buildChatRequestData(config: ChatProviderConfig = {}, messages: 
   if (config.useTools && tools?.length && toolChoice !== 'none') { data.tools = tools; data.tool_choice = toolChoice }
   return data
 }
+
+export function glmFlashJsonOptions(endpoint: URL, model: string) {
+  return endpoint.hostname === 'open.bigmodel.cn' && model.trim().toLowerCase() === 'glm-5.3-flash'
+    ? { thinking: { type: 'disabled' as const } } : {}
+}

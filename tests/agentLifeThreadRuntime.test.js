@@ -58,6 +58,7 @@ async function fixture(t, settings = {}) {
     getSelf: () => ({ id: target.account.id, name: '生活线角色' }),
     getPersona: () => ({ binding: f.binding, personaId: agentPersonaScopeId(f.binding.agentId), persona: {}, systemContent: '' }),
     getSection: () => config, getExecutionConfig: () => ({ useTools: true }), lifeThreadProvider: settings.provider,
+    isLifeThreadsCurrent: settings.isLifeThreadsCurrent,
     beginMemoryTurn: async () => ({ signal: f.memory.signal, isCurrent: () => f.memoryCurrent, release() {} }),
     messageActions: { send: async () => ({ state: 'sent', messageId: 'sent-life' }) },
     async YTapi(request) { requests.push(structuredClone(request)); return settings.script ? settings.script(round++, f, request) : round++ === 0
@@ -108,14 +109,20 @@ test('life thread storage separates Agents with one persona, accounts and conver
 
 test('empty sync persists lastSyncAt and background scheduling respects that checkpoint', { timeout: 12000 }, async t => {
   const calls = []
+  let authorizedChecks = 0
   const f = await fixture(t, { provider: { resolve: async () => ({ ok: true, sourceId: '12345', title: '测试作品', episode: 3 }),
-    async sync(input, guard) { calls.push(input); assert.deepEqual(guard.binding, f.originalBinding); await guard.ensureCurrent(); return { newNotes: [], episode: 3 } } } })
+    async sync(input, guard) { calls.push(input); assert.deepEqual(guard.binding, f.originalBinding); await guard.ensureCurrent(); return { newNotes: [], episode: 3 } } },
+    isLifeThreadsCurrent() { authorizedChecks++; return true } })
+  await f.runtime.sweepOnce(); await f.runtime.drain(); assert.equal(authorizedChecks, 0)
   await createAgentLifeThreadRuntime({ resolve: async () => ({ ok: true, sourceId: '12345', title: '测试作品', episode: 3 }), sync: async () => ({ newNotes: [] }) }, () => f.clock)
     .follow('测试作品', f.store(), context(f.binding))
   await f.runtime.sweepOnce(); await f.runtime.drain()
   const [saved] = await f.store().loadLifeThreads()
   assert.equal(calls.length, 1); assert.equal(saved.lastSyncAt, AT); assert.equal(saved.lastEpisode, 3); assert.deepEqual(saved.notes, [])
+  assert.ok(authorizedChecks > 0)
+  authorizedChecks = 0
   await f.runtime.sweepOnce(); await f.runtime.drain(); assert.equal(calls.length, 1)
+  assert.equal(authorizedChecks, 0)
 })
 
 test('sync, follow and drop serialize their complete read-provider-write operations without losing an update', async () => {

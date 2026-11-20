@@ -357,7 +357,7 @@ for (const target of [privateRoom, group]) test(`${target.kind}: a confirmed rep
   await withFixture(t, {
     name: `text-learning-admission-restart-${target.kind}`,
     wrapStorage: storage => ({ ...storage, async eval(script, input) {
-      if (failAdmission && input.keys.some(key => key.includes('agent:person-memory:text:v1:batch:')) && script.includes("redis.call('SET', KEYS[1], ARGV[5])")) {
+      if (failAdmission && input.keys.some(key => key.includes('agent:person-memory:text:v1:batch:')) && script.includes("redis.call('SET', KEYS[2],")) {
         failures++
         throw new Error('test lost the admission commit')
       }
@@ -396,7 +396,7 @@ for (const mode of ['privacy', 'recall', 'rebind', 'peer-change']) test(`a retai
   await withFixture(t, {
     name: `text-learning-admission-revoked-${mode}`,
     wrapStorage: storage => ({ ...storage, async eval(script, input) {
-      if (failAdmission && input.keys.some(key => key.includes('agent:person-memory:text:v1:batch:')) && script.includes("redis.call('SET', KEYS[1], ARGV[5])")) {
+      if (failAdmission && input.keys.some(key => key.includes('agent:person-memory:text:v1:batch:')) && script.includes("redis.call('SET', KEYS[2],")) {
         throw new Error('test lost the admission commit')
       }
       return storage.eval(script, input)

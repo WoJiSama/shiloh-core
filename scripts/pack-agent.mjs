@@ -145,6 +145,11 @@ try {
   const files = Object.fromEntries([...new Set([...runtimeFiles, ...declarations])].sort().map(file => [file, manifest.files[file]]))
   for (const name of Object.keys(files)) await copy(path.join(backend, name), `dist/backend/${name}`)
   for (const name of ['scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'scripts/import-cognition.mjs', 'scripts/semantic-memory-eval.mjs', 'scripts/examples/semantic-evaluation-backend.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json', 'utils/backendArtifactGuard.js', 'LICENSE']) await copy(path.join(root, name), name)
+  // Linux must execute this shebang even when the package is built from a Windows checkout.
+  const chromiumLauncher = path.join(output, 'scripts/start-sandboxed-chromium.mjs')
+  const launcherSource = await fs.readFile(chromiumLauncher, 'utf8')
+  await fs.writeFile(chromiumLauncher, launcherSource.replaceAll('\r\n', '\n'))
+  await fs.chmod(chromiumLauncher, 0o755)
   for (const name of ['docs/project-status.md', 'docs/architecture/agent-bindings.md', 'docs/architecture/agent-bindings-history.md',
     'docs/architecture/message-pipeline.md', 'docs/architecture/ai-brain-construction-2026-11-17.md', 'docs/evals/semantic-retrieval.md', 'console/README.md']) await copy(path.join(root, name), name)
   const agentReadme = await fs.readFile(path.join(root, 'docs/architecture/agent-bindings.md'), 'utf8')

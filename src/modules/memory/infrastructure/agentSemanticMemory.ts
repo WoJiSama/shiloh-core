@@ -5,6 +5,7 @@ import type { PersonMemoryStore } from '../../../contracts/personMemory.js'
 import type { PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
 import type { AgentSemanticMemoryBackend, AgentSemanticMemoryConfig, AgentSemanticMemoryRecall, AgentSemanticMemoryQuerySource,
   AgentSemanticMemoryCleanupGuard, AgentSemanticMemoryCleanupReceipt, AgentSemanticMemoryPurgeSubject } from '../../../contracts/semanticMemory.js'
+import { reportAgentFailure, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey, isPlatformIdentifier, platformAccountKey } from '../../runtime/domain/agentBindings.js'
 import { isPersonMemoryRedacted } from '../domain/personMemory.js'
@@ -50,6 +51,7 @@ export function createAgentSemanticMemory(ports: {
   isRunning(): boolean
   allowsText(text: string): boolean
   logger: { warn(message: string): void }
+  diagnostics?: Pick<AgentDiagnostics, 'emit'>
   now?(): number
   /** Offline evaluation only; omitted by the host. Public recall and authorization stay unchanged. */
   retrieval?: AgentSemanticRetrievalOptions
@@ -311,11 +313,18 @@ export function createAgentSemanticMemory(ports: {
         if (indexing.size >= 2 || indexing.has(state.id) || (retryAt.get(state.id) ?? 0) > now()) continue
         if (!dirty.has(state.id) && (nextCheck.get(state.id) ?? 0) > now()) continue
         dirty.delete(state.id); nextCheck.set(state.id, now() + 60_000)
-        const work = maintain(state.scope).catch(() => { retryAt.set(state.id, now() + 60_000); ports.logger.warn('[Agent] 语义记忆索引暂时不可用') })
+        const work = maintain(state.scope).catch(error => {
+          retryAt.set(state.id, now() + 60_000)
+          reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'semantic_memory_index', code: 'semantic_index_unavailable', error },
+            () => ports.logger.warn('[Agent] 语义记忆索引暂时不可用'))
+        })
           .finally(() => { indexing.delete(state.id) })
         indexing.set(state.id, work)
       }
-    })().catch(() => ports.logger.warn('[Agent] 语义记忆来源库暂时不可用')).finally(() => { sweep = undefined })
+    })().catch(error => {
+      reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'semantic_memory_sweep', code: 'semantic_source_store_unavailable', error },
+        () => ports.logger.warn('[Agent] 语义记忆来源库暂时不可用'))
+    }).finally(() => { sweep = undefined })
     return sweep
   }
   async function maintain(scope: AgentConversationScope) {

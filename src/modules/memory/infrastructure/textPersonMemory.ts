@@ -4,6 +4,7 @@ import type { PersonMemoryStore } from '../../../contracts/personMemory.js'
 import type { PersonProfileExtractionContext, PersonProfileExtractor } from '../../../contracts/personProfileExtraction.js'
 import type { TextPersonMemoryBatch, TextPersonMemoryConfig, TextPersonMemoryMessage } from '../../../contracts/textPersonMemory.js'
 import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js'
+import { reportAgentFailure, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { conversationAddressKey } from '../../runtime/domain/agentBindings.js'
 import { simulationAddressKey } from '../../simulation/infrastructure/simulationAddress.js'
 import { groundPersonProfileCandidate, parsePersonProfilePatches } from '../../simulation/domain/personProfile.js'
@@ -13,6 +14,7 @@ import { personMemoryAddress } from './personMemoryContext.js'
 import { agentPersonaScopeId } from '../../runtime/domain/agentBindings.js'
 import { classifyBoundary } from './engine/boundary.js'
 import { createTextPersonMemoryStore, textPersonMemoryBatchId } from './textPersonMemoryStore.js'
+import { PersonProfileExtractionError } from './agentPersonExtractor.js'
 
 type MemoryTurn = { signal: AbortSignal; isCurrent(): boolean; release(): void }
 
@@ -28,6 +30,7 @@ export function createTextPersonMemory(ports: {
   begin(binding: AgentBindingSnapshot): Promise<MemoryTurn>
   isRecalled(target: ConversationAddress, messageId: string): Promise<boolean>
   logger: { warn(message: string): void }
+  diagnostics?: Pick<AgentDiagnostics, 'emit'>
   recordUsage?(input: { scope: string; stage: string; model?: string; usage?: unknown; ms?: number }): void
   now?(): number
 }) {
@@ -191,12 +194,16 @@ export function createTextPersonMemory(ports: {
           dueAt: remaining.length >= maxBatch() ? now() : remaining.length ? saved.dueAt : now(),
           completedMessageIds: [...new Set([...(saved.completedMessageIds ?? []), ...completed])].slice(-60) }
       }, current)
-    } catch {
+    } catch (error) {
       const canRecordFailure = () => current() || timedOut && scopeCurrent()
       if (canRecordFailure()) {
         await store.update(batch.id, saved => saved && ({ ...saved, attempts: saved.attempts + 1,
           retryAt: now() + Math.min(300_000, 15_000 * 2 ** saved.attempts) }), canRecordFailure).catch(() => {})
-        ports.logger.warn('[Agent] 人物事实学习未完成，保留来源等待有限重试')
+        const failure = error instanceof PersonProfileExtractionError ? error : undefined
+        reportAgentFailure(ports.diagnostics, { stage: failure ? 'model' : 'memory', operation: 'text_person_profile_extract',
+          code: failure?.code ?? (timedOut ? 'extraction_timeout' : 'extraction_failed'),
+          ...(failure?.httpStatus === undefined ? {} : { httpStatus: failure.httpStatus }), error, durationMs: now() - startedAt },
+        () => ports.logger.warn('[Agent] 人物事实学习未完成，保留来源等待有限重试'))
       }
     } finally {
       active = false
@@ -225,11 +232,17 @@ export function createTextPersonMemory(ports: {
         }
         if (tasks.size >= 4 || tasks.has(batch.id) || batch.attempts >= 3 || now() < batch.retryAt || now() < batch.dueAt || !ports.available(batch.binding.target)) continue
         const controller = new AbortController()
-        const task = run(batch, controller).catch(() => ports.logger.warn('[Agent] 人物事实学习存储暂时不可用'))
+        const task = run(batch, controller).catch(error => {
+          reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'text_person_profile_extract', code: 'person_profile_store_unavailable', error },
+            () => ports.logger.warn('[Agent] 人物事实学习存储暂时不可用'))
+        })
           .finally(() => { tasks.delete(batch.id) })
         tasks.set(batch.id, { target: batch.binding.target, controller, promise: task })
       }
-    })().catch(() => ports.logger.warn('[Agent] 人物事实学习队列暂时不可用')).finally(() => { sweep = undefined })
+    })().catch(error => {
+      reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'text_person_profile_extract', code: 'person_profile_queue_unavailable', error },
+        () => ports.logger.warn('[Agent] 人物事实学习队列暂时不可用'))
+    }).finally(() => { sweep = undefined })
     return sweep
   }
 

@@ -4,6 +4,8 @@ import { createCharacterSharedSelf } from '../dist/backend/modules/simulation/in
 import { createCharacterWorkspace } from '../dist/backend/modules/simulation/infrastructure/characterWorkspace.js'
 import test from 'node:test'
 import { createAgentDiagnostics } from '../dist/backend/modules/runtime/infrastructure/agentDiagnostics.js'
+import { createAgentFailureAlerts } from '../dist/backend/modules/runtime/infrastructure/agentFailureAlerts.js'
+import { formatQqOwnerAlerts } from '../dist/backend/bootstrap/standaloneQqAlerts.js'
 import { createSimulationRuntime } from '../dist/backend/modules/simulation/infrastructure/simulationRuntime.js'
 import { createDefaultSimSession } from '../dist/backend/modules/simulation/domain/simConfig.js'
 import { CHARACTER_MIN_WAKE_MS, addCharacterMemory, beginCharacterGoalAttempt, characterKey, createCharacterGoal, createEmptyCharacterState, deleteCharacterMemory } from '../dist/backend/modules/simulation/domain/characterState.js'
@@ -53,7 +55,7 @@ function fixture({
   getStyleDigest, readSemanticMemory, getSemanticRecall, readConversationMemory, readGroupMemory, wakeGateJudge,
   recordGroupReply, recordEpisode,
   getSelf, handlesTarget, messageActions, getTodaySpendCny, durableIngress, isAccountReady, readFault,
-  describeImages, fetchImageBase64, getForwardContent, diagnostics, rawModel, failureNoticeFallback, ephemeralTools = false, withDiagnosticScope,
+  describeImages, fetchImageBase64, getForwardContent, diagnostics, rawModel, failureNoticeFallback, ephemeralTools = false, withDiagnosticScope, logger,
 } = {}) {
   if (seed) for (const groupId of groups) if (!kv.has(sessionKey(groupId))) seedSession(kv, groupId, botId, clock)
   const calls = []
@@ -84,7 +86,7 @@ function fixture({
   const runtime = createSimulationRuntime({
     redis, now: () => clock.value, random: () => 0.99,
     ...(diagnostics ? { diagnostics } : {}), ...(failureNoticeFallback ? { failureNoticeFallback } : {}), ...(withDiagnosticScope ? { withDiagnosticScope } : {}),
-    logger: { info() {}, warn(...args) { errors.push(args.join(' ')) }, error(...args) { errors.push(args.map(String).join(' ')) } },
+    logger: logger ?? { info() {}, warn(...args) { errors.push(args.join(' ')) }, error(...args) { errors.push(args.map(String).join(' ')) } },
     getSelf: getSelf ?? (() => ({ id: botId, name: identity.name })),
     getPersona: getPersona ?? (() => ({ personaId: identity.id, persona: { name: identity.name }, systemContent: identity.systemContent })),
     getSection: () => ({
@@ -147,6 +149,52 @@ const notice = '这次没能取得结果，当前请求还没有完成。'
 const failedResponse = { error: { message: 'sk-private-should-never-leave' } }
 const reply = content => ({ choices: [{ message: { role: 'assistant', content } }], usage: { total_tokens: 7 } })
 const spy = () => { const events = []; return { events, emit(event) { const { error, ...safe } = event; events.push({ ...safe, ...(error ? { errorKind: error instanceof Error ? 'Error' : 'Unknown' } : {}) }) }, traceId: () => 'fixture-trace' } }
+
+test('session read failures, invalid stored state and health findings produce distinct redacted QQ alerts', async t => {
+  const rows = [], terminal = [], batches = []
+  const alerts = createAgentFailureAlerts({
+    channel: 'qq', logger: { error() {} },
+    async deliver(batch) { batches.push(batch); return { state: 'confirmed' } },
+  })
+  t.after(() => alerts.close())
+  const diagnostics = createAgentDiagnostics({
+    sink: { async append(row) { rows.push(row); return true } },
+    logger: { info() {}, warn() {}, error(line) { terminal.push(line) } }, onFailure: alerts.report,
+  })
+  let failRead = true
+  const h = fixture({ diagnostics, logger: diagnostics.logger, readFault(key) {
+    if (failRead && key === sessionKey(GROUP)) throw new TypeError('private-redis-error sk-test-placeholder')
+  } })
+  t.after(() => h.runtime.stop())
+  const valid = h.kv.get(sessionKey(GROUP))
+  await h.runtime.describeGroup(GROUP)
+  failRead = false
+  h.kv.set(sessionKey(GROUP), '{private-corrupted-state')
+  await h.runtime.describeGroup(GROUP)
+  h.kv.set(sessionKey(GROUP), valid)
+  h.kv.set('bl-chat:commitment:faillog', JSON.stringify([{ id: 'private-task-id', intent: 'private-task-text', group_id: GROUP }]))
+  await h.runtime.sweepOnce()
+  await waitFor(() => rows.some(row => row.code === 'commitment_terminal_failure'), 'health classification is written')
+  await diagnostics.flush()
+  await alerts.close()
+
+  const read = rows.find(row => row.code === 'session_read_failed')
+  const decode = rows.find(row => row.code === 'session_decode_failed')
+  assert.equal(read.operation, 'simulation_session_load')
+  assert.equal(read.errorKind, 'TypeError')
+  assert.equal(decode.operation, read.operation)
+  assert.equal(decode.errorKind, 'SyntaxError')
+  assert.ok(terminal.some(line => line.includes(`session_read_failed trace=${read.traceId} errorKind=TypeError`)))
+  const text = batches.map(formatQqOwnerAlerts).join('\n')
+  assert.match(text, /读取群聊会话失败.*\n持久化的会话状态暂时无法读取/u)
+  assert.match(text, /读取群聊会话失败.*\n已保存的会话状态格式损坏/u)
+  assert.match(text, /后台健康检查失败.*\n托付账本中存在未完成或结果待确认的记录/u)
+  assert.ok(text.includes(`追踪编号 ${read.traceId}`))
+  assert.doesNotMatch(JSON.stringify({ rows, terminal, batches, text }),
+    /runtime_warning|private-redis-error|sk-test-placeholder|private-corrupted-state|private-task-(text|id)/u)
+  assert.ok(!text.includes(GROUP))
+})
+
 async function settled(h, minCalls = 1) {
   await waitFor(async () => h.calls.length >= minCalls && !(await h.runtime.describeGroup(GROUP)).running,
     `simulation settles: ${h.errors.join(' | ')}`)
@@ -204,7 +252,8 @@ test('optional wake and memory read failures preserve one normal turn with fixed
     const diagnostics = spy(), reads = []
     const unavailable = name => async () => { reads.push(name); throw Error(`private-read-body-${name}`) }
     const h = fixture({ diagnostics, proactiveProbability: 1,
-      wakeGateJudge: unavailable('wake'), loadDelegatedMemories: unavailable('delegated'), getStyleDigest: unavailable('style'),
+      wakeGateJudge: semanticReader === 'current' ? unavailable('wake') : async () => { reads.push('wake'); return null },
+      loadDelegatedMemories: unavailable('delegated'), getStyleDigest: unavailable('style'),
       ...(semanticReader === 'current' ? { readSemanticMemory: unavailable('semantic') } : { getSemanticRecall: unavailable('semantic') }),
       readConversationMemory: unavailable('narrative'), readGroupMemory: unavailable('group'),
       script: () => tools(toolCall('simFinishTurn', { choice: 'silent', reason: '本轮无需发言' })),
@@ -228,6 +277,23 @@ test('optional wake and memory read failures preserve one normal turn with fixed
     assert.equal(character.decision.kind, 'silent')
     assert.equal(character.decision.reason, '本轮无需发言')
   }
+})
+
+test('stopping during wake screening records cancellation and never starts the main model', { timeout: 10000 }, async t => {
+  const diagnostics = spy(), started = Promise.withResolvers(), verdict = Promise.withResolvers()
+  const h = fixture({ diagnostics, proactiveProbability: 1,
+    wakeGateJudge: () => { started.resolve(); return verdict.promise },
+  })
+  t.after(() => { h.runtime.stop(); verdict.resolve(null) })
+  await h.ingest('普通群聊背景', '40000', { at: false })
+  h.clock.value += 2 * 60 * 60_000
+  await h.runtime.sweepOnce()
+  await started.promise
+  h.runtime.stop()
+  await h.runtime.drain()
+  assert.equal(h.calls.length, 0)
+  assert.deepEqual(diagnostics.events.filter(row => row.operation === 'simulation_wake_gate')
+    .map(row => [row.outcome, row.code]), [['cancelled', 'wake_gate_cancelled']])
 })
 
 test('reply and episode record failures keep confirmed delivery without another model or send', async t => {
@@ -298,6 +364,7 @@ test('failed closing validation or review cannot be bypassed by a later failure 
     t.after(() => h.runtime.stop()); await h.ingest(); await settled(h, 2)
     assert.equal(h.calls.length, 2, mode); assert.equal(h.sent.length, 0, mode)
     assert.ok(diagnostics.events.some(row => row.operation === 'simulation_failure_notice' && row.code === 'notice_not_authorized'))
+    assert.equal(diagnostics.events.filter(row => row.stage === 'tool' && row.operation === 'simFinishTurn' && row.outcome === 'failed').length, 1, mode)
   }
 })
 

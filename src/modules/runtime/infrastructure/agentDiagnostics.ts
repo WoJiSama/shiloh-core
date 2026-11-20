@@ -58,7 +58,10 @@ function sameScope(left: AgentDiagnosticScope, right: AgentDiagnosticScope): boo
 }
 
 /** One context per admitted operation; async tools/model callbacks inherit its ownership and trace. */
-export function createAgentDiagnostics(options: { sink?: AgentDiagnosticSink; logger?: Logger; now?: () => number; configurationRevision?: string } = {}) {
+export function createAgentDiagnostics(options: {
+  sink?: AgentDiagnosticSink; logger?: Logger; now?: () => number; configurationRevision?: string
+  onFailure?: (event: AgentDiagnosticEvent) => void
+} = {}) {
   const contexts = new AsyncLocalStorage<{ scope: AgentDiagnosticScope; traceId: string; operation: string }>()
   const hostTrace = randomUUID()
   const pending = new Set<Promise<unknown>>()
@@ -68,6 +71,15 @@ export function createAgentDiagnostics(options: { sink?: AgentDiagnosticSink; lo
   const configurationRevision = typeof options.configurationRevision === 'string' && options.configurationRevision.length > 0 &&
     options.configurationRevision.length <= 512 && options.configurationRevision.trim() === options.configurationRevision &&
     !/[\u0000-\u001f\u007f\ud800-\udfff]/u.test(options.configurationRevision) ? options.configurationRevision : undefined
+  function notifyFailure(event: AgentDiagnosticEvent): void {
+    try { options.onFailure?.(Object.freeze(event)) }
+    catch { try { console.error('[Agent] diagnostic_failure_observer_failed') } catch { /* No writable terminal. */ } }
+  }
+  function journalFailure(event: AgentDiagnosticEvent, line: string, code: string): void {
+    try { console.error(`[Agent] ${code} ${line}`) } catch { /* Terminal unavailable. */ }
+    if (options.onFailure) notifyFailure({ version: 1, id: randomUUID(), traceId: event.traceId, at: now(), scope: { kind: 'host' },
+      stage: 'host', operation: 'operation_journal', outcome: 'failed', code })
+  }
   function emit(input: AgentDiagnosticInput): void {
     const context = contexts.getStore()
     const delivery = input.delivery === undefined ? undefined : deliveryOf(input.delivery)
@@ -80,21 +92,22 @@ export function createAgentDiagnostics(options: { sink?: AgentDiagnosticSink; lo
       ...(configurationRevision ? { configurationRevision } : {}),
       ...(delivery === undefined ? {} : { delivery }),
     }
-    const line = `[Agent] ${event.stage}/${event.operation} ${event.outcome}${event.code ? ` ${event.code}` : ''} trace=${event.traceId}`
+    const line = `[Agent] ${event.stage}/${event.operation} ${event.outcome}${event.code ? ` ${event.code}` : ''} trace=${event.traceId}${event.errorKind ? ` errorKind=${event.errorKind}` : ''}`
     // Console remains observable even when the injected journal is unavailable.
     try { (event.outcome === 'failed' || event.outcome === 'unknown' ? terminal.error : event.outcome === 'cancelled' ? terminal.warn : terminal.info)(line) }
     catch { try { console.error('[Agent] diagnostic_console_failed') } catch { /* No remaining writable terminal. */ } }
+    if (options.onFailure && (event.outcome === 'failed' || event.outcome === 'unknown')) notifyFailure(event)
     if (options.sink) {
       if (pending.size >= 256) {
-        try { console.error(`[Agent] diagnostic_queue_overflow ${line}`) } catch { /* Terminal unavailable. */ }
+        journalFailure(event, line, 'diagnostic_queue_overflow')
         return
       }
       // A failed custom sink cannot retain arbitrary turns forever or hang shutdown.
       let timer: ReturnType<typeof setTimeout> | undefined
       const timeout = new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 5_000) })
       const write = Promise.race([Promise.resolve().then(() => options.sink!.append(event)), timeout]).then(ok => {
-        if (!ok) console.error(`[Agent] diagnostic_journal_failed ${line}`)
-      }).catch(() => { try { console.error(`[Agent] diagnostic_journal_failed ${line}`) } catch { /* Console and journal both unavailable. */ } }).finally(() => { if (timer) clearTimeout(timer) })
+        if (!ok) journalFailure(event, line, 'diagnostic_journal_failed')
+      }, () => journalFailure(event, line, 'diagnostic_journal_failed')).finally(() => { if (timer) clearTimeout(timer) })
       pending.add(write)
       void write.finally(() => pending.delete(write))
     }
@@ -133,3 +146,14 @@ export function createAgentDiagnostics(options: { sink?: AgentDiagnosticSink; lo
 }
 
 export type AgentDiagnostics = ReturnType<typeof createAgentDiagnostics>
+
+export function reportAgentFailure(
+  diagnostics: Pick<AgentDiagnostics, 'emit'> | undefined,
+  failure: Omit<AgentDiagnosticInput, 'outcome'> & { code: string },
+  log: () => void,
+): void {
+  try {
+    if (diagnostics) diagnostics.emit({ ...failure, outcome: 'failed' })
+    else log()
+  } catch { /* Diagnostics cannot interrupt recovery. */ }
+}

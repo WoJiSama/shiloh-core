@@ -3,6 +3,7 @@ import type { AgentHistoryConfig, AgentHistoryRecall, AgentHistoryRequestSource 
 import type { IncomingMessage } from '../../../contracts/platformMessage.js'
 import type { PersonMemoryEntry, PersonMemoryQuery, PersonMemoryStore } from '../../../contracts/personMemory.js'
 import type { PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
+import { reportAgentFailure, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey, isPlatformIdentifier, platformAccountKey } from '../../runtime/domain/agentBindings.js'
 import { isPersonMemoryRedacted, samePersonMemoryScene } from '../domain/personMemory.js'
@@ -103,6 +104,7 @@ export function createAgentHistory(ports: {
   isRunning(): boolean
   allowsText(text: string): boolean
   logger: { warn(message: string): void }
+  diagnostics?: Pick<AgentDiagnostics, 'emit'>
   now?(): number
 }) {
   const store = createAgentHistoryStore(ports.redis), now = ports.now ?? Date.now
@@ -191,7 +193,10 @@ export function createAgentHistory(ports: {
           }
         }, context.isCurrent)
       })
-    } catch { ports.logger.warn('[Agent] 历史原始来源未能保存') }
+    } catch (error) {
+      reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'history_capture', code: 'history_source_write_failed', error },
+        () => ports.logger.warn('[Agent] 历史原始来源未能保存'))
+    }
   }
   /** Background style extraction consumes only this group's already captured originals. */
   async function readStyleSources(binding: AgentBindingSnapshot, days: number, guard: () => boolean, signal?: AbortSignal): Promise<AgentHistoryStyleSources> {
@@ -438,7 +443,10 @@ export function createAgentHistory(ports: {
         if (!canPrune()) return
         await store.update(item.id, state => state && ({ ...state, rows: state.rows.filter(row => row.at >= now() - retention()).slice(-maxRows()) }), canPrune)
       }
-    })().catch(() => { ports.logger.warn('[Agent] 历史来源清理暂时未完成') }).finally(() => { sweep = undefined })
+    })().catch(error => {
+      reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'history_cleanup', code: 'history_cleanup_failed', error },
+        () => ports.logger.warn('[Agent] 历史来源清理暂时未完成'))
+    }).finally(() => { sweep = undefined })
     return sweep
   }
   return { capture, read, readStyleSources, invalidate, tick, purgeSubject: store.purgeSubject, async stop() { lifecycle.abort(); for (const request of requests) request.controller.abort(); await sweep } }

@@ -88,6 +88,19 @@ test('the standalone HTTP boundary serves existing static assets and exposes kno
   assert.equal((await f.request('/src/contracts/agentConsole.ts')).status, 404)
 })
 
+test('the console observes real 5xx faults without reporting expected rejections or disabled features', async t => {
+  const failures = []
+  const f = await fixture(t, [custom('/api/broken', async () => { throw new Error('private API response') }),
+    custom('/api/fault', async () => ({ ...json({ error: 'unavailable' }), status: 503 }))], {
+    onRequestFailure: (...event) => failures.push(event),
+  })
+  assert.equal((await f.request('/api/broken', { token: false })).status, 401)
+  assert.equal((await f.request('/api/qzone/bots')).status, 503)
+  assert.equal((await f.request('/api/broken')).status, 500)
+  assert.equal((await f.request('/api/fault')).status, 503)
+  assert.deepEqual(failures, [[500, 'request_failed'], [503, 'console_http_error']])
+})
+
 test('authentication keeps cookie/token compatibility without forwarding credentials to business services', async t => {
   let received
   const f = await fixture(t, [custom('/api/echo', async (request, context) => { received = { request, context }; return json({ value: 7 }) })])

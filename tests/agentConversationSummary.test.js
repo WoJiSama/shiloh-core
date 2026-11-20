@@ -136,6 +136,22 @@ test('conversation summary source time anchors relative words across Beijing mid
   }
 })
 
+test('the official GLM summary avoids extra reasoning and exposes only fixed HTTP failure metadata', async () => {
+  const request = provider({ baseUrl: 'https://open.bigmodel.cn/api/paas/v4', name: 'glm-5.3-flash',
+    async fetchImpl(_url, init) {
+      assert.deepEqual(JSON.parse(init.body).thinking, { type: 'disabled' })
+      return new Response('private upstream data', { status: 429 })
+    },
+  })
+  await assert.rejects(request(input, context()), error => {
+    assert.equal(error.message, FAILURE)
+    assert.equal(error.code, 'http_error')
+    assert.equal(error.httpStatus, 429)
+    assert.doesNotMatch(JSON.stringify(error), /private upstream data/u)
+    return true
+  })
+})
+
 test('conversation summary clamps character and token budgets and truncates output by Unicode code point', async () => {
   for (const [requested, expected] of [[1, 120], [120.9, 120], [999999, 4000]]) {
     let sent

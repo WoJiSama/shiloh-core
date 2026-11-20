@@ -7,6 +7,7 @@ import type { PersonMemoryStore } from '../../../contracts/personMemory.js'
 import type { PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
 import type { AgentGroupMemoryCleanupGuard, AgentGroupMemoryCleanupReceipt, AgentGroupMemoryPurgeSubject, GroupMemoryAgentState, GroupMemoryConfig, GroupMemoryEntry, GroupMemoryJob, GroupMemoryMessage, GroupMemoryModel, GroupMemoryProposal, GroupMemoryState } from '../../../contracts/groupMemory.js'
 import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js'
+import { reportAgentFailure, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
 import { simulationAddressKey } from '../../simulation/infrastructure/simulationAddress.js'
 import { isPersonMemoryRedacted } from '../domain/personMemory.js'
@@ -41,6 +42,7 @@ export function createGroupMemory(ports: {
   isRunning(): boolean
   allowsText(text: string): boolean
   logger: { warn(message: string): void }
+  diagnostics?: Pick<AgentDiagnostics, 'emit'>
   recordUsage?(input: { scope: string; stage: string; model?: string; usage?: unknown; ms?: number }): void
   now?(): number
 }) {
@@ -169,8 +171,11 @@ export function createGroupMemory(ports: {
   async function runJob(state: GroupMemoryState, agent: GroupMemoryAgentState, job: GroupMemoryJob, cancel: AbortController) {
     const binding = agent.binding, startedAt = now()
     let turn: MemoryTurn | undefined, alive = true, used = false
+    let step: 'source' | 'model' | 'save' = 'source'
+    let timedOut = false
+    const expire = () => { timedOut = true; cancel.abort() }
     const isCurrent = () => alive && !cancel.signal.aborted && current(binding) && ports.available(binding.target) && turn?.isCurrent() !== false
-    const timeout = setTimeout(() => cancel.abort(), 35_000), poll = setInterval(() => { if (!isCurrent()) cancel.abort() }, 50)
+    const timeout = setTimeout(expire, 35_000), poll = setInterval(() => { if (!isCurrent()) cancel.abort() }, 50)
     timeout.unref?.(); poll.unref?.()
     const abort = () => cancel.abort()
     const abortable = async <T>(value: Promise<T>): Promise<T> => {
@@ -199,7 +204,7 @@ export function createGroupMemory(ports: {
         signal: cancel.signal, isCurrent, ensureCurrent: () => abortable(ensureCurrent()),
         recordUsage(model: string, usage: unknown) { if (alive && !used) { used = true; try { ports.recordUsage?.({ scope: simulationAddressKey(binding.target), stage: job.mode === 'teaching' ? 'group-teaching' : 'group-memory', model, usage, ms: now() - startedAt }) } catch {} } },
       })
-      const modelTimer = setTimeout(() => cancel.abort(), job.mode === 'teaching' ? 900 : 20_000)
+      const modelTimer = setTimeout(expire, job.mode === 'teaching' ? 900 : 20_000)
       modelTimer.unref?.()
       const messages = Object.freeze(job.messages.map(row => {
         const copy = structuredClone(row)
@@ -207,10 +212,12 @@ export function createGroupMemory(ports: {
         return Object.freeze(copy)
       }))
       let proposals: readonly GroupMemoryProposal[]
+      step = 'model'
       try {
         proposals = await abortable(ports.model!(Object.freeze({ mode: job.mode, messages, members: Object.freeze(members.map(member => Object.freeze({ ...member }))), botUserId: bot }), context))
       } finally { clearTimeout(modelTimer) }
       if (!Array.isArray(proposals) || proposals.length > 40) throw new Error('群学习结果无效')
+      step = 'source'
       await abortable(ensureCurrent())
       const entries: GroupMemoryEntry[] = [], roles = new Map<string, ConversationMember>()
       const memberIds = new Set(members.map(member => member.id))
@@ -241,6 +248,7 @@ export function createGroupMemory(ports: {
         roleCheckedAt = Date.now()
       }
       const commitCurrent = () => isCurrent() && (job.mode !== 'teaching' || Date.now() - roleCheckedAt <= 1500)
+      step = 'save'
       await store.update(state.id, saved => {
         const live = saved?.agents.find(item => item.agentId === binding.agentId)
         if (!saved || !live || live.token !== agent.token || !live.jobs.some(item => item.id === job.id && item.cleanupToken === job.cleanupToken)) return saved
@@ -264,8 +272,13 @@ export function createGroupMemory(ports: {
         else live.teachingDone = boundedIds([...live.teachingDone, ...job.messages.map(row => row.messageId)])
         return saved
       }, commitCurrent)
-    } catch {
-      if (current(binding)) ports.logger.warn('[Agent] 群学习未完成，保留来源等待有限重试')
+    } catch (error) {
+      if (current(binding)) {
+        const codes = { source: 'group_learning_source_unavailable', model: 'group_learning_model_failed', save: 'group_learning_save_failed' } as const
+        reportAgentFailure(ports.diagnostics, { stage: step === 'model' ? 'model' : 'memory', operation: 'group_memory_extract',
+          code: timedOut ? 'group_learning_timeout' : codes[step], durationMs: now() - startedAt, error },
+        () => ports.logger.warn('[Agent] 群学习未完成，保留来源等待有限重试'))
+      }
     } finally {
       alive = false; clearTimeout(timeout); clearInterval(poll)
       turn?.signal.removeEventListener('abort', abort); turn?.release(); cancel.abort()
@@ -309,11 +322,18 @@ export function createGroupMemory(ports: {
             return saved
           }, () => current(agent.binding))
           if (!committed || !claimed) continue
-          const cancel = new AbortController(), promise = runJob(state, agent, job, cancel).catch(() => ports.logger.warn('[Agent] 群学习存储暂时不可用')).finally(() => { active.delete(key) })
+          const cancel = new AbortController()
+          const promise = runJob(state, agent, job, cancel).catch(error => {
+            reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'group_memory_extract', code: 'group_memory_job_failed', error },
+              () => ports.logger.warn('[Agent] 群学习任务暂时不可用'))
+          }).finally(() => { active.delete(key) })
           active.set(key, { agentId: agent.agentId, target: state.target, cancel, promise })
         }
       }
-    })().catch(() => ports.logger.warn('[Agent] 群学习队列暂时不可用')).finally(() => { sweep = undefined })
+    })().catch(error => {
+      reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'group_memory_extract', code: 'group_memory_queue_unavailable', error },
+        () => ports.logger.warn('[Agent] 群学习队列暂时不可用'))
+    }).finally(() => { sweep = undefined })
     return sweep
   }
   async function read(binding: AgentBindingSnapshot, guard: () => boolean, includeWorkflows = false): Promise<string> {

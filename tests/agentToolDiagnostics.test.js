@@ -4,11 +4,11 @@ import { createAgentTools } from '../dist/backend/modules/tools/infrastructure/a
 import { createAgentDiagnostics } from '../dist/backend/modules/runtime/infrastructure/agentDiagnostics.js'
 const definition = execute => ({ name: 'diagnosticTool', description: 'Diagnostics fixture',
   parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] }, execute })
-function fixture(execute, overrides = {}) {
+function fixture(execute, overrides = {}, definitionOverrides = {}) {
   const events = [], lines = []
   const diagnostics = createAgentDiagnostics({ sink: { async append(event) { events.push(event); return true } },
     logger: { info: line => lines.push(line), warn: line => lines.push(line), error: line => lines.push(line) } })
-  const tools = createAgentTools({ builtIn: [definition(execute)] }, { signal: new AbortController().signal,
+  const tools = createAgentTools({ builtIn: [{ ...definition(execute), ...definitionOverrides }] }, { signal: new AbortController().signal,
     diagnostics, context: () => ({ actor: { kind: 'user' }, isCurrent: () => true }), ...overrides })
   return { tool: tools.getExtraTools(['diagnosticTool'])[0], events, lines, diagnostics }
 }
@@ -36,4 +36,11 @@ test('HostTool swallowed exceptions and AbstractTool validation failures remain 
 test('diagnostic observers cannot interrupt tool success or its existing outcome semantics', async () => {
   const f = fixture(async () => ({ status: 'succeeded', content: 'ok' }), { diagnostics: { emit() { throw Error('observer unavailable') }, traceId() { throw Error('observer unavailable') } } })
   assert.equal((await f.tool.execute({ query: 'query' }, {})).status, 'success')
+})
+
+test('a tool deadline reports a timeout with unknown outcome', async () => {
+  const f = fixture(() => new Promise(() => {}), {}, { timeoutMs: 15 })
+  assert.equal((await f.tool.execute({ query: 'query' }, {})).status, 'unknown')
+  await f.diagnostics.flush()
+  assert.ok(f.events.some(event => event.stage === 'tool' && event.code === 'tool_timeout' && event.outcome === 'unknown'))
 })

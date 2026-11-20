@@ -18,6 +18,8 @@ export interface AgentDouyinResponse {
 export type AgentDouyinRequest = (url: URL, address: LookupAddress, signal: AbortSignal, policy: AgentDouyinRequestPolicy) => Promise<AgentDouyinResponse>
 export type AgentDouyinLookup = (hostname: string) => Promise<readonly LookupAddress[]>
 
+const watchedContexts = new WeakSet<AgentMediaResourceContext>()
+
 export function douyinGuard(context: AgentMediaResourceContext, timeoutMs: number) {
   const cancel = new AbortController()
   if (!(context?.signal instanceof AbortSignal) || typeof context.isCurrent !== 'function' || context.ensureCurrent !== undefined && typeof context.ensureCurrent !== 'function') throw douyinFailure()
@@ -25,7 +27,8 @@ export function douyinGuard(context: AgentMediaResourceContext, timeoutMs: numbe
   const check = () => { try { if (signal.aborted || context.isCurrent() !== true) throw douyinFailure() } catch { throw douyinFailure() } }
   const timer = setTimeout(() => cancel.abort(), timeoutMs); timer.unref()
   let checking = false
-  const watcher = setInterval(() => {
+  // The parent already polls source authority; its abort signal stops every child stage.
+  const watcher = watchedContexts.has(context) ? undefined : setInterval(() => {
     try {
       check()
       if (context.ensureCurrent && !checking) {
@@ -33,7 +36,8 @@ export function douyinGuard(context: AgentMediaResourceContext, timeoutMs: numbe
         void Promise.resolve().then(() => context.ensureCurrent!()).catch(() => cancel.abort()).finally(() => { checking = false })
       }
     } catch { cancel.abort() }
-  }, 20); watcher.unref()
+  }, 20)
+  watcher?.unref()
   const wait = <T>(operation: Promise<T>, late?: (value: T) => unknown): Promise<T> => new Promise((resolve, reject) => {
     let settled = false
     const abort = () => { settled = true; signal.removeEventListener('abort', abort); reject(douyinFailure()) }
@@ -44,8 +48,11 @@ export function douyinGuard(context: AgentMediaResourceContext, timeoutMs: numbe
     }, () => { settled = true; signal.removeEventListener('abort', abort); reject(douyinFailure()) })
     if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true })
   })
+  const scoped = Object.freeze({ signal, isCurrent: () => { try { check(); return true } catch { return false } },
+    ...(context.ensureCurrent ? { ensureCurrent: () => context.ensureCurrent!() } : {}) })
+  watchedContexts.add(scoped)
   return { signal, check, wait, async ensure() { check(); if (context.ensureCurrent) await wait(Promise.resolve().then(() => context.ensureCurrent!())); check() },
-    context: { signal, isCurrent: () => { try { check(); return true } catch { return false } }, ...(context.ensureCurrent ? { ensureCurrent: () => context.ensureCurrent!() } : {}) },
+    context: scoped,
     close() { clearTimeout(timer); clearInterval(watcher); cancel.abort() } }
 }
 

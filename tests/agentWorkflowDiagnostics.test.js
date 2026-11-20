@@ -66,12 +66,13 @@ async function mediaFixture(t, mode) {
   return { seen, result, sends, get calls() { return calls }, get preparations() { return preparations } }
 }
 
-test('media final preparation failure explains once in its FIFO scope and retains canonical link fallback', redisTest, async t => {
+test('media final preparation failure sends one canonical link without the model and records one failure per attempt', redisTest, async t => {
   const f = await mediaFixture(t, 'failed')
-  assert.equal(f.preparations, 3); assert.equal(f.seen.notices.length, 1); assert.equal(f.sends.length, 1)
-  assert.ok(f.sends[0].parts[0].text.includes(explanation)); assert.ok(f.sends[0].parts[0].text.includes('https://www.pixiv.net/artworks/126649495'))
+  assert.equal(f.preparations, 3); assert.equal(f.seen.notices.length, 0); assert.equal(f.sends.length, 1)
+  assert.match(f.sends[0].parts[0].text, /图片资源准备失败/); assert.ok(f.sends[0].parts[0].text.includes('https://www.pixiv.net/artworks/126649495'))
   assert.equal(f.result.state, 'completed'); assert.ok(f.seen.scopes.some(row => row.operation === 'media_prepare')); assert.ok(f.seen.scopes.some(row => row.operation === 'media_deliver'))
-  await f.seen.verify(); assert.ok(f.seen.rows.some(row => row.code === 'provider_threw'))
+  await f.seen.verify()
+  assert.deepEqual(f.seen.rows.filter(row => row.outcome === 'failed').map(row => row.code), Array(3).fill('provider_threw'))
 })
 
 test('media unknown effects and revoked preparation produce no explanation or supplementary send', redisTest, async t => {

@@ -1,5 +1,7 @@
 import type { AgentBindingSnapshot, PlatformAccountRef } from './agentBinding.js'
 
+export const QQ_OWNER_ALERT_MAX_LENGTH = 3_000
+
 export type AgentDiagnosticScope =
   | { readonly kind: 'host' }
   | { readonly kind: 'conversation'; readonly binding: AgentBindingSnapshot; readonly messageId?: string }

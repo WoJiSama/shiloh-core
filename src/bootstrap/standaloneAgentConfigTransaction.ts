@@ -44,7 +44,7 @@ const hashPattern = /^[a-f0-9]{64}$/u
 const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex')
 const fail = (code: 'conflict' | 'unavailable' = 'conflict'): never => { throw new AgentConsoleError(code) }
 const absent = (error: unknown) => !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
-const exists = (name: string) => { try { fs.lstatSync(name); return true } catch (error) { if (absent(error)) return false; throw error } }
+const exists = (name: string) => fs.lstatSync(name, { throwIfNoEntry: false }) !== undefined
 const stat = (name: string) => fs.lstatSync(name, { bigint: true })
 const identity = (left: BigIntStats, right: BigIntStats) => left.dev === right.dev && left.ino === right.ino
 const record = (value: unknown): Record<string, unknown> => { if (!value || typeof value !== 'object' || Array.isArray(value)) return fail(); return value as Record<string, unknown> }

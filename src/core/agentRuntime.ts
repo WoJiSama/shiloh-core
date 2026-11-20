@@ -354,7 +354,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
   const inbox = createAgentInbox(storage)
   const toolLogger = logger
-  const memories = createDelegateMemoryRuntime({ redis: storage, logger: toolLogger, loadConfig: () => ({}), ...(options.now ? { now: options.now } : {}) })
+  const memories = createDelegateMemoryRuntime({ redis: storage, logger: toolLogger, diagnostics, loadConfig: () => ({}), ...(options.now ? { now: options.now } : {}) })
   const personMemory = createPersonMemoryStore({ redis: storage, ...(options.now ? { now: options.now } : {}) })
   const pendingSends = new Map<string, Set<() => void>>()
   const controlPendingSends = new WeakSet<() => void>()
@@ -1344,7 +1344,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
   })
   const mediaOutbox = createAgentMediaOutbox({
-    ...workflowDiagnostics,
+    diagnostics, withDiagnosticScope: diagnostics.run,
     storage, actions: messageActions, ...(options.mediaRelayProvider ? { provider: options.mediaRelayProvider } : {}),
     allowsText: text => options.allowsText?.(text, 'outgoing') !== false,
     ...(options.now ? { now: options.now } : {}), openContext: openMediaRelayContext,
@@ -1540,7 +1540,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     ...(options.now ? { now: options.now } : {}),
   })
   const deferredActions = createAgentDeferredActionRuntime({
-    redis: storage, logger: toolLogger, executor: deferredExecutor, authorization: deferredAuthorization,
+    redis: storage, logger: toolLogger, diagnostics, executor: deferredExecutor, authorization: deferredAuthorization,
     resolveBinding: target => bindingFor(target)?.binding, mode: deferredMode,
     ready: account => isRunning() && adapters.get(platformAccountKey(account))?.isReady() === true,
     capture: binding => captureMemoryTurn(binding), sendReminder: createAgentDeferredReminderSender(messageActions),
@@ -1947,7 +1947,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     isMessageRecalled: (target, messageId) => inbox.isRecalled(target, messageId),
   })
   const commitments = createCommitmentRuntime({
-    redis: storage, logger: toolLogger, getBot: () => null,
+    redis: storage, logger: toolLogger, diagnostics, getBot: () => null,
     messageActions,
     handlesTarget: target => isRunning() && !!target && adapterFor(target)?.isReady() === true && conversationEnabled(target),
     resolveBinding: target => bindingFor(target)?.binding,
@@ -2098,7 +2098,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     available: target => isRunning() && allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
     begin: beginMemoryTurn,
     isRecalled: inbox.isRecalled,
-    logger,
+    logger, diagnostics,
     ...(options.recordTokens ? { recordUsage: options.recordTokens } : {}),
     ...(options.now ? { now: options.now } : {}),
   })
@@ -2109,16 +2109,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     ...(options.summarizeConversation ? { summarize: options.summarizeConversation } : {}),
     resolve(target) {
       if (!isRunning() || !conversationEnabled(target)) return undefined
-      const selected = bindingFor(target)
-      if (!selected) return undefined
-      return { binding: selected.binding, viewer: createPersonaSnapshot({ botId: personMemoryAddress(target).botId,
-        personaId: agentPersonaScopeId(selected.binding.agentId), persona: { ...selected.persona, name: String(selected.persona.name ?? '') },
-        systemContent: selected.systemContent, binding: selected.binding }) }
+      const binding = bindingFor(target)?.binding
+      return binding && { binding }
     },
     available: target => isRunning() && allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
     privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, begin: beginMemoryTurn,
+    ...(options.observeExecutionCurrent ? { observeCurrent } : {}),
     isRunning, allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
-    logger, ...(options.recordTokens ? { recordUsage: options.recordTokens } : {}), ...(options.now ? { now: options.now } : {}),
+    logger, diagnostics, ...(options.recordTokens ? { recordUsage: options.recordTokens } : {}), ...(options.now ? { now: options.now } : {}),
   })
   const conversationMemoryCleanup: AgentConversationMemoryCleanup = Object.freeze({
     async purgeSubject(input: AgentConversationMemoryPurgeSubject, authority: AgentConversationMemoryCleanupGuard): Promise<AgentConversationMemoryCleanupReceipt> {
@@ -2191,7 +2189,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     available: target => allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
     privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, begin: beginMemoryTurn, isRunning, authorizePrivateSource,
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
-    logger, ...(options.now ? { now: options.now } : {}),
+    logger, diagnostics, ...(options.now ? { now: options.now } : {}),
   })
   const semanticMemory = createAgentSemanticMemory({
     redis: storage, memory: personMemory, config: () => options.semanticMemory,
@@ -2201,7 +2199,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, begin: beginMemoryTurn, isRunning,
     authorizePrivateSource,
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
-    logger, ...(options.now ? { now: options.now } : {}),
+    logger, diagnostics, ...(options.now ? { now: options.now } : {}),
   })
   const semanticMemoryCleanup: AgentSemanticMemoryCleanup = Object.freeze({
     async purgeSubject(input: AgentSemanticMemoryPurgeSubject, authority: AgentSemanticMemoryCleanupGuard): Promise<AgentSemanticMemoryCleanupReceipt> {
@@ -2285,7 +2283,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     members: readGroupMembers, member: readGroupMember,
     isRecalled: inbox.isRecalled, begin: beginMemoryTurn, isRunning,
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
-    logger, ...(options.recordTokens ? { recordUsage: options.recordTokens } : {}), ...(options.now ? { now: options.now } : {}),
+    logger, diagnostics, ...(options.recordTokens ? { recordUsage: options.recordTokens } : {}), ...(options.now ? { now: options.now } : {}),
   })
   const groupKnowledge = createGroupKnowledgeTool({
     management: createGroupMemoryManagement({ redis: storage, memory: personMemory, adapter: adapterFor,
@@ -3104,13 +3102,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     const pending = guardPendingSend(conversationAddressKey(target), () => !signal.aborted && mediaRelayCurrent() &&
       adapter.isReady() && adapterFor(target) === adapter && conversationEnabled(target) && memoryTurn.isCurrent() &&
       bindingIsCurrent(target, expected) && (!observed || mediaResponsible(observed)))
-    const isCurrent = () => !signal.aborted && pending.isCurrent() && (!source.share || mediaProviderEnabled(source.share.provider))
+    const isCurrent = () => !signal.aborted && observeCurrent(() => pending.isCurrent() && (!source.share || mediaProviderEnabled(source.share.provider)))
     const { botId, scene } = personMemoryAddress(target), identity = { botId, personaId: agentPersonaScopeId(binding.agentId) }
     const allowsSource = async (message: IncomingMessage): Promise<boolean> => {
-      if (!isCurrent() || message.messageId !== source.messageId || message.occurredAt !== source.occurredAt ||
-          conversationAddressKey(message.conversation) !== conversationAddressKey(target) ||
-          platformAccountKey(message.sender) !== platformAccountKey(source.sender) || !mediaResponsible(message) ||
-          options.allowsText?.(message.text, 'incoming') === false || !allowsFileNames(message)) return false
+      if (!observeCurrent(() => isCurrent() && message.messageId === source.messageId && message.occurredAt === source.occurredAt &&
+          conversationAddressKey(message.conversation) === conversationAddressKey(target) &&
+          platformAccountKey(message.sender) === platformAccountKey(source.sender) && mediaResponsible(message) &&
+          options.allowsText?.(message.text, 'incoming') !== false && allowsFileNames(message))) return false
       if (!await inbox.canReply(target, source.messageId) || await inbox.isRecalled(target, source.messageId) || !isCurrent()) return false
       const excerpt = message.text || '[媒体分享]'
       const redactions = await personMemory.getRedactions({ identity, subjectId: message.sender.id })
@@ -3462,7 +3460,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       void diagnostics.run({ kind: 'account', account: queue.account }, `consume_${queue.kind}`, async () => {
         diagnostics.emit({ stage: 'inbox', operation: `consume_${queue.kind}`, outcome: 'failed', code: 'inbox_retry_pending', error })
       }, 'inbox')
-      logger.warn('[Agent] 收件处理失败，保留队列并等待重试')
       if (isRunning()) retryTimers.set(key, setTimeout(() => { retryTimers.delete(key); kickInbox(queue) }, 1_000))
     }).finally(() => { consumers.delete(key) })
     consumers.set(key, consumer)
@@ -3497,6 +3494,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         .finally(() => { if (commitmentTasks.get(key) === operation) commitmentTasks.delete(key) })
       commitmentTasks.set(key, operation)
     }
+  }
+
+  async function runMaintenance(operation: string, task: () => Promise<unknown>): Promise<void> {
+    try { await task() }
+    catch (error) { diagnostics.emit({ stage: 'runtime', operation, outcome: 'failed', error }) }
   }
 
   async function start(): Promise<void> {
@@ -3538,7 +3540,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (mediaRelayConfig.enabled) await mediaOutbox.start()
       if (torrentConfig.enabled) await torrent.start()
       const recovered = kickInboxes()
-      maintenance = setInterval(() => { kickInboxes(); tickCommitments(); if (mediaRelayConfig.enabled) void mediaOutbox.tick().catch(error => diagnostics.emit({ stage: 'runtime', operation: 'media_outbox_tick', outcome: 'failed', error })); if (torrentConfig.enabled) void torrent.tick().catch(error => diagnostics.emit({ stage: 'runtime', operation: 'torrent_tick', outcome: 'failed', error })); void textPersonMemory.tick(); void conversationMemory.tick(); void semanticMemory.tick(); void history.tick(); void groupMemory.tick() }, 1_000)
+      maintenance = setInterval(() => {
+        kickInboxes()
+        tickCommitments()
+        if (mediaRelayConfig.enabled) void runMaintenance('media_outbox_tick', () => mediaOutbox.tick())
+        if (torrentConfig.enabled) void runMaintenance('torrent_tick', () => torrent.tick())
+        void runMaintenance('person_memory_tick', () => textPersonMemory.tick())
+        void runMaintenance('conversation_memory_tick', () => conversationMemory.tick())
+        void runMaintenance('semantic_memory_tick', () => semanticMemory.tick())
+        void runMaintenance('history_tick', () => history.tick())
+        void runMaintenance('group_memory_tick', () => groupMemory.tick())
+      }, 1_000)
       maintenance.unref()
       await Promise.all(recovered)
       if (!isRunning()) return

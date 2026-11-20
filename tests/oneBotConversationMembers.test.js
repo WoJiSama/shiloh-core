@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { once } from 'node:events'
 import { createServer } from 'node:http'
 import test from 'node:test'
@@ -25,7 +26,7 @@ async function waitFor(probe, description, timeoutMs = 5000) {
   assert.fail(`timed out waiting for ${description}`)
 }
 
-async function fixture(t, { transport = 'forward-websocket', holdLogin = false } = {}) {
+async function fixture(t, { transport = 'forward-websocket', holdLogin = false, onApiFailure, alertOwner } = {}) {
   const server = createServer((_request, outgoing) => outgoing.writeHead(404).end())
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
@@ -61,6 +62,7 @@ async function fixture(t, { transport = 'forward-websocket', holdLogin = false }
   }
   const adapter = createOneBotConnection({ connection: { id: 'members-fixture', account: { ...account } }, url, transport, accessToken: token,
     onDisconnect() { disconnected++ }, onReconnect() { reconnected++ }, onError() { fatal++ }, onEventError(error) { errors.push(error) },
+    onApiFailure, alertOwner,
   })
   t.after(async () => {
     adapter.stop()
@@ -95,7 +97,74 @@ async function fixture(t, { transport = 'forward-websocket', holdLogin = false }
   }
 }
 
+test('OneBot reports native rejection and unknown timeout without leaking API parameters or responses', { timeout: 10000 }, async t => {
+  const events = [], traces = new AsyncLocalStorage()
+  const f = await fixture(t, { onApiFailure: (...event) => events.push([traces.getStore(), ...event]) })
+  f.setHandler(() => ({ status: 'failed', retcode: 123, wording: 'private_response' }))
+  assert.equal(await traces.run('read', () => f.adapter.readConversationMember(target, user, options())), undefined)
+  f.setHandler(() => undefined)
+  for (const [index, reason] of ['TimeoutError', 'AbortError'].entries()) {
+    const controller = new AbortController()
+    const pending = traces.run('list', () => f.adapter.listConversationMembers(target, options({ signal: controller.signal })))
+    await waitFor(() => f.memberRequests().length === index + 2, 'pending member list')
+    controller.abort(new DOMException('private_error', reason))
+    assert.equal(await pending, undefined)
+  }
+  assert.deepEqual(events, [
+    ['read', 'get_group_member_info', 'failed', 'onebot_rejected'],
+    ['list', 'get_group_member_list', 'unknown', 'onebot_timeout'],
+  ])
+})
+
+test('owner alerts verify friendship and send plain text to the fixed private recipient', async t => {
+  const faults = []
+  const f = await fixture(t, { alertOwner: user, onApiFailure: (...row) => faults.push(row) })
+  f.setHandler(() => response([{ user_id: 111111 }]))
+  assert.deepEqual(await f.adapter.sendOwnerAlert('告警', options()), { state: 'failed', code: 'owner_friend_unconfirmed' })
+  assert.equal(f.requests.filter(row => row.action === 'send_private_msg').length, 0)
+
+  let current = true
+  f.setHandler(() => { current = false; return response([{ user_id: user.id }]) })
+  assert.equal((await f.adapter.sendOwnerAlert('告警', options({ isCurrent: () => current }))).state, 'failed')
+  assert.equal(f.requests.filter(row => row.action === 'send_private_msg').length, 0)
+
+  f.setHandler(({ action }) => action === 'get_friend_list' ? response([{ user_id: user.id }]) : response({ message_id: 99 }))
+  assert.deepEqual(await f.adapter.sendOwnerAlert('告警', options()), { state: 'sent', messageId: '99' })
+  assert.deepEqual(f.requests.filter(row => row.action === 'send_private_msg').map(row => row.params), [
+    { user_id: Number(user.id), message: [{ type: 'text', data: { text: '告警' } }] },
+  ])
+  f.setHandler(({ action }) => action === 'get_friend_list' ? response([{ user_id: user.id }]) : { status: 'failed', retcode: 1200 })
+  assert.deepEqual(await f.adapter.sendOwnerAlert('告警', options()), { state: 'unknown' })
+  assert.deepEqual(faults, [], 'failures from the alert transport cannot create recursive alerts')
+})
+
 for (const transport of ['forward-websocket', 'reverse-websocket']) {
+  test(`${transport} shutdown lets queued owner alerts finish on the verified socket`, { timeout: 10000 }, async t => {
+    const f = await fixture(t, { transport, alertOwner: user })
+    f.setHandler(({ action }) => action === 'get_friend_list' ? response([{ user_id: user.id }]) : undefined)
+    const ordinary = f.adapter.readConversationMember(target, user, options())
+    const inFlight = f.adapter.sendOwnerAlert('退出前的告警', options())
+    await waitFor(() => f.requests.some(row => row.action === 'send_private_msg') && f.memberRequests().length === 1, 'pending calls')
+    const finish = f.adapter.beginOwnerAlertDrain()
+    assert.equal(typeof finish, 'function')
+    try {
+      f.adapter.stop()
+      assert.equal(f.adapter.isReady(), false)
+      assert.equal(await ordinary, undefined)
+      assert.equal(await f.adapter.readConversationMember(target, user, options()), undefined)
+      await assert.rejects(f.adapter.start(), /正在退出/)
+      const first = f.requests.find(row => row.action === 'send_private_msg')
+      reply(f.peer(), first, response({ message_id: 80 }))
+      assert.deepEqual(await inFlight, { state: 'sent', messageId: '80' })
+      f.setHandler(({ action }) => action === 'get_friend_list' ? response([{ user_id: user.id }]) : response({ message_id: 81 }))
+      assert.deepEqual(await f.adapter.sendOwnerAlert('待发送的告警', options()), { state: 'sent', messageId: '81' })
+      const disconnected = once(f.peer(), 'close')
+      finish()
+      await disconnected
+      assert.deepEqual(await f.adapter.sendOwnerAlert('新告警', options()), { state: 'failed', code: 'owner_alert_unavailable' })
+    } finally { finish() }
+  })
+
   test(`${transport} reads fresh scoped member evidence and a complete member list over real WebSocket`, { timeout: 10000 }, async t => {
     const f = await fixture(t, { transport })
     const began = Date.now()

@@ -1,0 +1,249 @@
+import type { PlatformConnection, PlatformUserRef } from '../contracts/agentBinding.js'
+import { QQ_OWNER_ALERT_MAX_LENGTH } from '../contracts/agentDiagnostics.js'
+import type { AlertBatch } from '../modules/runtime/infrastructure/agentFailureAlerts.js'
+import { qqId } from '../adapters/qqIdentity.js'
+
+type Alert = AlertBatch['alerts'][number]
+
+const stageNames: Record<Alert['stage'], string> = {
+  host: '宿主服务',
+  inbox: '消息处理',
+  model: '模型请求',
+  tool: '工具执行',
+  delivery: '消息投递',
+  memory: '记忆处理',
+  runtime: '后台运行',
+  notification: '通知发送',
+}
+
+const operationNames = new Map(Object.entries({
+  configuration_load: '读取服务配置',
+  host_authority: '宿主运行授权',
+  host_log: '后台运行',
+  host_run: '宿主运行',
+  operation_journal: '操作日志写入',
+  alert_queue: '告警队列',
+  forbidden_word_config: '违禁词配置',
+  token_ledger_write: '保存令牌用量',
+  onebot_disconnect: 'QQ 连接',
+  onebot_recovery: 'QQ 重连',
+  onebot_admission: '接收 QQ 消息',
+  consume_simulation: '处理群消息队列',
+  simulation_ingest: '处理群消息',
+  simulation_poke: '处理群戳一戳',
+  simulation_sweep: '检查群聊调度',
+  simulation_session_load: '读取群聊会话',
+  simulation_memory_load: '读取群聊记忆',
+  simulation_affinity_load: '读取群友好感度',
+  simulation_wake_budget: '群聊唤醒',
+  simulation_budget_notice: '发送群聊限额提示',
+  simulation_initial_prompt: '恢复群聊初始说明',
+  simulation_tool_observer: '记录工具回复',
+  simulation_fallback_send: '补发群聊回复',
+  simulation_social_check: '检查群聊社会跟进',
+  simulation_goal_check: '检查角色目标',
+  simulation_character_background: '运行角色后台任务',
+  simulation_health_check: '后台健康检查',
+  simulation_style_extraction: '提取群友口头禅',
+  simulation_person_source: '登记人物记忆来源',
+  provider_http: '请求模型服务',
+  provider_request: '请求模型服务',
+  provider_recovery: '模型服务重试',
+  model_request: '请求模型',
+  simulation_main: '主对话模型',
+  simulation_turn: '群聊回合',
+  simulation_wake_gate: '唤醒预判',
+  wake_gate_provider_http: '唤醒预判请求',
+  simulation_meme_extract: '群梗提取',
+  meme_provider_http: '群梗提取请求',
+  conversation_summary: '会话摘要',
+  summary_provider_http: '会话摘要请求',
+  simulation_person_profile_extract: '提取群成员画像',
+  text_person_profile_extract: '提取人物事实',
+  person_memory_provider_http: '人物记忆请求',
+  group_memory_provider_http: '群记忆请求',
+  group_memory_extract: '提取群记忆',
+  history_capture: '保存历史消息来源',
+  history_cleanup: '清理历史消息来源',
+  semantic_memory_index: '更新语义记忆索引',
+  semantic_memory_sweep: '读取语义记忆来源',
+  delegated_memory_load: '读取委托记忆',
+  commitment_tick: '执行到期托付',
+  commitment_notice: '发送托付通知',
+  commitment_renewal: '处理托付续约',
+  commitment_failure_log: '读取托付失败记录',
+  simulation_image_description: '识别消息图片',
+  media_prepare: '准备搬运内容',
+  media_provider_prepare: '获取搬运内容',
+  media_deliver: '搬运内容投递',
+  media_failure_notice: '搬运失败通知',
+  bilibili_provider_identify: '解析 B 站链接',
+  bilibili_provider_download: '下载 B 站媒体',
+  bilibili_provider_prepare: '准备 B 站搬运',
+  douyin_provider_prepare: '准备抖音搬运',
+  simFinishTurn: '结束群聊回合',
+  simGetUnreadMessages: '读取未读消息',
+  simGetMessageImages: '读取消息图片',
+  simGetForward: '读取合并转发',
+  simSendMessage: '发送群聊消息',
+  send_send: '发送消息',
+  'onebot.send_private_msg': '发送 QQ 私聊消息',
+  'onebot.send_group_msg': '发送 QQ 群消息',
+}))
+
+const failureReasons = new Map(Object.entries({
+  configuration_unavailable: '服务配置无法读取或未通过校验。',
+  host_authority_lost: '服务失去了运行所需的授权或连接。',
+  connection_lost: '与 QQ 的连接已断开。',
+  onebot_rejected: 'QQ 接口拒绝了本次请求。',
+  onebot_response_unconfirmed: 'QQ 接口未返回可确认的结果。',
+  onebot_transport_unconfirmed: '与 QQ 通信时未收到确认回执。',
+  inbox_retry_pending: '消息处理未完成，系统会重试。',
+  event_not_queued: '收到的消息未能加入处理队列。',
+  admission_not_confirmed: '系统未能确认消息已进入队列。',
+  forbidden_regex_invalid: '有违禁词正则无法编译，已按普通词匹配。',
+  token_ledger_write_failed: '本次令牌用量未能写入账本。',
+  session_owned_by_another_bot: '该会话绑定了其他机器人，本账号已跳过处理。',
+  simulation_binding_unavailable: '处理会话时无法确认有效的角色绑定。',
+  session_read_failed: '持久化的会话状态暂时无法读取。',
+  session_decode_failed: '已保存的会话状态格式损坏，本次使用默认状态。',
+  memory_read_failed: '已保存的群聊记忆无法读取或校验，本次按空处理。',
+  affinity_read_failed: '已保存的好感度无法读取或校验，本次按空处理。',
+  person_source_not_recorded: '本次消息未能登记为人物记忆来源。',
+  schedule_registration_failed: '会话未能登记到群聊调度列表。',
+  turn_dispatch_failed: '调度器未能完成群聊回合的派发。',
+  sweep_failed: '定时检查未能完成。',
+  daily_turn_limit: '今日对话回合已达到上限，本次唤醒被拦截。',
+  daily_cost_limit: '今日消耗额度已达到上限，本次唤醒被拦截。',
+  budget_notice_not_confirmed: '群内限额提示未获得成功发送回执。',
+  initial_prompt_restore_failed: '本轮使用的初始说明未能恢复至待领取状态。',
+  tool_observer_failed: '工具回复的记录回调发生异常，原回合继续执行。',
+  closing_tools_unavailable: '模型请求未包含回合收尾工具，本轮已停止。',
+  fallback_send_not_confirmed: '普通文本兜底发送遇到异常，发送状态待确认。',
+  social_check_failed: '本次未能核对群友跟进提醒的状态。',
+  goal_check_failed: '本次未能检查到期的角色目标。',
+  character_background_failed: '角色的订阅检查或独立反思提前停止。',
+  user_style_extraction_failed: '群友口头禅提取未完成，未提交的结果已丢弃。',
+  health_style_read_failed: '健康检查未能读取风格学习状态。',
+  health_commitment_read_failed: '健康检查未能读取或解析托付失败记录。',
+  health_snapshot_write_failed: '健康检查结果未能保存到控制台数据存储。',
+  health_check_failed: '健康检查在生成检查结果时发生异常。',
+  style_summary_repeated_failure: '风格学习自动总结已连续失败多次。',
+  style_summary_stale: '风格学习自动总结已超过 48 小时未成功。',
+  expression_learning_repeated_failure: '群表达学习已连续提取失败多次。',
+  commitment_terminal_failure: '托付账本中存在未完成或结果待确认的记录。',
+  commitment_retry_pending: '到期托付处理遇到异常，调度会继续检查。',
+  commitment_notice_not_confirmed: '未能确认送达失约说明或续约问询。',
+  commitment_renewal_failed: '续约问询未能完成，本次问询会保留尝试记录。',
+  commitment_renewal_scan_failed: '扫描待续约托付时发生异常。',
+  commitment_execution_guard_failed: '领取托付时无法确认当前执行权限，任务仍待处理。',
+  commitment_failure_log_invalid: '托付失败记录格式损坏，本次按空处理。',
+  delegated_memory_decode_failed: '已保存的委托记忆无法解析，本次按空处理。',
+  history_source_write_failed: '本次历史消息来源未能保存。',
+  history_cleanup_failed: '历史消息来源的清理任务未能完成。',
+  semantic_index_unavailable: '语义记忆索引更新失败，稍后重试。',
+  semantic_source_store_unavailable: '语义记忆来源库暂时无法读取。',
+  person_profile_store_unavailable: '人物事实学习的存储操作未能完成。',
+  person_profile_queue_unavailable: '人物事实学习队列暂时无法处理。',
+  group_learning_source_unavailable: '群记忆学习未能完成来源或群成员核验。',
+  group_learning_model_failed: '群记忆学习未能取得可用的模型提取结果。',
+  group_learning_save_failed: '群记忆提取结果未能保存。',
+  group_learning_timeout: '群记忆学习超过了任务执行时限。',
+  group_memory_job_failed: '群记忆后台任务异常退出。',
+  group_memory_queue_unavailable: '群记忆学习队列暂时无法处理。',
+  diagnostic_journal_failed: '操作日志未能及时写入。',
+  diagnostic_queue_overflow: '等待写入日志的操作过多。',
+  alert_group_overflow: '告警种类过多，超出容量的告警已合并计数。',
+  wake_gate_timeout: '唤醒预判未在规定时间内完成。',
+  wake_gate_unavailable: '唤醒预判未能给出有效结果。',
+  provider_timeout: '等待外部服务响应超时。',
+  provider_transport_error: '与外部服务通信时发生网络错误。',
+  http_error: '服务返回了错误状态。',
+  provider_error: '模型服务返回了错误。',
+  provider_warning: '模型服务在请求或重试时报告了异常。',
+  model_response_error: '模型返回了错误。',
+  model_response_invalid: '模型返回的内容或格式无效。',
+  image_model_response_error: '图片识别服务未给出有效结果。',
+  model_threw: '调用模型时发生异常。',
+  summary_timeout: '摘要任务未在规定时间内完成。',
+  summary_failed: '会话摘要未能生成或保存。',
+  summary_store_unavailable: '摘要存储暂时不可用。',
+  summary_queue_unavailable: '摘要队列暂时不可用。',
+  source_identification_failed: '未能识别分享链接中的作品。',
+  prepare_failed: '未能获取搬运需要的内容。',
+  prepare_unavailable: '媒体来源暂时无法提供搬运内容。',
+  provider_threw: '请求外部服务时发生异常。',
+  video_candidate_failed: '这个视频下载地址未能成功提供文件。',
+  image_candidate_failed: '这个图片下载地址未能成功提供文件。',
+  video_plan_incomplete: '未能下载完整的全部视频分段。',
+  request_unfulfilled: '请求的内容未能交付。',
+  explanation_failed: '未能生成或发送失败说明。',
+  returned_error: '操作返回了错误结果。',
+  returned_failed: '操作返回了失败结果。',
+  returned_unknown: '系统未收到可确认的操作结果。',
+  tool_reply_failed: '工具报告本次执行失败。',
+  effect_rejected: '接收端拒绝了本次投递。',
+  effect_unknown: '暂时无法确认内容是否已送达。',
+  delivery_failed: '投递过程遇到异常，暂时无法确认是否送达。',
+  operation_exception: '执行操作时发生异常。',
+  runtime_error: '运行过程中发生异常。',
+  tool_budget_exhausted: '本轮工具调用已达到上限。',
+}))
+
+const httpReasons = new Map([
+  [400, '服务拒绝了请求参数。'],
+  [401, '请求未通过服务的身份验证。'],
+  [403, '服务拒绝了访问请求。'],
+  [404, '服务找不到请求的资源。'],
+  [408, '服务等待请求超时。'],
+  [429, '服务限制了请求频率或额度。'],
+  [504, '网关等待上游服务响应超时。'],
+])
+
+const exceptionReasons = new Map<Alert['errorKind'], string>([
+  ['TimeoutError', '等待操作完成超时。'],
+  ['AbortError', '操作在完成前被中断。'],
+  ['SyntaxError', '处理数据时发现格式错误。'],
+  ['TypeError', '处理数据时遇到类型不匹配。'],
+  ['RangeError', '处理的数值或长度超出了允许范围。'],
+])
+
+const warningCodes = new Set(['runtime_warning', 'provider_warning', 'daily_turn_limit', 'daily_cost_limit',
+  'forbidden_regex_invalid', 'style_summary_stale'])
+
+export function resolveStandaloneQqAlertOwner(connectionId: string, connections: readonly PlatformConnection[], masters: readonly PlatformUserRef[]): PlatformUserRef {
+  const connection = connections.find(candidate => candidate.id === connectionId)
+  const owner = masters[0]
+  if (!connection || connection.account.platform !== 'qq' || connection.account.namespace !== 'global' || masters.length !== 1 ||
+      owner?.platform !== 'qq' || owner.namespace !== 'global' || qqId(owner.id) !== owner.id ||
+      connections.some(candidate => candidate.account.platform === 'qq' && candidate.account.namespace === 'global' && candidate.account.id === owner.id)) {
+    throw new Error('QQ 主人告警需要一个有效 QQ 连接和唯一的 bilibiliQuality.masters 主人')
+  }
+  return owner
+}
+
+export function formatQqOwnerAlerts(batch: AlertBatch): string {
+  function format(includeOperation: boolean) {
+    const lines = batch.alerts.map(alert => {
+      const warning = alert.code !== undefined && warningCodes.has(alert.code)
+      const outcome = alert.outcome === 'unknown' ? '结果待确认' : warning ? '出现警告' : '失败'
+      const operation = operationNames.get(alert.operation) ?? (alert.operation.startsWith('onebot.') ? '调用 QQ 接口' :
+        alert.operation.startsWith('mcp.') ? '连接 MCP 工具服务' : stageNames[alert.stage])
+      const code = alert.code === 'redacted' ? undefined : alert.code
+      const status = alert.httpStatus
+      const httpReason = status === undefined ? undefined : httpReasons.get(status) ??
+        (status >= 500 && status <= 599 ? '外部服务暂时不可用。' : undefined)
+      const knownReason = code && failureReasons.get(code)
+      const reason = httpReason || knownReason || exceptionReasons.get(alert.errorKind) ||
+        (alert.outcome === 'unknown' ? '暂时无法确认操作是否完成。' : warning ? '这条兼容日志缺少可确认的原因。' : '系统未记录更具体的原因，详情见运行日志。')
+      const details = [code && `错误码 ${code}`, status !== undefined && `HTTP 状态 ${status}`,
+        includeOperation && alert.operation !== 'redacted' && `操作标识 ${alert.operation}`].filter(Boolean).join(' · ')
+      return [`${operation}${outcome}，共 ${alert.count} 次`, reason, details,
+        alert.traceId && `追踪编号 ${alert.traceId}`].filter(Boolean).join('\n')
+    })
+    return ['【助手运行告警】', ...lines].join('\n\n')
+  }
+  const text = format(true)
+  // A full QQ batch may be too long when every entry has a long diagnostic label.
+  return text.length <= QQ_OWNER_ALERT_MAX_LENGTH ? text : format(false)
+}

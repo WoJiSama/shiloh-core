@@ -43,6 +43,28 @@ test('one synchronous configuration check shares its complete entry observation 
   } finally { fs.openSync = original }
 })
 
+test('fresh exit checks detect different bytes even when file metadata and size match', async t => {
+  const f = await fixture(t), original = fs.readFileSync, hostStat = fs.statSync(f.host, { bigint: true })
+  let changed = false
+  fs.readFileSync = function(name, ...args) {
+    if (changed && typeof name === 'number' && fs.fstatSync(name, { bigint: true }).ino === hostStat.ino) {
+      return Buffer.from('version: 2\n')
+    }
+    return original.call(this, name, ...args)
+  }
+  try {
+    assert.deepEqual(observe(f.loaded, () => {
+      assert.equal(current(f.loaded), true)
+      changed = true
+      return true
+    }), { current: false, accepted: false })
+    assert.equal(current(f.loaded), false)
+    assert.equal(inspect(f.loaded).sources.host, 'version: 2\n')
+    changed = false
+    assert.equal(current(f.loaded), true)
+  } finally { fs.readFileSync = original }
+})
+
 test('a same-byte replacement during a synchronous callback rejects true, false and throwing checks', async t => {
   for (const completion of ['true', 'false', 'throw']) await t.test(completion, async t => {
     const f = await fixture(t)
