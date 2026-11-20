@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentLifeThreadContext, AgentLifeThreadProvider } from '../../../contracts/agentLifeThread.js'
 import { agentBindingToken, conversationAddressKey } from '../../runtime/domain/agentBindings.js'
-import { mergeThreadSync, normalizeLifeThreads } from '../domain/lifeThread.js'
+import { mergeThreadSync, normalizeLifeThreads, type LifeThread } from '../domain/lifeThread.js'
 
 export interface AgentLifeThreadStore {
   loadLifeThreads(): Promise<unknown[]>
   saveLifeThreads(threads: unknown[]): Promise<void>
 }
+
+const isDue = (thread: LifeThread, at: number, intervalMs: number) => thread.status === 'active' && at - thread.lastSyncAt >= intervalMs
 
 /** Serialize the complete read/resolve/write operation in each actual character partition. */
 export function createAgentLifeThreadRuntime(provider: AgentLifeThreadProvider, now: () => number = Date.now) {
@@ -69,13 +71,17 @@ export function createAgentLifeThreadRuntime(provider: AgentLifeThreadProvider, 
         return { ok: true as const }
       })
     },
+    async hasDueSync(intervalMs: number, store: AgentLifeThreadStore): Promise<boolean> {
+      const threads = normalizeLifeThreads(await store.loadLifeThreads()), at = now()
+      return threads.some(thread => isDue(thread, at, intervalMs))
+    },
     sync(intervalMs: number, store: AgentLifeThreadStore, context: AgentLifeThreadContext) {
       return run(store, context, async ensure => {
         const threads = normalizeLifeThreads(await store.loadLifeThreads()); await ensure()
         const at = now(); let dirty = false
         for (const thread of threads) {
+          if (!isDue(thread, at, intervalMs)) continue
           await ensure()
-          if (thread.status !== 'active' || at - thread.lastSyncAt < intervalMs) continue
           const result = await provider.sync({ sourceId: thread.sourceId, title: thread.title,
             ...(thread.lastEpisode === undefined ? {} : { lastEpisode: thread.lastEpisode }) }, context)
           await ensure()

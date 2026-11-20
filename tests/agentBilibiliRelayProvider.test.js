@@ -138,14 +138,15 @@ test('ordinary automatic relay uses anonymous fingerprint cookies and never the 
   assert.equal(f.requests.find(request => request.url.includes('bilivideo.com')).policy.headers.Cookie, undefined)
 })
 
-test('PCDN primary durl with port falls back to official backup instead of failing the relay', async t => {
+test('automatic relay downloads the official backup when the primary points to PCDN', async t => {
   const body = mp4(72, 9)
   const f = await fixture(t, { play: { durl: [{ url: 'https://edge.mountaintoys.cn:4483/upgcxcode/pcdn.mp4?buvid3=BUVID_PRIVATE_3', length: 60000, size: 72,
       backup_url: ['https://upos-sz-estgcos.bilivideo.com/official.mp4?token=upstream-private&buvid4=BUVID_PRIVATE_4'] }] },
     respond: async url => url.hostname === 'edge.mountaintoys.cn' ? assert.fail('non-whitelisted host must never be requested') : url.pathname === '/official.mp4' ? response(body, 'video/mp4') : undefined })
   const result = await f.prepare(); assert.equal(result.status, 'ready')
   assert.deepEqual(await f.read(result.plan.items[1].parts[0].artifact), body)
-  assert.ok(f.events.some(event => event.operation === 'bilibili_provider_download' && event.code === 'video_candidate_failed'))
+  assert.deepEqual(f.requests.filter(request => request.url.includes('bilivideo.com')).map(request => new URL(request.url).pathname), ['/official.mp4'])
+  assert.equal(f.events.some(event => event.operation === 'bilibili_provider_download' && event.code === 'video_candidate_failed'), false)
   await result.release(); await f.clean()
 })
 

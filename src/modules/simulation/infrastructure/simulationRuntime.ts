@@ -465,7 +465,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     }
     const combined = AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000), ...(signal ? [signal] : [])])
     let memory: Awaited<ReturnType<NonNullable<SimulationRuntimePorts['beginMemoryTurn']>>> | undefined
-    const check = () => { if (combined.aborted || !current() || memory?.isCurrent() === false) throw new Error('生活线所属角色或权限已改变') }
+    const authorized = () => !combined.aborted && current() && memory?.isCurrent() !== false
+    const check = () => {
+      if ((ports.observeCurrent ? ports.observeCurrent(authorized) : authorized()) !== true) throw new Error('生活线所属角色或权限已改变')
+    }
     const ensure = async () => {
       check(); await outerEnsure(); check()
       if ((await characters.load(scope)).paused) throw new Error('生活线所属角色已暂停')
@@ -1697,6 +1700,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           const invokeGate = async () => {
             try {
               if (!gateCurrent() || !gateSources.length) return null
+              const started = now()
               if (durableWake) { recordWakeStart(); noteProactiveCheck?.() }
               await gateContext.ensureCurrent()
               const verdict = await awaitSideModel(() => judgeWake({
@@ -1706,6 +1710,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               }, gateCurrent, gateContext), gateSignal, gateCurrent)
               await gateContext.ensureCurrent()
               if (verdict === null) diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'failed', code: 'wake_gate_unavailable' })
+              else diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'succeeded', durationMs: now() - started })
               return verdict
             } finally { gateActive = false }
           }
@@ -4010,10 +4015,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (!hasWake && isCurrent() && !running.has(groupId)) await maybeMineUserStyle(groupId, cfg)
       if (!hasWake && !running.has(groupId) && isCurrent()) {
         if (lifeThreads && binding) {
-          await withLifeThreads(groupId, target, binding, sweepActivity.signal, isCurrent, async () => {
-            await refreshGroupState(true)
-            if (!isCurrent()) throw new Error('生活线调度所属角色已改变')
-          }, (store, context) => lifeThreads.sync(cfg.lifeThreads.syncIntervalMs, store, context)).catch(() => undefined)
+          const threadStore = scopedStore(characterScopeFor(target, agentPersonaScopeId(binding.agentId)), binding)
+          if (cfg.lifeThreads.enabled && await lifeThreads.hasDueSync(cfg.lifeThreads.syncIntervalMs, threadStore)) {
+            await withLifeThreads(groupId, target, binding, sweepActivity.signal, isCurrent, async () => {
+              await refreshGroupState(true)
+              if (!isCurrent()) throw new Error('生活线调度所属角色已改变')
+            }, (store, context) => lifeThreads.sync(cfg.lifeThreads.syncIntervalMs, store, context)).catch(() => undefined)
+          }
         } else await maybeSyncLifeThreads(cfg, scopedStore(scopeFor(groupId, state.botId)), isCurrent)
       }
       // 健康哨兵：全局每小时跑一次（挂在第一个群的 sweep 里）
