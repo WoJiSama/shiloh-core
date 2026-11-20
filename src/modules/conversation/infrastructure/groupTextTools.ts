@@ -60,7 +60,7 @@ export function createGroupTextTools(options: {
 }) {
   const instances: Partial<Record<GroupTextToolName, AbstractTool>> = { commitmentTool: options.commitment, delegateMemoryTool: options.memory,
     ...(options.knowledge ? { groupKnowledgeTool: options.knowledge } : {}) }
-  const tools = new Map<string, { instance: AbstractTool; parameters: ToolParameters; definition: ChatTool }>(groupTextToolNames.flatMap(name => {
+  const tools = new Map<string, { instance: AbstractTool; parameters: AgentTool['parameters']; definition: ChatTool }>(groupTextToolNames.flatMap(name => {
     const instance = instances[name]
     if (!instance) return []
     const parameters = propertiesFor(name, instance.parameters)
