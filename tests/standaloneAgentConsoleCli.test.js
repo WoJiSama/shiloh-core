@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createServer as createTcpServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -136,6 +136,30 @@ async function fixture(t, enabled = true) {
     },
   }
 }
+
+test('packaged standalone console serves imported artwork through its host credential filter', { timeout: 30_000 }, async t => {
+  const f = await fixture(t)
+  await f.start()
+  const folder = path.join(f.dataDir, 'legacy-console', 'draw')
+  await mkdir(folder, { recursive: true })
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=', 'base64')
+  await writeFile(path.join(folder, 'imported.png'), bytes)
+  assert.equal((await f.request('/img/imported.png', { token: false })).status, 401)
+  const response = await fetch(f.base + '/img/imported.png', { headers: { 'x-console-token': CONSOLE_TOKEN } })
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('content-type'), 'image/png')
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes)
+  const contaminated = path.join(folder, 'with-test-credential.png')
+  await writeFile(contaminated, Buffer.concat([bytes, Buffer.from(MODEL_KEY)]))
+  try {
+    const blocked = await f.request('/img/with-test-credential.png')
+    assert.equal(blocked.status, 500)
+    assert.equal(blocked.text.includes(MODEL_KEY), false)
+  } finally {
+    await rm(contaminated)
+  }
+  await f.stop()
+})
 
 test('packaged standalone console checks without writes, serves authenticated APIs and manages exact bound simulation targets', { timeout: 45_000 }, async t => {
   const f = await fixture(t); await f.check(); await f.start()

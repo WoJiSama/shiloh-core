@@ -834,7 +834,8 @@ export async function main(argv: string[]): Promise<void> {
             ...(adapter.gift ? ['qq.gift'] : []), ...(adapter.qzone ? ['qq.qzone'] : []), ...(adapter.redPackets ? ['qq.red-packet'] : [])],
         })), services: () => services, configState: persistence.state }))
       consoleHost = createStandaloneAgentConsole({ frontendDir: config.console.frontendDir, host: config.console.host, port: config.console.port,
-        authority, bindings, auth: consoleAuth, services, execution: persistence.execution, commits: persistence.commits, allowsResponse: allowsSecretText,
+        authority, bindings, auth: consoleAuth, services, execution: persistence.execution, commits: persistence.commits,
+        allowsResponse: body => allowsSecretText(typeof body === 'string' ? body : Buffer.from(body).toString('utf8')),
         onRequestFailure: (httpStatus, code) => diagnostics.emit({ stage: 'host', operation: 'console_request',
           outcome: code === 'commit_outcome_unknown' ? 'unknown' : 'failed', httpStatus, code }) })
       await consoleHost.listen()
