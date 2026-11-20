@@ -70,11 +70,12 @@ function scope(value: unknown): AgentDiagnosticScope {
 }
 /** The writer and read view share the same closed metadata schema, including historical v1 records. */
 export function parseAgentDiagnosticEvent(value: unknown): Readonly<AgentDiagnosticEvent> {
-  const row = record(value, ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code', 'durationMs', 'errorKind', 'httpStatus', 'configurationRevision', 'delivery'])
+  const row = record(value, ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code', 'sourceTag', 'durationMs', 'errorKind', 'httpStatus', 'configurationRevision', 'delivery'])
   if (row.version !== 1 || !Number.isSafeInteger(row.at) || Number(row.at) < 0 || Number(row.at) > 8_640_000_000_000_000 ||
       typeof row.stage !== 'string' || !stages.includes(row.stage) || typeof row.outcome !== 'string' || !outcomes.includes(row.outcome) ||
       row.durationMs !== undefined && (!Number.isSafeInteger(row.durationMs) || Number(row.durationMs) < 0) ||
       row.errorKind !== undefined && (typeof row.errorKind !== 'string' || !errorKinds.includes(row.errorKind)) ||
+      row.sourceTag !== undefined && (typeof row.sourceTag !== 'string' || !/^[\p{Script=Han}\p{L}\p{N} _-]{1,24}$/u.test(row.sourceTag)) ||
       row.httpStatus !== undefined && (!Number.isInteger(row.httpStatus) || Number(row.httpStatus) < 100 || Number(row.httpStatus) > 599)) throw failure()
   let delivery: AgentDiagnosticEvent['delivery']
   if (row.delivery !== undefined) {
@@ -85,7 +86,8 @@ export function parseAgentDiagnosticEvent(value: unknown): Readonly<AgentDiagnos
   }
   return Object.freeze({ version: 1, id: token(row.id), traceId: token(row.traceId), at: row.at as number, scope: scope(row.scope),
     stage: row.stage as AgentDiagnosticEvent['stage'], operation: token(row.operation), outcome: row.outcome as AgentDiagnosticEvent['outcome'],
-    ...(row.code === undefined ? {} : { code: token(row.code) }), ...(row.durationMs === undefined ? {} : { durationMs: row.durationMs as number }),
+    ...(row.code === undefined ? {} : { code: token(row.code) }), ...(row.sourceTag === undefined ? {} : { sourceTag: row.sourceTag as string }),
+    ...(row.durationMs === undefined ? {} : { durationMs: row.durationMs as number }),
     ...(row.errorKind === undefined ? {} : { errorKind: row.errorKind as NonNullable<AgentDiagnosticEvent['errorKind']> }), ...(row.httpStatus === undefined ? {} : { httpStatus: row.httpStatus as number }),
     ...(row.configurationRevision === undefined ? {} : { configurationRevision: text(row.configurationRevision, 512) }), ...(delivery === undefined ? {} : { delivery }) })
 }

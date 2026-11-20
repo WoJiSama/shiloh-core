@@ -6,7 +6,15 @@ import { agentBindingToken, conversationAddressKey, platformAccountKey } from '.
 
 type Logger = { info(message: string, ...values: unknown[]): void; warn(message: string, ...values: unknown[]): void; error(message: string, ...values: unknown[]): void }
 export type AgentDiagnosticInput = Pick<AgentDiagnosticEvent, 'stage' | 'operation' | 'outcome'> &
-  Partial<Pick<AgentDiagnosticEvent, 'code' | 'durationMs' | 'httpStatus' | 'delivery'>> & { error?: unknown }
+  Partial<Pick<AgentDiagnosticEvent, 'code' | 'sourceTag' | 'durationMs' | 'httpStatus' | 'delivery'>> & { error?: unknown }
+
+/** Only a leading bracketed label survives from runtime logger messages; bodies stay local. */
+function sourceTagOf(message: unknown): string | undefined {
+  if (typeof message !== 'string') return undefined
+  const label = /^\s*\[([^\][\r\n]{1,24})\]/u.exec(message)?.[1]
+  if (!label) return undefined
+  return /^[\p{Script=Han}\p{L}\p{N} _-]+$/u.test(label) ? label.trim().slice(0, 24) : undefined
+}
 
 /** Never inspect exception text, stack, request bodies, tool arguments or provider responses. */
 function errorKind(error: unknown): NonNullable<AgentDiagnosticEvent['errorKind']> {
@@ -74,13 +82,14 @@ export function createAgentDiagnostics(options: { sink?: AgentDiagnosticSink; lo
     const event: AgentDiagnosticEvent = { version: 1, id: randomUUID(), traceId: context?.traceId ?? hostTrace,
       at: now(), scope: context?.scope ?? { kind: 'host' }, stage: input.stage, operation: token(input.operation), outcome: input.outcome,
       ...(input.code ? { code: token(input.code) } : {}),
+      ...(input.sourceTag ? { sourceTag: input.sourceTag } : {}),
       ...(input.error === undefined ? {} : { errorKind: errorKind(input.error) }),
       ...(Number.isFinite(input.durationMs) ? { durationMs: Math.max(0, Math.round(input.durationMs!)) } : {}),
       ...(Number.isSafeInteger(input.httpStatus) && input.httpStatus! >= 100 && input.httpStatus! <= 599 ? { httpStatus: input.httpStatus } : {}),
       ...(configurationRevision ? { configurationRevision } : {}),
       ...(delivery === undefined ? {} : { delivery }),
     }
-    const line = `[Agent] ${event.stage}/${event.operation} ${event.outcome}${event.code ? ` ${event.code}` : ''} trace=${event.traceId}`
+    const line = `[Agent] ${event.stage}/${event.operation} ${event.outcome}${event.code ? ` ${event.code}` : ''}${event.sourceTag ? ` source=${event.sourceTag}` : ''} trace=${event.traceId}`
     // Console remains observable even when the injected journal is unavailable.
     try { (event.outcome === 'failed' || event.outcome === 'unknown' ? terminal.error : event.outcome === 'cancelled' ? terminal.warn : terminal.info)(line) }
     catch { try { console.error('[Agent] diagnostic_console_failed') } catch { /* No remaining writable terminal. */ } }
@@ -101,8 +110,8 @@ export function createAgentDiagnostics(options: { sink?: AgentDiagnosticSink; lo
   }
   const logger: Logger = {
     info() { emit({ stage: 'runtime', operation: contexts.getStore()?.operation ?? 'host_log', outcome: 'succeeded', code: 'runtime_info' }) },
-    warn(_message, error) { emit({ stage: 'runtime', operation: contexts.getStore()?.operation ?? 'host_log', outcome: 'failed', code: 'runtime_warning', ...(error === undefined ? {} : { error }) }) },
-    error(_message, error) { emit({ stage: 'runtime', operation: contexts.getStore()?.operation ?? 'host_log', outcome: 'failed', code: 'runtime_error', ...(error === undefined ? {} : { error }) }) },
+    warn(message, error) { const sourceTag = sourceTagOf(message); emit({ stage: 'runtime', operation: contexts.getStore()?.operation ?? 'host_log', outcome: 'failed', code: 'runtime_warning', ...(sourceTag ? { sourceTag } : {}), ...(error === undefined ? {} : { error }) }) },
+    error(message, error) { const sourceTag = sourceTagOf(message); emit({ stage: 'runtime', operation: contexts.getStore()?.operation ?? 'host_log', outcome: 'failed', code: 'runtime_error', ...(sourceTag ? { sourceTag } : {}), ...(error === undefined ? {} : { error }) }) },
   }
   return {
     emit, logger,
