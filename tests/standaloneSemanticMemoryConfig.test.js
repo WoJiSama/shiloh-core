@@ -50,6 +50,8 @@ test('semantic enabled backends resolve only their explicit endpoints, models an
   assert.throws(() => read({ enabled: true, embedding, rerank }, { credentials: { TEST_MODEL_KEY: 'main', TEST_EMBEDDING_KEY: 'embed' } }), /TEST_RERANK_KEY/u)
   const sharedExplicit = read({ enabled: true, embedding, rerank: { ...rerank, apiKeyEnv: embedding.apiKeyEnv } }).semanticMemory
   assert.equal(sharedExplicit.rerank.apiKey, sharedExplicit.embedding.apiKey)
+  assert.equal(read({ enabled: true, groupOnly: true, embedding }).semanticMemory.groupOnly, true)
+  assert.throws(() => read({ groupOnly: 'true' }), /groupOnly/u)
 })
 
 test('disabled semantic configuration does not read credentials and preview tolerates missing values', t => {

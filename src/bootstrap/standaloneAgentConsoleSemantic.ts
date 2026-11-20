@@ -64,6 +64,7 @@ export function createStandaloneAgentConsoleSemantic(options: {
     const hiddenIds = new Set((redactions?.ids as unknown[] | undefined)?.map(String))
     const hiddenMessages = new Set((redactions?.messages as unknown[] | undefined)?.map(String))
     const cutoff = await options.admin.cutoff(selected, context.isCurrent)
+    if (cutoff > 0) return json({ archived: true, privacyRestricted: true, total: 0, indexed: 0, rows: [] })
     const needle = query.toLocaleLowerCase()
 
     let total = 0
@@ -86,10 +87,11 @@ export function createStandaloneAgentConsoleSemantic(options: {
         }
         if (typeof row.id !== 'string' || !row.id || row.id.length > 240 || String(row.group_id) !== target.id ||
           typeof row.text !== 'string' || row.text.length > 20_000 || !options.allowsText(row.text) ||
-          typeof row.start_ts !== 'number' || !Number.isSafeInteger(row.start_ts) || row.start_ts <= cutoff ||
+          typeof row.start_ts !== 'number' || !Number.isSafeInteger(row.start_ts) || row.start_ts <= 0 ||
           hiddenIds.has(row.id) || !Array.isArray(row.message_ids) ||
           row.message_ids.some(id => hiddenMessages.has(String(id))) || needle && !row.text.toLocaleLowerCase().includes(needle)) continue
-        const hasIndex = Array.isArray(row.emb) && row.emb.length > 0
+        const hasIndex = Array.isArray(row.emb) && row.emb.length > 0 ||
+          typeof row.emb === 'string' && row.emb.length > 0
         if (hasIndex) indexed++
         if (total >= offset && rows.length < pageSize) rows.push({ id: row.id, text: row.text, at: row.start_ts, indexed: hasIndex })
         total++

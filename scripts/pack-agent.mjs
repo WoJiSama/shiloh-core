@@ -105,7 +105,7 @@ const [project, projectLock] = await Promise.all(['package.json', 'package-lock.
 const packageJson = {
   name: 'bl-chat-agent', version: project.version, private: true, type: 'module', license: project.license, engines: project.engines,
   scripts: { start: 'node scripts/start-agent.mjs', 'eval:memory': 'node scripts/semantic-memory-eval.mjs' },
-  files: ['dist/backend', 'console/frontend/dist', 'console/README.md', 'docs', 'scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'scripts/import-cognition.mjs', 'scripts/import-legacy-console-resources.py', 'scripts/semantic-memory-eval.mjs', 'scripts/examples/semantic-evaluation-backend.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json', 'utils/backendArtifactGuard.js', 'release-manifest.json', 'npm-shrinkwrap.json'],
+  files: ['dist/backend', 'console/frontend/dist', 'console/README.md', 'docs', 'scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'scripts/import-cognition.mjs', 'scripts/import-legacy-console-resources.py', 'scripts/import-legacy-token-usage.py', 'scripts/semantic-memory-eval.mjs', 'scripts/examples/semantic-evaluation-backend.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json', 'utils/backendArtifactGuard.js', 'release-manifest.json', 'npm-shrinkwrap.json'],
   exports: Object.fromEntries(Object.entries(exports).map(([key, name]) => [key, {
     types: `./dist/backend/${name.replace(/\.js$/, '.d.ts')}`, import: `./dist/backend/${name}`,
   }])),
@@ -144,7 +144,7 @@ try {
   for (const name of frontendFiles) await copy(name, path.posix.join('console/frontend/dist', path.relative(frontendOutput, name)))
   const files = Object.fromEntries([...new Set([...runtimeFiles, ...declarations])].sort().map(file => [file, manifest.files[file]]))
   for (const name of Object.keys(files)) await copy(path.join(backend, name), `dist/backend/${name}`)
-  for (const name of ['scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'scripts/import-cognition.mjs', 'scripts/import-legacy-console-resources.py', 'scripts/semantic-memory-eval.mjs', 'scripts/examples/semantic-evaluation-backend.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json', 'utils/backendArtifactGuard.js', 'LICENSE']) await copy(path.join(root, name), name)
+  for (const name of ['scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'scripts/import-cognition.mjs', 'scripts/import-legacy-console-resources.py', 'scripts/import-legacy-token-usage.py', 'scripts/semantic-memory-eval.mjs', 'scripts/examples/semantic-evaluation-backend.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json', 'utils/backendArtifactGuard.js', 'LICENSE']) await copy(path.join(root, name), name)
   // Linux must execute this shebang even when the package is built from a Windows checkout.
   const chromiumLauncher = path.join(output, 'scripts/start-sandboxed-chromium.mjs')
   const launcherSource = await fs.readFile(chromiumLauncher, 'utf8')

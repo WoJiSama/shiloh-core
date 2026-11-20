@@ -127,19 +127,19 @@ test('archived expression preferences trim the displayed copy and preserve the o
   assert.match(fs.readFileSync(path.join(root, 'style/style_memory.json'), 'utf8'), /保留简短回答/u)
 })
 
-test('the imported semantic index respects account ownership, forgotten messages and the current room cutoff', async t => {
+test('the imported semantic index respects account ownership, forgotten messages and the current privacy state', async t => {
   const dataDir = temp(t)
   const root = path.join(dataDir, 'legacy-console')
   save(root, 'manifest.json', { version: 1, legacyAccount: '2001' })
   const rows = [
     { id: 'kept', group_id: '3011', text: '可见记录', start_ts: 21, message_ids: ['1'], emb: [0.1] },
     { id: 'withdrawn', group_id: '3011', text: '已撤回记录', start_ts: 22, message_ids: ['2'], emb: [0.2] },
-    { id: 'expired', group_id: '3011', text: '当前已遗忘的记录', start_ts: 10, message_ids: ['3'], emb: [0.3] },
   ]
   save(root, 'semantic/group/3011.ndjson', rows.map(row => JSON.stringify(row)).join('\n'))
   save(root, 'semantic/redactions/3011.json', { ids: [], messages: ['2'] })
+  let cutoff = 0
   const services = createStandaloneAgentConsoleSemantic({
-    dataDir, enabled: false, admin: { cutoff: async () => 11 }, allowsText: allowed,
+    dataDir, enabled: false, admin: { cutoff: async () => cutoff }, allowsText: allowed,
   })
   const request = { query: { source: 'legacy' } }
   const match = (await invoke(services, 'semantic.records', context(binding()), request)).value
@@ -148,4 +148,8 @@ test('the imported semantic index respects account ownership, forgotten messages
   const other = (await invoke(services, 'semantic.records', context(binding('2002')), request)).value
   assert.equal(other.archived, false)
   assert.equal(other.total, 0)
+  cutoff = 11
+  const restricted = (await invoke(services, 'semantic.records', context(binding()), request)).value
+  assert.equal(restricted.privacyRestricted, true)
+  assert.equal(restricted.total, 0)
 })

@@ -764,7 +764,9 @@ export async function main(argv: string[]): Promise<void> {
         allowSetup: config.console.allowSetup,
         secureCookies: config.console.secureCookies,
         policy: { operations, authorize: async (_principal, operation, binding) =>
-          operation.startsWith('turtle-soup.') && binding?.target.kind !== 'group' ? 'denied' : 'allowed' },
+          binding?.target.kind !== 'group' && (operation.startsWith('turtle-soup.') ||
+            (operation === 'semantic.records' || operation === 'semantic.recall') && config.semanticMemory.groupOnly === true)
+            ? 'denied' : 'allowed' },
       })
       const runtime = createStandaloneAgentConsoleRuntime({ runtime: host.runtime, bindings, auth: consoleAuth })
       const management = host.management && createStandaloneAgentConsoleManagement({ management: host.management, auth: consoleAuth })

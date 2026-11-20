@@ -132,6 +132,18 @@ async function fixture(t, options = {}) {
   return f
 }
 
+test('the migrated group-only policy keeps private messages out of the semantic corpus', redisTest, async t => {
+  const f = await fixture(t, { config: { groupOnly: true } })
+  await f.capture('private observation', { target: privateRoom })
+  assert.equal(await f.state(privateRoom), undefined)
+  await f.capture('group observation')
+  const state = await f.indexed()
+  assert.deepEqual(state.rows.map(item => item.text), ['group observation'])
+  assert.deepEqual(f.calls.embed.flatMap(call => call.texts), ['group observation'])
+  const privateResult = await f.composer.read(f.binding(privateRoom), 'group observation', () => true)
+  assert.equal(privateResult.text, '')
+})
+
 test('capture persists independent original sources without model calls, while repeated background ticks persist every vector', redisTest, async t => {
   const f = await fixture(t)
   const originals = []

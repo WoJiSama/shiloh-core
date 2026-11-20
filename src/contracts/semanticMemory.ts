@@ -35,6 +35,8 @@ export interface AgentSemanticMemoryCleanup {
 /** Disabled unless explicitly enabled. Retention is bounded per conversation. */
 export interface AgentSemanticMemoryConfig {
   enabled?: boolean
+  /** Preserve deployments that capture and recall only inside groups. */
+  groupOnly?: boolean
   retentionDays?: number
   maxMessagesPerConversation?: number
   topK?: number

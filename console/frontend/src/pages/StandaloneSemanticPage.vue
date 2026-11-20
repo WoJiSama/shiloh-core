@@ -13,6 +13,7 @@ interface Status {
 interface Records {
   enabled?: boolean
   archived?: boolean
+  privacyRestricted?: boolean
   total: number
   indexed: number
   rows: { id: string; at: number; text: string; indexed: boolean }[]
@@ -50,6 +51,7 @@ const canRecall = computed(() => status.value?.enabled && source.value === 'core
   selected.value && capability('semantic.recall', selected.value.value).status === 'available')
 const blankMessage = computed(() => {
   if (!selected.value) return '当前账号没有获准查看的会话'
+  if (records.value?.privacyRestricted) return '旧语义块缺少逐条作者来源，本会话的遗忘状态限制了访问'
   if (source.value === 'legacy' && !records.value?.archived) return '该群没有可查看的旧版语义归档'
   if (source.value === 'core' && status.value?.enabled === false) return '当前 Core 的语义召回处于关闭状态'
   return appliedQuery.value ? '没有匹配的记录' : '暂无记录'

@@ -66,6 +66,7 @@ export function createAgentSemanticMemory(ports: {
   const dirty = new Set<string>()
   let sweep: Promise<void> | undefined
   const enabled = () => !lifecycle.signal.aborted && ports.config()?.enabled === true && !!ports.backend && /^[a-f0-9]{64}$/u.test(ports.backend.id)
+  const scopeAllowed = (binding: AgentBindingSnapshot) => ports.config()?.groupOnly !== true || binding.target.kind === 'group'
   const retention = () => bounded(ports.config()?.retentionDays, 30, 1, 90) * DAY
   const limit = () => Math.floor(bounded(ports.config()?.maxMessagesPerConversation, 1000, 50, 2000))
   const identity = (binding: AgentBindingSnapshot) => ({ botId: personMemoryAddress(binding.target).botId, personaId: agentPersonaScopeId(binding.agentId) })
@@ -75,7 +76,7 @@ export function createAgentSemanticMemory(ports: {
   function current(binding: AgentBindingSnapshot): boolean {
     try {
       const selected = ports.resolve(binding.target)
-      return enabled() && ports.isRunning() && ports.available(binding.target) && !!selected &&
+      return enabled() && scopeAllowed(binding) && ports.isRunning() && ports.available(binding.target) && !!selected &&
         agentBindingToken(selected.binding) === agentBindingToken(binding)
     } catch { return false }
   }
@@ -374,7 +375,7 @@ export function createAgentSemanticMemory(ports: {
     },
     async records(binding: AgentBindingSnapshot, isCurrent: () => boolean, search: string, offset: number) {
       if (!isCurrent()) throw new Error('语义资料会话已失效')
-      if (!enabled()) return { enabled: false, total: 0, indexed: 0, rows: [] }
+      if (!enabled() || !scopeAllowed(binding)) return { enabled: false, total: 0, indexed: 0, rows: [] }
       return withContext(binding, isCurrent, 10_000, async context => {
         const state = await store.read(agentSemanticMemoryId(binding))
         const allowed = await permitted(binding, state?.rows ?? [])

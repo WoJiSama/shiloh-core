@@ -123,16 +123,18 @@ interface StandaloneSemanticModel {
   apiKeyEnv: string
 }
 
-export interface StandaloneSemanticMemoryConfig extends Required<AgentSemanticMemoryConfig> {
+export interface StandaloneSemanticMemoryConfig extends Required<Omit<AgentSemanticMemoryConfig, 'groupOnly'>> {
+  groupOnly?: boolean
   embedding?: StandaloneSemanticModel
   rerank?: StandaloneSemanticModel
 }
 
 function readSemanticMemory(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: boolean): StandaloneSemanticMemoryConfig {
   const input = value === undefined ? {} : object(value)
-  const allowed = ['enabled', 'retentionDays', 'maxMessagesPerConversation', 'topK', 'minScore', 'timeoutMs', 'embedding', 'rerank']
+  const allowed = ['enabled', 'groupOnly', 'retentionDays', 'maxMessagesPerConversation', 'topK', 'minScore', 'timeoutMs', 'embedding', 'rerank']
   if (Object.keys(input).some(key => !allowed.includes(key))) throw new Error('semanticMemory 包含不支持的字段')
   if (input.enabled !== undefined && typeof input.enabled !== 'boolean') throw new Error('semanticMemory.enabled 必须是布尔值')
+  if (input.groupOnly !== undefined && typeof input.groupOnly !== 'boolean') throw new Error('semanticMemory.groupOnly 必须是布尔值')
   const enabled = input.enabled === true
   function integer(key: string, minimum: number, maximum: number, fallback: number): number {
     const value = input[key]
@@ -168,6 +170,7 @@ function readSemanticMemory(value: unknown, env: NodeJS.ProcessEnv, requireCrede
   if (enabled && !embedding) throw new Error('启用 semanticMemory.enabled 需要显式配置 embedding')
   return {
     enabled,
+    ...(input.groupOnly !== undefined ? { groupOnly: input.groupOnly } : {}),
     retentionDays: integer('retentionDays', 1, 90, 30),
     maxMessagesPerConversation: integer('maxMessagesPerConversation', 50, 2000, 1000),
     topK: integer('topK', 1, 10, 5), minScore,
