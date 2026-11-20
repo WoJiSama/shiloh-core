@@ -145,6 +145,11 @@ try {
   const files = Object.fromEntries([...new Set([...runtimeFiles, ...declarations])].sort().map(file => [file, manifest.files[file]]))
   for (const name of Object.keys(files)) await copy(path.join(backend, name), `dist/backend/${name}`)
   for (const name of ['scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'utils/backendArtifactGuard.js', 'LICENSE']) await copy(path.join(root, name), name)
+  // Linux must execute this shebang even when the package is built from a Windows checkout.
+  const chromiumLauncher = path.join(output, 'scripts/start-sandboxed-chromium.mjs')
+  const launcherSource = await fs.readFile(chromiumLauncher, 'utf8')
+  await fs.writeFile(chromiumLauncher, launcherSource.replaceAll('\r\n', '\n'))
+  await fs.chmod(chromiumLauncher, 0o755)
   await copy(path.join(root, 'docs/architecture/agent-bindings.md'), 'README.md')
   await writeJson('package.json', packageJson)
   await copy(path.join(root, 'package-lock.json'), 'package-lock.json')

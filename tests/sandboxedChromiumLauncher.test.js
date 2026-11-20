@@ -150,7 +150,11 @@ const rejected = [
     const link = path.join(f.directory, 'home-link'); await symlink(f.home, link)
     return { env: { BL_AGENT_CHROMIUM_HOME: link } }
   }],
-  ['non-private runtime', async f => { await mkdir(path.join(f.home, 'runtime'), { mode: 0o755 }); await chown(path.join(f.home, 'runtime'), uid, gid); return {} }],
+  ['non-private runtime', async f => {
+    const runtime = path.join(f.home, 'runtime')
+    await mkdir(runtime, { mode: 0o700 }); await chmod(runtime, 0o755); await chown(runtime, uid, gid)
+    return {}
+  }],
   ['symbolic-link runtime', async f => {
     const target = path.join(f.directory, 'runtime-target'); await mkdir(target, { mode: 0o700 })
     await symlink(target, path.join(f.home, 'runtime')); return { preserve: [target] }

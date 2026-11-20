@@ -678,7 +678,7 @@ mediaRelay:
 
 抖音提供器同属Core，通过公开 `createAgentDouyinRelayProvider` 准备中立计划，`parseAgentDouyinReference` 只做官方作品/短链语法归一。独立CLI须另设 `mediaRelay.douyin.enabled: true`，省略或false不装配抖音提供器；不新增任意解析端点、Cookie、浏览器地址或执行路径配置。QQ文本、CQ、JSON与旧原生douyin段统一解码为video/note/short，保留旧B站扫描优先和原生段位置规则。QQ不接收作品详情中的任意CDN资源作为可信分享。
 
-以root运行Core并使用专用Chromium启动器时，抖音复用Puppeteer创建的空临时profile。启动器在交给浏览器用户前写入禁用非代理WebRTC UDP的固定偏好，浏览器退出时由Puppeteer清理。
+以root运行Core并使用专用Chromium启动器时，抖音复用Puppeteer创建的空临时profile。启动器在交给浏览器用户前写入禁用非代理WebRTC UDP的固定偏好，浏览器退出时由Puppeteer清理。发布包的启动器使用LF换行，部署时确认该文件具有Linux执行权限。
 
 Core完成分享页静态解析、目标作品浏览器回退、视频或图集下载、可选配乐轮播和缩略图，再交同一有序媒体计划。视频限30分钟/512MiB；图集保留旧20张护栏，超过明确说明，单图32MiB，失败位置明确提示；信息、图片、配乐视频顺序保留。配乐限32MiB/5分钟，按成功图片数将每图时长限制在2至10秒，输出720×1280 H.264/AAC视频，并探测成品时长/音视频轨道，避免将大小限制造成的截断当作完整成品；配乐失败保留图集。HEIC图片先在Core转成支持格式，宿主解码器不支持时说明对应图片失败。所有临时资源由同一生命周期释放，不把音频中间文件、CDN URL或浏览器会话写入队列。静态和浏览器结果只接受对应作品ID，不能借推荐流填充原作品、图片或配乐。宿主须提供Puppeteer可用的Chrome与固定ffmpeg/ffprobe；缺少Chrome时保留静态解析或原页，缺少编码工具时保留图集及无缩略图的完整中立视频，再由渠道处理其兼容要求。
 
