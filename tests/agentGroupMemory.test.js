@@ -402,6 +402,7 @@ test('private privacy revocation for the origin Agent cancels another Agent repl
   }, async f => {
     await f.send(group, 'origin-agent-teaching', `记住${marker}是甲成员`, { mentions: [targetActor(group)] })
     await f.acknowledged(group, 'origin-agent-teaching')
+    assert.equal((await f.state(group)).entries[0].persona.personaId, 'agent:daily')
     f.rebind('cross-agent-reader', new Map([[conversationAddressKey(group), 'work']]))
     assert.equal(f.binding(group).agentId, 'work')
     assert.equal(f.binding(privateRoom).agentId, 'daily')
@@ -414,7 +415,7 @@ test('private privacy revocation for the origin Agent cancels another Agent repl
     await f.tick()
     assert.ok(!f.deliveries.some(action => action.replyTo === 'cross-agent-pending-read'))
     assert.ok(!f.attempts.some(action => action.replyTo === 'cross-agent-pending-read'))
-    assert.equal((await f.state(group)).entries[0].persona.personaId, 'agent:daily')
+    assert.deepEqual((await f.state(group)).entries, [])
     const after = await f.prompt(group, 'cross-agent-after-disable', 'B再次查询当前资料')
     assert.doesNotMatch(textOf(after), new RegExp(marker))
   })

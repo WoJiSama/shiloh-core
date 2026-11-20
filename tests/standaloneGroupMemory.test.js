@@ -38,7 +38,7 @@ function completion(content, total = 23) {
   return JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: total - 5, completion_tokens: 5, total_tokens: total } })
 }
 
-async function fixture(t, { instance, enabled = true, backend = true, beforeTeachingResponse }) {
+async function fixture(t, { instance, enabled = true, backend = true, beforeTeachingResponse, beforeMainResponse }) {
   const directory = await mkdtemp(path.join(tmpdir(), 'standalone-group-memory-'))
   const socketPath = path.join(directory, 'redis.sock')
   const redis = spawn('redis-server', ['--port', '0', '--unixsocket', socketPath, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
@@ -68,7 +68,11 @@ async function fixture(t, { instance, enabled = true, backend = true, beforeTeac
       }
       if (request.url === '/main/v1/chat/completions') {
         mainRequests.push({ epoch, auth: request.headers.authorization, body })
-        response.end(completion('已收到这次消息。'))
+        await beforeMainResponse?.()
+        response.end(JSON.stringify({ choices: [{ finish_reason: 'tool_calls', message: { role: 'assistant', content: '',
+          tool_calls: [{ id: `finish-${mainRequests.length}`, type: 'function', function: { name: 'simFinishTurn',
+            arguments: JSON.stringify({ choice: 'chat', reason: '回复本次群消息', messages: ['已收到这次消息。'] }) } }],
+        } }] }))
         return
       }
       unexpected.push(request.url)
@@ -126,9 +130,8 @@ async function fixture(t, { instance, enabled = true, backend = true, beforeTeac
     ...(backend ? { groupMemoryExtraction: { baseUrl: `http://127.0.0.1:${port}/group/v1`, name: 'standalone-group-extractor', apiKeyEnv: 'TEST_GROUP_BACKEND_KEY' } } : {}),
     groupMemory: { enabled, groupExtractMinIntervalMinutes: 0, groupExtractMaxBatchMessages: 12 },
     midtermMemory: { enabled: false }, episodicMemory: { enabled: false }, memorySystem: { enabled: false },
-    textGroups: [{ connectionId: 'qq-group', conversationId: String(groupId) }],
     connections: [{ id: 'qq-group', url: `ws://127.0.0.1:${port}/onebot`, accessTokenEnv: 'TEST_GROUP_ONEBOT_TOKEN' }],
-    simulation: { wake: { probability: 0, proactiveProbability: 0 }, reflection: { enabled: false },
+    simulation: { wake: { probability: 0, proactiveProbability: 0, batchWindowMs: 1000 }, wakeGate: { enabled: false }, reflection: { enabled: false },
       rhythm: { enabled: false }, personProfile: { enabled: false }, turn: { minSendGapMs: 0 }, budget: { dailyCostCny: 0 } },
   }
   async function bind(agentId = 'daily') {
@@ -247,7 +250,8 @@ test('standalone persists human teaching before an unknown reply, learns facts o
   await run.start()
   const query = '现在的绘图组成员是谁？'
   run.send(query, 87106, { directed: true, author: memberId })
-  const workPrompt = await waitFor(() => run.mainRequests.find(row => row.epoch === 2 && row.body.messages.at(-1).content === query), 'different Agent reads shared teaching')
+  const workPrompt = await waitFor(() => run.mainRequests.find(row => row.epoch === 2 &&
+    row.body.messages.some(message => typeof message.content === 'string' && message.content.includes(query))), 'different Agent reads shared teaching')
   const knowledge = workPrompt.body.messages.find(row => row.content?.includes('【本群已保存资料】'))
   assert.ok(knowledge?.content.includes('绘图组'))
   assert.ok(knowledge.content.includes(String(memberId)))
@@ -271,20 +275,25 @@ test('standalone persists human teaching before an unknown reply, learns facts o
   run.assertClean()
 })
 
-test('standalone saves slow group teaching in the background while the main reply goes out', {
+test('standalone saves slow group teaching without cancelling an in-flight main reply', {
   skip: !redisAvailable, timeout: 20_000,
 }, async t => {
-  const replyDelivered = Promise.withResolvers()
+  const finishTeaching = Promise.withResolvers(), finishMain = Promise.withResolvers()
   const run = await fixture(t, { instance: 'standalone-group-teaching-slow',
-    beforeTeachingResponse: () => Promise.all([delay(1_100), replyDelivered.promise]) })
+    beforeTeachingResponse: () => Promise.all([delay(1_100), finishTeaching.promise]),
+    beforeMainResponse: () => finishMain.promise,
+  })
+  t.after(() => { finishTeaching.resolve(); finishMain.resolve() })
   await run.start()
   run.send(teachingText, 87301, { directed: true, mentions: [memberId] })
   try {
-    await waitFor(() => run.deliveries.length === 1, 'normal reply during slow teaching')
+    await waitFor(() => run.mainRequests.length === 1, 'main model starts independently of teaching')
     assert.equal((await run.state()).entries.length, 0)
-  } finally { replyDelivered.resolve() }
-  const taught = await waitFor(async () => (await run.state())?.entries.find(row => row.subject === '绘图组'), 'slow teaching persisted')
-  assert.equal(taught.source.messageId, '87301')
+    finishTeaching.resolve()
+    const taught = await waitFor(async () => (await run.state())?.entries.find(row => row.subject === '绘图组'), 'slow teaching persisted')
+    assert.equal(taught.source.messageId, '87301')
+  } finally { finishTeaching.resolve(); finishMain.resolve() }
+  await waitFor(() => run.deliveries.length === 1, 'main reply still delivers after teaching is saved')
   assert.equal(run.extractions.filter(row => row.material.mode === 'teaching').length, 1)
   assert.equal(run.deliveries.length, 1)
   await run.stop()

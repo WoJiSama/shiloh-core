@@ -1844,7 +1844,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
     async isGroupMemoryCurrent(target, expected, includeWorkflows, guard) {
       const selected = bindingFor(target)
-      return !!selected && guard() && await groupMemory.read(selected.binding, guard, includeWorkflows) === expected && guard()
+      return !!selected && await groupMemory.isReadCurrent(selected.binding, expected, guard, includeWorkflows)
     },
     async recordGroupReply(target, guard) {
       const selected = bindingFor(target)
@@ -2730,7 +2730,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     } } : {}),
     async isGroupMemoryCurrent(incoming, expected, guard) {
       const selected = bindingFor(incoming.conversation)
-      return !!selected && guard() && await groupMemory.read(selected.binding, guard, true) === expected && guard()
+      return !!selected && await groupMemory.isReadCurrent(selected.binding, expected, guard, true)
     },
     async recordGroupReply(incoming, binding, guard) {
       if (incoming.conversation.kind === 'group') try { await groupMemory.confirmed(binding, guard) } catch (error) { diagnostics.emit({ stage: 'memory', operation: 'group_learning_confirm', outcome: 'failed', code: 'confirmed_reply_record_failed', error }) }
