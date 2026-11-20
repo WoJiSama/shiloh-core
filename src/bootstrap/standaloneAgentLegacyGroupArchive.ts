@@ -134,12 +134,23 @@ export async function runStandaloneLegacyGroupArchiveMigration(config: ReturnTyp
               [...pinned].every(([file, revision]) => stamp(file) === revision)
           } catch { return false }
         }
+        let checkedAt = Number.NEGATIVE_INFINITY, sourceCurrent = true
+        // The staging overlay cannot write to Redis. Rate-limit repeated file
+        // checks inside it, then compare the full evidence again before CAS.
+        const stagingCurrent = () => {
+          const started = performance.now()
+          if (sourceCurrent && started - checkedAt >= 250) {
+            sourceCurrent = groupCurrent()
+            checkedAt = started
+          }
+          return sourceCurrent
+        }
         const checks = new Map<string, ArchiveMigrationCheck>()
         const result = await stageStandaloneAgentArchiveMigration({
           redis: { get: key => key.startsWith(prefix) ? redis.get(key) : frozen.get(key) },
           prefix, binding, legacyGroup: { originalRole: oldRole, roleEffectiveAt: originalLibrary.at, frozenAt },
           sourceArchiveDir: path.join(base, 'message_archive'), history: config.history, now, checks,
-          isCurrent: groupCurrent, allowsText, ...(!options.apply ? { previewWhileRunning: true } : {}),
+          isCurrent: stagingCurrent, allowsText, ...(!options.apply ? { previewWhileRunning: true } : {}),
         })
         const semantic = createAgentSemanticMemoryStore({
           get: key => redis.get(prefix + key),
@@ -155,7 +166,7 @@ export async function runStandaloneLegacyGroupArchiveMigration(config: ReturnTyp
           if (prior && prior.value !== guard.value) return fail('语义隐私或来源库在预演期间改变')
           checks.set(key, { ...guard, key })
         }
-        if (!result.isCurrent()) return fail('会话绑定、来源或宿主配置已变更')
+        if (!groupCurrent() || !result.isCurrent()) return fail('会话绑定、来源或宿主配置已变更')
         if (options.apply) await commitStandaloneTransfer(redis, [...checks.values()].filter(check => check.key.startsWith(prefix)))
         report.push({ groupId: target.id, ...result.report, semanticSources: staged.imported })
       }

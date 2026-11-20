@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import fs from 'node:fs'
+import { createServer } from 'node:http'
+import { once } from 'node:events'
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -49,6 +51,7 @@ async function fixture(t, options = {}) {
     persona: { name: 'Default persona', identity: 'default identity' }, personaGuard: { enabled: true }, extensionOwned: { preserve: 'this field' } }
   if (options.diceEngine !== undefined) host.dice.engine = options.diceEngine
   if (options.reasoningEffort !== undefined) host.model.reasoningEffort = options.reasoningEffort
+  if (options.modelBaseUrl) host.model.baseUrl = options.modelBaseUrl
   await writeFile(hostFile, '# host comment\n' + YAML.stringify(host))
   const bindingData = bindingsObject()
   if (options.noLibrary) bindingData.agents[1].personaId = 'default'
@@ -57,7 +60,8 @@ async function fixture(t, options = {}) {
   const frontendDir = path.join(root, 'frontend'); await mkdir(frontendDir); await writeFile(path.join(frontendDir, 'index.html'), '<!doctype html><title>fixture</title>')
   const lifetime = new AbortController(), control = { session: true, lease: true, filter: true, forbidden: new Set() }
   const authority = { signal: lifetime.signal, isCurrent: () => control.lease }
-  const owned = persistence({ enabled: options.enabled ?? true, hostFile, loaded: snapshot(hostFile), authority, validateCandidate: options.validateCandidate ?? validateCandidate })
+  const owned = persistence({ enabled: options.enabled ?? true, hostFile, loaded: snapshot(hostFile), authority,
+    ...(options.providerEnv ? { providerEnv: options.providerEnv } : {}), validateCandidate: options.validateCandidate ?? validateCandidate })
   const readBindings = createAgentBindingConfig(path.join(root, 'agent-bindings.yaml'))
   const bindings = { list: () => readBindings().listBindings(), resolve: target => readBindings().resolve(target) }
   const principal = { id: 'fixture-session', username: 'admin', via: 'session' }
@@ -92,6 +96,44 @@ const waitFor = async predicate => {
   const end = Date.now() + 2000
   while (!predicate()) { if (Date.now() > end) throw new Error('fixture condition did not become true'); await new Promise(resolve => setTimeout(resolve, 5)) }
 }
+
+test('Core model probes use only the loaded URL and key and return no provider payload', async t => {
+  const calls = []
+  const provider = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    calls.push({ url: request.url, body, authorized: request.headers.authorization === 'Bearer ' + secret })
+    if (body.model === 'draft-v2') {
+      response.writeHead(401, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: { message: secret } }))
+    } else {
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { content: secret } }] }))
+    }
+  })
+  provider.listen(0, '127.0.0.1'); await once(provider, 'listening')
+  t.after(() => new Promise(resolve => provider.close(resolve)))
+  const baseUrl = `http://127.0.0.1:${provider.address().port}/v1/`
+  const f = await fixture(t, { modelBaseUrl: baseUrl, providerEnv: { MODEL_KEY: secret } })
+  const post = (route, body) => f.request(route, { method: 'POST', body })
+  const before = await f.files()
+  const saved = await post('/api/ai/probe', { configKey: 'model' })
+  assert.equal(saved.status, 200, saved.text)
+  assert.deepEqual(saved.data.results.map(({ ms, ...row }) => row), [{ name: 'model-v1', ok: true, detail: '模型已响应' }])
+  const draft = { baseUrl, name: 'draft-v2', apiKeyEnv: 'MODEL_KEY' }
+  const tested = await post('/api/ai/probe-provider', { configKey: 'model', provider: draft })
+  assert.equal(tested.status, 200, tested.text)
+  assert.equal(tested.data.results[0].detail, 'HTTP 401')
+  assert.equal(tested.text.includes(secret), false)
+  for (const change of [{ baseUrl: baseUrl + 'unexpected' }, { apiKeyEnv: 'OTHER_KEY' }])
+    assert.equal((await post('/api/ai/probe-provider', { configKey: 'model', provider: { ...draft, ...change } })).status, 409)
+  f.control.forbidden.add('providers.probe')
+  assert.equal((await post('/api/ai/probe', { configKey: 'model' })).status, 403)
+  assert.deepEqual(calls.map(call => [call.url, call.body.model, call.body.messages, call.authorized]), [
+    ['/v1/chat/completions', 'model-v1', [{ role: 'user', content: 'ping' }], true],
+    ['/v1/chat/completions', 'draft-v2', [{ role: 'user', content: 'ping' }], true],
+  ])
+  assert.deepEqual(await f.files(), before)
+})
 
 test('host dice save returns its canonical view, retires execution immediately and reloads on a new process epoch', async t => {
   const f = await fixture(t), before = await f.files(), view = (await f.request('/api/config/dice')).data

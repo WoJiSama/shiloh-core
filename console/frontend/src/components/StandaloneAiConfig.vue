@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { NAlert, NInput, NTab, NTabs, NTag } from 'naive-ui'
+import { NAlert, NButton, NInput, NSpace, NTab, NTabs, NTag } from 'naive-ui'
 import { api } from '../lib/api'
 import { consoleRestart, type ConfigSaveResult } from '../lib/consoleRestart'
 import type { StandaloneAiView, StandaloneModel } from '../lib/standaloneConfig'
@@ -17,7 +17,17 @@ const saving = ref(false),
   error = ref(''),
   saved = ref('')
 let request: AbortController | undefined
+let probeRequest: AbortController | undefined
+const probeState = ref<Record<string, { loading: boolean; detail?: string; ok?: boolean }>>({})
 const provider = computed(() => drafts.value[active.value]?.[0])
+const selected = computed(() => view.value.definitions.find(item => item.configKey === active.value))
+const activeProbe = computed(() => probeState.value[active.value])
+const canProbeDraft = computed(() => {
+  const saved = baseline.value[active.value]?.[0], draft = provider.value
+  if (!saved || !draft) return false
+  try { return new URL(draft.baseUrl).href === new URL(saved.baseUrl).href && draft.apiKeyEnv === saved.apiKeyEnv }
+  catch { return false }
+})
 const dirty = computed(() =>
   equal(drafts.value[active.value], baseline.value[active.value]) ? 0 : 1
 )
@@ -56,6 +66,30 @@ function apply(next: StandaloneAiView, submitted?: Record<string, StandaloneMode
   view.value = clone(next)
   if (!next.definitions.some((item) => item.configKey === active.value))
     active.value = next.definitions[0]?.configKey || ''
+}
+async function probe(draft: boolean) {
+  const key = active.value, model = provider.value
+  if (!model || probeRequest || restartBlocked.value || (draft && (!canProbeDraft.value || validation.value))) return
+  const controller = new AbortController()
+  probeRequest = controller
+  probeState.value[key] = { loading: true }
+  try {
+    const response = await api<{ results: { name: string; ok: boolean; ms: number; detail: string }[] }>(
+      draft ? '/api/ai/probe-provider' : '/api/ai/probe', {
+        method: 'POST', signal: controller.signal,
+        body: JSON.stringify({ configKey: key, ...(draft ? { provider: {
+          baseUrl: model.baseUrl, name: model.name.trim(), apiKeyEnv: model.apiKeyEnv
+        } } : {}) })
+      })
+    const result = response.results[0]
+    probeState.value[key] = result
+      ? { loading: false, ok: result.ok, detail: `${result.name} · ${result.detail} · ${result.ms} ms` }
+      : { loading: false, ok: false, detail: '未收到测试结果' }
+  } catch (cause: any) {
+    if (cause.name !== 'AbortError') probeState.value[key] = { loading: false, ok: false, detail: cause.message || '测试失败' }
+  } finally {
+    probeRequest = undefined
+  }
 }
 async function save() {
   if (!dirty.value || saving.value || consoleRestart.blocked.value || validation.value) return
@@ -102,7 +136,7 @@ watch(
     }
   }
 )
-onBeforeUnmount(() => request?.abort())
+onBeforeUnmount(() => { request?.abort(); probeRequest?.abort() })
 </script>
 <template>
   <div class="page-stack standalone-ai-config" :inert="restartBlocked">
@@ -116,11 +150,17 @@ onBeforeUnmount(() => request?.abort())
     >
     <section v-if="provider" class="panel standalone-model">
       <div class="panel-heading">
-        <h2>{{ view.definitions.find((item) => item.configKey === active)?.title }}</h2>
+        <h2>{{ selected?.title }}</h2>
         <NTag :type="provider.apiKeyConfigured ? 'success' : 'warning'">{{
           provider.apiKeyConfigured ? '凭据已配置' : '凭据尚未配置'
         }}</NTag>
       </div>
+      <NSpace v-if="selected?.capabilities?.probe && !restartBlocked" class="probe-actions">
+        <NButton size="small" :loading="activeProbe?.loading" @click="probe(false)">测试已启用渠道</NButton>
+        <NButton v-if="dirty" size="small" :disabled="!canProbeDraft || !!validation || activeProbe?.loading" @click="probe(true)">测试草稿模型</NButton>
+      </NSpace>
+      <p v-if="selected?.capabilities?.probe && dirty && !canProbeDraft" class="field-help">API 地址或凭据变更在保存并重启后可测试。</p>
+      <NAlert v-if="activeProbe?.detail" :type="activeProbe.ok ? 'success' : 'error'" role="status">{{ activeProbe.detail }}</NAlert>
       <div class="field-grid">
         <div class="form-field">
           <label for="standalone-model-name">模型名称</label
@@ -164,5 +204,8 @@ onBeforeUnmount(() => request?.abort())
 <style scoped>
 .standalone-model {
   padding: 22px;
+}
+.probe-actions {
+  margin-top: 16px;
 }
 </style>

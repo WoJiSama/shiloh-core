@@ -329,7 +329,7 @@ export async function main(argv: string[]): Promise<void> {
       isCurrent: () => !termination.signal.aborted && storage?.isCurrent() === true }
     if (config.console.enabled) {
       consolePersistence = createStandaloneAgentConsolePersistence({ enabled: true, hostFile: configPath,
-        loaded: config.sourceSnapshot, authority: consoleAuthority,
+        loaded: config.sourceSnapshot, authority: consoleAuthority, providerEnv: process.env,
         validateCandidate: createStandaloneAgentCandidateValidator(config.sourceSnapshot.hostFile, process.env, { sourceSnapshot: config.sourceSnapshot }) })
       const execution = consolePersistence.execution
       // Every existing model/tool/sending fence also observes this irreversible process-local retirement.

@@ -17,6 +17,7 @@ import { deltaForceSchema, turtleSoupSchema, umaRaceSchema } from '../modules/co
 import { resolveTurtleSoupConfig } from '../modules/games/infrastructure/turtleSoup/TurtleSoupStore.js'
 import { DEFAULT_CONFIG as UMA_DEFAULTS } from '../modules/games/infrastructure/uma/umaConstants.js'
 import { TURTLE_NUMBERS, UMA_NUMBERS } from './standaloneGamesConfig.js'
+import { createStandaloneAgentConsoleProviderProbe } from './standaloneAgentConsoleProviderProbe.js'
 
 export type ConsoleModelSlot = 'model' | 'vision' | 'personMemoryExtraction' | 'midtermSummary' | 'groupMemoryExtraction' | 'textTriggerModel'
 export interface ConsoleModelView { readonly baseUrl: string; readonly name: string; readonly apiKeyEnv: string; readonly apiKeyConfigured: boolean }
@@ -31,6 +32,7 @@ export interface StandaloneConsolePersistenceOptions {
   readonly hostFile: string
   readonly loaded: SourceSnapshot
   readonly authority: { readonly signal: AbortSignal; isCurrent(): boolean }
+  readonly providerEnv?: NodeJS.ProcessEnv
   validateCandidate(sources: ConfigSources): ValidatedConsoleCandidate
 }
 type Data = Record<string, unknown>
@@ -184,6 +186,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
     } catch (error) { if (error instanceof AgentConsoleError) throw error; return fail() }
   }
   const loadedCandidate = validate(loaded.sources)
+  const probeModel = options.providerEnv && createStandaloneAgentConsoleProviderProbe(options.providerEnv, signal)
   if (options.enabled === true) parsed(loaded.sources, loaded.versions.bindings)
   function version(snapshot: SourceSnapshot, scope: string) { return createHash('sha256').update(JSON.stringify([snapshot.root, snapshot.revision, scope])).digest('hex') }
   const base = (snapshot: SourceSnapshot, scope: string) => ({ mode: 'standalone', revision: version(snapshot, scope), processEpoch, configRevision: snapshot.revision,
@@ -228,7 +231,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
   function ai(snapshot: SourceSnapshot, candidate: ValidatedConsoleCandidate): Data {
     const present = slots.filter(slot => candidate.models[slot] !== undefined)
     return { ...base(snapshot, 'providers'), definitions: present.map(configKey => ({ configKey, title: slotTitles[configKey], protocol: 'openai',
-      capabilities: { maxProviders: 1, credentialMode: 'env-ref', probe: false } })), sections: Object.fromEntries(present.map(slot => {
+      capabilities: { maxProviders: 1, credentialMode: 'env-ref', probe: !!probeModel } })), sections: Object.fromEntries(present.map(slot => {
         const model = candidate.models[slot]!
         return [slot, [{ baseUrl: model.baseUrl, name: model.name, apiKeyEnv: model.apiKeyEnv, apiKeyConfigured: model.apiKeyConfigured }]]
       })),
@@ -352,8 +355,31 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
       }, library)
     },
   }
+  const savedModel = (value: unknown) => {
+    const slot = id(value) as ConsoleModelSlot
+    const model = slots.includes(slot) && loadedCandidate.models[slot]
+    if (!model) return fail('not_found')
+    return model
+  }
   const providers: StandaloneAgentConsoleProviderPort = {
     read(context) { ensure(context); return ai(loaded, loadedCandidate) },
+    ...(probeModel ? {
+      probe(payload: Readonly<Data>, context: AgentConsoleContext) {
+        fields(payload as Data, ['configKey'])
+        const model = savedModel(payload.configKey)
+        return probeModel(model, model.name, context, () => ensure(context))
+      },
+      probeProvider(payload: Readonly<Data>, context: AgentConsoleContext) {
+        const model = savedModel(payload.configKey), draft = record(payload.provider)
+        fields(draft, ['baseUrl', 'name', 'apiKeyEnv'])
+        let url: URL
+        try { url = new URL(text(draft.baseUrl, 4096, false)) } catch { return fail() }
+        if (url.href !== model.baseUrl || draft.apiKeyEnv !== model.apiKeyEnv) return fail('conflict')
+        const name = text(draft.name, 200, false).trim()
+        if (/[\r\n\t]/u.test(name)) return fail()
+        return probeModel(model, name, context, () => ensure(context))
+      },
+    } : {}),
     write(payload, context) {
       fields(payload as Data, ['revision', 'configKey', 'providers'])
       const slot = id(payload.configKey) as ConsoleModelSlot
