@@ -683,6 +683,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   const videoCardAt = new Map<string, number>()
   let overridesLoadedAt = 0
   let healthSentinelLastRun = 0
+  let wakeGateRetryAt = 0
   let knownGroupsCache: string[] = []
 
   function runtimeConfig(groupId?: string): SimRuntimeConfig {
@@ -1670,7 +1671,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         // 判定不值得 → 等价 simMarkRead 静默收尾（推进水位、清未读），不进完整回合。
         // 预判不可用/异常 → 放行（fail-open，宁多花一次也不丢回复）。
         const judgeWake = ports.wakeGateJudge
-        if (!followUpId && cfg.wakeGate.enabled && judgeWake && !WAKE_GATE_BYPASS_KINDS.has(reason.kind)) {
+        if (!followUpId && cfg.wakeGate.enabled && judgeWake && now() >= wakeGateRetryAt && !WAKE_GATE_BYPASS_KINDS.has(reason.kind)) {
           const gateReadThroughSeq = turnState.unread.reduce((max, message) => Math.max(max, message.seq), turnState.lastReadThroughSeq)
           const gateSources = [...turnState.unread].sort((a, b) => a.seq - b.seq)
             .filter(message => !resolvedPersona.binding || message.kind === 'text' && !!message.messageId && !message.forwardId && !message.textTruncated)
@@ -1714,10 +1715,18 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               return verdict
             } finally { gateActive = false }
           }
-          const runGate = () => invokeGate().catch(() => {
+          const runGate = () => invokeGate().catch(error => {
             const cancelled = turnSignal.aborted && gateSignal.reason === turnSignal.reason
+            const timedOut = gateSignal.aborted && gateSignal.reason instanceof DOMException && gateSignal.reason.name === 'TimeoutError'
+            const failure = error instanceof AgentSimulationModelError ? error : undefined
+            const httpStatus = failure?.httpStatus
+            if (!cancelled && (timedOut || failure?.code === 'provider_timeout' || failure?.code === 'provider_transport_error' ||
+                httpStatus === 429 || httpStatus !== undefined && httpStatus >= 500)) {
+              wakeGateRetryAt = now() + 60_000
+            }
             diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: cancelled ? 'cancelled' : 'failed',
-              code: cancelled ? 'wake_gate_cancelled' : 'wake_gate_unavailable' })
+              code: cancelled ? 'wake_gate_cancelled' : timedOut ? 'wake_gate_timeout' : failure?.code ?? 'wake_gate_unavailable',
+              ...(httpStatus === undefined ? {} : { httpStatus }) })
             return null
           })
           const gate = durableWake ? await beginWake(runGate) : { result: runGate() }

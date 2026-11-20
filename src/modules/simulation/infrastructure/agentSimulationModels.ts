@@ -157,7 +157,7 @@ function client(options: AgentSimulationModelOptions, deadline: number, maxToken
 }
 
 /** Low-signal wake screening; unavailable or malformed verdicts preserve fail-open behavior. */
-export function createAgentSimulationWakeGate(options: AgentSimulationModelOptions) {
+export function createAgentSimulationWakeGate(options: AgentSimulationModelOptions & { readonly throwOnFailure?: boolean }) {
   const run = client(options, 8000, 64, 0.1)
   return async (input: AgentSimulationWakeInput, isCurrent?: () => boolean, context?: PersonProfileExtractionContext): Promise<{ engage: boolean; reason?: string } | null> => {
     try {
@@ -167,12 +167,15 @@ export function createAgentSimulationWakeGate(options: AgentSimulationModelOptio
         const messages = input.messages.slice(-10).map(row => ({ name: row.name.slice(0, 80), text: row.text.slice(0, 80), atSelf: row.atSelf }))
         return [{ role: 'system', content: WAKE_SYSTEM }, { role: 'user', content: JSON.stringify({ 唤醒原因: input.reason, 未读消息: messages }) }]
       }, context, isCurrent)
-      if (raw.length > 4000) return null
+      if (raw.length > 4000) throw new AgentSimulationModelError('model_response_invalid')
       const verdict = object(parseOutput(raw, '{'))
       if (typeof verdict.engage !== 'boolean' || Object.keys(verdict).some(key => !['engage', 'reason'].includes(key)) ||
-          verdict.reason !== undefined && typeof verdict.reason !== 'string') return null
+          verdict.reason !== undefined && typeof verdict.reason !== 'string') throw new AgentSimulationModelError('model_response_invalid')
       return { engage: verdict.engage, ...(typeof verdict.reason === 'string' ? { reason: verdict.reason.slice(0, 20) } : {}) }
-    } catch { return null }
+    } catch (error) {
+      if (options.throwOnFailure) throw error instanceof AgentSimulationModelError ? error : new AgentSimulationModelError('model_response_invalid')
+      return null
+    }
   }
 }
 

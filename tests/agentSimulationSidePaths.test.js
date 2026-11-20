@@ -69,6 +69,25 @@ test('configured wake gate carries its exact scope; rejection preserves a new di
   } finally { await open.runtime.stop(); await open.runtime.drain() }
 })
 
+test('a provider failure is recorded once and subsequent wakes bypass screening until the provider can recover', { timeout: 15000 }, async () => {
+  const diagnostics = []
+  let requests = 0
+  const f = fixture({ diagnostics: { emit: event => diagnostics.push(event) }, async wakeGateJudge() {
+    if (++requests === 1) throw new AgentSimulationModelError('http_error', 429)
+    return { engage: false }
+  } })
+  try {
+    await f.emit('provider-rate-limit'); await until(() => f.models.length === 1); await f.runtime.drain()
+    await f.emit('wake-during-provider-backoff'); await until(() => f.models.length === 2); await f.runtime.drain()
+    assert.equal(requests, 1)
+    f.clock.at += 60_001
+    await f.emit('wake-after-provider-backoff'); await until(() => requests === 2); await f.runtime.drain()
+    assert.equal(f.models.length, 2)
+    assert.deepEqual(diagnostics.filter(event => event.operation === 'simulation_wake_gate').map(event => [event.outcome, event.code, event.httpStatus]),
+      [['failed', 'http_error', 429], ['succeeded', undefined, undefined]])
+  } finally { f.runtime.stop(); await f.runtime.drain() }
+})
+
 test('meme extraction discards a late recalled result while preserving new ingress and its pending wake', { timeout: 10000 }, async () => {
   const entered = Promise.withResolvers(), held = Promise.withResolvers()
   const f = fixture({ meme: true, async memeExtract(_messages, current, context) {
