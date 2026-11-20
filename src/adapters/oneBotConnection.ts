@@ -67,6 +67,7 @@ export type { QqRedPacketApiAction, QqRedPacketApiOptions, QqRedPacketOptions, Q
 
 interface PendingRequest {
   finish(value?: unknown): void
+  ownerAlert: boolean
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -331,7 +332,10 @@ interface OneBotConnectionOptions extends OneBotEndpoint {
 }
 
 interface OwnerAlertGuard { readonly signal: AbortSignal; isCurrent(): boolean }
-type OneBotAdapter = PlatformConnectionAdapter & { sendOwnerAlert?(text: string, guard: OwnerAlertGuard): Promise<DeliveryReceipt> }
+type OneBotAdapter = PlatformConnectionAdapter & {
+  sendOwnerAlert?(text: string, guard: OwnerAlertGuard): Promise<DeliveryReceipt>
+  beginOwnerAlertDrain?(): (() => void) | undefined
+}
 
 function createOneBotSession(options: OneBotConnectionOptions) {
   const { connection } = options
@@ -346,6 +350,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
   const url = reverse ? parseOneBotReverseUrl(options.url) : parseOneBotUrl(options.url)
   if (reverse && !options.accessToken?.trim()) throw new Error('反向 OneBot 连接必须配置 access token')
   let socket: WebSocket | undefined
+  let ownerDrainSocket: WebSocket | undefined
   let listener: { close(): void } | undefined
   let cancelFirstPeer: (() => void) | undefined
   let retry: ReturnType<typeof setTimeout> | undefined
@@ -434,7 +439,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       }
       const abort = () => finish(undefined, signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError' ? 'onebot_timeout' : undefined)
       const timer = setTimeout(() => finish(undefined, 'onebot_timeout'), timeoutMs)
-      pending.set(echo, { finish })
+      pending.set(echo, { finish, ownerAlert: !observeFailures })
       signal?.addEventListener('abort', abort, { once: true })
       try {
         if (signal?.aborted) { finish(); return }
@@ -460,7 +465,10 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     if (!alertTarget || !text || text.length > 3_000) return { state: 'failed', code: 'owner_alert_invalid' }
     const client = socket
     const current = () => {
-      try { return !guard.signal.aborted && !stopped && verified && socket === client && client?.readyState === WebSocket.OPEN && guard.isCurrent() }
+      try {
+        return !guard.signal.aborted && socket === client && client?.readyState === WebSocket.OPEN &&
+          (stopped ? ownerDrainSocket === client : verified) && guard.isCurrent()
+      }
       catch { return false }
     }
     if (!client || !current()) return { state: 'failed', code: 'owner_alert_unavailable' }
@@ -630,12 +638,27 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     if (retry) { clearTimeout(retry); retry = undefined }
     if (heartbeat) { clearInterval(heartbeat); heartbeat = undefined }
     const client = socket
-    socket = undefined
-    for (const request of pending.values()) request.finish()
-    client?.terminate()
-    listener?.close()
-    listener = undefined
+    const drainingAlerts = !!client && client === ownerDrainSocket
+    for (const request of pending.values()) if (!drainingAlerts || !request.ownerAlert) request.finish()
+    if (!drainingAlerts) {
+      socket = undefined
+      client?.terminate()
+      listener?.close()
+      listener = undefined
+    }
     conversationFiles.clear()
+  }
+
+  function beginOwnerAlertDrain(): (() => void) | undefined {
+    const client = socket
+    if (!alertTarget || stopped || !verified || client?.readyState !== WebSocket.OPEN) return undefined
+    ownerDrainSocket = client
+    stop()
+    return () => {
+      if (ownerDrainSocket !== client) return
+      ownerDrainSocket = undefined
+      stop()
+    }
   }
 
   const outbound = createQqMessageActionPort({
@@ -971,6 +994,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     return typeof url === 'string' ? url : undefined
   }
   async function start(handler?: (event: PlatformConversationEvent) => Promise<void>): Promise<void> {
+    if (ownerDrainSocket) throw new Error('OneBot 告警队列正在退出')
     if (!stopped) return
     stopped = false
     accept = handler
@@ -997,7 +1021,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       }
     } } : {}),
     botUserId: connection.account.id,
-    ...(alertTarget ? { sendOwnerAlert } : {}),
+    ...(alertTarget ? { sendOwnerAlert, beginOwnerAlertDrain } : {}),
     get botName() { return botName },
     resolvePrivatePeer(target) {
       if (target.kind !== 'private' || !servesAccount(target) || qqId(target.id) !== target.id || target.id === connection.account.id) return undefined

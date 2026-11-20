@@ -139,6 +139,32 @@ test('owner alerts verify friendship and send plain text to the fixed private re
 })
 
 for (const transport of ['forward-websocket', 'reverse-websocket']) {
+  test(`${transport} shutdown lets queued owner alerts finish on the verified socket`, { timeout: 10000 }, async t => {
+    const f = await fixture(t, { transport, alertOwner: user })
+    f.setHandler(({ action }) => action === 'get_friend_list' ? response([{ user_id: user.id }]) : undefined)
+    const ordinary = f.adapter.readConversationMember(target, user, options())
+    const inFlight = f.adapter.sendOwnerAlert('退出前的告警', options())
+    await waitFor(() => f.requests.some(row => row.action === 'send_private_msg') && f.memberRequests().length === 1, 'pending calls')
+    const finish = f.adapter.beginOwnerAlertDrain()
+    assert.equal(typeof finish, 'function')
+    try {
+      f.adapter.stop()
+      assert.equal(f.adapter.isReady(), false)
+      assert.equal(await ordinary, undefined)
+      assert.equal(await f.adapter.readConversationMember(target, user, options()), undefined)
+      await assert.rejects(f.adapter.start(), /正在退出/)
+      const first = f.requests.find(row => row.action === 'send_private_msg')
+      reply(f.peer(), first, response({ message_id: 80 }))
+      assert.deepEqual(await inFlight, { state: 'sent', messageId: '80' })
+      f.setHandler(({ action }) => action === 'get_friend_list' ? response([{ user_id: user.id }]) : response({ message_id: 81 }))
+      assert.deepEqual(await f.adapter.sendOwnerAlert('待发送的告警', options()), { state: 'sent', messageId: '81' })
+      const disconnected = once(f.peer(), 'close')
+      finish()
+      await disconnected
+      assert.deepEqual(await f.adapter.sendOwnerAlert('新告警', options()), { state: 'failed', code: 'owner_alert_unavailable' })
+    } finally { finish() }
+  })
+
   test(`${transport} reads fresh scoped member evidence and a complete member list over real WebSocket`, { timeout: 10000 }, async t => {
     const f = await fixture(t, { transport })
     const began = Date.now()

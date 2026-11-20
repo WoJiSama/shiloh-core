@@ -168,7 +168,7 @@ npm start -- --config /path/to/agent-host.yaml --check
 
 Webhook 请求体形如 `{"version":1,"id":"<batch-id>","alerts":[{"stage":"model","operation":"provider_http","outcome":"failed","code":"http_error","httpStatus":503,"traceId":"<trace-id>","firstAt":0,"lastAt":0,"count":1}]}`。时间为 Unix 毫秒。重试沿用批次的 `id` 和 `Idempotency-Key`，接收端可据此去重。QQ 私聊显示同类故障的操作、状态、次数与 trace。用 `traceId` 在运行观测中查找对应操作。外发字段仅含运行元数据，队列有界，溢出汇总附带次数。
 
-待推送队列保存在进程内，正常退出会限时提交剩余告警。重启后的追溯使用 `dataDir/operations` 中已提交的记录。整机宕机、强制终止和进程卡死由独立于宿主的存活监控检测。
+待推送队列保存在进程内。正常退出时，停止 QQ 业务收发，并在配置及宿主租约有效时保留已核验的连接，最多给已排队的 QQ 告警 12 秒提交回执。重启后的追溯使用 `dataDir/operations` 中已提交的记录。整机宕机、强制终止和进程卡死由独立于宿主的存活监控检测。
 
 ### 连接与入站队列
 

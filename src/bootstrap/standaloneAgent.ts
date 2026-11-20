@@ -73,7 +73,7 @@ import { openStandaloneAgentConsoleAuth } from './standaloneAgentConsoleAuth.js'
 import { createStandaloneAgentConsoleServices } from './standaloneAgentConsoleServices.js'
 import { createStandaloneAgentConsoleRuntime } from './standaloneAgentConsoleRuntime.js'
 import { createStandaloneAgentConsolePersistence } from './standaloneAgentConsolePersistence.js'
-import { inspectStandaloneAgentConfigTransaction, recoverStandaloneAgentConfigTransaction } from './standaloneAgentConfigSources.js'
+import { inspectStandaloneAgentConfigTransaction, isStandaloneAgentSourceSnapshotCurrent, recoverStandaloneAgentConfigTransaction } from './standaloneAgentConfigSources.js'
 import { createStandaloneAgentConsoleManagement } from './standaloneAgentConsoleManagement.js'
 import { createStandaloneAgentForgetOperations } from './standaloneAgentForgetOperations.js'
 import { createStandaloneAgentWorkspace } from './standaloneAgentWorkspace.js'
@@ -250,13 +250,16 @@ export async function main(argv: string[]): Promise<void> {
   }
   const termination = new AbortController()
   let storage: Awaited<ReturnType<typeof openAgentRedis>> | undefined
-  let sendQqOwnerAlert: ReturnType<typeof createOneBotConnection>['sendOwnerAlert']
+  let qqAlertAdapter: ReturnType<typeof createOneBotConnection> | undefined
+  let finishOwnerAlertDrain: (() => void) | undefined
+  let qqAlertDrain: Promise<void> | undefined
   if (qqAlertOwner) {
     alerts = createAgentFailureAlerts({ channel: 'qq', logger, allowsLabel: label => allowsAlertLabel?.(label) !== false,
       async deliver(batch, signal) {
-        if (!sendQqOwnerAlert) return { state: 'failed', code: 'owner_alert_unavailable' }
-        const receipt = await sendQqOwnerAlert(formatQqOwnerAlerts(batch), { signal,
-          isCurrent: () => !termination.signal.aborted && storage?.isCurrent() === true && config.isConfigCurrent() })
+        if (!qqAlertAdapter?.sendOwnerAlert) return { state: 'failed', code: 'owner_alert_unavailable' }
+        const receipt = await qqAlertAdapter.sendOwnerAlert(formatQqOwnerAlerts(batch), { signal,
+          isCurrent: () => storage?.isCurrent() === true && (termination.signal.aborted
+            ? !!finishOwnerAlertDrain && isStandaloneAgentSourceSnapshotCurrent(config.sourceSnapshot) : config.isConfigCurrent()) })
         if (receipt.state === 'failed') return { state: 'failed', code: receipt.code ?? 'owner_alert_rejected' }
         return { state: receipt.state === 'sent' ? 'confirmed' : 'unknown' }
       } })
@@ -268,9 +271,20 @@ export async function main(argv: string[]): Promise<void> {
     configurationRevision: config.sourceSnapshot.revision })
   const safeLogger = diagnostics.logger
   const stop = () => termination.abort()
+  const gracefulStop = () => {
+    if (termination.signal.aborted) return
+    if (alerts && qqAlertAdapter && storage?.isCurrent() === true && config.isConfigCurrent()) {
+      const finish = qqAlertAdapter.beginOwnerAlertDrain?.()
+      if (finish) {
+        finishOwnerAlertDrain = finish
+        qqAlertDrain = alerts.close().finally(() => { finishOwnerAlertDrain = undefined; finish() })
+      }
+    }
+    stop()
+  }
   const fail = (_message: string) => { diagnostics.emit({ stage: 'host', operation: 'host_authority', outcome: 'failed', code: 'host_authority_lost' }); process.exitCode = 1; stop() }
-  process.once('SIGTERM', stop)
-  process.once('SIGINT', stop)
+  process.once('SIGTERM', gracefulStop)
+  process.once('SIGINT', gracefulStop)
   let host: ReturnType<typeof createAgentRuntime> | undefined
   let mcp: Awaited<ReturnType<typeof openAgentMcpTools>> | undefined
   let semanticBackend: ReturnType<typeof createAgentSemanticBackend> | undefined
@@ -437,7 +451,7 @@ export async function main(argv: string[]): Promise<void> {
         onEventError: () => diagnostics.emit({ stage: 'inbox', operation: 'onebot_admission', outcome: 'failed', code: 'event_not_queued' }),
         onApiFailure: (action, outcome, code) => diagnostics.emit({ stage: 'host', operation: `onebot.${action}`, outcome, code }),
       })
-      if (alertOwner) sendQqOwnerAlert = adapter.sendOwnerAlert
+      if (alertOwner) qqAlertAdapter = adapter
       return adapter
     })
     const reviewFetch = observeModelFetch('consistency_provider_http')
@@ -815,6 +829,7 @@ export async function main(argv: string[]): Promise<void> {
         cleanup('mcp_close', () => mcp?.close()), cleanup('semantic_close', () => semanticBackend?.dispose()),
         cleanup('ledger_flush', () => ledger.flush()),
       ])
+      await cleanup('qq_alert_drain', () => qqAlertDrain)
       await cleanup('redis_close', () => storage?.close())
     } finally {
       diagnostics.emit({ stage: 'host', operation: 'host_stop', outcome: clean ? 'succeeded' : 'failed' })
@@ -822,8 +837,8 @@ export async function main(argv: string[]): Promise<void> {
         try { if (journal && !await journal.close()) process.exitCode = 1 }
         finally {
           await alerts?.close()
-          process.removeListener('SIGTERM', stop)
-          process.removeListener('SIGINT', stop)
+          process.removeListener('SIGTERM', gracefulStop)
+          process.removeListener('SIGINT', gracefulStop)
         }
       }
     }
