@@ -191,7 +191,7 @@ watch(
             <span class="eyebrow">本人</span>
             <h2>{{ robotLabel(agent, data?.agents ?? []) }}</h2>
             <p class="field-help">
-              当前使用人设「{{ agent.personaName }}」。经历与行动按这个本人的会话归属展示。
+              初始人设「{{ agent.personaName }}」。在「自我与记忆」中查看她现在的档案。
             </p>
             <details class="technical-details">
               <summary>技术详情</summary>
@@ -239,15 +239,7 @@ watch(
           </div>
           <p v-if="!agent.conversations.length" class="empty-note">本人尚未绑定会话。</p>
         </section>
-        <section class="panel cognition-note">
-          <NTag size="small">设计中</NTag>
-          <div>
-            <h3>连续自我与统一认知</h3>
-            <p class="muted">
-              当前仍是按会话保存的自我记录。这里不会把各群自我合并成已实现的统一认知。
-            </p>
-          </div>
-        </section></template
+        </template
       >
       <template v-else-if="['conversations', 'self', 'actions'].includes(tab)"
         ><section v-if="tab === 'self' && (selfProfile || profileLoading || profileError)" class="panel">
