@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { NButton, NInput, NPagination, NTag } from 'naive-ui'
 import PageHeader from '../components/PageHeader.vue'
 import WorkspaceOnboarding from '../components/WorkspaceOnboarding.vue'
+import QzoneComposer from '../components/QzoneComposer.vue'
 import { workspace, capability } from '../lib/workspace'
 import {
   accountLabel,
@@ -17,6 +18,7 @@ const route = useRoute(),
   query = ref(''),
   page = ref(1)
 const onboarding = ref(false)
+const qzoneOpen = ref(false), qzoneAccount = ref('')
 const createCapability = computed(() =>
   ['configuration.read', 'configuration.preview', 'configuration.commit']
     .map((operation) => capability(operation))
@@ -56,6 +58,7 @@ watch(query, () => (page.value = 1))
     >
     <p v-if="createCapability" class="field-help">{{ createCapability.reason }}</p>
     <WorkspaceOnboarding v-model:show="onboarding" kind="connection.add" />
+    <QzoneComposer v-if="qzoneAccount" v-model:show="qzoneOpen" :bot-ids="[qzoneAccount]" />
     <RouterLink v-if="route.params.id" to="/connections">← 全部连接</RouterLink
     ><NInput
       v-model:value="query"
@@ -74,6 +77,9 @@ watch(query, () => (page.value = 1))
         }}</NTag>
       </div>
       <p class="field-help">{{ connection.conversationCount }} 个接入会话</p>
+      <NButton v-if="connection.capabilities.includes('qq.qzone') && capability('qzone.publish').status === 'available'"
+        size="small" :disabled="connection.state !== 'connected'"
+        @click="qzoneAccount = connection.account.id; qzoneOpen = true">发布 QQ 空间说说</NButton>
       <div class="tag-list">
         <NTag v-for="item in connection.capabilities" :key="item" size="small">{{ item }}</NTag
         ><span v-if="!connection.capabilities.length" class="muted">未报告连接能力</span>

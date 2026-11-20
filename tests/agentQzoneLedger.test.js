@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
 import { createQzoneRedis, qzoneRedisAvailable } from './helpers/agentQzoneRedis.mjs'
 
-const { createAgentQzoneLedger } = await importBilibiliHost('modules/runtime/infrastructure/agentQzoneLedger.js')
+const [{ createAgentQzoneLedger }, { createStandaloneAgentConsoleQzone }] = await Promise.all([
+  importBilibiliHost('modules/runtime/infrastructure/agentQzoneLedger.js'),
+  importBilibiliHost('bootstrap/standaloneAgentConsoleQzone.js'),
+])
 const account = { platform: 'qq', namespace: 'global', id: '100001' }
 const binding = (room = '200001', agentId = 'role') => ({ source: 'configured', id: 'binding-' + room, revision: 'one', agentId,
   personaId: 'default', connectionId: 'qq-main', target: { account, kind: 'group', id: room } })
@@ -61,6 +64,42 @@ test('source identity cannot change a pending or completed publication payload',
   assert.equal(await ledger.settle(first, 'failed'), false)
   const otherAccount = { ...account, id: '100002' }
   assert.equal(await ledger.readOwnPost(otherAccount, 'published-1'), undefined)
+})
+
+test('Core console checks the selected QQ binding and never repeats a confirmed or unknown native publication', { skip: !qzoneRedisAvailable }, async t => {
+  const { ledger } = await setup(t), calls = []
+  const first = binding()
+  let current = first, ready = true
+  const adapter = { id: first.connectionId, account, botName: '夹具机器人', isReady: () => ready,
+    qzone: { async execute(action, guard) {
+      await guard.ensureCurrent()
+      calls.push(action)
+      if (action.operation.text === '结果待确认') throw new Error('fixture timeout')
+      return { state: 'confirmed', postId: 'native-post-1' }
+    } } }
+  const services = createStandaloneAgentConsoleQzone({ bindings: { list: () => [current], resolve: () => current },
+    adapters: [adapter], auth: { authorize: async () => 'allowed' }, ledger, allowsText: () => true })
+  const context = { principal: { id: 'console-operator', username: 'operator', via: 'session' },
+    signal: new AbortController().signal, isCurrent: () => true, ensureCurrent() {} }
+  const invoke = (operation, body) => services.find(service => service.operation === operation).handle({ body }, context)
+  const { value } = await invoke('qzone.accounts')
+  assert.deepEqual(value.bots.map(row => row.qq), [account.id])
+  const request = { botIds: [account.id], requestId: randomUUID(), content: '已确认的发布',
+    bindingTokens: { [account.id]: value.bots[0].bindingToken } }
+  const submit = async body => (await invoke('qzone.publish', body)).value.results[0]
+  assert.equal((await submit(request)).tid, 'native-post-1')
+  assert.equal((await submit(request)).ok, true)
+  assert.equal(calls.length, 1)
+  assert.equal((await ledger.readOwnPost(account, 'native-post-1')).source.id, first.id)
+  const second = { ...request, requestId: randomUUID(), content: '结果待确认' }
+  assert.match((await submit(second)).error, /待确认/u)
+  assert.match((await submit(second)).error, /待确认/u)
+  assert.equal(calls.length, 2)
+  current = { ...first, revision: 'new-binding' }
+  assert.equal((await submit({ ...request, requestId: randomUUID() })).ok, false)
+  ready = false
+  assert.deepEqual((await invoke('qzone.accounts')).value.bots, [])
+  assert.equal(calls.length, 2)
 })
 
 test('publication sources keep their original outcome across binding revision or agent changes', { skip: !qzoneRedisAvailable }, async t => {

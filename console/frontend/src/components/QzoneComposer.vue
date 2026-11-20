@@ -15,13 +15,15 @@ import { botLabel } from '../lib/identities'
 import { api } from '../lib/api'
 import { useUnsavedGuard } from '../composables/useUnsavedGuard'
 import { errorText } from '../lib/operations'
+import { clientId } from '../lib/clientId'
 
 const props = withDefaults(defineProps<{ show: boolean; botIds?: string[] }>(), {
   botIds: () => []
 })
 const emit = defineEmits<{ 'update:show': [value: boolean] }>()
 const dialog = useDialog()
-const bots = ref<Array<{ qq: string; nickname: string }>>([])
+type Bot = { qq: string; nickname: string; bindingToken?: string }
+const bots = ref<Bot[]>([])
 const selected = ref<string[]>([])
 const content = ref('')
 const loading = ref(false)
@@ -33,6 +35,7 @@ const valid = computed(() => content.value.trim().length > 0 && selected.value.l
 let controller: AbortController | null = null
 let active = true
 let sequence = 0
+let attempted: { input: string; requestId: string } | undefined
 watch(
   () => props.show,
   async (show) => {
@@ -47,7 +50,7 @@ watch(
     loading.value = true
     controller = new AbortController()
     try {
-      const result = await api<{ bots: Array<{ qq: string; nickname: string }> }>(
+      const result = await api<{ bots: Bot[] }>(
         '/api/qzone/bots',
         { signal: controller.signal }
       )
@@ -75,7 +78,10 @@ function close() {
 }
 function publish() {
   if (!valid.value || sending.value) return
-  const snapshot = { botIds: [...selected.value], content: content.value.trim() }
+  const botIds = [...selected.value]
+  const bindingTokens = Object.fromEntries(bots.value.filter(bot => botIds.includes(bot.qq) && bot.bindingToken)
+    .map(bot => [bot.qq, bot.bindingToken]))
+  const snapshot = { botIds, content: content.value.trim(), bindingTokens }
   dialog.warning({
     title: `确认以 ${snapshot.botIds.length} 个账号发布说说`,
     content: `账号：${snapshot.botIds.map((qq) => botLabel(qq, bots.value.find((bot) => bot.qq === qq)?.nickname)).join('、')}。内容：${snapshot.content}`,
@@ -87,14 +93,16 @@ function publish() {
       error.value = ''
       results.value = []
       try {
+        const input = JSON.stringify(snapshot)
+        if (attempted?.input !== input) attempted = { input, requestId: clientId() }
         const result = await api<{ results: Array<{ qq: string; ok: boolean; error?: string }> }>(
           '/api/qzone/publish',
-          { method: 'POST', body: JSON.stringify(snapshot) }
+          { method: 'POST', body: JSON.stringify({ ...snapshot, requestId: attempted.requestId }) }
         )
         if (!active) return
         results.value = result.results || []
         if (!results.value.length) error.value = '接口没有返回发布回执，请核对运行状态后再操作。'
-        else if (results.value.every((item) => item.ok)) content.value = ''
+        else if (results.value.every((item) => item.ok)) { content.value = ''; attempted = undefined }
       } catch (cause) {
         if (active) error.value = errorText(cause)
       } finally {

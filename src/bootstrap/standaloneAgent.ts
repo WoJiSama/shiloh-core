@@ -75,6 +75,7 @@ import { createStandaloneAgentConsoleGames } from './standaloneAgentConsoleGames
 import { createStandaloneAgentConsoleStyle } from './standaloneAgentConsoleStyle.js'
 import { createStandaloneAgentConsoleSemantic } from './standaloneAgentConsoleSemantic.js'
 import { createStandaloneAgentConsoleDirectory } from './standaloneAgentConsoleDirectory.js'
+import { createStandaloneAgentConsoleQzone } from './standaloneAgentConsoleQzone.js'
 import { runStandaloneLegacyGroupArchiveMigration } from './standaloneAgentLegacyGroupArchive.js'
 import { createStandaloneAgentConsoleRuntime } from './standaloneAgentConsoleRuntime.js'
 import { createStandaloneAgentConsolePersistence } from './standaloneAgentConsolePersistence.js'
@@ -787,6 +788,7 @@ export async function main(argv: string[]): Promise<void> {
           ...createStandaloneAgentConsoleImages({ ...config.tools.images, secrets: hostSecrets, dataDir: config.dataDir,
             recordUsage: (model, usage) => ledger.record({ scope: 'global', stage: 'api', model, usage }) }),
           ...createStandaloneAgentConsoleGames(gamePorts),
+          ...createStandaloneAgentConsoleQzone({ adapters, bindings, auth: consoleAuth, ledger: qzoneLedger, allowsText: allowsMediaText }),
           ...createStandaloneAgentConsoleStyle({ dataDir: config.dataDir, bindings, auth: consoleAuth, allowsText: allowsSecretText }),
           ...createStandaloneAgentConsoleSemantic({ dataDir: config.dataDir, enabled: config.semanticMemory.enabled,
             admin: host.semanticMemoryAdmin, allowsText: allowsSecretText }),
