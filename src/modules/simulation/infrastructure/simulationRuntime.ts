@@ -65,7 +65,7 @@ import { createDefaultSimSession, isSimulationUserId } from '../domain/simConfig
 import { affinityLevel, bumpMemeUsage, defaultAffinityEntry, dueMemories, formatSelfMemorySection, mergeMemeCandidates, normalizeMemoryList, parseMemeCandidates } from '../domain/simMemory.js'
 import { mineUserCatchphrases } from '../domain/userStyle.js'
 import { boundedTimerDelay, safeSetTimeout, isDuplicateMessageId, sanitizeUntrustedText, safeToolErrorText, shouldSendErrorNotice } from '../domain/safety.js'
-import { evaluateWakeTrigger, formatWakeReason, mergeWakeReason, messageReasonStillPending, pushPendingReason, TIMER_WAKE_REASONS } from '../domain/wakeTrigger.js'
+import { directGroupAddress, evaluateWakeTrigger, formatWakeReason, mergeWakeReason, messageReasonStillPending, pushPendingReason, TIMER_WAKE_REASONS } from '../domain/wakeTrigger.js'
 import { resolveSimToolSurface } from '../domain/toolPolicy.js'
 import { acknowledgeMessages, noteModelSeen, readThroughSeq } from '../domain/watermark.js'
 import { buildWakeSnapshot, compactSimMessage } from '../domain/messageView.js'
@@ -109,13 +109,14 @@ export const SIM_SWEEP_INTERVAL_MS = 30_000
 
 /** 仅@才回模式下仍放行的唤醒：点名（@/引用）、一次性开场、被点名后的定时延伸（等待超时/回合补发）、管理指令、承诺到期（答应了的事必须兑现）。主动冒泡(proactiveCheck)不放行。 */
 const AT_ONLY_WAKE_KINDS = new Set<SimWakeReason['kind']>(['atMention', 'bootstrap', 'timeout', 'replyCheck', 'admin', 'commitment'])
+const DIRECT_OR_SCHEDULED_WAKE_KINDS = new Set<SimWakeReason['kind']>(['atMention', 'nameMention', 'admin', 'commitment'])
 const FORWARD_READ_ERROR = '无法确认原群消息或转发已不可用'
 
 /**
  * 唤醒预判闸旁路：这些唤醒不经便宜模型预判、直达完整回合——
  * 被@/开场/管理天然高价值；session(活跃档)是管理员明确要的参与；timeout/replyCheck 是已参与回合的收尾延伸。
  */
-const WAKE_GATE_BYPASS_KINDS = new Set<SimWakeReason['kind']>([...AT_ONLY_WAKE_KINDS, 'session', 'characterGoal'])
+const WAKE_GATE_BYPASS_KINDS = new Set<SimWakeReason['kind']>([...AT_ONLY_WAKE_KINDS, 'nameMention', 'session', 'characterGoal'])
 
 interface NudgeIngressOptions extends MessageActionOptions {
   binding?: AgentBindingSnapshot
@@ -168,6 +169,8 @@ export interface SimulationRuntimePorts {
   handlesTarget?(target: ConversationAddress): boolean
   /** Mode selection may suppress execution while this host still owns recall and storage. */
   allowsSimulation?(target: ConversationAddress): boolean
+  unifiedGroupChat?: boolean
+  migratedGroupToolNames?(target: ConversationAddress): readonly string[] | undefined
   /** Temporary host permission; does not alter the user's simulation configuration. */
   allowsConversationAI?(target: ConversationAddress): boolean
   /** Process hosts acknowledge a durable inbox entry after this runtime records its wake. */
@@ -175,7 +178,7 @@ export interface SimulationRuntimePorts {
   readHealthStyleMemory?(): Promise<unknown>
   /** Compatibility transport for native segments emitted by existing QQ tools and cards. */
   sendGroupMessage?(groupId: string, segments: unknown[], selfId?: string, options?: SimSendOptions): Promise<SimTransportReceipt>
-  getPersona(groupId: string, selfId: string, target?: ConversationAddress): { personaId?: string; persona: PersonaText; systemContent: string; personaGuard?: PersonaGuardConfig; binding?: AgentBindingSnapshot }
+  getPersona(groupId: string, selfId: string, target?: ConversationAddress): { personaId?: string; persona: PersonaText; systemContent: string; personaGuard?: PersonaGuardConfig; binding?: AgentBindingSnapshot; aliases?: readonly string[] }
   readQuotedMessage?(target: ConversationAddress, messageId: string, guard: MessageActionOptions): Promise<IncomingMessage | undefined>
   supportsForwardRead?(target: ConversationAddress): boolean
   readForward?(target: ConversationAddress, source: ForwardReference, guard: MessageActionOptions): Promise<ForwardContent | undefined>
@@ -300,6 +303,7 @@ export interface SimulationRuntime {
   /** 承诺账本查询口：该群当前是否仿真生效（commitmentTool 创建 agent 类承诺前的闸） */
   isGroupActive(groupId: string): boolean
   isConversationActive(target: ConversationAddress): Promise<boolean>
+  canInitiateGroupChat(target: ConversationAddress): Promise<boolean>
   groupTextBudget(target: ConversationAddress, at: number): Promise<{
     maxTurns: number; dailyCostCny: number; minGapMs: number; carriedTurns: number; todayCostCny: number
   }>
@@ -740,10 +744,33 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
 
   /** 群是否处于仿真模式：enabled 总开关 → 显式退出优先 → allGroups 默认全开 / 显式清单。 */
   function groupActive(cfg: SimRuntimeConfig, groupId: string): boolean {
-    if (!cfg.enabled || !overridesCache) return false
-    const target = decodeSimulationAddressKey(groupId)
+    if (!overridesCache) return false
+    const target = groupTargets.get(groupId) ?? decodeSimulationAddressKey(groupId)
     if (target && (!handlesTarget(target) || !allowsConversationAI(target))) return false
+    if (ports.unifiedGroupChat && target?.kind === 'group') return true
+    if (!cfg.enabled) return false
     return simulationGroupOverride(overridesCache, groupId) ?? cfg.allGroups
+  }
+
+  function proactiveAllowed(groupId: string): boolean {
+    const legacyAtOnly = overridesCache?.atOnly || []
+    if (!ports.unifiedGroupChat) return !legacyAtOnly.includes(groupId)
+    const setting = overridesCache?.proactive?.[groupId]
+    if (setting !== undefined) return setting
+    const target = groupTargets.get(groupId) ?? decodeSimulationAddressKey(groupId)
+    if (legacyAtOnly.includes(groupId) || (target && legacyAtOnly.includes(target.id)) ||
+        (target && ports.migratedGroupToolNames?.(target) !== undefined)) return false
+    const config = runtimeConfig(groupId)
+    return config.enabled && (overridesCache ? simulationGroupOverride(overridesCache, groupId) ?? config.allGroups : config.allGroups)
+  }
+
+  function mayWake(groupId: string, reason: SimWakeReason, state?: SimSessionState): boolean {
+    if (proactiveAllowed(groupId)) return true
+    if (!ports.unifiedGroupChat) return AT_ONLY_WAKE_KINDS.has(reason.kind)
+    if (!DIRECT_OR_SCHEDULED_WAKE_KINDS.has(reason.kind)) return false
+    if (reason.kind !== 'atMention' || !state) return true
+    const message = state.recent.find(entry => entry.seq === reason.seq)
+    return message?.kind === 'text' && message.atSelf
   }
 
   /** 承诺账本查询口：该群当前是否仿真生效（commitmentTool 创建 agent 类承诺前的闸） */
@@ -771,6 +798,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (!key) return false
     await refreshGroupState()
     return isSimulationGroup(key)
+  }
+
+  async function canInitiateGroupChat(target: ConversationAddress): Promise<boolean> {
+    if (target.kind !== 'group' || !allowsConversationAI(target)) return false
+    await refreshGroupState()
+    const key = await conversationKey(target)
+    return !!key && isSimulationGroup(key) && proactiveAllowed(key)
   }
 
   /** 承诺账本兑现口：agent 类承诺到期由 commitmentTick 调这里唤醒仿真回合（timer 类 1s 直醒） */
@@ -825,7 +859,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   /** 实际放通的既有工具名清单:open=内置安全面−减法+追加(自定义/敏感走 extraTools/allowTools);legacy=extraTools 白名单。
    *  端口缺省或解析异常都安全回落 legacy 行为——能力面只会更小不会更大。 */
   function resolveExtraToolNames(cfg: SimRuntimeConfig, groupId: string): string[] {
-    const target = decodeSimulationAddressKey(groupId)
+    const target = groupTargets.get(groupId) ?? decodeSimulationAddressKey(groupId)
     if (target && !isQqSimulationAddress(target) && !ports.extraToolsPlatformNeutral) return []
     const available = (names: string[]) => names.filter(name =>
       (!['qqZoneTool', 'sendGiftTool', 'grabRedBagTool', 'simQzoneInteract'].includes(name) ||
@@ -833,6 +867,11 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       (!target || !(ports.supportsInteractions?.(target) === false && ['pokeTool', 'likeTool', 'reactionTool', 'recallTool', 'jinyanTool', 'changeCardTool'].includes(name)) &&
       !(['jinyanTool', 'changeCardTool'].includes(name) && ports.supportsGroupManagement?.(target) === false) &&
       !(name === 'recallTool' && ports.supportsMessageRecall?.(target) === false)))
+    const migrated = target ? ports.migratedGroupToolNames?.(target) : undefined
+    if (migrated && target) {
+      const denied = new Set([...cfg.toolPolicy.denyTools, ...(cfg.toolPolicy.groups[target.id] ?? [])])
+      return available(migrated.filter(name => !denied.has(name)))
+    }
     if (cfg.toolPolicy.mode === 'legacy' || typeof ports.listRegistryToolNames !== 'function') return available(cfg.extraTools)
     try {
       const registry = ports.listRegistryToolNames()
@@ -928,7 +967,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (!allowsConversationAI(target)) return false
     const ingressActivity = activity.capture(target)
     try {
-    if (ports.getSection().enabled === false) return false
+    if (ports.getSection().enabled === false && !(ports.unifiedGroupChat && target.kind === 'group')) return false
     let key: string | null
     try { key = await conversationKey(target) } catch (error) {
       diagnose({ stage: 'inbox', operation: 'simulation_ingest', outcome: 'failed', code: 'simulation_binding_unavailable', error },
@@ -960,6 +999,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     let scope: CharacterScope
     let binding: AgentBindingSnapshot | undefined
     let selfName = self.name
+    let aliases: readonly string[] = []
     let capturedBinding: string | undefined
     try {
       const resolved = personaFor(target)
@@ -968,6 +1008,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (incoming.binding && (conversationAddressKey(incoming.binding.target) !== conversationAddressKey(target) || agentBindingToken(incoming.binding) !== capturedBinding)) return true
       scope = characterScopeFor(target, resolved.personaId || 'default')
       if (resolved.binding?.source === 'configured') selfName = String(resolved.persona.name || self.name)
+      aliases = resolved.aliases ?? []
     } catch (error) {
       diagnose({ stage: 'inbox', operation: 'simulation_ingest', outcome: 'failed', code: 'simulation_binding_unavailable', error },
         () => logger.warn(`[仿真] 群 ${groupId} 角色绑定无效，跳过本次入站`))
@@ -1096,11 +1137,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     }
     resetPreSleepWait(state)
 
-    let reason: SimWakeReason | null = null
+    const atOnlyGroup = !proactiveAllowed(groupId)
+    let reason = ports.unifiedGroupChat ? directGroupAddress(message, [selfName, ...aliases], !atOnlyGroup) : null
     if (!state.bootstrapSent) {
-      reason = message.atSelf || message.quoteToSelf ? { kind: 'atMention', seq: message.seq } : { kind: 'bootstrap', seq: message.seq }
+      if (!reason && (!ports.unifiedGroupChat || !atOnlyGroup)) {
+        reason = message.atSelf || message.quoteToSelf ? { kind: 'atMention', seq: message.seq } : { kind: 'bootstrap', seq: message.seq }
+      }
       state.bootstrapSent = true
-    } else {
+    } else if (!reason && (!ports.unifiedGroupChat || !atOnlyGroup)) {
       const hourNow = new Date(now() + 8 * 3600_000).getUTCHours()
       // 插话熔断：我上次发言后有第三人插过话（recent 只含群友消息，当前消息已入列但按 userId 自然排除）——
       // 对话对象这条更可能是接那人的话而不是对我说的，不算延续唤醒。宁可漏接不要抢话。
@@ -1110,13 +1154,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     }
     // 管理员设定的「仅@才回」优先于一切触发器（含 AI 自设唤醒）：非点名类唤醒压掉。
     // 消息照常入库——AI 被点名醒来后仍可读到全部内容；定时器/管理类唤醒是被点名后的延伸，不受影响。
-    const atOnlyGroup = (overridesCache?.atOnly || []).includes(groupId)
-    if (reason && atOnlyGroup && !AT_ONLY_WAKE_KINDS.has(reason.kind)) reason = null
+    if (reason && !mayWake(groupId, reason, state)) reason = null
     // 生物节律：睡眠窗口内非点名唤醒全部压掉（真人在睡觉；被@会醒，这是唯一的例外）
     if (reason && cfg.rhythm.enabled) {
       const rhythmWin = await loadRhythmWindow(cfg, scope)
       const hour = new Date(now() + 8 * 3600_000).getUTCHours()
-      if (isSleeping(hour, rhythmWin) && !AT_ONLY_WAKE_KINDS.has(reason.kind)) reason = null
+      if (isSleeping(hour, rhythmWin) && !AT_ONLY_WAKE_KINDS.has(reason.kind) && !DIRECT_OR_SCHEDULED_WAKE_KINDS.has(reason.kind)) reason = null
     }
     // 自主·活跃档：群里持续有动静时按节奏主动醒来跟进剧情，不等点名。
     // 节奏由 lastPlayAlongWakeAt 冷却（默认 5 分钟）控制，防刷屏/烧钱；仅@模式优先于活跃档，两者同开时主动跟进被压掉。
@@ -1383,7 +1426,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         isBindingCurrent() && memoryTurn?.isCurrent() !== false
       const canRunTurn = () => ports.observeCurrent ? ports.observeCurrent(turnCurrent) === true : turnCurrent()
       const wakeSourceExists = () => reason.seq === undefined || turnState.recent.some(message => message.seq === reason.seq)
-      const canCallModel = () => canRunTurn() && wakeSourceExists()
+      const canCallModel = () => canRunTurn() && (!ports.unifiedGroupChat || mayWake(groupId, reason, turnState)) && wakeSourceExists()
       const beginWake = async <T>(start: () => T): Promise<{ result: T } | null> => {
         if (!canRunTurn() || !wakeSourceExists()) return null
         if (queuedWake && !wakeStarted) {
@@ -1414,13 +1457,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         recordWake(turnState, now())
         turnState.lastWakeReason = reason
       }
-      if (['characterGoal', 'interestUpdate', 'proactiveCheck'].includes(reason.kind) && (overridesCache?.atOnly || []).includes(groupId)) {
+      if ((ports.unifiedGroupChat || ['characterGoal', 'interestUpdate', 'proactiveCheck'].includes(reason.kind)) && !mayWake(groupId, reason, state)) {
         if (durableWake) await discardWake()
         return
       }
       const sendOptions: SimSendOptions = {
         ...(resolvedPersona.binding ? {binding: resolvedPersona.binding} : {}),
-        isCurrent: canRunTurn,
+        isCurrent: ports.unifiedGroupChat ? canCallModel : canRunTurn,
       }
       const triggerSource = reason.seq === undefined ? undefined : state.recent.find(message => message.seq === reason.seq)
       const historyProjections: AgentHistoryRecall[] = []
@@ -1610,7 +1653,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         let announcement: AnnouncementPermit | undefined
         const focusGoal = async (id: string) => {
           if (reason.kind === 'commitment') throw new Error('正式托付回合不能转为自主目标并借用托付预算')
-          if ((overridesCache?.atOnly || []).includes(groupId)) throw new Error('仅被@回应模式下不执行自主目标')
+          if (!proactiveAllowed(groupId)) throw new Error('本群已关闭主动接话')
           if (focusedGoalId && focusedGoalId !== id) throw new Error('一回合只能推进一个自主目标')
           if (focusedGoalId) return
           if (!characterMemoryVisibility(character, memorySceneState.invalidatedAt).goals.some(goal => goal.id === id)) throw new Error('目标的聊天来源已失效')
@@ -2988,8 +3031,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           if (await shared.fingerprint() !== sharedFingerprint) throw new Error('共享偏好已改变，停止使用旧上下文')
           character = await characters.load(characterScope)
           if ([...sourceMemoryIds].some(id => !activeCharacterMemories(character).some(memory => memory.id === id))) throw new Error('本轮引用的记忆已被删除，停止使用旧上下文')
-          if (actor.kind === 'autonomous' && (character.paused || (overridesCache?.atOnly || []).includes(groupId))) throw new Error('自主行动已暂停或仅被@回应')
-          if (focusedGoalId && (overridesCache?.atOnly || []).includes(groupId)) throw new Error('本群已切为仅被@回应，自主目标暂停执行')
+          if (actor.kind === 'autonomous' && (character.paused || !proactiveAllowed(groupId))) throw new Error('本群自主参与已暂停')
+          if (focusedGoalId && !proactiveAllowed(groupId)) throw new Error('本群已关闭主动接话，本群目标暂停执行')
           if (permit && character.revision !== permit.revision) throw new Error('收尾保存后角色状态已改变，停止公告或标读')
           if (focusedGoalId) {
             const goal = character.goals.find(item => item.id === focusedGoalId)
@@ -4066,7 +4109,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       }
       if (ports.durableIngress && state.queuedIngressWake) {
         const queued = state.queuedIngressWake
-        if (queued.seq === undefined || state.recent.some(message => message.seq === queued.seq)) {
+        if ((!ports.unifiedGroupChat || mayWake(groupId, queued, state)) && (queued.seq === undefined || state.recent.some(message => message.seq === queued.seq))) {
           if (isCurrent()) await scheduleWake(groupId, queued, bindingToken, cfg)
           continue
         }
@@ -4074,25 +4117,26 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         await store.save(groupId, state)
       }
       const at = now()
+      const atOnly = !proactiveAllowed(groupId)
       const reasons: SimWakeReason[] = []
       let scheduleChanged = false
       const sleepUntil = state.wakeConfig.sleepUntil
       const timeoutDue = state.wakeConfig.mode === 'active' && typeof sleepUntil === 'number' && at >= sleepUntil
-      if (timeoutDue) reasons.push({ kind: 'timeout' })
+      if (timeoutDue && (!ports.unifiedGroupChat || !atOnly)) reasons.push({ kind: 'timeout' })
       if (state.pendingWakeReasons.length) {
         const pending = state.pendingWakeReasons
         state.pendingWakeReasons = []
-        for (const reason of pending) if (messageReasonStillPending(reason, state.unread)) reasons.push(reason)
+        scheduleChanged = true
+        for (const reason of pending) if ((!ports.unifiedGroupChat || mayWake(groupId, reason, state)) && messageReasonStillPending(reason, state.unread)) reasons.push(reason)
       }
       if (state.nextReplyCheckAt && at >= state.nextReplyCheckAt) {
         state.nextReplyCheckAt = 0
         scheduleChanged = true
-        if (state.unread.some(message => message.at > state.lastAiSendAt && (message.atSelf || message.quoteToSelf || (!message.atOther && !message.replyToUserId)))) {
+        if ((!ports.unifiedGroupChat || !atOnly) && state.unread.some(message => message.at > state.lastAiSendAt && (message.atSelf || message.quoteToSelf || (!message.atOther && !message.replyToUserId)))) {
           reasons.push({ kind: 'replyCheck' })
         }
       }
       // 仅@才回的群不主动冒泡：静默期检查照常排期，但不产生 proactiveCheck 唤醒；睡眠窗口内同样不冒泡
-      const atOnly = (overridesCache?.atOnly || []).includes(groupId)
       let sleepingNow = false
       if (cfg.rhythm.enabled) {
         const rhythmWin = await loadRhythmWindow(cfg, scopeFor(groupId, state.botId))
@@ -4194,7 +4238,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const live = personaFor(target)
       bindingCurrent = bindingCurrent && (live.personaId || 'default') === scope.personaId &&
         (live.binding ? agentBindingToken(live.binding) : undefined) === bindingToken
-      return bindingCurrent && groupActive(runtimeConfig(), groupId) && !(overridesCache?.atOnly || []).includes(groupId)
+      return bindingCurrent && groupActive(runtimeConfig(), groupId) && proactiveAllowed(groupId)
     }
     const guard = async () => {
       await refreshGroupState(true)
@@ -4830,6 +4874,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       budgetCaps: { ...(current.budgetCaps || {}) },
       turnCaps: { ...(current.turnCaps || {}) },
       atOnly: edit.atOnly ?? [...(current.atOnly || [])],
+      ...(current.proactive ? { proactive: { ...current.proactive } } : {}),
       playAlongUntil: edit.playAlongUntil ?? { ...(current.playAlongUntil || {}) },
       ...(current.budgetDefaultCny !== undefined ? { budgetDefaultCny: current.budgetDefaultCny } : {}),
     }
@@ -4851,11 +4896,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
 
   /** 活跃助推是否生效（窗口未过期） */
   function playAlongActive(groupId: string): boolean {
+    if (ports.unifiedGroupChat) return false
     const until = Number(overridesCache?.playAlongUntil?.[groupId])
     return Number.isFinite(until) && until > now()
   }
 
   async function enableGroup(groupId: string): Promise<string> {
+    if (ports.unifiedGroupChat) return setGroupReplyMode(groupId, 'auto')
     await refreshGroupState(true)
     const cfg = runtimeConfig()
     const overrides = nextOverrides({ disabled: (overridesCache?.disabled || []).filter(g => g !== groupId) })
@@ -4869,6 +4916,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   }
 
   async function disableGroup(groupId: string): Promise<string> {
+    if (ports.unifiedGroupChat) return setGroupReplyMode(groupId, 'atOnly')
     administration.ensureCurrent()
     backgroundByGroup.get(groupId)?.abort()
     await refreshGroupState(true)
@@ -4887,6 +4935,17 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
    *  mode 缺省=query。 */
   async function setGroupReplyMode(groupId: string, mode: 'atOnly' | 'auto' | 'active' | 'query' = 'query'): Promise<string> {
     await refreshGroupState(true)
+    if (ports.unifiedGroupChat) {
+      if (mode === 'query') return proactiveAllowed(groupId) ? '允许主动接话：开' : '允许主动接话：关，@ 或叫名字可以唤醒'
+      const enabled = mode !== 'atOnly'
+      const overrides = nextOverrides({})
+      overrides.proactive = { ...overrides.proactive, [groupId]: enabled }
+      await store.saveOverrides(overrides)
+      administration.ensureCurrent()
+      overridesCache = overrides
+      if (!enabled) backgroundByGroup.get(groupId)?.abort()
+      return enabled ? '已开启主动接话' : '已关闭主动接话，@ 或叫名字可以唤醒'
+    }
     const atOnlyList = overridesCache?.atOnly || []
     const isAtOnly = atOnlyList.includes(groupId)
     const isBoosted = playAlongActive(groupId)
@@ -4939,8 +4998,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       : ''
     return [
       `模式：${active ? '仿真（AI 自主收发）' : '普通'}${running.has(groupId) ? '（回合进行中）' : ''}`,
-      `回复模式：${(overridesCache?.atOnly || []).includes(groupId) ? '仅被@才回（管理员设定，优先于 AI 自设触发器）' : playAlongActive(groupId) ? (Number(overridesCache?.playAlongUntil?.[groupId]) >= 4102444800000 ? '自主·活跃（长期）' : `自主·活跃（剩 ${Math.max(1, Math.ceil((Number(overridesCache?.playAlongUntil?.[groupId]) - now()) / 60_000))} 分钟）`) : '自主'}`,
-      `范围：${cfg.enabled ? (cfg.allGroups ? '默认全群开启，可按群 .仿真 关' : '仅显式清单') : '总开关关闭'}`,
+      ports.unifiedGroupChat ? `允许主动接话：${proactiveAllowed(groupId) ? '开' : '关（@ 或叫名字可以唤醒）'}`
+        : `回复模式：${!proactiveAllowed(groupId) ? '仅被@才回' : playAlongActive(groupId) ? '自主·活跃' : '自主'}`,
+      `范围：${ports.unifiedGroupChat ? '已绑定群会话' : cfg.enabled ? (cfg.allGroups ? '默认全群开启' : '仅显式清单') : '总开关关闭'}`,
       `唤醒配置：mode=${state.wakeConfig.mode}${state.wakeConfig.sleepUntil ? `（${Math.max(0, Math.ceil((state.wakeConfig.sleepUntil - now()) / 60_000))} 分钟后到期）` : ''}`,
       `触发器：${JSON.stringify(state.wakeConfig.triggers)}`,
       `水位：lastReadThrough=${state.lastReadThroughSeq} unread=${state.unread.length} recent=${state.recent.length}`,
@@ -5115,7 +5175,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (state.recent.length > SIM_RECENT_LIMIT) state.recent = state.recent.slice(-SIM_RECENT_LIMIT)
     state.lastIncomingAt = Math.max(state.lastIncomingAt, message.at)
     resetPreSleepWait(state)
-    const reason: SimWakeReason | null = state.wakeConfig.triggers.poke ? { kind: 'atMention', seq: message.seq } : null
+    const reason: SimWakeReason | null = state.wakeConfig.triggers.poke && (!ports.unifiedGroupChat || proactiveAllowed(groupId))
+      ? { kind: 'atMention', seq: message.seq } : null
     await saveIncoming(groupId, state, message, reason, bindingToken, cfg)
     return true
   }
@@ -5131,7 +5192,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     for (const groupId of known.slice(0, 60)) {
       try { groups.push(await describeGroup(groupId)) } catch { /* 单群失败不影响总览 */ }
     }
-    return { enabled: cfg.enabled, allGroups: cfg.allGroups, disabled: overridesCache?.disabled || [], explicitEnabled: overridesCache?.explicitEnabled || [], budgetDefaultCny: cfg.budget.dailyCostCny, budgetGroupsCny: cfg.budget.groups, groups }
+    return { enabled: ports.unifiedGroupChat || cfg.enabled, allGroups: ports.unifiedGroupChat || cfg.allGroups, disabled: overridesCache?.disabled || [], explicitEnabled: overridesCache?.explicitEnabled || [], budgetDefaultCny: cfg.budget.dailyCostCny, budgetGroupsCny: cfg.budget.groups, groups }
   }
 
   /** 控制台 JSON 视图 */
@@ -5166,7 +5227,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       allGroups: cfg.allGroups,
       mode: state.wakeConfig.mode,
       /** 管理员设定的回复模式（三档）：atOnly=仅被@才回，active=自主·活跃，auto=自主 */
-      replyMode: (overridesCache?.atOnly || []).includes(groupId) ? 'atOnly' : playAlongActive(groupId) ? 'active' : 'auto',
+      replyMode: !proactiveAllowed(groupId) ? 'atOnly' : !ports.unifiedGroupChat && playAlongActive(groupId) ? 'active' : 'auto',
+      ...(ports.unifiedGroupChat ? { proactiveEnabled: proactiveAllowed(groupId) } : {}),
       wakeConfig: state.wakeConfig,
       unreadCount: state.unread.length,
       recentCount: state.recent.length,
@@ -5397,7 +5459,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return `【群友好感 · 前8】\n${top}${mineLine}`
   }
 
-  return { runAdministration: administration.run, ingest, ingestNudge, start, stop, drain, sweepOnce, invalidateConversation, enableGroup, disableGroup, setGroupReplyMode, groupStatus, resetGroup, listMemories, listAffinity, ingestPoke, handleRecall, overview, describeGroup, controlCharacter, controlActivity, getInitialPrompt, setInitialPrompt, setGroupBudget, setGroupTurnsCap, setDefaultBudget, conversationKey, isGroupActive: isSimulationGroup, isConversationActive, groupTextBudget, wakeForCommitment, listPersonProfiles: () => store.listPersonProfiles(), deletePersonProfile: (userId: string) => store.deletePersonProfile(userId), deletePersonProfileField: (userId: string, field: string, value?: string) => store.deletePersonProfileField(userId, field, value),
+  return { runAdministration: administration.run, ingest, ingestNudge, start, stop, drain, sweepOnce, invalidateConversation, enableGroup, disableGroup, setGroupReplyMode, groupStatus, resetGroup, listMemories, listAffinity, ingestPoke, handleRecall, overview, describeGroup, controlCharacter, controlActivity, getInitialPrompt, setInitialPrompt, setGroupBudget, setGroupTurnsCap, setDefaultBudget, conversationKey, isGroupActive: isSimulationGroup, isConversationActive, canInitiateGroupChat, groupTextBudget, wakeForCommitment, listPersonProfiles: () => store.listPersonProfiles(), deletePersonProfile: (userId: string) => store.deletePersonProfile(userId), deletePersonProfileField: (userId: string, field: string, value?: string) => store.deletePersonProfileField(userId, field, value),
   lifeOverview: async (groupIds?: readonly string[]) => {
     const cfg = runtimeConfig()
     const stored = await store.loadRhythm().catch(() => null)

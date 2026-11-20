@@ -115,6 +115,7 @@ export interface AgentConsoleService {
 /** Existing non-proxy operations. The standalone host supplies real handlers or leaves them explicitly unavailable. */
 export const AGENT_CONSOLE_SERVICES: readonly AgentConsoleService[] = Object.freeze([
   ['GET', '/api/workspace', 'workspace.read'],
+  ['GET', '/api/self-profile/:agentId', 'self-profile.read'],
   ['GET', '/api/overview', 'overview.read'],
   ['GET', '/api/overview/accounts', 'accounts.read'],
   ['GET', '/api/overview/stats', 'stats.read'],

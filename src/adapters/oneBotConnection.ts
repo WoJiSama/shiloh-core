@@ -416,6 +416,11 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     const report = (outcome: 'failed' | 'unknown', code: string) => {
       try { if (observeFailures) options.onApiFailure?.(action, outcome, code) } catch { /* Observers do not affect API results. */ }
     }
+    if (/^(?:set_group_kick|set_group_kick_members)(?:_async)?$/iu.test(action) ||
+        /^set_group_leave(?:_async)?$/iu.test(action) && params.is_dismiss === true) {
+      report('failed', 'onebot_action_forbidden')
+      return { state: 'failed', code: 'onebot_action_forbidden' }
+    }
     if (socket !== client || client.readyState !== WebSocket.OPEN) {
       if (!stopped) report('failed', 'onebot_disconnected')
       return { state: 'failed', code: 'onebot_disconnected' }
@@ -1027,6 +1032,43 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     resolvePrivatePeer(target) {
       if (target.kind !== 'private' || !servesAccount(target) || qqId(target.id) !== target.id || target.id === connection.account.id) return undefined
       return { ...connection.account, id: target.id }
+    },
+    async verifyPrivateFriend(target, { signal, isCurrent: guard }) {
+      const client = socket
+      const isCurrent = () => !!client && socket === client && verified && !stopped && !signal.aborted && guard?.() !== false
+      if (!client || !isCurrent() || target.kind !== 'private' || !servesAccount(target)) return false
+      const friends = await call(client, 'get_friend_list', {}, isCurrent, 5000, signal, undefined, false)
+      return isCurrent() && proveQqFriend(friends, target)
+    },
+    async moderateMessage(source, action, guard) {
+      const { conversation, sender, messageId } = source
+      const scope = memberReadScope(conversation, guard, sender)
+      if (!scope || !messageId || source.sender.id === connection.account.id ||
+          !['recall', 'mute', 'unmute'].includes(action)) return { state: 'failed', code: 'moderation_scope_invalid' }
+      let dispatched = false
+      try {
+        await guard.ensureCurrent()
+        const bot = (await readConversationMembers(conversation, guard, connection.account))?.members[0]
+        const member = (await readConversationMembers(conversation, guard, sender))?.members[0]
+        if (!bot || !['owner', 'admin'].includes(bot.role) || member?.role !== 'member') return { state: 'failed', code: 'moderation_role_changed' }
+        const observed = action === 'unmute' ? source : await readMessage(conversation, messageId, guard)
+        if (!observed || observed.messageId !== messageId || observed.occurredAt !== source.occurredAt ||
+            platformAccountKey(observed.sender) !== platformAccountKey(sender) || observed.text !== source.text) {
+          return { state: 'failed', code: 'moderation_source_changed' }
+        }
+        await guard.ensureCurrent()
+        if (!scope.isCurrent()) return { state: 'failed', code: 'moderation_scope_changed' }
+        const result = record(await call(scope.client, action === 'recall' ? 'delete_msg' : 'set_group_ban',
+          action === 'recall' ? { message_id: messageId } : { group_id: conversation.id, user_id: sender.id, duration: action === 'mute' ? 120 : 0 },
+          scope.isCurrent, 8000, scope.signal, () => { dispatched = true }))
+        if (result.status === 'ok' && result.retcode === 0) return { state: 'confirmed' }
+        if (!dispatched || result.status === 'failed' || typeof result.retcode === 'number' && result.retcode !== 0) {
+          return { state: 'failed', code: 'moderation_rejected' }
+        }
+        return { state: 'unknown' }
+      } catch {
+        return dispatched ? { state: 'unknown' } : { state: 'failed', code: 'moderation_preflight_failed' }
+      }
     },
     readMessage,
     readOwnMessage,

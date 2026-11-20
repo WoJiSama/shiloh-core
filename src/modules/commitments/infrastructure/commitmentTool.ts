@@ -21,6 +21,8 @@ export interface CommitmentExecutionPorts {
   diagnostics?:Pick<AgentDiagnostics,'emit'>
   allowsExecution?(target:ConversationAddress):boolean
   captureExecution?(target:ConversationAddress):AgentConversationActivityCapture
+  authorizePrivateSchedule?(origin:AgentBindingSnapshot, request:{messageId:string; sourceAt:number; text:string; groupId?:string},
+    guard:()=>boolean):Promise<{ destinationBindingIdentity?:string } | undefined>
 }
 type TaskGuard = (()=>boolean) & { signal:AbortSignal; executionCurrent():boolean; release():void }
 
@@ -31,7 +33,7 @@ function event(value:unknown):CommitmentEvent {
 function taskVisible(c:CommitmentData,groupId:string,binding?:AgentBindingSnapshot):boolean {
   if(c.scope) {
     if(binding?.source!=='configured'||agentConversationKey(c.scope)!==agentConversationKey(binding))return false
-    return !(c.importedReminder||c.deferredAction)||c.bindingIdentity===agentBindingIdentity(binding)
+    return !(c.importedReminder||c.deferredAction||c.privateRequest)||c.bindingIdentity===agentBindingIdentity(binding)
   }
   return binding?.source!=='configured'&&c.group_id===groupId
 }
@@ -87,6 +89,7 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
           schedule_time:{type:'string',description:'once 填 ISO 8601 带 +08:00（如 2026-11-10T12:00:00+08:00）；daily 填 HH:mm（如 12:00）'},
           deliver:{type:'string',enum:['agent','static'],description:'agent=到点我自己动手完成（默认）；static=到点直接发固定文字'},
           static_message:{type:'string',description:'deliver=static 时必填：到点要发的原文'},
+          mention_creator:{type:'boolean',description:'定时群消息若只是普通发言，填 false；明确提醒委托人填 true'},
           commitment_id:{type:'string',description:'cancel/renew 时填 list 结果里的完整 id'}
         },
         required:['action'],
@@ -115,7 +118,7 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
       return await renew(opts,ev,groupId)
     }
 
-    async managePrivateReminder(opts:Record<string,unknown>,ev:CommitmentEvent){
+    async managePrivateReminder(opts:Record<string,unknown>,ev:CommitmentEvent, requestMessageId?:string){
       const binding=ev._agentBinding
       if(binding?.source!=='configured'||binding.target.kind!=='private'||privatePeerFor(binding.target)!==String(ev.user_id||'')||!isAgentBindingCurrent(ev)) {
         return '这条私聊提醒当前不可操作。'
@@ -124,13 +127,27 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
       await ensureAgentBindingCurrent(owner)
       if(opts.action==='list')return await list(owner,'')
       if(opts.action==='cancel')return await cancel(opts,owner,'')
-      return '私聊支持查看和取消已接续的提醒。'
+      if(opts.action==='create'&&ports.authorizePrivateSchedule&&requestMessageId){
+        const text=String(opts.static_message||'').trim()
+        const sourceAt=owner._agentToolRequest?.occurredAt
+        const groupId=typeof opts.target_group_id==='string'&&opts.target_group_id?opts.target_group_id:undefined
+        if(!text||text.length>300||!Number.isSafeInteger(sourceAt)||sourceAt===undefined||opts.schedule_kind!=='once'||
+            groupId&&!/^\d{5,12}$/u.test(groupId))return '请给出一次性时间和要发送的文字。指定群时需给出群号。'
+        const grant=await ports.authorizePrivateSchedule(binding,{ messageId:requestMessageId,sourceAt,text,...(groupId?{groupId}:{})},
+          ()=>isAgentBindingCurrent(owner))
+        await ensureAgentBindingCurrent(owner)
+        if(!grant||groupId&&!grant.destinationBindingIdentity)return '私聊来源或目标群权限未核实，请确认要发的原文和共同所在的群。'
+        const privateRequest:NonNullable<CommitmentData['privateRequest']>={ messageId:requestMessageId,
+          ...(groupId&&grant.destinationBindingIdentity?{groupId,destinationBindingIdentity:grant.destinationBindingIdentity}:{}) }
+        return create({ ...opts, intent:text, deliver:'static' },owner,'',{ agentId:binding.agentId,target:binding.target },privateRequest)
+      }
+      return '此私聊可查看、取消本人提醒。'
     }
   }
 
-  async function create(opts:Record<string,unknown>,ev:CommitmentEvent,groupId:string,scope?:AgentConversationScope){
+  async function create(opts:Record<string,unknown>,ev:CommitmentEvent,groupId:string,scope?:AgentConversationScope,privateRequest?:CommitmentData['privateRequest']){
     const creatorId=String(ev.user_id||'')
-    if(!groupId)return '承诺只能在群里创建（私聊没有群的上下文）'
+    if(!groupId&&!privateRequest)return '承诺只能在群里创建（私聊没有群的上下文）'
     if(!creatorId)return 'error: 缺少创建人身份'
     const intent=String(opts.intent||'').trim()
     if(!intent)return '托付内容是空的——要记什么事？请把用户原话放 intent'
@@ -165,10 +182,12 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
       intent:intent.slice(0,200),
       schedule:normalized.schedule,deliver,
       static_message:staticMessage||null,
+      ...(typeof opts.mention_creator==='boolean'?{mentionCreator:opts.mention_creator}:{}),
       expiry_at:at+cfg.defaultExpiryDays*86400_000,
       next_run_at:normalized.nextRunAt,status:'active',
       last_run_at:0,last_result:'',retry_count:0,created_at:at,sourceAt,bot_id:botId,
       ...(scope?{scope}:{}),
+      ...(privateRequest?{privateRequest}:{}),
       ...(ev._agentBinding?{bindingIdentity:agentBindingIdentity(ev._agentBinding)}:{}),
     }
     await store.createCommitment(commitment, active=>{
@@ -176,7 +195,7 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
       if(error)throw new Error(error)
     },()=>isAgentBindingCurrent(ev),()=>ensureAgentBindingCurrent(ev))
     await ensureAgentBindingCurrent(ev)
-    ports.logger.info(`[承诺] 群 ${groupId} 用户 ${creatorId} 创建 ${commitment.schedule.kind}「${intent.slice(0,40)}」下次 ${formatScheduleText(commitment.schedule)}`)
+    ports.logger.info(`[承诺] 创建 ${commitment.schedule.kind} 下次 ${formatScheduleText(commitment.schedule)}`)
     const deliverNote=deliver==='agent'?'到点我来办':'到点会原样发出来'
     return {
       content: `已记下：「${intent}」——${formatScheduleText(commitment.schedule)}，${deliverNote}（${cfg.defaultExpiryDays} 天后到期会再确认要不要续）。跟用户轻确认一句就行，别念参数。`,
@@ -246,6 +265,7 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
   }
 
   function targetFor(c:CommitmentData):ConversationAddress | undefined {
+    if(c.scope&&c.privateRequest?.groupId)return { account:c.scope.target.account,kind:'group',id:c.privateRequest.groupId }
     if(c.scope)return c.scope.target
     const accountId=c.bot_id || String(ports.getBot()?.uin||'')
     if(accountId)return {account:{platform:'qq',namespace:'global',id:accountId},kind:'group',id:c.group_id}
@@ -254,7 +274,8 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
 
   function captureTaskGuard(c:CommitmentData,target:ConversationAddress | undefined): TaskGuard | null | undefined {
     const resolve=ports.resolveBinding
-    const snapshot=target&&resolve?.(target)
+    const owner=c.scope?.target??target
+    const snapshot=owner&&resolve?.(owner)
     if(c.scope){
       if(snapshot?.source!=='configured'||agentConversationKey(snapshot)!==agentConversationKey(c.scope))return null
     }else if(resolve&&target&&snapshot?.source!=='legacy'){
@@ -262,11 +283,15 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
     }
     const token=snapshot?agentBindingToken(snapshot):undefined
     if(c.bindingIdentity&&(!snapshot||c.bindingIdentity!==agentBindingIdentity(snapshot)))return null
-    if(target?.kind==='private'){
-      const recipient=privatePeerFor(target)
+    if(owner?.kind==='private'){
+      const recipient=privatePeerFor(owner)
       if(recipient===undefined)return undefined
       if(recipient!==c.creator_id)return null
     }
+    const destination=c.privateRequest?.groupId&&target?.kind==='group'?resolve?.(target):undefined
+    if(c.privateRequest?.groupId&&target?.kind==='group'&&(!destination||destination.agentId!==snapshot?.agentId||
+        agentBindingIdentity(destination)!==c.privateRequest.destinationBindingIdentity))return null
+    const destinationToken=destination?agentBindingToken(destination):undefined
     const execution=captureExecution(target)
     let valid=true
     const guard = () => {
@@ -274,9 +299,11 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
       if(!valid)return false
       valid=false
       try {
-        const live=target&&resolve?.(target)
+        const live=owner&&resolve?.(owner)
+        const liveDestination=destination&&target?resolve?.(target):undefined
         valid=(live?agentBindingToken(live):undefined)===token&&
-          (target?.kind!=='private'||privatePeerFor(target)===c.creator_id)
+          (owner?.kind!=='private'||privatePeerFor(owner)===c.creator_id)&&
+          (liveDestination?agentBindingToken(liveDestination):undefined)===destinationToken
       } catch { /* The binding could not be revalidated. */ }
       return valid
     }
@@ -287,7 +314,7 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
     return Object.assign(new Error(BINDING_CHANGED),{bindingChanged:true})
   }
 
-  async function sendTaskText(c:CommitmentData,text:string,target:ConversationAddress | undefined,isCurrent:TaskGuard) {
+  async function sendTaskText(c:CommitmentData,text:string,target:ConversationAddress | undefined,isCurrent:TaskGuard,ensureCurrent?:()=>Promise<void>) {
     if(!isCurrent()){if(!isCurrent.executionCurrent())throw pausedError();throw bindingChangedError()}
     const safe=sanitizeFinalReplyText(text)
     if(!safe&&c.importedReminder)throw new Error('提醒文字无法发送')
@@ -295,11 +322,11 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
     if(c.scope){
       if(!target||!ports.messageActions)throw new Error('承诺会话的消息适配器不可用')
       const {platform,namespace}=target.account
-      const parts:OutgoingPart[]=target.kind==='private'? [{kind:'text',text:safe}]
+      const parts:OutgoingPart[]=target.kind==='private'||c.privateRequest||c.mentionCreator===false? [{kind:'text',text:safe}]
         : [{kind:'mention',user:{platform,namespace,id:c.creator_id}},{kind:'text',text:body}]
       const result=await sendWithDeadline(()=>ports.messageActions!.send({
         version:1,kind:'message.send',target,parts,
-      },{isCurrent}),isCurrent.signal)
+      },{isCurrent,...(ensureCurrent?{ensureCurrent}:{})}),isCurrent.signal)
       if(result&&typeof result==='object'&&'state' in result&&result.state==='failed'&&!isCurrent.executionCurrent())throw pausedError()
       assertSent(result)
     }else{
@@ -308,10 +335,20 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
       if(!isCurrent()){if(!isCurrent.executionCurrent())throw pausedError();throw bindingChangedError()}
       const result=await sendWithDeadline(()=>withDeliveryGuard(isCurrent,()=>bot.sendApi!('send_group_msg',{
         group_id:Number(c.group_id),
-        message:[{type:'at',data:{qq:c.creator_id}},{type:'text',data:{text:body}}],
+        message:c.mentionCreator===false?[{type:'text',data:{text:safe}}]:[{type:'at',data:{qq:c.creator_id}},{type:'text',data:{text:body}}],
       })),isCurrent.signal)
       assertSent(result)
     }
+  }
+
+  async function ensurePrivateGrant(c:CommitmentData,guard:TaskGuard):Promise<void>{
+    if(!c.privateRequest||!c.scope)return
+    const origin=ports.resolveBinding?.(c.scope.target)
+    const {messageId,groupId,destinationBindingIdentity}=c.privateRequest
+    const grant=origin&&await ports.authorizePrivateSchedule?.(origin,{
+      messageId,sourceAt:c.sourceAt!,text:String(c.static_message),...(groupId?{groupId}:{})
+    },guard)
+    if(!grant||grant.destinationBindingIdentity!==destinationBindingIdentity||!guard())throw bindingChangedError()
   }
 
   /** 群内通知(失约明说/续约问询)，发送失败只记日志。 */
@@ -319,7 +356,7 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
     let guard:TaskGuard|null|undefined
     try{
       if(isCurrent&&!await isCurrent())return
-      const target=targetFor(c)
+      const target=c.privateRequest?c.scope?.target:targetFor(c)
       guard=captureTaskGuard(c,target)
       if(guard)await sendTaskText(c,text,target,guard)
     }catch(error){
@@ -449,6 +486,7 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
           if(guard===null)throw bindingChangedError()
           executionGuard=guard
           if(!guard.executionCurrent()){await store.releaseUnstartedClaim(c);continue}
+          await ensurePrivateGrant(c,guard)
           if(c.deliver==='agent'){
             if(!await ports.isSimulationGroup(c.group_id,target)){
               if(!ports.waitForSimulation)throw new Error('群未开仿真，无法兑现')
@@ -483,7 +521,7 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
               if(!guard())throw bindingChangedError()
               continue
             }
-            await sendTaskText(c,String(c.static_message||c.intent),target,guard)
+            await sendTaskText(c,String(c.static_message||c.intent),target,guard,c.privateRequest?()=>ensurePrivateGrant(c,guard):undefined)
             externalStarted=true
           }
           const advanced=advanceCommitmentAfterRun(c,now())
@@ -498,13 +536,15 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
             continue
           }
           if(metadata.bindingChanged===true&&!executionPaused){
-            await store.commitRunOutcome({...c,status:'cancelled',next_run_at:0,last_result:BINDING_CHANGED})
+            const cancelled=await store.commitRunOutcome({...c,status:'cancelled',next_run_at:0,last_result:BINDING_CHANGED})
+            if(cancelled&&c.privateRequest?.groupId)await sendGroupNotice(c,'你托付的定时群消息未发送，原消息或目标群权限已失效。')
             continue
           }
           const unknown=metadata.uncertain===true||(externalStarted&&metadata.safeToRetry!==true)
           if(unknown){
             if(await store.commitRunOutcome({...c,status:'unknown',next_run_at:0,last_run_at:now(),last_result:reason})){
               await store.appendFailLog({id:c.id,intent:c.intent,group_id:c.group_id,reason:`结果未知，不自动重试：${reason}`,at:now()})
+              if(c.privateRequest?.groupId)await sendGroupNotice(c,'你托付的定时群消息结果未确认。我会保留记录，避免重复发送。')
             }
           }else{
             const outcome=await store.requeueForRetry({...c,last_result:reason},now())

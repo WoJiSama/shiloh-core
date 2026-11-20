@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NAlert, NButton, NInput, NPagination, NTag } from 'naive-ui'
 import { workspace, capability } from '../lib/workspace'
+import { api } from '../lib/api'
 import {
   accountLabel,
   conversationLabel,
@@ -29,9 +30,39 @@ const tabs = [
   { id: 'boundaries', label: '能力与边界' }
 ]
 const agent = computed(() => data.value?.agents.find((item) => item.id === route.params.id))
+interface SelfProfileVersion {
+  revision: number
+  name: string
+  aliases: string[]
+  introduction: string
+  identity: string
+  reason: string
+  changedAt: number
+}
+const selfProfiles = ref<SelfProfileVersion[]>([])
+const profileError = ref('')
+const profileLoading = ref(false)
+const selfProfile = computed(() => selfProfiles.value.at(-1))
 const tab = computed(() =>
   tabs.some((item) => item.id === route.params.tab) ? String(route.params.tab) : 'home'
 )
+watch(() => [tab.value, agent.value?.id, capability('self-profile.read').status] as const, async ([selected, id, status], _previous, cleanup) => {
+  const controller = new AbortController()
+  cleanup(() => controller.abort())
+  selfProfiles.value = []
+  profileError.value = ''
+  profileLoading.value = false
+  if (selected !== 'self' || !id || status !== 'available') return
+  profileLoading.value = true
+  try {
+    const result = await api('/api/self-profile/' + encodeURIComponent(id), { signal: controller.signal }) as { profiles: SelfProfileVersion[] }
+    if (!controller.signal.aborted) selfProfiles.value = result.profiles
+  } catch (error) {
+    if (!controller.signal.aborted) profileError.value = (error as Error).message
+  } finally {
+    if (!controller.signal.aborted) profileLoading.value = false
+  }
+}, { immediate: true })
 const selection = computed(() => {
   try {
     return {
@@ -219,10 +250,29 @@ watch(
         </section></template
       >
       <template v-else-if="['conversations', 'self', 'actions'].includes(tab)"
-        ><p class="context-note">
+        ><section v-if="tab === 'self' && (selfProfile || profileLoading || profileError)" class="panel">
+          <h3>本人档案</h3>
+          <NAlert v-if="profileError" type="error">{{ profileError }}</NAlert>
+          <p v-else-if="profileLoading">正在读取档案</p>
+          <template v-else-if="selfProfile">
+            <p><strong>{{ selfProfile.name }}</strong> <NTag size="small">版本 {{ selfProfile.revision }}</NTag></p>
+            <p v-if="selfProfile.aliases.length">也回应 {{ selfProfile.aliases.join('、') }}</p>
+            <p v-if="selfProfile.introduction">{{ selfProfile.introduction }}</p>
+            <p>{{ selfProfile.identity }}</p>
+            <details v-if="selfProfiles.length > 1">
+              <summary>档案修订记录</summary>
+              <ol>
+                <li v-for="entry in [...selfProfiles].reverse()" :key="entry.revision">
+                  <strong>{{ entry.name }}</strong> · {{ entry.changedAt ? new Date(entry.changedAt).toLocaleString() : '初始档案' }}
+                  <p>{{ entry.reason }}</p>
+                </li>
+              </ol>
+            </details>
+          </template>
+        </section><p class="context-note">
           {{
             tab === 'self'
-              ? '以下自我与记忆按来源会话分开展示，不将局部记录合并为统一结论。'
+              ? '本人的档案在所有绑定会话生效。下方可以查看各会话的记忆。'
               : tab === 'actions'
                 ? '目标、承诺与实际回执分别展示，待确认和未知结果不计作成功。'
                 : '每个会话保留所属连接与完整平台地址。选择后再操作。'

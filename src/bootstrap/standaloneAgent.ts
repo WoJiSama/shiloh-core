@@ -82,6 +82,7 @@ import { createAgentManagementBindings } from '../modules/runtime/infrastructure
 import type { AgentManagementBindings } from '../contracts/agentManagement.js'
 import { conversationAddressKey } from '../modules/runtime/domain/agentBindings.js'
 import { createForgetOperationStore } from '../modules/runtime/infrastructure/forgetOperationStore.js'
+import { createStandaloneAgentCodingWorker } from './standaloneAgentCodingWorker.js'
 
 const logger = {
   info: (message: string) => console.info(message),
@@ -103,7 +104,7 @@ async function checkStandaloneQq(config: ReturnType<typeof readStandaloneAgentCo
   config.checkBindings()
   return {
     mode: 'check', instance: config.instance, redis: 'reachable',
-    simulationEnabled: config.simulation.enabled !== false,
+    simulationEnabled: true,
     privateChatEnabled: config.privateChatEnabled,
     connections: config.connections.map(({connection}) => ({
       id: connection.id, accountId: connection.account.id, loginVerified: true, ...bindings.get(connection.id),
@@ -632,6 +633,12 @@ export async function main(argv: string[]): Promise<void> {
       () => !executionSignal.aborted && storage?.isCurrent() === true && config.isConfigCurrent(),
       diceScriptRunner ? { scriptRunner: diceScriptRunner } : {})
     const managementBindings = createAgentManagementBindings(() => config.listBindings())
+    const codingSource = process.env.BL_AGENT_CODING_SOURCE
+    const codingWorker = codingSource ? createStandaloneAgentCodingWorker({
+      source: codingSource, jobs: path.join(config.dataDir, 'coding-candidates'),
+      model: (request, signal) => runModel(request, { signal, forceChatBackend: true }),
+      allowsText: allowsSecretText,
+    }) : undefined
     host = createAgentRuntime({
       storage: storage.storage, adapters, logger: safeLogger, diagnostics,
       managementBindings,
@@ -711,7 +718,10 @@ export async function main(argv: string[]): Promise<void> {
       ...(semanticBackend ? { semanticMemoryBackend: semanticBackend } : {}),
       privateChatEnabled: config.privateChatEnabled,
       privateTextTools: config.privateTextTools,
-      ...(config.useTextGroup ? { useTextGroup: config.useTextGroup, textGroupRevision: config.textGroupRevision, groupTextTools: config.groupTextTools } : {}),
+      unifiedGroupChat: true,
+      personalSeeds: config.personalSeeds,
+      ...(codingWorker ? { codingWorker } : {}),
+      ...(config.migratedGroupToolNames ? { migratedGroupToolNames: config.migratedGroupToolNames, groupTextTools: config.groupTextTools, textGroupRevision: config.textGroupRevision } : {}),
       getExecutionConfig: () => config.execution,
       YTapi: (request, _config, signal, isCurrent, ensureCurrent) => runModel(request, { ...(signal ? { signal } : {}), ...(isCurrent ? { isCurrent } : {}), ...(ensureCurrent ? { ensureCurrent } : {}) }),
       reflectCharacter: (request, _config, signal, isCurrent, ensureCurrent) => runModel(request, { forceChatBackend: true, signal, ...(isCurrent ? { isCurrent } : {}), ...(ensureCurrent ? { ensureCurrent } : {}) }),
@@ -773,13 +783,37 @@ export async function main(argv: string[]): Promise<void> {
       const loadedBindings: AgentManagementBindings = { list: () => config.loadedBindings,
         resolve: target => loadedByAddress.get(conversationAddressKey(target)) }
       const services: AgentConsoleService[] = [...installed]
+      services.push({
+        method: 'GET', path: '/api/self-profile/:agentId', operation: 'self-profile.read', scope: 'global',
+        async handle(request, context) {
+          const id = request.params.agentId
+          if (!id || !config.workspaceAgents.some(agent => agent.id === id) || Object.keys(request.query).length) {
+            return { kind: 'json', status: 404, value: { code: 'not_found' } }
+          }
+          const related = config.loadedBindings.filter(binding => binding.agentId === id)
+          let permitted = false
+          for (const binding of related) {
+            if (await consoleAuth!.authorize(context.principal, 'bindings.read', binding, context) === 'allowed') {
+              permitted = true
+              break
+            }
+          }
+          if (!related.length) permitted = await consoleAuth!.authorize(context.principal, 'bindings.list', undefined, context) === 'allowed'
+          context.ensureCurrent()
+          if (!permitted) return { kind: 'json', status: 403, value: { code: 'forbidden' } }
+          return { kind: 'json', value: { profiles: host!.selfProfiles(id).map(profile => ({ ...profile })) } }
+        },
+      })
       services.push(createStandaloneAgentPipeline({ bindings: loadedBindings, auth: consoleAuth, storage: storage.storage,
         inboxBindingToken: host.inboxBindingToken, configState: persistence.state }))
       services.push(createStandaloneAgentObserve({ bindings: loadedBindings, auth: consoleAuth,
         read: guard => readAgentOperationJournal({ dataDir: config.dataDir, maxFiles: config.operationLogging.maxFiles, guard, allowsText: allowsSecretText }),
         health: () => journal!.health(), configState: persistence.state }))
       services.push(createStandaloneAgentWorkspace({ bindings: loadedBindings, auth: consoleAuth,
-        agents: () => config.workspaceAgents,
+        agents: () => config.workspaceAgents.map(agent => {
+          const current = host!.selfProfiles(agent.id).at(-1)
+          return current?.revision && allowsSecretText(current.name) ? { ...agent, name: current.name } : agent
+        }),
         connections: () => adapters.map(adapter => ({ id: adapter.id, account: adapter.account,
           state: adapter.isReady() ? 'connected' as const : 'disconnected' as const,
           capabilities: ['message.send', ...(adapter.readMessage ? ['message.read'] : []),

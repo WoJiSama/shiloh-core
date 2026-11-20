@@ -35,7 +35,7 @@ test('startup decodes the exact three source bytes it exposes and keeps text gro
   assert.equal(inspectStandaloneAgentSourceSnapshot(config.sourceSnapshot).revision, config.sourceSnapshot.revision)
   assert.equal(config.listBindings()[0].revision, config.sourceSnapshot.versions.bindings)
   assert.equal(config.resolvePersona(target).persona.tone, '安静')
-  assert.equal(config.useTextGroup(target), true); assert.equal(config.checkBindings().get('main').textGroups, 1)
+  assert.deepEqual(config.migratedGroupToolNames(target), []); assert.equal(config.checkBindings().get('main').simulationGroups, 1)
   assert.equal(config.connections[0].transport, 'reverse-websocket'); assert.equal(config.connections[0].accessToken, 'private-onebot-token')
   assert.equal(config.isConfigCurrent(), true)
   assert.deepEqual((await readdir(f.directory)).sort(), ['agent-bindings.yaml', 'host.yaml', 'persona-library.yaml'])

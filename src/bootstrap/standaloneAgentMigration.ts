@@ -840,7 +840,7 @@ export async function runStandaloneQqMigration(config: ReturnType<typeof readSta
   if (!connection || qqId(conversationId) !== conversationId) throw new Error('迁移需要当前宿主的连接 ID 和有效群号或好友 QQ 号')
   if (kind === 'private' && !config.privateChatEnabled) throw new Error('迁移好友会话前须启用目标宿主的 privateChat')
   const target: ConversationAddress = { account: connection.account, kind, id: conversationId }
-  const targetUsesSimulation = kind === 'group' && !config.useTextGroup?.(target)
+  const targetUsesSimulation = kind === 'group'
   if (options.moveGroupTeaching && (kind !== 'group' || config.groupMemory.enabled !== true)) {
     throw new Error('群教学迁移只用于已启用 groupMemory 的群会话')
   }

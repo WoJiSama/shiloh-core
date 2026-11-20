@@ -34,6 +34,7 @@ interface GroupRow {
   running: boolean
   mode: string
   replyMode?: 'atOnly' | 'auto' | 'active'
+  proactiveEnabled?: boolean
   unreadCount: number
   budget: { turns: number; maxTurnsPerDay: number; tokens: number; dailyCostCny: number; capOverridden?: boolean; turnsCapOverridden?: boolean; todayCostCny: number }
   lastWakeReason: string | null
@@ -166,7 +167,8 @@ async function setReplyMode(row: GroupRow, value: string) {
       body: JSON.stringify(selectorBody(row.groupId, { action: 'reply-mode', mode: value }, row.bindingToken))
     })
     if (detail.value && detailId.value === row.groupId && detail.value.bindingToken === row.bindingToken)
-      detail.value.replyMode = value as GroupRow['replyMode']
+      if (detail.value.proactiveEnabled !== undefined) detail.value.proactiveEnabled = value !== 'atOnly'
+      else detail.value.replyMode = value as GroupRow['replyMode']
     await load()
   } catch (e: any) {
     error.value = e?.message || '切换回复模式失败'
@@ -404,13 +406,16 @@ const columns: DataTableColumns<GroupRow> = [
     render: conversationLabel,
   },
   { title: '模式', key: 'active', width: 90, render: row => row.active ? (row.running ? '仿真·回合中' : '仿真') : '普通' },
-  { title: '回复模式', key: 'replyMode', width: 110, render: row => h(NSelect, { value: row.replyMode || 'auto', options: replyModeOptions, size: 'tiny', onUpdateValue: (value: string) => void setReplyMode(row, value) }) },
+  { title: '主动接话', key: 'replyMode', width: 110, render: row => row.proactiveEnabled !== undefined
+    ? h(NSwitch, { value: row.proactiveEnabled, size: 'small', 'aria-label': '允许主动接话', onUpdateValue: value => void setReplyMode(row, value ? 'auto' : 'atOnly') })
+    : h(NSelect, { value: row.replyMode || 'auto', options: replyModeOptions, size: 'tiny', onUpdateValue: (value: string) => void setReplyMode(row, value) }) },
   { title: '未读', key: 'unreadCount', width: 70 },
   { title: '今日回合', key: 'budget', width: 110, render: row => `${row.budget.turns}/${row.budget.maxTurnsPerDay === -1 ? '∞' : row.budget.maxTurnsPerDay}${row.budget.turnsCapOverridden ? ' *' : ''}` },
   { title: '今日花费', key: 'cost', width: 130, render: row => `¥${Number(row.budget.todayCostCny || 0).toFixed(2)} / ¥${row.budget.dailyCostCny}${row.budget.capOverridden ? ' *' : ''}` },
   { title: '最近唤醒', key: 'lastWakeReason', width: 110, render: row => row.lastWakeReason || '—' },
   { title: '梗/待办', key: 'memes', width: 90, render: row => `${row.memes.length}/${row.pendingEvents.length}` },
-  { title: '仿真开关', key: 'toggle', width: 100, render: row => h(NSwitch, { value: row.active, size: 'small', onUpdateValue: () => void toggle(row) }) },
+  { title: '仿真开关', key: 'toggle', width: 100, render: row => row.proactiveEnabled === undefined
+    ? h(NSwitch, { value: row.active, size: 'small', onUpdateValue: () => void toggle(row) }) : '仿真' },
   { title: '', key: 'ops', width: 90, render: row => h(NButton, { size: 'tiny', onClick: () => void openDetail(row.groupId, row.bindingToken) }, { default: () => '详情' }) },
 ]
 import { h } from 'vue'
@@ -441,7 +446,11 @@ const detailTitle = computed(() => `${detail.value ? conversationLabel(detail.va
     <NDrawer v-model:show="drawerOpen" width="min(420px, 100vw)">
       <NDrawerContent :title="detailTitle" closable>
         <div v-if="detail" class="detail">
-          <div class="kv"><span>回复模式（管理员设定）</span><NSelect :value="detail.replyMode || 'auto'" :options="replyModeOptions" size="small" style="width: 130px" @update:value="(value: string) => setReplyMode(detail!, value)" /></div>
+          <div v-if="detail.proactiveEnabled !== undefined" class="kv"><span>允许主动接话</span>
+            <NSwitch :value="detail.proactiveEnabled" aria-label="允许主动接话"
+              @update:value="(value: boolean) => setReplyMode(detail!, value ? 'auto' : 'atOnly')" />
+          </div>
+          <div v-else class="kv"><span>回复模式（管理员设定）</span><NSelect :value="detail.replyMode || 'auto'" :options="replyModeOptions" size="small" style="width: 130px" @update:value="(value: string) => setReplyMode(detail!, value)" /></div>
           <div class="kv"><span>AI 自设状态（它给自己定的）</span><b>{{ detail.mode === 'active' ? '活跃观察期' : '潜水（低主动）' }}</b></div>
           <div class="kv"><span>回合历史</span><b>{{ detail.historyLength }} 条</b></div>
           <div class="block">

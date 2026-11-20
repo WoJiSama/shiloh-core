@@ -108,7 +108,7 @@ test('standalone preflight checks hosted bindings and QQ login without starting 
   assert.deepEqual(JSON.parse(stdout), {
     mode: 'check', instance: 'preflight', redis: 'reachable', simulationEnabled: true, privateChatEnabled: true,
     connections: [
-      { id: 'main', accountId: account.id, loginVerified: true, simulationGroups: 1, textGroups: 1, friends: 1 },
+      { id: 'main', accountId: account.id, loginVerified: true, simulationGroups: 2, textGroups: 0, friends: 1 },
       { id: 'alt', accountId: '123456002', loginVerified: true, simulationGroups: 1, textGroups: 0, friends: 0 },
     ],
   })

@@ -7,6 +7,7 @@ import type { AgentMessageVideo, MessageVideoReadOptions } from './agentVideo.js
 import type { AgentGiftDeliveryPort } from './agentQqGift.js'
 import type { AgentQzoneProvider } from './agentQzone.js'
 import type { AgentRedPacketPort, AgentRedPacketSnapshot } from './agentQqRedPacket.js'
+import type { InteractionReceipt } from './agentInteraction.js'
 
 export type PlatformConversationEvent =
   | { kind: 'message'; message: IncomingMessage }
@@ -124,6 +125,11 @@ export interface PlatformConnectionAdapter extends PlatformConnection {
   /** Synchronously resolve the verified and stable one-to-one peer for this account's private conversation.
    * Return undefined when unverified. Omission declares that private conversation IDs are the verified participant IDs. */
   resolvePrivatePeer?(target: ConversationAddress): PlatformUserRef | undefined
+  /** Prove an unprompted private send still goes to a current friend. */
+  verifyPrivateFriend?(target: ConversationAddress, options: ConversationMemberReadOptions): Promise<boolean>
+  /** The adapter verifies the bot's and member's current roles and the original source. */
+  moderateMessage?(source: IncomingMessage, action: 'recall' | 'mute' | 'unmute',
+    guard: { signal: AbortSignal; isCurrent(): boolean; ensureCurrent(): Promise<void> }): Promise<InteractionReceipt>
   /** Optional read of one already referenced message. The adapter must verify its full conversation address. */
   readMessage?(target: ConversationAddress, messageId: string, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<IncomingMessage | undefined>
   /** Verify an already referenced self-authored message in this exact conversation. */

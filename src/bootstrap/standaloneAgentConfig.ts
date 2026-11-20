@@ -693,8 +693,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
       if (!count) continue
       resolveConfiguredAgentPersona(binding, library.detailById)
       if (target.kind === 'group') {
-        if (textGroups.has(conversationAddressKey(target))) count.textGroups++
-        else count.simulationGroups++
+        count.simulationGroups++
       } else if (target.kind === 'private') {
         count.friends++
       }
@@ -715,16 +714,20 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     const personaName = typeof selected.persona.name === 'string' && selected.persona.name.trim() ? selected.persona.name.trim() : personaId
     return Object.freeze({ id, name: personaName, personaId, personaName })
   }))
+  const personalSeeds = workspaceAgents.map(({ id, name, personaId }) => ({
+    id, name: name.replace(/\s+/gu, ' ').slice(0, 64),
+    identity: String(library.detailById(personaId)!.persona.identity ?? '').replace(/\s+/gu, ' ').trim().slice(0, 1000),
+  }))
   return { candidate, config: {
     instance, dataDir, games, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, cognition: { enabled: cognition.enabled }, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords,
     workspaceAgents,
+    personalSeeds,
     loadedBindings: Object.freeze([...bindings.listBindings()]),
     listBindings: () => readBindings()?.listBindings() ?? [],
     hasMusicGroup(account: ConversationAddress['account']) {
-      if (simulation.enabled === false) return false
       return readBindings()?.listBindings().some(binding => binding.target.kind === 'group' &&
         binding.target.account.platform === account.platform && binding.target.account.namespace === account.namespace && binding.target.account.id === account.id &&
-        !textGroups.has(conversationAddressKey(binding.target)) && !!resolvePersona(binding.target)) === true
+        !!resolvePersona(binding.target)) === true
     },
     ...(personMemoryExtraction ? { personMemoryExtraction } : {}),
     ...(midtermSummary ? { midtermSummary } : {}),
@@ -732,7 +735,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     ...(reviewEnabled && reviewModel ? { characterConsistency: { apiUrl: reviewModel.apiUrl, model: reviewModel.model, apiKey: reviewModel.apiKey } } : {}),
     isConfigCurrent: input.isConfigCurrent ?? (() => true),
     ...(textGroupRevision ? {
-      useTextGroup: (target: ConversationAddress) => textGroups.has(conversationAddressKey(target)),
+      migratedGroupToolNames: (target: ConversationAddress) => textGroups.get(conversationAddressKey(target)),
       groupTextTools: (target: ConversationAddress) => textGroups.get(conversationAddressKey(target)) ?? [],
       textGroupRevision,
     } : {}),

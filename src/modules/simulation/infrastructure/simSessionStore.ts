@@ -98,7 +98,7 @@ const MOOD_KEY = 'shiloh:sim:mood'
 export const SIM_TURN_BUSY_LEASE_MS = 15 * 60_000
 
 /** 群级覆盖（.仿真 开/关 与控制台预算编辑都写这里）：budgetCaps 键=群号 值=每日金额上限；budgetDefaultCny 为空表示用 yaml 默认；atOnly=「仅被@才回」群清单（管理员设定，优先于 AI 自设触发器）；playAlongUntil=「活跃助推」到期表（epoch ms，助推窗口内系统兜底节奏，过期回落自主档、由 AI 自设配置接管） */
-export interface SimGroupOverrides { explicitEnabled: string[]; disabled: string[]; budgetCaps: Record<string, number>; turnCaps: Record<string, number>; atOnly?: string[]; playAlongUntil?: Record<string, number>; budgetDefaultCny?: number }
+export interface SimGroupOverrides { explicitEnabled: string[]; disabled: string[]; budgetCaps: Record<string, number>; turnCaps: Record<string, number>; atOnly?: string[]; playAlongUntil?: Record<string, number>; proactive?: Record<string, boolean>; budgetDefaultCny?: number }
 
 interface SimulationBudgetCarryover { day: string; turns: number; costCny: number }
 
@@ -193,6 +193,8 @@ export function decodeSimulationOverrides(raw: string): SimGroupOverrides {
   }
   return { explicitEnabled: parseStringList(parsed.explicitEnabled), disabled: parseStringList(parsed.disabled),
     budgetCaps: normalizeCaps(parsed.budgetCaps), turnCaps: normalizeCaps(parsed.turnCaps), atOnly: parseStringList(parsed.atOnly), playAlongUntil,
+    proactive: Object.fromEntries(Object.entries(record(parsed.proactive))
+      .filter((entry): entry is [string, boolean] => supportedKey(entry[0]) && typeof entry[1] === 'boolean')),
     ...(Number.isFinite(rawDefault) && rawDefault > 0 ? { budgetDefaultCny: Math.min(10_000, rawDefault) } : {}) }
 }
 
@@ -204,6 +206,7 @@ export function encodeSimulationOverrides(overrides: SimGroupOverrides): string 
     turnCaps: overrides.turnCaps || {},
     atOnly: overrides.atOnly || [],
     playAlongUntil: overrides.playAlongUntil || {},
+    ...(overrides.proactive ? { proactive: overrides.proactive } : {}),
     ...(overrides.budgetDefaultCny !== undefined ? { budgetDefaultCny: overrides.budgetDefaultCny } : {}),
   })
 }

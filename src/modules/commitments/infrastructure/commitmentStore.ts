@@ -50,14 +50,26 @@ export function decodeCommitment(data:string):CommitmentData {
   const scope=typeof r.scopeKey==='string'?decodeAgentConversationKey(r.scopeKey):null
   const bindingIdentity=r.bindingIdentity
   const importedReminder=r.importedReminder===true
+  const origin=record(r.privateRequest)
+  const privateRequest=r.privateRequest===undefined?undefined:(()=>{
+    if(typeof origin.messageId!=='string'||!origin.messageId||origin.messageId.length>128||
+      (origin.groupId===undefined)!==(origin.destinationBindingIdentity===undefined)||
+      origin.groupId!==undefined&&(typeof origin.groupId!=='string'||!/^\d{5,12}$/u.test(origin.groupId)||
+        typeof origin.destinationBindingIdentity!=='string'||!origin.destinationBindingIdentity||origin.destinationBindingIdentity.length>8192))
+      throw new Error('私聊承诺来源损坏')
+    return { messageId:origin.messageId, ...(typeof origin.groupId==='string'?{
+      groupId:origin.groupId,destinationBindingIdentity:String(origin.destinationBindingIdentity)}:{}) }
+  })()
   if(r.sourceAt!==undefined&&(!Number.isSafeInteger(r.sourceAt)||Number(r.sourceAt)<0))throw new Error('承诺来源时间损坏')
+  if(r.mentionCreator!==undefined&&typeof r.mentionCreator!=='boolean')throw new Error('承诺提醒方式损坏')
   const deferredAction=r.deferredAction===undefined?undefined:decodeAgentDeferredAction(r.deferredAction)
   const scopeMatches=scope?.target.account.id===r.bot_id && (scope?.target.kind==='group' ? scope.target.id===r.group_id :
-    importedReminder&&scope?.target.kind==='private'&&scope.target.id===r.creator_id&&r.group_id==='')
+    (importedReminder||privateRequest)&&scope?.target.kind==='private'&&scope.target.id===r.creator_id&&r.group_id==='')
   if((r.scopeKey!==undefined&&(!scope||!scopeMatches))||
     (bindingIdentity!==undefined&&(typeof bindingIdentity!=='string'||!bindingIdentity||bindingIdentity.length>8192))||
     (scope&&!bindingIdentity)||
-    (importedReminder&&(!scope||deliver!=='static'||normalizedSchedule.kind!=='once'||typeof r.static_message!=='string'||!r.static_message.trim()))) {
+    ((importedReminder||privateRequest)&&(!scope||deliver!=='static'||normalizedSchedule.kind!=='once'||typeof r.static_message!=='string'||!r.static_message.trim())) ||
+    (privateRequest&&(scope?.target.kind!=='private'||!Number.isSafeInteger(r.sourceAt)||importedReminder||deferredAction))) {
     throw new Error('承诺会话分区损坏')
   }
   if(deferredAction){
@@ -70,7 +82,9 @@ export function decodeCommitment(data:string):CommitmentData {
     id:r.id,group_id:r.group_id,creator_id:r.creator_id,creator_name:String(r.creator_name||''),
     intent:r.intent,schedule:normalizedSchedule,deliver,
     static_message:typeof r.static_message==='string'?r.static_message:null,
+    ...(typeof r.mentionCreator==='boolean'?{mentionCreator:r.mentionCreator}:{}),
     ...(importedReminder?{importedReminder:true as const}:{}),
+    ...(privateRequest?{privateRequest}:{}),
     ...(deferredAction?{deferredAction}:{}),
     expiry_at:Number(r.expiry_at)||0,renewal_asked_at:Number(r.renewal_asked_at)||0,
     next_run_at:Number(r.next_run_at)||0,status:status as CommitmentData['status'],

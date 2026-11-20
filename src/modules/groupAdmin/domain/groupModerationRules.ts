@@ -232,7 +232,7 @@ export function normalizeGroupModerationConfig(input:unknown = {}):ModerationCon
   for(const key of ['enabled','inspectLowLevelOnly','publicReportEnabled','forwardEvidenceToAdmins','modelReviewEnabled'] as const)config[key]=typeof raw[key]==='boolean'?raw[key]:DEFAULT_GROUP_MODERATION_CONFIG[key]
   config.reportTemplate=typeof raw.reportTemplate==='string'?raw.reportTemplate:DEFAULT_GROUP_MODERATION_CONFIG.reportTemplate
   const rawActions=adminRecord(raw.actions)
-  for(const key of ['recallEnabled','muteEnabled','kickEnabled'] as const)config.actions[key]=typeof rawActions[key]==='boolean'?rawActions[key]:DEFAULT_GROUP_MODERATION_CONFIG.actions[key]
+  for(const key of ['recallEnabled','muteEnabled'] as const)config.actions[key]=typeof rawActions[key]==='boolean'?rawActions[key]:DEFAULT_GROUP_MODERATION_CONFIG.actions[key]
   config.enabledGroups = normalizeStringList(config.enabledGroups)
   config.globalAdmins = normalizeStringList(config.globalAdmins)
   config.groupAdmins = normalizeGroupAdmins(config.groupAdmins)
@@ -274,7 +274,7 @@ export function normalizeGroupModerationConfig(input:unknown = {}):ModerationCon
   config.thresholds.report = normalizeNumber(config.thresholds.report, 0.7, 0, 1)
   config.thresholds.recall = normalizeNumber(config.thresholds.recall, 0.85, 0, 1)
   config.thresholds.mute = normalizeNumber(config.thresholds.mute, 0.9, 0, 1)
-  config.thresholds.kick = normalizeNumber(config.thresholds.kick, 0.97, 0, 1)
+  config.actions.kickEnabled = false
   config.actions.muteSeconds = Math.floor(normalizeNumber(config.actions.muteSeconds, 600, 60, 2592000))
   return config
 }

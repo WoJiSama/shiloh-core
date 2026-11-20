@@ -17,8 +17,12 @@ export interface CommitmentData {
   schedule:CommitmentSchedule
   deliver:'agent'|'static'         // agent=到点唤醒仿真 agent 用工具完成;static=直发固定文案
   static_message:string|null
+  /** Older group commitments keep mentioning the creator. */
+  mentionCreator?:boolean
   /** An existing one-time reminder transferred from the QQ reminder ledger. */
   importedReminder?:true
+  /** The owning scope stays private. A destination, when present, is a bound group on the same account. */
+  privateRequest?: { messageId:string; groupId?:string; destinationBindingIdentity?:string }
   /** Frozen extra_action delegation; executed by the dedicated worker, never by wakeSim. */
   deferredAction?:AgentDeferredActionData
   expiry_at:number                 // 到期不再执行(默认30天,防遗忘永动机)

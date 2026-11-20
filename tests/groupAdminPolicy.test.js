@@ -111,12 +111,12 @@ test('restore defaults removes both current and legacy overrides while retaining
   settings.groupAdmin.overrides[0].groupModeration.enabled = true
   const prepared = prepareGroupAdminUpdates('100001', settings, {
     revision: buildGroupAdminView('100001', settings).revision,
-    resets: ['groupGuard.timeoutSeconds', 'groupGuard.kickOnTimeout', 'groupNotice.welcomeMessage', 'groupNotice.leaveMessage', 'groupNotice.welcomeEnabled', 'groupModeration.admins']
+    resets: ['groupGuard.timeoutSeconds', 'groupNotice.welcomeMessage', 'groupNotice.leaveMessage', 'groupNotice.welcomeEnabled', 'groupModeration.admins']
   })
   const saved = apply(settings, prepared.updates)
   const row = saved.groupAdmin.overrides[0]
   assert.equal(Object.hasOwn(row.groupGuard, 'timeoutSeconds'), false)
-  assert.equal(Object.hasOwn(row.groupGuard, 'kickOnTimeout'), false)
+  assert.equal(row.groupGuard.kickOnTimeout, false, 'retired field is carried through untouched')
   assert.equal(Object.hasOwn(row.groupNotice, 'welcomeMessage'), false)
   assert.equal(Object.hasOwn(row.groupNotice, 'leaveMessage'), false)
   assert.equal(Object.hasOwn(row.groupModeration, 'admins'), false)

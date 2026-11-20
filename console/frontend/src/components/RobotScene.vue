@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { RouteLocationRaw } from 'vue-router'
-import { NAlert, NButton, NPagination, NTag, useDialog, useMessage } from 'naive-ui'
+import { NAlert, NButton, NPagination, NSwitch, NTag, useDialog, useMessage } from 'naive-ui'
 import { api } from '../lib/api'
 import { capability, workspace } from '../lib/workspace'
 import { consoleRestart } from '../lib/consoleRestart'
@@ -50,6 +50,7 @@ interface Scene {
   active: boolean
   running: boolean
   replyMode?: string
+  proactiveEnabled?: boolean
   unreadCount: number
   budget?: { turns: number; maxTurnsPerDay: number; dailyCostCny: number; todayCostCny: number }
   character?: {
@@ -305,10 +306,15 @@ onBeforeUnmount(() => {
           ><div class="tag-list">
             <NTag size="small">{{ view.active ? '允许参与' : '已关闭参与' }}</NTag
             ><NTag size="small">{{ view.running ? '当前有回合执行' : '当前无回合执行' }}</NTag
-            ><NTag v-if="view.replyMode" size="small">{{
+            ><NTag v-if="view.replyMode && view.proactiveEnabled === undefined" size="small">{{
               replyModes[view.replyMode] || view.replyMode
             }}</NTag>
           </div>
+          <label v-if="view.proactiveEnabled !== undefined" class="tag-list">
+            <span>允许主动接话</span>
+            <NSwitch :value="view.proactiveEnabled" :disabled="!canWrite" aria-label="允许主动接话"
+              @update:value="(enabled: boolean) => mutate({ action: 'reply-mode', mode: enabled ? 'auto' : 'atOnly' })" />
+          </label>
           <div v-if="view.budget" class="scene-facts">
             <span
               >今日回合

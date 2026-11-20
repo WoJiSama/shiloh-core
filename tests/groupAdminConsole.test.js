@@ -170,7 +170,7 @@ test('group HTTP saves and resets preserve comments on untouched fields and sibl
       { groupId: '200002', welcomeMessage: 'other legacy welcome' }
     ] },
     groupAdmin: { overrides: [
-      { groupId: '100001', groupGuard: { timeoutSeconds: 60, kickOnTimeout: false } },
+      { groupId: '100001', groupGuard: { timeoutSeconds: 60, maxWrongTimes: 3 } },
       { groupId: '200002', groupGuard: { timeoutSeconds: 120 } }
     ] }
   })
@@ -196,7 +196,7 @@ test('group HTTP saves and resets preserve comments on untouched fields and sibl
   checkComments()
   let settings = f.readSettings()
   assert.deepEqual(settings.groupAdmin.overrides, [
-    { groupId: '100001', groupGuard: { kickOnTimeout: false } },
+    { groupId: '100001', groupGuard: { maxWrongTimes: 3 } },
     { groupId: '200002', groupGuard: { timeoutSeconds: 120 } }
   ])
   assert.deepEqual(settings.groupModeration.groupAdmins, [{ groupId: '200002', admins: ['700002'] }])
@@ -214,7 +214,7 @@ test('group HTTP saves and resets preserve comments on untouched fields and sibl
   await f.saveGroup('300003', {}, ['groupGuard.timeoutSeconds'])
   assert.deepEqual(f.readSettings().groupAdmin.overrides.map(row => row.groupId), ['100001', '200002'])
   checkComments()
-  await f.saveGroup('100001', {}, ['groupGuard.kickOnTimeout'])
+  await f.saveGroup('100001', {}, ['groupGuard.maxWrongTimes'])
   assert.deepEqual(f.readSettings().groupAdmin.overrides, [{ groupId: '200002', groupGuard: { timeoutSeconds: 120 } }])
   const afterFirstRemoval = fs.readFileSync(f.configFile, 'utf8')
   for (const [, comment] of annotations.slice(1)) assert.ok(afterFirstRemoval.includes(`#${comment}`), `lost sibling comment after removing first entry:${comment}`)
@@ -390,8 +390,8 @@ test('HTTP persisted group policies drive compiled guard, notices, moderation, a
   const moderation = new GroupModerationManager(ports, new AdCorpusStore({ filePath: path.join(f.root, 'isolated-ad-corpus.jsonl') }))
   t.after(() => { for (const key of guard.pending.keys()) guard.clearPending(key) })
   await f.saveGroup('100001', {
-    'groupGuard.enabled': true, 'groupGuard.timeoutSeconds': 60, 'groupGuard.kickOnWrongAnswer': false,
-    'groupModeration.enabled': true, 'groupModeration.admins': ['700003'], 'groupModeration.actions.kickEnabled': false,
+    'groupGuard.enabled': true, 'groupGuard.timeoutSeconds': 60,
+    'groupModeration.enabled': true, 'groupModeration.admins': ['700003'],
     'groupNotice.enabled': true, 'groupNotice.welcomeMessage': 'saved welcome {userId}'
   })
   await f.saveGroup('200002', {
@@ -416,13 +416,11 @@ test('HTTP persisted group policies drive compiled guard, notices, moderation, a
   assert.equal(await moderation.handleMessage(ad), true)
   assert.equal(apiCalls.length, 0, 'local moderation kick=false must override the global punitive action')
   assert.equal(await moderation.handleMessage({ ...ad, group_id: 200002 }), true)
-  assert.equal(apiCalls.at(-1).method, 'set_group_kick')
-  assert.equal(apiCalls.at(-1).params.group_id, 200002)
+  assert.equal(apiCalls.length, 0, 'retired kick settings must not dispatch')
   apiCalls.length = 0
 
   members = new Map([[600006, { role: 'admin' }], [800008, { role: 'owner' }]])
   assert.equal(await guard.handleGroupIncrease(event('100001')), false)
-  assert.equal(await guard.kickUser(event('100001'), 100001, 800008, 'fixture'), false)
   assert.equal(await moderation.handleMessage({ ...ad, group_id: 200002, sender: { role: 'owner', level: 0 } }), false)
   assert.equal(apiCalls.length, 0, 'native owners remain protected')
   members = new Map([[600006, { role: 'member' }], [800008, { role: 'member', level: 0 }]])
@@ -463,7 +461,7 @@ test('HTTP persisted group policies drive compiled guard, notices, moderation, a
   // 新语义：总开关只是默认值——本群显式启用的模块不再被默认关闭拦截
   assert.equal(await guard.handleGroupIncrease(event('100001')), true, '显式启用的入群验证无视默认总开关关闭')
   assert.equal(await moderation.handleMessage({ ...ad, group_id: 200002 }), true, '显式启用的广告扫描无视默认总开关关闭')
-  assert.equal(apiCalls.at(-1).method, 'set_group_kick')
+  assert.equal(apiCalls.length, 0, 'retired kick settings must not dispatch')
   assert.equal(await notice.handleGroupIncrease(event('200002')), true)
   assert.equal(sent.pop(), 'other welcome 800008')
 })

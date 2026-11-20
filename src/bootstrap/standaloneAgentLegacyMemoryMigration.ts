@@ -405,7 +405,7 @@ export async function runStandaloneLegacyQqMemoryMigration(config: ReturnType<ty
     const connection = config.connections.find(row => row.connection.id === options.connectionId)?.connection
     if (!connection || !config.isConfigCurrent()) return failure('连接或当前宿主配置无效')
     const target = { account: connection.account, kind: 'group' as const, id: options.groupId }, resolved = config.resolvePersona(target), binding = resolved?.binding
-    if (!binding || binding.connectionId !== options.connectionId || config.simulation.enabled === false || config.useTextGroup?.(target)) return failure('目标不是已配置仿真群')
+    if (!binding || binding.connectionId !== options.connectionId) return failure('目标不是已配置仿真群')
     const expectedToken = agentBindingToken(binding), redis = await connectAgentRedis(config.redisUrl)
     try {
       const captured = await acquireStandaloneLegacyMemoryEvidence({ sourceRoot: options.sourceRoot, backupDir: options.backupDir, binding, redis })
