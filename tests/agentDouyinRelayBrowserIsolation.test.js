@@ -60,7 +60,7 @@ test('the actual production browser launcher prevents native WebRTC UDP without 
   await assert.rejects(lstat(profile), { code: 'ENOENT' })
 })
 
-test('native Douyin browser keeps official scripts and signed detail requests while blocking page, iframe, popup and worker network capabilities', { timeout: 25000 }, async t => {
+test('native Douyin browser keeps the signed detail request after blocking a burst of off-policy traffic', { timeout: 25000 }, async t => {
   const f = await fixture(t), requests = [], blocked = [], reports = []
   const target = { aweme_id: id, desc: '隔离回归作品', author: { nickname: '本地合成' },
     images: [{ url_list: ['https://p3.douyinpic.com/ordered.png'] }] }
@@ -83,8 +83,13 @@ test('native Douyin browser keeps official scripts and signed detail requests wh
     try { const p = new iframe.contentWindow.RTCPeerConnection({iceServers:[{urls:'stun:127.0.0.1:${f.port}'}]}); p.createDataChannel('frame'); p.createOffer().then(v=>p.setLocalDescription(v)); outcome.iframe = 'allowed'; }
     catch(error) { outcome.iframe = error.name; }
     fetch('https://127.0.0.1:${f.port}/forbidden').catch(()=>{});
-    setTimeout(() => fetch('/isolation/report?value='+encodeURIComponent(JSON.stringify(outcome))).then(()=>
-      fetch('/aweme/v1/web/aweme/detail/?aweme_id=${id}&msToken=anonymous-signed-detail')).catch(()=>{}), 80);
+    setTimeout(() => {
+      const blocked = Array.from({length: 150}, (_, i) => fetch('https://outside.invalid/rejected-'+i));
+      Promise.allSettled(blocked).then(results => {
+        outcome.blockedRequests = results.filter(result => result.status === 'rejected').length;
+        return fetch('/isolation/report?value='+encodeURIComponent(JSON.stringify(outcome)));
+      }).then(() => fetch('/aweme/v1/web/aweme/detail/?aweme_id=${id}&msToken=anonymous-signed-detail')).catch(()=>{});
+    }, 80);
   })();`
   const read = createDouyinHttp({ allows: () => true, lookup: async () => [{ address: '93.184.216.34', family: 4 }], request: async (url, address, signal) => {
     requests.push(url.href); assert.equal(address.address, '93.184.216.34'); assert.equal(signal.aborted, false)
@@ -99,6 +104,7 @@ test('native Douyin browser keeps official scripts and signed detail requests wh
   const result = await nativeAgentDouyinBrowser({ id, kind: 'note', pageUrl, directory: f.directory }, f.context, read)
   assert.equal(result?.id, id); assert.deepEqual(result.images, ['https://p3.douyinpic.com/ordered.png'])
   assert.equal(reports.length, 1)
+  assert.equal(reports[0].blockedRequests, 150)
   for (const key of ['rtc', 'transport', 'worker', 'sharedWorker', 'serviceWorker']) assert.ok(['SecurityError', 'TypeError'].includes(reports[0][key]), key)
   assert.equal(reports[0].rtcRewrite, 'TypeError'); assert.equal(reports[0].popup, 'blocked')
   assert.equal(reports[0].frameRealm?.isolationFrame, true, 'the srcdoc realm actually attempted its own blocked network capabilities')

@@ -94,14 +94,15 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
     const handle = async (request: HTTPRequest) => {
       let acquired = false
       try {
-        await guard.ensure()
-        if (++requests > 128 || request.method() !== 'GET' || ['media', 'font', 'websocket', 'eventsource', 'other'].includes(request.resourceType())) throw douyinFailure()
+        if (requests >= 128 || request.method() !== 'GET' || ['media', 'font', 'websocket', 'eventsource', 'other'].includes(request.resourceType())) throw douyinFailure()
         const url = douyinOfficialUrl(request.url(), 'browser')
         if (/\/(?:log|collect|beacon|applog|webmssdk|slardar|mcs|tnc)(?:\/|\?|$)/iu.test(url.pathname)) throw douyinFailure()
         // Image src attributes are enough for scoped gallery extraction; never spend the
         // browser's memory on decoded source images or media streams.
         if (request.resourceType() === 'image') throw douyinFailure()
         if (total >= 64 * 1024 * 1024) throw douyinFailure()
+        // Denied requests never use the budget reserved for the pinned HTTP port.
+        requests++
         if (active >= 4) await guard.wait(new Promise<void>(resolve => waiting.push(resolve)))
         else active++
         acquired = true; await guard.ensure()
