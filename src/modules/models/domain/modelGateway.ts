@@ -9,6 +9,6 @@ export function buildChatRequestData(config: ChatProviderConfig = {}, messages: 
 }
 
 export function glmFlashJsonOptions(endpoint: URL, model: string) {
-  return endpoint.hostname === 'open.bigmodel.cn' && model.trim().toLowerCase() === 'glm-5.3-flash'
+  return endpoint.hostname === 'open.bigmodel.cn' && ['glm-4.5-flash', 'glm-5.3-flash'].includes(model.trim().toLowerCase())
     ? { thinking: { type: 'disabled' as const } } : {}
 }

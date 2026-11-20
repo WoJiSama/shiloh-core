@@ -1715,7 +1715,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             } finally { gateActive = false }
           }
           const runGate = () => invokeGate().catch(() => {
-            diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'failed', code: 'wake_gate_unavailable' })
+            const cancelled = turnSignal.aborted && gateSignal.reason === turnSignal.reason
+            diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: cancelled ? 'cancelled' : 'failed',
+              code: cancelled ? 'wake_gate_cancelled' : 'wake_gate_unavailable' })
             return null
           })
           const gate = durableWake ? await beginWake(runGate) : { result: runGate() }

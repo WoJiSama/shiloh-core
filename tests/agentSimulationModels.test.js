@@ -59,16 +59,18 @@ test('wake and meme providers use real local JSON HTTP with fixed model budgets 
 })
 
 test('official GLM flash side tasks request content without spending the JSON budget on reasoning', async () => {
-  const bodies = []
-  const config = { ...options, baseUrl: 'https://open.bigmodel.cn/api/paas/v4', name: 'glm-5.3-flash',
-    async fetchImpl(_url, init) {
-      const body = JSON.parse(init.body)
-      bodies.push(body)
-      return answer(body.max_tokens === 64 ? '{"engage":false,"reason":"普通闲聊"}' : '[]')
-    } }
-  assert.deepEqual(await createAgentSimulationWakeGate(config)(input, undefined, context()), { engage: false, reason: '普通闲聊' })
-  assert.equal(await createAgentSimulationMemeExtractor(config)(memes, undefined, context()), '[]')
-  assert.deepEqual(bodies.map(body => body.thinking), [{ type: 'disabled' }, { type: 'disabled' }])
+  for (const name of ['glm-4.5-flash', 'glm-5.3-flash']) {
+    const bodies = []
+    const config = { ...options, baseUrl: 'https://open.bigmodel.cn/api/paas/v4', name,
+      async fetchImpl(_url, init) {
+        const body = JSON.parse(init.body)
+        bodies.push(body)
+        return answer(body.max_tokens === 64 ? '{"engage":false,"reason":"普通闲聊"}' : '[]')
+      } }
+    assert.deepEqual(await createAgentSimulationWakeGate(config)(input, undefined, context()), { engage: false, reason: '普通闲聊' })
+    assert.equal(await createAgentSimulationMemeExtractor(config)(memes, undefined, context()), '[]')
+    assert.deepEqual(bodies.map(body => body.thinking), [{ type: 'disabled' }, { type: 'disabled' }])
+  }
 })
 
 test('meme provider failures carry only a fixed label and optional HTTP status', async () => {

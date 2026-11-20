@@ -231,6 +231,23 @@ test('optional wake and memory read failures preserve one normal turn with fixed
   }
 })
 
+test('stopping during wake screening records cancellation and never starts the main model', { timeout: 10000 }, async t => {
+  const diagnostics = spy(), started = Promise.withResolvers(), verdict = Promise.withResolvers()
+  const h = fixture({ diagnostics, proactiveProbability: 1,
+    wakeGateJudge: () => { started.resolve(); return verdict.promise },
+  })
+  t.after(() => { h.runtime.stop(); verdict.resolve(null) })
+  await h.ingest('普通群聊背景', '40000', { at: false })
+  h.clock.value += 2 * 60 * 60_000
+  await h.runtime.sweepOnce()
+  await started.promise
+  h.runtime.stop()
+  await h.runtime.drain()
+  assert.equal(h.calls.length, 0)
+  assert.deepEqual(diagnostics.events.filter(row => row.operation === 'simulation_wake_gate')
+    .map(row => [row.outcome, row.code]), [['cancelled', 'wake_gate_cancelled']])
+})
+
 test('reply and episode record failures keep confirmed delivery without another model or send', async t => {
   const diagnostics = spy(), h = fixture({ diagnostics,
     recordGroupReply: async () => { throw Error('private-group-reply-body') },
