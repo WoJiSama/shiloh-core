@@ -70,11 +70,35 @@ export const pages = navigation.flatMap((group) =>
 // The plugin adapter retains its existing navigation above. Standalone navigation follows the robot's identity.
 export const workspaceNavigation = [
   { path: '/', label: '总览', icon: Activity, hint: '本人、连接与待处理事项' },
-  { path: '/robots', label: '机器人', icon: Bot, hint: '本人、会话、自我与行动' },
+  {
+    path: '/robots',
+    label: '机器人',
+    overviewLabel: '机器人列表',
+    icon: Bot,
+    hint: '本人、会话、自我与行动'
+  },
   { path: '/connections', label: '连接', icon: Workflow, hint: '平台账号与会话接入' },
-  { path: '/resources', label: '资源库', icon: Database, hint: '人设、模型与创作资源' },
-  { path: '/runtime', label: '运行中心', icon: Activity, hint: '观测、任务与用量' },
-  { path: '/system', label: '系统', icon: ShieldCheck, hint: '边界、配置与服务状态' }
+  {
+    path: '/resources',
+    label: '资源库',
+    overviewLabel: '资源概览',
+    icon: Database,
+    hint: '人设、模型与创作资源'
+  },
+  {
+    path: '/runtime',
+    label: '运行中心',
+    overviewLabel: '运行概览',
+    icon: Activity,
+    hint: '观测、任务与用量'
+  },
+  {
+    path: '/system',
+    label: '系统',
+    overviewLabel: '系统概览',
+    icon: ShieldCheck,
+    hint: '边界、配置与服务状态'
+  }
 ]
 export const workspaceFeatures = {
   persona: {
@@ -189,27 +213,31 @@ export const workspaceFeatures = {
     hint: '当前宿主是否提供安全配置编辑',
     keywords: '风控 安全 审查 限流 通知'
   },
-  'group-admin': {
-    label: '群管理',
-    group: '/connections',
-    operation: 'group-admin.read',
-    hint: '入群验证、广告处理与群通知',
-    keywords: '群管理 入群验证 广告 刷屏 欢迎 退群'
-  },
   groups: {
     label: '接入会话',
     group: '/connections',
     operation: 'groups.read',
     hint: '当前接入的完整会话地址',
     keywords: '群聊 群组 会话 连接 平台'
+  },
+  'group-admin': {
+    label: '群管理',
+    group: '/connections',
+    operation: 'group-admin.read',
+    hint: '入群验证、广告处理与群通知',
+    keywords: '群管理 入群验证 广告 刷屏 欢迎 退群'
   }
 } as const
 export type WorkspaceFeature = keyof typeof workspaceFeatures
 
 export function workspaceFeatureEntries(group: string) {
-  return Object.entries(workspaceFeatures).filter(([, item]) => item.group === group)
+  const entries = Object.entries(workspaceFeatures) as [
+    WorkspaceFeature,
+    (typeof workspaceFeatures)[WorkspaceFeature]
+  ][]
+  return entries.filter(([, item]) => item.group === group)
 }
 
 export function workspaceFeaturePath(feature: WorkspaceFeature) {
-  return '/' + feature
+  return feature === 'groups' ? '/connections' : '/' + feature
 }

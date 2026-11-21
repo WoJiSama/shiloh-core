@@ -14,8 +14,8 @@ describe('standalone workspace navigation', () => {
     expect(entries).toHaveLength(18)
     expect(entries.every(([, item]) => sections.has(item.group))).toBe(true)
     expect(workspaceFeatureEntries('/connections').map(([key]) => key)).toEqual([
-      'group-admin',
-      'groups'
+      'groups',
+      'group-admin'
     ])
   })
 
@@ -23,5 +23,6 @@ describe('standalone workspace navigation', () => {
     expect(workspaceFeaturePath('semantic')).toBe('/semantic')
     expect(workspaceFeaturePath('draw')).toBe('/draw')
     expect(workspaceFeaturePath('group-admin')).toBe('/group-admin')
+    expect(workspaceFeaturePath('groups')).toBe('/connections')
   })
 })

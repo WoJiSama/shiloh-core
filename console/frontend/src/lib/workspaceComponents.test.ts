@@ -580,13 +580,16 @@ describe('robot workspace components', () => {
     wrappers.push(wrapper)
     expect(wrapper.find('.template-editor h2').text()).toBe('当前机器人的模板')
   })
-  it('keeps module navigation and search available and assigns observation details to runtime', async () => {
+  it('opens one section in the sidebar, follows routes, and keeps module search available', async () => {
     const snapshot = data()
     vi.mocked(api).mockResolvedValue(snapshot)
     vi.stubGlobal('__CONSOLE_BUILD__', { revision: 'test', at: '2026-11-18T00:00:00Z' })
     const router = createRouter({
       history: createMemoryHistory(),
-      routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }]
+      routes: [
+        { path: '/robots/:id/:tab?', component: { template: '<div />' } },
+        { path: '/:pathMatch(.*)*', component: { template: '<div />' } }
+      ]
     })
     await router.push('/observe/details')
     await router.isReady()
@@ -597,12 +600,32 @@ describe('robot workspace components', () => {
     })
     wrappers.push(shell)
     await flushPromises()
-    expect(shell.find('.navigation .active').text()).toBe('运行中心')
-    expect(shell.find('.workspace-subnav .active').text()).toBe('运行观测')
-    expect(shell.find('.workspace-subnav').text()).toContain('托付与承诺')
-    await router.push('/ai')
-    expect(shell.find('.workspace-subnav .active').text()).toBe('模型资源')
-    expect(shell.find('.workspace-subnav').text()).toContain('记忆检索')
+    const nav = shell.get('nav[aria-label="主导航"]')
+    const heading = (label: string) =>
+      nav.findAll('button').find((button) => button.text() === label)!
+    const links = (label: string) => nav.get('#' + heading(label).attributes('aria-controls'))
+    const current = () => nav.get('a[aria-current="page"]').text()
+    expect(heading('运行中心').attributes('aria-expanded')).toBe('true')
+    expect(current()).toBe('运行观测')
+    expect(links('运行中心').isVisible()).toBe(true)
+    expect(links('资源库').isVisible()).toBe(false)
+    await heading('系统').trigger('click')
+    expect(router.currentRoute.value.path).toBe('/observe/details')
+    expect(links('运行中心').isVisible()).toBe(false)
+    expect(links('系统').isVisible()).toBe(true)
+    await links('系统').get('a[href="/commands"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/commands')
+    expect(current()).toBe('骰子边界')
+    await heading('系统').trigger('click')
+    expect(links('系统').isVisible()).toBe(false)
+    expect(router.currentRoute.value.path).toBe('/commands')
+    await router.push('/ai/')
+    await flushPromises()
+    expect(current()).toBe('模型资源')
+    expect(links('资源库').isVisible()).toBe(true)
+    expect(links('资源库').text()).toContain('记忆检索')
+    expect(shell.find('.workspace-subnav').exists()).toBe(false)
     await shell.find('.search-trigger').trigger('click')
     await flushPromises()
     shell
@@ -614,6 +637,24 @@ describe('robot workspace components', () => {
     ;(document.querySelector('.search-results button') as HTMLButtonElement).click()
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/tokens')
+    expect(current()).toBe('模型用量')
+    expect(links('运行中心').isVisible()).toBe(true)
+    await router.push('/robots/alice/self?connection=19001111&panel=person-profiles')
+    await flushPromises()
+    expect(current()).toBe('人物记忆')
+    await heading('运行中心').trigger('click')
+    const trusteeship = links('运行中心')
+      .findAll('a')
+      .find((link) => link.text() === '托付与承诺')!
+    await trusteeship.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/robots/alice/actions')
+    expect(router.currentRoute.value.query).toEqual({
+      connection: '19001111',
+      panel: 'trusteeship'
+    })
+    expect(current()).toBe('托付与承诺')
+    expect(links('运行中心').isVisible()).toBe(true)
     const details = page(EmbeddedPage, {}, [router])
     expect(details.find('iframe').exists()).toBe(false)
     expect(details.text()).toContain('尚未提供完整运行明细')

@@ -401,31 +401,6 @@ small {
   padding: 32px 34px 50px;
   min-width: 0;
 }
-.workspace-subnav {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin: -12px 0 24px;
-  padding: 0 0 8px;
-  border-bottom: 1px solid var(--c-border);
-}
-.workspace-subnav a {
-  flex: 0 0 auto;
-  padding: 8px 11px;
-  color: var(--c-muted);
-  border-radius: 7px;
-  font-size: 12px;
-  white-space: nowrap;
-  transition:
-    color 0.15s,
-    background 0.15s;
-}
-.workspace-subnav a:hover,
-.workspace-subnav a.active {
-  color: var(--c-accent);
-  background: var(--c-selected);
-}
 .mobile-menu-button {
   display: none !important;
 }
@@ -845,22 +820,35 @@ small {
 }
 
 /* Robot workspace. Platform accounts remain connection metadata. */
-.robot-console .desktop-sidebar .navigation {
-  padding-top: 26px;
+.robot-console .desktop-sidebar {
+  overflow: hidden;
 }
-.robot-console .navigation .nav-item {
-  margin: 5px 0;
-  padding: 12px 15px;
+.robot-console .desktop-sidebar .workspace-navigation {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: thin;
+  margin-inline: -6px;
+  padding: 3px 6px;
 }
-.workspace-sidebar-note {
-  margin: auto 20px 24px;
-  padding: 18px 0 0;
-  color: var(--c-muted);
-  border-top: 1px solid var(--c-border);
-  font-size: 12px;
+.robot-console .desktop-sidebar > :is(.brand, .sidebar-user, .build-info) {
+  flex-shrink: 0;
 }
 .robot-console .sidebar-user {
-  margin-top: 0;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+.robot-console .breadcrumbs {
+  min-width: 0;
+}
+.robot-console .breadcrumbs > :is(span, strong) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-drawer-logout {
+  margin-top: 16px;
 }
 .skip-link {
   position: fixed;
