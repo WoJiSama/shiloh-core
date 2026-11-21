@@ -168,6 +168,7 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   personalSeeds?: readonly AgentPersonalSeed[]
   codingWorker?(agentId: string, task: string, signal: AbortSignal): Promise<string | undefined>
   personalToolAuthor?: NonNullable<PersonalPorts['publishTool']>
+  personalFollowFeed?: NonNullable<PersonalPorts['followFeed']>
   migratedGroupToolNames?(target: ConversationAddress): readonly string[] | undefined
   textGroupRevision?: string
   textTrigger?: AgentTextTriggerConfig
@@ -2136,6 +2137,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       } } : {}),
       ...(options.codingWorker ? { coding: options.codingWorker } : {}),
       ...(options.personalToolAuthor ? { publishTool: options.personalToolAuthor } : {}),
+      ...(options.personalFollowFeed ? { followFeed: options.personalFollowFeed } : {}),
       recordUsage: (agentId, stage, reply) => options.recordTokens?.({ scope: 'agent:' + agentId, stage, model: String(reply.model ?? ''), usage: reply.usage }),
       failed: (operation, error, code) => diagnostics.emit({ stage: 'runtime', operation, outcome: 'failed', ...(code ? { code } : {}), error }),
     })

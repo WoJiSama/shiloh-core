@@ -38,6 +38,7 @@ test('startup decodes the exact three source bytes it exposes and keeps text gro
   assert.deepEqual(config.migratedGroupToolNames(target), []); assert.equal(config.checkBindings().get('main').simulationGroups, 1)
   assert.equal(config.connections[0].transport, 'reverse-websocket'); assert.equal(config.connections[0].accessToken, 'private-onebot-token')
   assert.equal(config.isConfigCurrent(), true)
+  assert.equal(config.personalFollow.enabled, true)
   assert.deepEqual((await readdir(f.directory)).sort(), ['agent-bindings.yaml', 'host.yaml', 'persona-library.yaml'])
 })
 
@@ -68,6 +69,13 @@ test('cognition requires an explicit boolean rollout boundary and starts disable
     await writeFile(f.file, JSON.stringify(host({ cognition })))
     assert.throws(() => readStandaloneAgentConfig(f.file, { MAIN_KEY: 'private-key' }), /cognition/)
   }
+})
+
+test('the personal follow provider can be disabled with a boolean', async t => {
+  const f = await fixture(t, sources({ config: host({ personalFollow: { enabled: false } }) }))
+  assert.equal(readStandaloneAgentConfig(f.file, { MAIN_KEY: 'private-key' }).personalFollow.enabled, false)
+  await writeFile(f.file, JSON.stringify(host({ personalFollow: { enabled: 'false' } })))
+  assert.throws(() => readStandaloneAgentConfig(f.file, { MAIN_KEY: 'private-key' }), /personalFollow/)
 })
 
 test('candidate validation needs no existing files and performs no filesystem or network calls', async t => {

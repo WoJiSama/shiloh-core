@@ -90,6 +90,7 @@ import { conversationAddressKey } from '../modules/runtime/domain/agentBindings.
 import { createForgetOperationStore } from '../modules/runtime/infrastructure/forgetOperationStore.js'
 import { createStandaloneAgentCodingWorker, resolveStandaloneAgentCodingSnapshot } from './standaloneAgentCodingWorker.js'
 import { createStandaloneAgentToolAuthor } from './standaloneAgentToolAuthor.js'
+import { readPersonalFollowFeed } from '../modules/simulation/infrastructure/agentPersonalFollow.js'
 import type { AgentBindingSnapshot } from '../contracts/agentBinding.js'
 
 const logger = {
@@ -742,6 +743,7 @@ export async function main(argv: string[]): Promise<void> {
       unifiedGroupChat: true,
       personalSeeds: config.personalSeeds,
       personalToolAuthor,
+      ...(config.personalFollow.enabled ? { personalFollowFeed: readPersonalFollowFeed } : {}),
       ...(codingWorker ? { codingWorker } : {}),
       ...(config.migratedGroupToolNames ? { migratedGroupToolNames: config.migratedGroupToolNames, groupTextTools: config.groupTextTools, textGroupRevision: config.textGroupRevision } : {}),
       getExecutionConfig: () => config.execution,

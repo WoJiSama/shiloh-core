@@ -406,6 +406,27 @@ describe('robot workspace components', () => {
       scene().bindingToken
     )
   })
+  it('shows the interest update, source and unconfirmed share in the actions tab', async () => {
+    workspace.data.value!.capabilities.push({
+      operation: 'self-profile.read', scope: 'global', effect: 'read', status: 'available', reason: ''
+    })
+    const source = 'https://github.com/example/game', url = source + '/releases/tag/v2'
+    const at = Date.UTC(2026, 10, 21, 10)
+    vi.mocked(api).mockResolvedValue({ profiles: [], work: { goals: [], tools: [], followEnabled: true,
+      follows: [{ id: 'f1', title: '游戏版本', url: source, state: 'active', nextAt: at + 3600_000,
+        lastCheckedAt: at, failures: 0, latest: { text: '新版本修复了存档。', url, at } }],
+      actions: [{ id: 'a1', kind: 'follow-share', state: 'unknown', at, followId: 'f1' }]
+    } })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/robots/:id/:tab', component: WorkspaceRobot }] })
+    await router.push('/robots/alice/actions')
+    const wrapper = page(WorkspaceRobot, {}, [router])
+    await flushPromises()
+    expect(api).toHaveBeenCalledWith('/api/self-profile/alice', expect.anything())
+    expect(wrapper.text()).toContain('兴趣跟进')
+    expect(wrapper.text()).toContain('新版本修复了存档。')
+    expect(wrapper.get(`a[href="${url}"]`).text()).toBe('查看原公告')
+    expect(wrapper.text()).toContain('分享兴趣更新 · 待核实')
+  })
   it('restores scoped memory and trusteeship panels from URLs and clears panels on tab changes', async () => {
     const row = scene()
     workspace.data.value!.capabilities.push({

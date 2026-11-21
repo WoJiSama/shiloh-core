@@ -38,6 +38,7 @@ export interface PublicFeedDependencies {
   lookup?(hostname: string): Promise<LookupAddress[]>
   request?(url: URL, address: LookupAddress, timeoutMs: number): Promise<PublicResponse>
   guard?(): Promise<void>
+  allowRequest?(url: URL): boolean
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -130,6 +131,7 @@ export async function fetchPublicFeed(input: string, kind: Kind, dependencies: P
   }
   for (let redirects = 0; redirects <= 3; redirects++) {
     await dependencies.guard?.()
+    if (dependencies.allowRequest?.(url) === false) throw new Error('订阅地址与公开来源不符')
     const host = url.hostname.replace(/^\[|\]$/gu, '')
     const addresses = isIP(host) ? [{ address: host, family: isIP(host) }] : await guarded(lookup(host))
     if (!addresses.length || addresses.some(address => !isPublicFeedAddress(address.address) || isIP(address.address) !== address.family)) throw new Error('订阅DNS包含非公共地址')

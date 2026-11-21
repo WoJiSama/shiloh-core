@@ -41,8 +41,11 @@ interface SelfProfileVersion {
 }
 interface PersonalWorkSummary {
   goals: { id: string; title: string; nextAt: number; state: 'active' | 'completed' | 'abandoned'; waitingFor?: string }[]
-  actions: { id: string; kind: 'contact' | 'reserve' | 'research' | 'coding'; state: 'pending' | 'confirmed' | 'failed' | 'unknown'; at: number; goalId?: string }[]
+  actions: { id: string; kind: 'contact' | 'reserve' | 'research' | 'coding' | 'follow-share'; state: 'pending' | 'confirmed' | 'failed' | 'unknown'; at: number; goalId?: string; followId?: string }[]
   tools: { name: string; description: string; activeRevision?: number; versions?: number[] }[]
+  followEnabled?: boolean
+  follows?: { id: string; title: string; url: string; state: 'active' | 'stopped'; nextAt: number; lastCheckedAt?: number;
+    failures: number; latest?: { text: string; url: string; at: number } }[]
 }
 const selfProfiles = ref<SelfProfileVersion[]>([])
 const personalWork = ref<PersonalWorkSummary>()
@@ -76,7 +79,7 @@ watch(() => [tab.value, agent.value?.id, capability('self-profile.read').status]
   }
 }, { immediate: true })
 const goalStates = { active: '进行中', completed: '已完成', abandoned: '已放下' }
-const actionNames = { contact: '联系', reserve: '预约登记', research: '检索', coding: '编程候选' }
+const actionNames = { contact: '联系', reserve: '预约登记', research: '检索', coding: '编程候选', 'follow-share': '分享兴趣更新' }
 const actionStates = { pending: '待回执', confirmed: '已确认', failed: '失败', unknown: '待核实' }
 const beijingTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Asia/Shanghai' })
 const selection = computed(() => {
@@ -293,12 +296,34 @@ watch(
               <NTag size="small">{{ goalStates[goal.state] }}</NTag>
             </div>
             <p v-if="!personalWork.goals.length" class="empty-note">暂无自主目标。</p>
+            <details v-if="personalWork.followEnabled || personalWork.follows?.length" open>
+              <summary>兴趣跟进</summary>
+              <p v-if="!personalWork.followEnabled" class="empty-note">兴趣跟进已停用。</p>
+              <p v-else-if="!personalWork.follows?.length" class="empty-note">还没有开始跟进。</p>
+              <div v-for="follow in personalWork.follows" :key="follow.id" class="workspace-row">
+                <div class="row-main">
+                  <a :href="follow.url" target="_blank" rel="noopener noreferrer"><strong>{{ follow.title }}</strong></a>
+                  <small v-if="follow.lastCheckedAt !== undefined">最近检查 {{ beijingTime.format(follow.lastCheckedAt) }}</small>
+                  <small v-if="follow.state === 'active' && personalWork.followEnabled">
+                    {{ follow.failures ? '检查失败，下次重试' : '下次检查' }} {{ beijingTime.format(follow.nextAt) }}
+                  </small>
+                  <template v-if="follow.latest">
+                    <p>{{ follow.latest.text }}</p>
+                    <small><a :href="follow.latest.url" target="_blank" rel="noopener noreferrer">查看原公告</a>
+                      · {{ beijingTime.format(follow.latest.at) }}</small>
+                  </template>
+                </div>
+                <NTag size="small">{{ follow.state === 'stopped' ? '已结束' : personalWork.followEnabled ? '跟进中' : '已停用' }}</NTag>
+              </div>
+            </details>
             <details v-if="personalWork.actions.length">
               <summary>行动回执</summary>
               <ul>
                 <li v-for="entry in [...personalWork.actions].reverse()" :key="entry.id">
                   {{ actionNames[entry.kind] }} · {{ actionStates[entry.state] }} · {{ beijingTime.format(entry.at) }}
                   <span v-if="entry.goalId"> · {{ personalWork.goals.find(goal => goal.id === entry.goalId)?.title }}</span>
+                  <span v-else-if="entry.followId && personalWork.follows?.some(follow => follow.id === entry.followId)">
+                    · {{ personalWork.follows?.find(follow => follow.id === entry.followId)?.title }}</span>
                 </li>
               </ul>
             </details>
