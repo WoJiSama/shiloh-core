@@ -7,6 +7,7 @@ import WorkspaceRobots from '../pages/WorkspaceRobots.vue'
 import WorkspaceRobot from '../pages/WorkspaceRobot.vue'
 import WorkspaceOverview from '../pages/WorkspaceOverview.vue'
 import WorkspaceConnections from '../pages/WorkspaceConnections.vue'
+import WorkspaceHub from '../pages/WorkspaceHub.vue'
 import WorkspaceShell from '../components/WorkspaceShell.vue'
 import StandaloneProfiles from '../components/StandaloneProfiles.vue'
 import StandalonePersonaConfig from '../components/StandalonePersonaConfig.vue'
@@ -610,6 +611,32 @@ describe('robot workspace components', () => {
     wrappers.push(wrapper)
     expect(wrapper.find('.template-editor h2').text()).toBe('当前机器人的模板')
   })
+  it('links the dice and game pages back to both entries on the feature overview', async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }]
+    })
+    await router.push('/commands')
+    const dice = page(ConsoleFeaturePage, { feature: 'commands' }, [router])
+    expect(dice.get('.feature-breadcrumb a').attributes('href')).toBe('/features')
+    expect(dice.get('.feature-breadcrumb a').text()).toContain('返回功能')
+
+    await router.push('/games')
+    const games = page(ConsoleFeaturePage, { feature: 'games' }, [router])
+    expect(games.get('.feature-breadcrumb a').attributes('href')).toBe('/features')
+    await games.get('.feature-breadcrumb a').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/features')
+
+    const hub = page(WorkspaceHub, { section: 'features' }, [router])
+    expect(hub.findAll('a.resource-card').map((link) => ({
+      name: link.get('h2').text(),
+      path: link.attributes('href')
+    }))).toEqual([
+      { name: '骰子', path: '/commands' },
+      { name: '游戏', path: '/games' }
+    ])
+  })
   it('opens one section in the sidebar, follows routes, and keeps module search available', async () => {
     const snapshot = data()
     vi.mocked(api).mockResolvedValue(snapshot)
@@ -639,17 +666,22 @@ describe('robot workspace components', () => {
     expect(current()).toBe('运行观测')
     expect(links('运行中心').isVisible()).toBe(true)
     expect(links('资源库').isVisible()).toBe(false)
-    await heading('系统').trigger('click')
+    await heading('功能').trigger('click')
     expect(router.currentRoute.value.path).toBe('/observe/details')
     expect(links('运行中心').isVisible()).toBe(false)
-    expect(links('系统').isVisible()).toBe(true)
-    await links('系统').get('a[href="/commands"]').trigger('click')
+    expect(links('功能').isVisible()).toBe(true)
+    expect(links('功能').findAll('a').map((link) => link.text())).toEqual(['骰子', '游戏'])
+    await links('功能').get('a[href="/commands"]').trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/commands')
-    expect(current()).toBe('骰子边界')
-    await heading('系统').trigger('click')
-    expect(links('系统').isVisible()).toBe(false)
-    expect(router.currentRoute.value.path).toBe('/commands')
+    expect(current()).toBe('骰子')
+    expect(shell.get('.breadcrumbs').text()).toContain('功能')
+    await links('功能').get('a[href="/games"]').trigger('click')
+    await flushPromises()
+    expect(current()).toBe('游戏')
+    await heading('功能').trigger('click')
+    expect(links('功能').isVisible()).toBe(false)
+    expect(router.currentRoute.value.path).toBe('/games')
     await router.push('/ai/')
     await flushPromises()
     expect(current()).toBe('模型资源')

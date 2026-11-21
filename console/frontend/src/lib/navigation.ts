@@ -78,6 +78,7 @@ export const workspaceNavigation = [
     hint: '本人、会话、自我与行动'
   },
   { path: '/connections', label: '连接', icon: Workflow, hint: '平台账号与会话接入' },
+  { path: '/features', label: '功能', icon: Gamepad2, hint: '跑团骰娘与群游戏' },
   {
     path: '/resources',
     label: '资源库',
@@ -101,6 +102,20 @@ export const workspaceNavigation = [
   }
 ]
 export const workspaceFeatures = {
+  commands: {
+    label: '骰子',
+    group: '/features',
+    operation: 'config.read',
+    hint: '跑团骰娘的掷骰开关与上限',
+    keywords: '命令 骰子 骰娘 掷骰 跑团 TRPG'
+  },
+  games: {
+    label: '游戏',
+    group: '/features',
+    operation: 'turtle-soup.read',
+    hint: '海龟汤题库、赛马娘与三角洲设置',
+    keywords: '游戏 海龟汤 赛马娘 三角洲 题库'
+  },
   persona: {
     label: '人设模板',
     group: '/resources',
@@ -121,13 +136,6 @@ export const workspaceFeatures = {
     operation: 'images.providers',
     hint: '图片生成、编辑与历史',
     keywords: '生图 图片 绘图 图像 生成 编辑'
-  },
-  games: {
-    label: '游戏资源',
-    group: '/resources',
-    operation: 'turtle-soup.read',
-    hint: '题库审核与游戏资源',
-    keywords: '游戏 海龟汤 题库'
   },
   simulation: {
     label: '会话参与',
@@ -191,13 +199,6 @@ export const workspaceFeatures = {
     operation: 'semantic.read',
     hint: '当前宿主可用的检索管理',
     keywords: '语义 记忆 检索 召回 搜索 向量'
-  },
-  commands: {
-    label: '骰子边界',
-    group: '/system',
-    operation: 'config.read',
-    hint: '骰子规则与参与边界，保存后重启生效',
-    keywords: '命令 骰子 规则'
   },
   conversation: {
     label: '对话配置',

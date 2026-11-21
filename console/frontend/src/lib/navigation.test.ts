@@ -19,10 +19,26 @@ describe('standalone workspace navigation', () => {
     ])
   })
 
+  it('places dice and games together near the top of the sidebar', () => {
+    expect(workspaceNavigation.map((item) => item.path).slice(0, 5)).toEqual([
+      '/',
+      '/robots',
+      '/connections',
+      '/features',
+      '/resources'
+    ])
+    expect(workspaceFeatureEntries('/features').map(([key, item]) => [key, item.label])).toEqual([
+      ['commands', '骰子'],
+      ['games', '游戏']
+    ])
+  })
+
   it('keeps legacy module paths available for the secondary navigation', () => {
     expect(workspaceFeaturePath('semantic')).toBe('/semantic')
     expect(workspaceFeaturePath('draw')).toBe('/draw')
     expect(workspaceFeaturePath('group-admin')).toBe('/group-admin')
     expect(workspaceFeaturePath('groups')).toBe('/connections')
+    expect(workspaceFeaturePath('commands')).toBe('/commands')
+    expect(workspaceFeaturePath('games')).toBe('/games')
   })
 })

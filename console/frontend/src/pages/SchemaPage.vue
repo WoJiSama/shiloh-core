@@ -407,8 +407,8 @@ defineExpose({ dirty, reload, saving, loading })
     <PageHeader
       v-if="!embedded"
       :title="view?.mode === 'standalone' ? view.title : titles[kind]"
-      :description="view?.mode === 'standalone' ? (kind === 'dice' ? '设置掷骰开关与计算上限，保存后重启服务生效。' : '配置默认人设与表达守卫，保存后重启服务生效。') : descriptions[kind]"
-      eyebrow="配置中心"
+      :description="view?.mode === 'standalone' ? (kind === 'dice' ? '设置跑团骰娘的掷骰开关，以及骰子数量、面数和轮数上限。保存后重启服务生效。' : '配置默认人设与表达守卫，保存后重启服务生效。') : descriptions[kind]"
+      :eyebrow="kind === 'dice' && view?.mode === 'standalone' ? '功能' : '配置中心'"
       ><template #actions
         ><NButton secondary :disabled="saving || loading" @click="reload"
           >刷新配置</NButton

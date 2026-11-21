@@ -2,7 +2,7 @@
 import { computed, defineAsyncComponent } from 'vue'
 import { useRoute } from 'vue-router'
 import { workspace } from '../lib/workspace'
-import { workspaceFeatures, type WorkspaceFeature } from '../lib/navigation'
+import { workspaceFeatures, workspaceNavigation, type WorkspaceFeature } from '../lib/navigation'
 import { robotLocation, selectConversation } from '../lib/workspaceModel'
 import CapabilityGate from '../components/CapabilityGate.vue'
 import SchemaPage from './SchemaPage.vue'
@@ -73,15 +73,10 @@ const componentProps = computed<Record<string, unknown>>(() => {
   }
   return {}
 })
-const groupLabels: Record<string, string> = {
-  '/resources': '资源库',
-  '/runtime': '运行中心',
-  '/system': '系统',
-  '/connections': '连接',
-  '/robots': '机器人'
-}
 const backLabel = computed(() =>
-  backTarget.value.path.startsWith('/robots/') ? '机器人' : groupLabels[feature.value.group]
+  backTarget.value.path.startsWith('/robots/')
+    ? '机器人'
+    : workspaceNavigation.find((section) => section.path === feature.value.group)?.label
 )
 </script>
 <template>

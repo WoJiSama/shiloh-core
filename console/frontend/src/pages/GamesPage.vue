@@ -603,8 +603,8 @@ const formatTime = (at: number) => new Date(at).toLocaleString()
   <div class="page-stack games-page">
     <PageHeader
       title="游戏"
-      eyebrow="机器人能力"
-      description="管理海龟汤的生成、质量审核、回收修复与游戏参数。"
+      :eyebrow="workspace.mode.value === 'standalone' ? '功能' : '机器人能力'"
+      description="管理海龟汤题库与游戏参数，设置赛马娘和三角洲。"
     />
     <NTabs :value="activeTab" type="line" @update:value="activeTab = $event">
       <NTab name="turtleSoup">海龟汤</NTab><NTab name="umaRace">赛马娘</NTab
