@@ -5,7 +5,9 @@ import { api } from '../lib/api'
 import { consoleRestart, type ConfigSaveResult } from '../lib/consoleRestart'
 import type { StandaloneAiView, StandaloneModel } from '../lib/standaloneConfig'
 import { clone, equal } from '../lib/schemaState'
+import { modelGuidance } from '../lib/modelGuidance'
 import { useUnsavedGuard } from '../composables/useUnsavedGuard'
+import ModelGuidance from './ModelGuidance.vue'
 import SaveBar from './SaveBar.vue'
 const restartBlocked = consoleRestart.blocked
 const props = defineProps<{ initial: StandaloneAiView }>()
@@ -21,6 +23,7 @@ let probeRequest: AbortController | undefined
 const probeState = ref<Record<string, { loading: boolean; detail?: string; ok?: boolean }>>({})
 const provider = computed(() => drafts.value[active.value]?.[0])
 const selected = computed(() => view.value.definitions.find(item => item.configKey === active.value))
+const guidance = computed(() => modelGuidance[active.value])
 const fallback = computed(() => {
   const key = selected.value?.fallbackConfigKey
   return key ? baseline.value[key]?.[0] : undefined
@@ -175,8 +178,9 @@ onBeforeUnmount(() => { request?.abort(); probeRequest?.abort() })
           </template>
         </NSpace>
       </div>
+      <ModelGuidance v-if="guidance" id="standalone-model-guidance" :guidance="guidance" />
       <p v-if="fallback && effectiveProvider" class="field-help">
-        编程和编写自建工具使用此分组。{{ restartBlocked ? '配置模型' : '当前模型' }} <strong>{{ effectiveProvider.name }}</strong>。
+        {{ restartBlocked ? '配置模型' : '当前模型' }} <strong>{{ effectiveProvider.name }}</strong>。
       </p>
       <p v-if="fallback && savedProvider && !provider" class="field-help">
         保存并重启后使用主对话的 {{ fallback.name }}。
@@ -191,7 +195,10 @@ onBeforeUnmount(() => { request?.abort(); probeRequest?.abort() })
         <div class="form-field">
           <label for="standalone-model-name">模型名称</label
           ><NInput
-            id="standalone-model-name"
+            :input-props="{
+              id: 'standalone-model-name',
+              'aria-describedby': guidance ? 'standalone-model-guidance' : undefined
+            }"
             v-model:value="provider.name"
             :disabled="restartBlocked"
           />
@@ -230,6 +237,9 @@ onBeforeUnmount(() => { request?.abort(); probeRequest?.abort() })
 <style scoped>
 .standalone-model {
   padding: 22px;
+}
+.standalone-model > .model-guidance {
+  margin-bottom: 18px;
 }
 .probe-actions {
   margin-top: 16px;

@@ -34,6 +34,8 @@ import {
   type AiProvider
 } from '../lib/schemaAi'
 import { useSchemaSaveShortcut } from '../lib/schemaKeyboard'
+import { modelGuidance } from '../lib/modelGuidance'
+import ModelGuidance from '../components/ModelGuidance.vue'
 import StandaloneAiConfig from '../components/StandaloneAiConfig.vue'
 import type { StandaloneAiView } from '../lib/standaloneConfig'
 
@@ -69,6 +71,7 @@ let loadGeneration = 0
 const definition = computed(() =>
   overview.value?.definitions.find((def) => def.configKey === active.value)
 )
+const guidance = computed(() => modelGuidance[active.value])
 const providers = computed(() => drafts.value[active.value] || [])
 function dirtyCount(key: string) {
   const current = drafts.value[key] || [],
@@ -356,7 +359,9 @@ onBeforeUnmount(() => {
     <template v-else>
     <section v-if="overview" class="panel provider-panel">
       <h2>思考程度</h2>
-      <p class="field-help">按全局聊天、短闲聊和复杂请求分别设置。模型支持的档位以渠道说明为准。</p>
+      <p class="field-help">
+        短闲聊建议用默认或低档。常规工具调用可从低档开始，复杂推理可按效果调高。可选档位以模型渠道支持为准。
+      </p>
       <SchemaPage kind="reasoning" embedded />
     </section>
     <PageState :loading="loading && !overview" :error="!overview ? loadError : ''" @retry="load()">
@@ -379,7 +384,8 @@ onBeforeUnmount(() => {
         <div class="section-intro">
           <div>
             <h2>{{ shortTitle(definition) }}</h2>
-            <p>{{ definition.usageHint }}</p>
+            <ModelGuidance v-if="guidance" id="legacy-model-guidance" :guidance="guidance" />
+            <p v-else>{{ definition.usageHint }}</p>
           </div>
           <NButton secondary size="small" :loading="probes[active]?.loading" @click="probe()"
             ><template #icon><FlaskConical :size="15" /></template>测试已保存渠道</NButton
@@ -460,7 +466,10 @@ onBeforeUnmount(() => {
               <label :for="`ai-${provider._clientId}-model`">模型名称</label
               ><NInput
                 v-model:value="provider.model"
-                :input-props="{ id: `ai-${provider._clientId}-model` }"
+                :input-props="{
+                  id: `ai-${provider._clientId}-model`,
+                  'aria-describedby': guidance ? 'legacy-model-guidance' : undefined
+                }"
                 :placeholder="definition.modelPlaceholder"
               />
             </div>

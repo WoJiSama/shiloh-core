@@ -365,7 +365,7 @@ describe('standalone persistence page requests', () => {
     expect(wrapper.text()).not.toContain('测试当前草稿')
     const name = wrapper
       .findAllComponents(NInput)
-      .find((input) => input.attributes('id') === 'standalone-model-name')!
+      .find((input) => input.props('inputProps')?.id === 'standalone-model-name')!
     name.vm.$emit('update:value', 'new-model')
     await flushPromises()
     wrapper.findComponent(SaveBar).vm.$emit('save')
@@ -379,6 +379,49 @@ describe('standalone persistence page requests', () => {
     })
     expect(fetcher).toHaveBeenCalledTimes(2)
     expect(wrapper.text()).toContain('重启服务后生效')
+  })
+  it('shows task-specific advice on every Core model slot, including inherited development', async () => {
+    const slots = [
+      ['model', '主对话', '群聊和私聊回复', '强模型'],
+      ['developmentModel', '开发', '自建文字工具', '擅长编程的强模型'],
+      ['vision', '图片理解', '画面和文字', '轻量或中档视觉模型'],
+      ['personMemoryExtraction', '个人记忆提取', '唤醒预判', '中档文本模型'],
+      ['midtermSummary', '对话摘要', '压缩成摘要', '轻量模型（弱模型）'],
+      ['groupMemoryExtraction', '群记忆提取', '群内共识', '中档文本模型'],
+      ['textTriggerModel', '主动发言判断', '继续旁听', '低延迟的轻量模型（弱模型）']
+    ] as const
+    const view = {
+      ...ai,
+      definitions: slots.map(([configKey, title]) => ({
+        configKey,
+        title,
+        ...(configKey === 'developmentModel' ? { fallbackConfigKey: 'model' } : {})
+      })),
+      sections: Object.fromEntries(
+        slots.map(([key]) => [key, key === 'developmentModel' ? [] : ai.sections.model])
+      ),
+      revisions: Object.fromEntries(slots.map(([key]) => [key, 'r1']))
+    }
+    const fetcher = vi.fn(async () => response(view))
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = page(AiPage)
+    await flushPromises()
+    const tabs = wrapper.getComponent(NTabs)
+    for (const [key, , purpose, tier] of slots) {
+      tabs.vm.$emit('update:value', key)
+      await flushPromises()
+      const guidance = wrapper.get('#standalone-model-guidance')
+      expect(guidance.text()).toContain(purpose)
+      expect(guidance.get('strong').text()).toBe('建议选择 ' + tier)
+      if (key === 'developmentModel') {
+        expect(wrapper.text()).toContain('沿用主对话')
+      } else {
+        expect(wrapper.get('input#standalone-model-name').attributes('aria-describedby'))
+          .toBe('standalone-model-guidance')
+      }
+      expect(wrapper.getComponent(SaveBar).props('dirty')).toBe(0)
+    }
+    expect(fetcher).toHaveBeenCalledOnce()
   })
   it('preserves another model slot draft and reloads only after a true new process', async () => {
     const initial = clone(ai)
@@ -415,7 +458,7 @@ describe('standalone persistence page requests', () => {
     const modelInput = () =>
       wrapper
         .findAllComponents(NInput)
-        .find((input) => input.attributes('id') === 'standalone-model-name')!
+        .find((input) => input.props('inputProps')?.id === 'standalone-model-name')!
     modelInput().vm.$emit('update:value', 'vision-draft')
     tabs.vm.$emit('update:value', 'model')
     await flushPromises()
@@ -458,7 +501,7 @@ describe('standalone persistence page requests', () => {
     const action = configured ? '改用主对话' : '配置开发模型'
     await wrapper.findAllComponents(NButton).find(button => button.text() === action)!.trigger('click')
     if (!configured) {
-      const field = wrapper.findAllComponents(NInput).find(input => input.attributes('id') === 'standalone-model-name')!
+      const field = wrapper.findAllComponents(NInput).find(input => input.props('inputProps')?.id === 'standalone-model-name')!
       expect(field.props('value')).toBe('old-model')
       field.vm.$emit('update:value', 'code-model')
     }
