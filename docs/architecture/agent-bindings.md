@@ -143,7 +143,7 @@ npm run backend:build
 npm run agent:start -- --config /path/to/agent-host.yaml
 ```
 
-也可以在已经安装构建依赖的仓库运行 `npm run agent:pack`。命令输出 `.release/agent-*` 下的发布包目录。将该目录复制到服务器，从包目录安装锁定的运行依赖后启动。
+也可以在已经安装构建依赖的仓库运行 `npm run agent:pack`。命令输出 `.release/agent-*` 下的发布包目录，并在旁边生成同名的 `.tar.gz`。交付到 Linux 时使用该归档，以保留 Chromium 启动器的执行权限。解包后从包目录安装锁定的运行依赖。
 
 ```sh
 npm ci --omit=dev --ignore-scripts

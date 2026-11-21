@@ -88,6 +88,7 @@
   "devDependencies": {
     "@types/node": "22.20.5",
     "@types/ws": "8.18.2",
+    "tar-stream": "2.2.0",
     "typescript": "5.9.3"
   },
   "engines": {

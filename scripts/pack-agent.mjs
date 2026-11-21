@@ -1,6 +1,10 @@
 import fs from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
 import path from 'node:path'
 import { isBuiltin } from 'node:module'
+import { pipeline } from 'node:stream/promises'
+import { createGzip } from 'node:zlib'
+import tar from 'tar-stream'
 import ts from 'typescript'
 import { root, digestFiles, filesUnder, run, verifyBackend } from './lib/build-support.mjs'
 
@@ -128,12 +132,38 @@ const packageJson = {
 const releaseRoot = path.join(root, '.release')
 await fs.mkdir(releaseRoot, { recursive: true })
 const output = await fs.mkdtemp(path.join(releaseRoot, 'agent-'))
+const archivePath = output + '.tar.gz'
+const chromiumLauncherName = 'scripts/start-sandboxed-chromium.mjs'
 async function copy(source, relative) {
   const target = path.join(output, relative)
   await fs.mkdir(path.dirname(target), { recursive: true })
   await fs.copyFile(source, target)
 }
 const writeJson = (relative, data) => fs.writeFile(path.join(output, relative), JSON.stringify(data, null, 2) + '\n')
+
+async function archiveRelease() {
+  const files = await filesUnder(output)
+  const archive = tar.pack()
+  const file = await fs.open(archivePath, 'wx', 0o600)
+  const writing = pipeline(archive, createGzip(), file.createWriteStream())
+  const append = async () => {
+    for (const filename of files) {
+      const name = path.relative(output, filename).replaceAll('\\', '/')
+      const stat = await fs.stat(filename)
+      // Win32 chmod cannot set the Unix execute bit. Set it in the tar header.
+      const mode = name === chromiumLauncherName || (stat.mode & 0o111) !== 0 ? 0o755 : 0o644
+      await pipeline(createReadStream(filename), archive.entry({ name, mode, size: stat.size, mtime: stat.mtime }))
+    }
+    archive.finalize()
+  }
+  try { await Promise.all([append(), writing]) }
+  catch (error) {
+    archive.destroy()
+    await writing.catch(() => {})
+    await fs.rm(archivePath, { force: true })
+    throw error
+  }
+}
 
 try {
   const frontend = path.join(root, 'console/frontend'), frontendOutput = path.join(frontend, 'dist')
@@ -153,7 +183,7 @@ try {
   for (const name of Object.keys(files)) await copy(path.join(backend, name), `dist/backend/${name}`)
   for (const name of ['scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'scripts/import-cognition.mjs', 'scripts/import-legacy-console-resources.py', 'scripts/import-legacy-token-usage.py', 'scripts/archive-legacy-data.py', 'scripts/semantic-memory-eval.mjs', 'scripts/examples/semantic-evaluation-backend.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json', 'utils/backendArtifactGuard.js', 'LICENSE']) await copy(path.join(root, name), name)
   // Linux must execute this shebang even when the package is built from a Windows checkout.
-  const chromiumLauncher = path.join(output, 'scripts/start-sandboxed-chromium.mjs')
+  const chromiumLauncher = path.join(output, chromiumLauncherName)
   const launcherSource = await fs.readFile(chromiumLauncher, 'utf8')
   await fs.writeFile(chromiumLauncher, launcherSource.replaceAll('\r\n', '\n'))
   await fs.chmod(chromiumLauncher, 0o755)
@@ -181,6 +211,7 @@ try {
   `], { cwd: output })
   if (withCodingSource) run('git', ['archive', '--format=tar.gz', '--output=' + output + '.coding-source.tar.gz',
     manifest.commit, ...codingSourceFiles])
+  await archiveRelease()
   console.log(output)
 } catch (error) {
   await fs.rm(output, { recursive: true, force: true })
