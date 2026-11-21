@@ -8,7 +8,7 @@ import { personMemoryAddress } from '../dist/backend/modules/memory/infrastructu
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
 
-const { createAgentSemanticMemory } = await load('modules/memory/infrastructure/agentSemanticMemory.js')
+const { createAgentSemanticMemory, semanticMemoryFailureCode } = await load('modules/memory/infrastructure/agentSemanticMemory.js')
 
 const redisTest = { skip: !redisAvailable, timeout: 20_000 }
 const DAY = 86_400_000
@@ -40,7 +40,7 @@ async function fixture(t, options = {}) {
   const bindings = new Map(), unavailable = new Set(), recalled = new Set()
   const calls = { embed: [], rerank: [] }, warnings = []
   const store = createAgentSemanticMemoryStore(redis.storage)
-  const behavior = { embed: undefined, rerank: undefined }
+  const behavior = { embed: undefined, rerank: undefined, readQueryPrivacy: undefined }
   let serial = 0, acquired = 0, released = 0, composer, memory, backend
   let currentVector = options.vector ?? (() => [1, 0, 0])
   const config = { enabled: true, topK: 5, minScore: 0.8, timeoutMs: 5000, ...options.config }
@@ -106,7 +106,10 @@ async function fixture(t, options = {}) {
         },
       }
       composer = createAgentSemanticMemory({
-        redis: redis.storage, memory, backend, config: () => config, now: () => clock.at,
+        redis: redis.storage, memory: { ...memory, getRedactionsBatch(identity, subjects, signal) {
+          if (subjects === undefined && behavior.readQueryPrivacy) return behavior.readQueryPrivacy()
+          return memory.getRedactionsBatch(identity, subjects, signal)
+        } }, backend, config: () => config, now: () => clock.at,
         resolve: target => { const binding = f.binding(target); return binding && { binding } },
         available: target => !unavailable.has(conversationAddressKey(target)),
         privatePeer: target => target.kind === 'private' ? actor.id : undefined,
@@ -566,7 +569,11 @@ test('Core deadline is reported as a timeout and still releases the read lease',
   await f.capture('indexed source for the deadline')
   await f.indexed()
   f.behavior.embed = () => new Promise(() => {})
-  await assert.rejects(f.read('unresponsive semantic query'), { code: 'semantic_memory_timeout' })
+  await assert.rejects(f.read('unresponsive semantic query'), error => {
+    assert.equal(error.code, 'semantic_memory_timeout')
+    assert.equal(semanticMemoryFailureCode(error, 'recall'), 'semantic_recall_embedding_timeout')
+    return true
+  })
   await f.drained()
   assert.equal(f.activeTurns, 0)
 })
@@ -584,4 +591,22 @@ test('stalled group embedding still returns current keyword matches and marks re
   assert.equal(await result.isCurrent(), false)
   assert.equal(f.activeTurns, 0)
   assert.equal(f.warnings.length, 1)
+})
+
+test('group keyword fallback remains usable when outbound query authorization stalls', redisTest, async t => {
+  const events = []
+  const f = await fixture(t, { batchRecall: true, config: { timeoutMs: 300 }, diagnostics: { emit: event => events.push(event) } })
+  const original = await f.capture('copper handbook source')
+  await f.indexed()
+  const indexedCalls = f.calls.embed.length
+  f.behavior.readQueryPrivacy = () => new Promise(() => {})
+  const result = await f.read('copper')
+  assert.equal(result.incomplete, true)
+  assert.match(result.text, /copper handbook source/u)
+  assert.equal(await result.isCurrent(), true)
+  assert.equal(f.calls.embed.length, indexedCalls)
+  assert.deepEqual(events.map(({ outcome, code }) => [outcome, code]), [['unknown', 'semantic_recall_local_fallback_authorization']])
+  f.recall(room, original.messageId)
+  assert.equal(await result.isCurrent(), false)
+  assert.equal(f.activeTurns, 0)
 })

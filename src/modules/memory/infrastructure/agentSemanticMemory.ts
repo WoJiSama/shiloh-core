@@ -14,13 +14,13 @@ import { describeMemoryTime } from './engine/temporalContext.js'
 import { canReadUnattributedMemory, personMemoryAddress } from './personMemoryContext.js'
 import { agentSemanticMemoryId, createAgentSemanticMemoryStore, type AgentSemanticMemoryRow } from './agentSemanticMemoryStore.js'
 import { ensureSemanticCleanup, semanticCleanupCurrent, semanticCleanupMatchesScope, semanticCleanupSelector } from './agentSemanticMemoryCleanup.js'
-import { AgentSemanticMemoryTimeoutError, rankAgentSemanticEvidence, type AgentSemanticRetrievalOptions, type AgentSemanticRetrievalTrace } from './agentSemanticRetrieval.js'
+import { AgentSemanticMemoryTimeoutError, prepareAgentSemanticRanking, type AgentSemanticRetrievalOptions, type AgentSemanticRetrievalTrace } from './agentSemanticRetrieval.js'
 
 type MemoryTurn = { isCurrent(): boolean; signal: AbortSignal; release(): void }
 class SemanticSourceChangedError extends Error {}
 class SemanticProviderError extends Error {}
 export function semanticMemoryFailureCode(error: unknown, use: 'index' | 'recall'): string | undefined {
-  if (error instanceof AgentSemanticMemoryTimeoutError) return `semantic_${use}_timeout`
+  if (error instanceof AgentSemanticMemoryTimeoutError) return use === 'recall' && error.phase ? `semantic_recall_${error.phase}_timeout` : `semantic_${use}_timeout`
   if (error instanceof SemanticSourceChangedError) return `semantic_${use}_source_changed`
   if (error instanceof SemanticProviderError) return `semantic_${use}_provider_failed`
 }
@@ -90,11 +90,13 @@ export function createAgentSemanticMemory(ports: {
         agentBindingToken(selected.binding) === agentBindingToken(binding)
     } catch { return false }
   }
-  async function permitted(binding: AgentBindingSnapshot, rows: readonly AgentSemanticMemoryRow[], signal: AbortSignal): Promise<AgentSemanticMemoryRow[]> {
+  async function permitted(binding: AgentBindingSnapshot, rows: readonly AgentSemanticMemoryRow[], signal: AbortSignal, observed = false): Promise<AgentSemanticMemoryRow[]> {
     signal.throwIfAborted()
+    if (!rows.length) return []
     const cutoff = now() - retention(), latest = now() + 60_000
     const peer = binding.target.kind === 'private' ? ports.privatePeer(binding.target) : undefined
-    const candidates = (await store.filterRows(binding, rows)).filter(row => row.at >= cutoff && row.at <= latest &&
+    // Observed rows already passed the cleanup fence in the same snapshot.
+    const candidates = (observed ? rows : await store.filterRows(binding, rows)).filter(row => row.at >= cutoff && row.at <= latest &&
       (binding.target.kind !== 'private' || peer === row.authorId) && ports.allowsText(row.text))
     signal.throwIfAborted()
     const recalled = ports.recalledMessageIds && candidates.length
@@ -134,7 +136,7 @@ export function createAgentSemanticMemory(ports: {
     })
   }
   async function withContext<T>(binding: AgentBindingSnapshot, guard: () => boolean, timeout: number, work: (context: PersonProfileExtractionContext) => Promise<T>,
-    related: readonly AgentBindingSnapshot[] = [], callerSignal?: AbortSignal): Promise<T> {
+    related: readonly AgentBindingSnapshot[] = [], callerSignal?: AbortSignal, phase?: () => AgentSemanticMemoryTimeoutError['phase']): Promise<T> {
     const turn = await ports.begin(binding)
     const controller = new AbortController()
     const request = { agentId: binding.agentId, target: binding.target, controller, related }
@@ -143,7 +145,7 @@ export function createAgentSemanticMemory(ports: {
     const authorized = () => !signal.aborted && turn.isCurrent() && guard() && current(binding) && related.every(current)
     const isCurrent = () => !signal.aborted && (ports.observeCurrent ? ports.observeCurrent(authorized) : authorized())
     const poll = setInterval(() => { if (!isCurrent()) controller.abort() }, 25)
-    const deadline = setTimeout(() => controller.abort(new AgentSemanticMemoryTimeoutError()), timeout)
+    const deadline = setTimeout(() => controller.abort(new AgentSemanticMemoryTimeoutError(phase?.())), timeout)
     poll.unref?.(); deadline.unref?.()
     try {
       if (!isCurrent()) throw new SemanticSourceChangedError('语义记忆来源已失效')
@@ -240,6 +242,7 @@ export function createAgentSemanticMemory(ports: {
     const related: AgentBindingSnapshot[] = []
     const budget = bounded(ports.config()?.timeoutMs, 1000, 200, 5000)
     const viewerCurrent = () => guard() && !callerSignal?.aborted
+    let phase: NonNullable<AgentSemanticMemoryTimeoutError['phase']> = 'source_check'
     let fallback: AgentSemanticMemoryRecall | undefined
     return withContext(binding, viewerCurrent, budget, async context => {
         const id = agentSemanticMemoryId(binding)
@@ -259,7 +262,7 @@ export function createAgentSemanticMemory(ports: {
           const scopeId = agentSemanticMemoryId(sourceBinding)
           for (const row of rows) evidence.push({ id: createHash('sha256').update(JSON.stringify([scopeId, row.messageId])).digest('hex'), binding: sourceBinding, row })
         }
-        append(binding, await permitted(binding, (saved?.rows ?? []).filter(row => !excluded.has(row.messageId)), context.signal))
+        append(binding, await permitted(binding, (saved?.rows ?? []).filter(row => !excluded.has(row.messageId)), context.signal, true))
         if (proof && subjectId && ports.authorizePrivateSource) {
           for (const entry of await store.listScopes()) {
             const scope = entry.scope
@@ -268,7 +271,7 @@ export function createAgentSemanticMemory(ports: {
             const sourceBinding = ports.resolve(scope.target)?.binding
             if (!sourceBinding || sourceBinding.agentId !== binding.agentId || !current(sourceBinding)) continue
             const sourceSnapshot = await store.observe(entry.id, context.signal)
-            const rows = await permitted(sourceBinding, (sourceSnapshot.state?.rows ?? []).filter(row => row.authorId === subjectId), context.signal)
+            const rows = await permitted(sourceBinding, (sourceSnapshot.state?.rows ?? []).filter(row => row.authorId === subjectId), context.signal, true)
             if (!rows.length) continue
             await context.ensureCurrent()
             if (!await abortable(ports.authorizePrivateSource(binding, sourceBinding, subjectId, context), context.signal)) continue
@@ -280,13 +283,13 @@ export function createAgentSemanticMemory(ports: {
         if (!evidence.length) { observeEmpty('no-authorized-evidence'); return empty }
         const scene = personMemoryAddress(binding.target, ports.privatePeer(binding.target)).scene
         const queryScope = { identity: identity(binding), scene }
-        const queryEpoch = (await ports.memory.getSceneRedactions(queryScope)).invalidatedAt
         // Queries may combine several utterances. Without an attribution for
         // every part, opt-outs conservatively keep the whole query local.
         const allowsQuery = async (activeContext = context) => proof ? (await permitted(binding, [proof], activeContext.signal)).length === 1
           : canReadUnattributedMemory(ports.memory, queryScope.identity, scene, activeContext.signal)
-        const remoteQuery = await allowsQuery()
         const groupQuery = binding.target.kind === 'group'
+        let queryEpoch: number | undefined
+        let remoteQuery = false
         const ensureEvidence = async (candidates: readonly Evidence[], activeContext = context) => {
           await activeContext.ensureCurrent()
           const groups = new Map<string, { binding: AgentBindingSnapshot; rows: AgentSemanticMemoryRow[] }>()
@@ -310,6 +313,11 @@ export function createAgentSemanticMemory(ports: {
           if ((proof && !(await allowsQuery(activeContext))) || !activeContext.isCurrent()) throw new SemanticSourceChangedError('语义查询来源权限已改变')
         }
         if (!groupQuery) await ensureEvidence(evidence)
+        const authorizeQuery = async () => {
+          phase = 'authorization'
+          queryEpoch = (await ports.memory.getSceneRedactions(queryScope)).invalidatedAt
+          remoteQuery = await allowsQuery()
+        }
         const ensureQueryAuthority = async () => {
           context.signal.throwIfAborted()
           // Core batches hold a stable privacy scope. Every opt-out, recall or
@@ -344,10 +352,13 @@ export function createAgentSemanticMemory(ports: {
         const threshold = bounded(ports.config()?.minScore, 0.35, 0, 1)
         const topK = Math.floor(bounded(ports.config()?.topK, 5, 1, 10))
         const rowById = new Map(evidence.map(item => [item.id, item]))
-        const embedsQuery = remoteQuery && mode !== 'bm25'
+        let ranking: ReturnType<typeof prepareAgentSemanticRanking> | undefined
+        const rank = (queryVector?: readonly number[]) =>
+          (ranking ??= prepareAgentSemanticRanking(evidence, text, ports.backend!.id, threshold, mode))(queryVector)
         const ensureEmbeddingCurrent = groupQuery ? ensureQueryAuthority : () => ensureQuery(evidence)
         const embedQuery = async () => {
           await ensureEmbeddingCurrent()
+          phase = 'embedding'
           let queryVector: number[] | undefined
           try {
             queryVector = vector((await abortable(ports.backend!.embed([text], { ...context, ensureCurrent: ensureEmbeddingCurrent }), context.signal))[0])
@@ -361,22 +372,29 @@ export function createAgentSemanticMemory(ports: {
           return queryVector
         }
         const prepareFallback = async () => {
-          const selected = rankAgentSemanticEvidence(evidence, text, undefined, ports.backend!.id, threshold, mode)
-            .slice(0, topK).map(hit => rowById.get(hit.chunk.id)!)
+          const selected = rank().slice(0, topK).map(hit => rowById.get(hit.chunk.id)!)
+          if (!selected.length) return
           await ensureEvidence(selected)
           fallback = project(selected, linesFor(selected).join('\n').slice(0, 5000), true)
         }
+        const retrieveVector = async () => {
+          await authorizeQuery()
+          const result = remoteQuery && mode !== 'bm25' ? await embedQuery() : undefined
+          phase = 'source_check'
+          return result
+        }
         let queryVector: number[] | undefined
-        if (embedsQuery && groupQuery && mode === 'production' && ports.recalledMessageIds && ports.memory.getRedactionsBatch) {
-          const [result] = await Promise.all([embedQuery().then(value => ({ value }), (error: unknown) => ({ error })), prepareFallback()])
+        if (groupQuery && mode === 'production' && ports.recalledMessageIds && ports.memory.getRedactionsBatch) {
+          const [result] = await Promise.all([retrieveVector().then(value => ({ value }), (error: unknown) => ({ error })), prepareFallback()])
           if ('error' in result) throw result.error
           queryVector = result.value
-        } else if (embedsQuery) queryVector = await embedQuery()
-        let hits = rankAgentSemanticEvidence(evidence, text, queryVector, ports.backend!.id, threshold, mode)
+        } else queryVector = await retrieveVector()
+        let hits = rank(queryVector)
         const candidates = () => hits.map(hit => rowById.get(hit.chunk.id)!)
         const usesRerank = mode === 'production' || mode === 'hybrid-rerank'
         let rerank: AgentSemanticRetrievalTrace['rerank'] = !usesRerank ? 'disabled' : hits.length <= 1 ? 'not-needed' : 'unavailable'
         if (usesRerank && remoteQuery && ports.backend?.rerank && hits.length > 1) {
+          phase = 'rerank'
           const ensureCurrent = () => ensureQuery(candidates())
           await ensureCurrent()
           const scores = await abortable(ports.backend.rerank(text, hits.map(hit => hit.chunk), { ...context, ensureCurrent }), context.signal)
@@ -384,6 +402,7 @@ export function createAgentSemanticMemory(ports: {
           if (scores) hits.sort((a, b) => (scores.get(b.chunk.id) ?? -1) - (scores.get(a.chunk.id) ?? -1))
           rerank = scores ? 'applied' : 'fallback'
         }
+        phase = 'source_check'
         const sourceRef = (item: Evidence) => ({ scopeId: agentSemanticMemoryId(item.binding), messageId: item.row.messageId })
         const ranked = ports.retrieval?.observe ? candidates().map(sourceRef) : []
         hits = hits.slice(0, topK)
@@ -403,11 +422,12 @@ export function createAgentSemanticMemory(ports: {
             ...(!selected.length ? { reason: 'no-match' as const } : {}) })
         }
         return project(selected, projection)
-      }, related, callerSignal).catch(error => {
+      }, related, callerSignal, () => phase).catch(error => {
         if (!fallback || !(error instanceof AgentSemanticMemoryTimeoutError || error instanceof SemanticProviderError) ||
             !viewerCurrent() || !current(binding)) throw error
         reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'semantic_memory_recall',
-          code: 'semantic_recall_local_fallback', outcome: 'unknown', error },
+          code: error instanceof AgentSemanticMemoryTimeoutError && error.phase
+            ? `semantic_recall_local_fallback_${error.phase}` : 'semantic_recall_local_fallback', outcome: 'unknown', error },
         () => ports.logger.warn('[Agent] 语义检索未完成，使用本地关键词结果'))
         return fallback
       })

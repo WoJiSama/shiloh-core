@@ -38,14 +38,16 @@ export interface AgentSemanticRankedHit {
 
 export class AgentSemanticMemoryTimeoutError extends Error {
   readonly code = 'semantic_memory_timeout'
-  constructor() { super('语义记忆操作超时'); this.name = 'AgentSemanticMemoryTimeoutError' }
+  constructor(readonly phase?: 'authorization' | 'embedding' | 'rerank' | 'source_check') {
+    super('语义记忆操作超时')
+    this.name = 'AgentSemanticMemoryTimeoutError'
+  }
 }
 
-/** Every mode starts with the same authorized evidence, before fusion or truncation. */
-export function rankAgentSemanticEvidence(
+/** Prepare keyword scores once so the local fallback and hybrid ranking share the same evidence. */
+export function prepareAgentSemanticRanking(
   evidence: readonly { readonly id: string; readonly row: AgentSemanticMemoryRow }[],
   query: string,
-  queryVector: readonly number[] | undefined,
   providerId: string,
   threshold: number,
   mode: AgentSemanticRetrievalMode,
@@ -55,12 +57,25 @@ export function rankAgentSemanticEvidence(
   if (mode !== 'vector') for (const item of evidence) bm25.add(item.id, tokenizeForBM25(item.row.text))
   const bm25Hits = mode === 'vector' ? [] : bm25.search(tokenizeForBM25(query), 30)
     .map(hit => ({ chunk: chunks.get(hit.id)!, score: hit.score }))
-  const vectorHits = mode !== 'bm25' && queryVector ? evidence.filter(({ row }) =>
-    row.providerId === providerId && row.vector?.length === queryVector.length)
-    .map(item => ({ chunk: chunks.get(item.id)!, score: item.row.vector!.reduce((sum, value, position) => sum + value * queryVector[position]!, 0) }))
-    .sort((a, b) => b.score - a.score).slice(0, 30) : []
-  if (mode === 'vector') return rrfFuse(vectorHits.filter(hit => hit.score >= threshold), []).slice(0, 20)
-  const hits = rrfFuse(vectorHits, bm25Hits)
-  return (mode === 'bm25' ? hits : hits.filter(hit => hit.vector >= threshold ||
-    hit.bm25Rank >= 1 && hit.bm25Rank <= 3)).slice(0, 20)
+  return (queryVector?: readonly number[]): AgentSemanticRankedHit[] => {
+    const vectorHits = mode !== 'bm25' && queryVector ? evidence.filter(({ row }) =>
+      row.providerId === providerId && row.vector?.length === queryVector.length)
+      .map(item => ({ chunk: chunks.get(item.id)!, score: item.row.vector!.reduce((sum, value, position) => sum + value * queryVector[position]!, 0) }))
+      .sort((a, b) => b.score - a.score).slice(0, 30) : []
+    if (mode === 'vector') return rrfFuse(vectorHits.filter(hit => hit.score >= threshold), []).slice(0, 20)
+    const hits = rrfFuse(vectorHits, bm25Hits)
+    return (mode === 'bm25' ? hits : hits.filter(hit => hit.vector >= threshold ||
+      hit.bm25Rank >= 1 && hit.bm25Rank <= 3)).slice(0, 20)
+  }
+}
+
+export function rankAgentSemanticEvidence(
+  evidence: Parameters<typeof prepareAgentSemanticRanking>[0],
+  query: string,
+  queryVector: readonly number[] | undefined,
+  providerId: string,
+  threshold: number,
+  mode: AgentSemanticRetrievalMode,
+): AgentSemanticRankedHit[] {
+  return prepareAgentSemanticRanking(evidence, query, providerId, threshold, mode)(queryVector)
 }
