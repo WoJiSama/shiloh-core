@@ -103,8 +103,8 @@ test('candidate resolution uses the original host directory without scratch path
   assert.deepEqual((await readdir(f.directory)).sort(), ['agent-bindings.yaml', 'host.yaml'])
 })
 
-test('six explicit model slots project only environment references and configured flags without exposing credentials', () => {
-  const slots = ['model', 'vision', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction', 'textTriggerModel']
+test('explicit model slots project only environment references and configured flags without exposing credentials', () => {
+  const slots = ['model', 'developmentModel', 'vision', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction', 'textTriggerModel']
   const env = {}, declared = {}, reads = []
   for (const [index, slot] of slots.entries()) {
     env[`KEY_${index}`] = `PRIVATE_CANDIDATE_KEY_${index}_20261117`
@@ -115,9 +115,23 @@ test('six explicit model slots project only environment references and configure
   assert.deepEqual(Object.keys(result.models), slots)
   for (const slot of slots) assert.deepEqual(result.models[slot], { ...declared[slot], apiKeyConfigured: true })
   assert.deepEqual(result.personaGuard, { enabled: true, badPatterns: ['坏模式'] })
-  assert.equal(new Set(reads).size, 7); assert.equal(reads.includes(''), false)
+  assert.equal(new Set(reads).size, slots.length + 1); assert.equal(reads.includes(''), false)
   for (const secret of Object.values(env)) assert.equal(JSON.stringify(result).includes(secret), false)
   assert.equal(JSON.stringify(result).includes('chatApiKey'), false)
+})
+
+test('development accepts only a server credential reference and leaves the main model distinct', async t => {
+  const developmentModel = { baseUrl: 'https://development.example/v1', name: 'code-model', apiKeyEnv: 'DEVELOPMENT_KEY' }
+  const f = await fixture(t, sources({ config: host({ developmentModel }) }))
+  const env = { MAIN_KEY: 'test-main', DEVELOPMENT_KEY: 'test-development' }
+  assert.throws(() => readStandaloneAgentConfig(f.file, { MAIN_KEY: env.MAIN_KEY }), /DEVELOPMENT_KEY/u)
+  const config = readStandaloneAgentConfig(f.file, env)
+  assert.equal(config.execution.chatAiConfig.chatApiModel, 'main')
+  assert.equal(config.execution.taskAiConfig.development.model, 'code-model')
+  assert.equal(config.execution.taskAiConfig.development.apiKey, env.DEVELOPMENT_KEY)
+  const validate = createStandaloneAgentCandidateValidator(f.file, env)
+  assert.equal(validate(sources()).models.developmentModel, undefined)
+  assert.throws(() => validate(sources({ config: host({ developmentModel: { ...developmentModel, apiKey: 'bare-key' } }) })), /仅支持/u)
 })
 
 test('candidate credentials retain startup rules while explicit inspection accepts missing declared keys', () => {

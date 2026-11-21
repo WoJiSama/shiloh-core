@@ -390,7 +390,8 @@ export async function main(argv: string[]): Promise<void> {
         diagnostics.emit({ stage: 'model', operation: 'model_request', outcome: 'failed', code: 'model_response_error' })
         return { error: '模型请求失败' }
       }
-      ledger.record({ scope: 'global', stage: 'api', model: String(result.model ?? config.execution.chatAiConfig?.chatApiModel ?? ''), usage: result.usage })
+      const taskModel = options.taskBackend ? config.execution.taskAiConfig?.[options.taskBackend]?.model : undefined
+      ledger.record({ scope: 'global', stage: 'api', model: String(result.model ?? taskModel ?? config.execution.chatAiConfig?.chatApiModel ?? ''), usage: result.usage })
       return result
     }
     const reviewBackend = config.characterConsistency
@@ -640,16 +641,22 @@ export async function main(argv: string[]): Promise<void> {
         return undefined
       })
       : legacySource ? { source: legacySource } : undefined
+    const development = config.execution.taskAiConfig?.development
+    const runDevelopmentModel = (request: ChatRequestData, signal: AbortSignal) => runModel(request, {
+      signal, isCurrent: config.isConfigCurrent, routeLabel: '开发',
+      ...(development ? { taskBackend: 'development' } : { forceChatBackend: true }),
+    })
     const codingWorker = codingSnapshot ? createStandaloneAgentCodingWorker({
       ...codingSnapshot, jobs: path.join(config.dataDir, 'coding-candidates'),
-      model: (request, signal) => runModel(request, { signal, forceChatBackend: true }),
+      model: runDevelopmentModel,
       allowsText: allowsSecretText,
     }) : undefined
     const personalToolAuthor = createStandaloneAgentToolAuthor({
       allowsText: allowsSecretText,
       async model(agentId, request, signal) {
-        const result = await runModel(request, { signal, forceChatBackend: true })
-        ledger.record({ scope: 'agent:' + agentId, stage: 'personal_tool_author', model: String(result.model ?? ''), usage: result.usage })
+        const result = await runDevelopmentModel(request, signal)
+        ledger.record({ scope: 'agent:' + agentId, stage: 'personal_tool_author',
+          model: String(result.model ?? development?.model ?? config.execution.chatAiConfig?.chatApiModel ?? ''), usage: result.usage })
         return result
       },
     })

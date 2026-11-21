@@ -1023,6 +1023,8 @@ node scripts/start-agent.mjs --config /path/to/agent-host.yaml \
 
 本人回合可委托文字工具作者生成声明与样例。固定发布进程验证样例后，工具的新版本在本人的工作回合生效。她可以恢复保留的早期版本或停用。工具支持新增行、字面量筛选、去重、排序和计数的组合。
 
+控制台「AI 模型 → 开发」显示编程工作器和自建工具实际使用的模型。可以沿用主对话的 API 地址和凭据环境变量名，填写独立的模型名称。也可以填写另一服务的 API 地址和服务器已配置的凭据环境变量名。保存后重启生效。可以测试已加载的渠道，也可以在沿用当前地址和凭据时测试草稿模型。取消独立配置时改用主对话。配置文件中该分组为可选的 `developmentModel`，接受 `baseUrl`、`name` 和 `apiKeyEnv`。
+
 生产编程工作器使用宿主变量 `BL_AGENT_CODING_SOURCES` 指定快照根。执行 `npm run agent:pack -- --with-coding-source` 会生成同提交的独立发布包和 `.coding-source.tar.gz`。把源码归档解至根目录下的完整提交号目录，在其中安装锁定依赖并将完整提交号写入 `source-commit`，再切换运行版本。宿主按已加载构建的清单选择对应目录，候选文件在 `coding-candidates` 记录基础提交。单独配置 `BL_AGENT_CODING_SOURCE` 的自管安装仍可运行。整包更新由宿主发布流程执行。
 
 ### 启用好友私聊

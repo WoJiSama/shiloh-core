@@ -19,7 +19,7 @@ import { DEFAULT_CONFIG as UMA_DEFAULTS } from '../modules/games/infrastructure/
 import { TURTLE_NUMBERS, UMA_NUMBERS } from './standaloneGamesConfig.js'
 import { createStandaloneAgentConsoleProviderProbe } from './standaloneAgentConsoleProviderProbe.js'
 
-export type ConsoleModelSlot = 'model' | 'vision' | 'personMemoryExtraction' | 'midtermSummary' | 'groupMemoryExtraction' | 'textTriggerModel'
+export type ConsoleModelSlot = 'model' | 'developmentModel' | 'vision' | 'personMemoryExtraction' | 'midtermSummary' | 'groupMemoryExtraction' | 'textTriggerModel'
 export interface ConsoleModelView { readonly baseUrl: string; readonly name: string; readonly apiKeyEnv: string; readonly apiKeyConfigured: boolean }
 export interface ValidatedConsoleCandidate {
   readonly dice: Readonly<{ enabled: boolean; maxDiceCount: number; maxDiceSides: number; maxRounds: number }>
@@ -47,8 +47,9 @@ const gameSettings = {
 function gameSettingsFor(kind: string) {
   return kind === 'turtleSoup' || kind === 'umaRace' || kind === 'deltaForce' ? gameSettings[kind] : undefined
 }
-const slots: readonly ConsoleModelSlot[] = ['model', 'vision', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction', 'textTriggerModel']
-const slotTitles: Record<ConsoleModelSlot, string> = { model: '主对话', vision: '图片理解', personMemoryExtraction: '个人记忆提取', midtermSummary: '对话摘要', groupMemoryExtraction: '群记忆提取', textTriggerModel: '主动发言判断' }
+const slots: readonly ConsoleModelSlot[] = ['model', 'developmentModel', 'vision', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction', 'textTriggerModel']
+const slotTitles: Record<ConsoleModelSlot, string> = { model: '主对话', developmentModel: '开发', vision: '图片理解',
+  personMemoryExtraction: '个人记忆提取', midtermSummary: '对话摘要', groupMemoryExtraction: '群记忆提取', textTriggerModel: '主动发言判断' }
 const { normalizeConfig: normalizePersonaGuard } = createPersonaReplyGuard({ isToneCorrectionMessage: () => false })
 const fail = (code: ConstructorParameters<typeof AgentConsoleError>[0] = 'invalid_request'): never => { throw new AgentConsoleError(code) }
 const record = (value: unknown): Data => { if (!value || typeof value !== 'object' || Array.isArray(value)) return fail(); return value as Data }
@@ -229,11 +230,12 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
     return { ...base(snapshot, 'config:' + kind), key: kind, title: kind === 'dice' ? '骰子配置' : '默认人设与回复守卫', groups: [{ label: '独立宿主配置', fields: selected }] }
   }
   function ai(snapshot: SourceSnapshot, candidate: ValidatedConsoleCandidate): Data {
-    const present = slots.filter(slot => candidate.models[slot] !== undefined)
+    const present = slots.filter(slot => slot === 'developmentModel' || candidate.models[slot] !== undefined)
     return { ...base(snapshot, 'providers'), definitions: present.map(configKey => ({ configKey, title: slotTitles[configKey], protocol: 'openai',
+      ...(configKey === 'developmentModel' ? { fallbackConfigKey: 'model' } : {}),
       capabilities: { maxProviders: 1, credentialMode: 'env-ref', probe: !!probeModel } })), sections: Object.fromEntries(present.map(slot => {
-        const model = candidate.models[slot]!
-        return [slot, [{ baseUrl: model.baseUrl, name: model.name, apiKeyEnv: model.apiKeyEnv, apiKeyConfigured: model.apiKeyConfigured }]]
+        const model = candidate.models[slot]
+        return [slot, model ? [{ baseUrl: model.baseUrl, name: model.name, apiKeyEnv: model.apiKeyEnv, apiKeyConfigured: model.apiKeyConfigured }] : []]
       })),
       revisions: Object.fromEntries(present.map(slot => [slot, version(snapshot, 'provider:' + slot)])) }
   }
@@ -357,7 +359,8 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
   }
   const savedModel = (value: unknown) => {
     const slot = id(value) as ConsoleModelSlot
-    const model = slots.includes(slot) && loadedCandidate.models[slot]
+    const model = slots.includes(slot) && (loadedCandidate.models[slot] ??
+      (slot === 'developmentModel' ? loadedCandidate.models.model : undefined))
     if (!model) return fail('not_found')
     return model
   }
@@ -383,7 +386,14 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
     write(payload, context) {
       fields(payload as Data, ['revision', 'configKey', 'providers'])
       const slot = id(payload.configKey) as ConsoleModelSlot
-      if (!slots.includes(slot) || !loadedCandidate.models[slot] || !Array.isArray(payload.providers) || payload.providers.length !== 1) return fail()
+      if (!slots.includes(slot) || slot !== 'developmentModel' && !loadedCandidate.models[slot] || !Array.isArray(payload.providers)) return fail()
+      if (slot === 'developmentModel' && payload.providers.length === 0) {
+        return save(context, payload, 'providers.write', 'provider:' + slot, 'host', state => {
+          if (!state.host.delete(slot)) return { source: loaded.sources.host, changed: 0 }
+          return { source: state.host.toString(), changed: 1 }
+        }, ai)
+      }
+      if (payload.providers.length !== 1) return fail()
       const provider = record(payload.providers[0]); fields(provider, ['baseUrl', 'name', 'apiKeyEnv'])
       const name = text(provider.name, 200, false).trim(), baseUrl = text(provider.baseUrl, 4096, false), apiKeyEnv = id(provider.apiKeyEnv)
       if (!/^[A-Z_][A-Z0-9_]{0,127}$/u.test(apiKeyEnv)) return fail()
@@ -391,8 +401,8 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
       try { url = new URL(baseUrl) } catch { return fail() }
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return fail()
       return save(context, payload, 'providers.write', 'provider:' + slot, 'host', (state, candidate) => {
-        const next = { baseUrl: url.href, name, apiKeyEnv }, current = candidate.models[slot]!
-        if (equal(next, { baseUrl: current.baseUrl, name: current.name, apiKeyEnv: current.apiKeyEnv })) return { source: loaded.sources.host, changed: 0 }
+        const next = { baseUrl: url.href, name, apiKeyEnv }, current = candidate.models[slot]
+        if (current && equal(next, { baseUrl: current.baseUrl, name: current.name, apiKeyEnv: current.apiKeyEnv })) return { source: loaded.sources.host, changed: 0 }
         for (const [key, value] of Object.entries(next)) state.host.setIn([slot, key], value)
         return { source: state.host.toString(), changed: 1 }
       }, ai)

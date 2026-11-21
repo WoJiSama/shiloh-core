@@ -438,6 +438,39 @@ describe('standalone persistence page requests', () => {
     expect(modelInput().props('value')).toBe('vision-draft')
     expect(wrapper.findComponent(SaveBar).props('dirty')).toBe(1)
   })
+  it.each([false, true])('shows the effective development model and saves its routing choice (configured=%s)', async configured => {
+    const model = ai.sections.model[0]
+    const initial = {
+      ...ai,
+      definitions: [...ai.definitions, { configKey: 'developmentModel', title: '开发', fallbackConfigKey: 'model' }],
+      sections: { ...ai.sections, developmentModel: configured ? [{ ...model, name: 'code-model' }] : [] },
+      revisions: { ...ai.revisions, developmentModel: 'dev-r1' },
+    }
+    const fetcher = vi.fn(async (_path: string, options?: RequestInit) =>
+      options?.method === 'PUT' ? response(commit(initial)) : response(initial)
+    )
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = page(AiPage)
+    await flushPromises()
+    wrapper.findComponent(NTabs).vm.$emit('update:value', 'developmentModel')
+    await flushPromises()
+    expect(wrapper.text()).toContain(configured ? 'code-model' : 'old-model')
+    const action = configured ? '改用主对话' : '配置开发模型'
+    await wrapper.findAllComponents(NButton).find(button => button.text() === action)!.trigger('click')
+    if (!configured) {
+      const field = wrapper.findAllComponents(NInput).find(input => input.attributes('id') === 'standalone-model-name')!
+      expect(field.props('value')).toBe('old-model')
+      field.vm.$emit('update:value', 'code-model')
+    }
+    await flushPromises()
+    wrapper.findComponent(SaveBar).vm.$emit('save')
+    await flushPromises()
+    const save = fetcher.mock.calls.find(([path, options]) => path === '/api/ai/config' && options?.method === 'PUT')
+    expect(JSON.parse(String(save?.[1]?.body))).toMatchObject({
+      configKey: 'developmentModel', revision: 'dev-r1',
+      providers: configured ? [] : [{ baseUrl: model.baseUrl, apiKeyEnv: model.apiKeyEnv, name: 'code-model' }],
+    })
+  })
   it('saves templates alone without legacy accounts or binding payloads', async () => {
     const fetcher = vi.fn(async (_path: string, options?: RequestInit) => {
       if (options?.method === 'PUT') {

@@ -14,7 +14,7 @@ export function standaloneAgentSecrets(config: ReturnType<typeof readStandaloneA
   const proxySecrets = torrentProxy ? [torrentProxy.href, torrentProxy.username, torrentProxy.password].flatMap(value => {
     try { return [value, decodeURIComponent(value)] } catch { return [value] }
   }) : []
-  return [config.characterConsistency?.apiKey, config.execution.chatAiConfig?.chatApiKey, config.vision?.apiKey,
+  return [config.characterConsistency?.apiKey, config.execution.chatAiConfig?.chatApiKey, config.execution.taskAiConfig?.development?.apiKey, config.vision?.apiKey,
     config.tools.localEmoji.analysis?.apiKey, config.tools.localEmoji.embedding?.apiKey, config.tools.localEmoji.tools?.apiKey,
     config.tools.search?.apiKey, config.tools.deltaForce?.apiKey, config.tools.github?.token,
     config.tools.modrinth?.translation.apiKey, config.personMemoryExtraction?.apiKey, config.midtermSummary?.apiKey, config.groupMemoryExtraction?.apiKey,

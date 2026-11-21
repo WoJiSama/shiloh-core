@@ -56,9 +56,10 @@ function envName(value: unknown): string {
   return value
 }
 
-function readModel(value: unknown, section: 'model' | 'vision' | 'characterConsistency' | 'personMemoryExtraction' | 'midtermSummary' | 'groupMemoryExtraction' | 'textTriggerModel' | 'tools.search' | 'tools.images.generation' | 'tools.images.edit' | 'tools.modrinth.translation' | 'tools.rendering.mindMap', env: NodeJS.ProcessEnv, requireCredentials: boolean) {
+function readModel(value: unknown, section: ConsoleModelSlot | 'characterConsistency' | 'tools.search' | 'tools.images.generation' |
+  'tools.images.edit' | 'tools.modrinth.translation' | 'tools.rendering.mindMap', env: NodeJS.ProcessEnv, requireCredentials: boolean) {
   const model = object(value)
-  if (['characterConsistency', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction', 'textTriggerModel'].includes(section) && Object.keys(model).some(key => !['baseUrl', 'name', 'apiKeyEnv'].includes(key))) {
+  if (['developmentModel', 'characterConsistency', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction', 'textTriggerModel'].includes(section) && Object.keys(model).some(key => !['baseUrl', 'name', 'apiKeyEnv'].includes(key))) {
     throw new Error(`${section} 仅支持 baseUrl、name 和 apiKeyEnv`)
   }
   let apiUrl: URL
@@ -535,6 +536,8 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   const requireCredentials = options?.requireCredentials !== false
   const mainModel = readModel(raw.model, 'model', env, requireCredentials)
   const { apiUrl, model: modelName, apiKey, apiKeyEnv } = mainModel
+  const developmentModel = raw.developmentModel === undefined ? undefined
+    : readModel(raw.developmentModel, 'developmentModel', env, requireCredentials)
   const vision = raw.vision === undefined ? undefined : readModel(raw.vision, 'vision', env, requireCredentials)
   const personMemoryExtraction = raw.personMemoryExtraction === undefined ? undefined
     : readModel(raw.personMemoryExtraction, 'personMemoryExtraction', env, requireCredentials)
@@ -573,6 +576,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     chatAiConfig: { chatApiUrl: apiUrl, chatApiModel: modelName, chatApiKey: apiKey,
       ...(mainModel.reasoningEffort ? { chatReasoningEffort: mainModel.reasoningEffort } : {}) },
     toolsAiConfig: { toolsAiUrl: apiUrl, toolsAiModel: modelName, toolsAiApikey: apiKey },
+    ...(developmentModel ? { taskAiConfig: { development: developmentModel } } : {}),
   }
   const hostConfig = decodeHostConfig({ ...(raw.simulation === undefined ? {} : { simulation: object(raw.simulation) }), persona: raw.persona, forbiddenWords: raw.forbiddenWords })
   const personaGuard: PersonaGuardConfig | undefined = raw.personaGuard === undefined ? undefined : object(raw.personaGuard)
@@ -705,7 +709,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   }
   const forbiddenWords: ForbiddenConfig = hostConfig.forbiddenWords ?? {}
   const models: Partial<Record<ConsoleModelSlot, ConsoleModelView>> = {}
-  for (const [slot, selected] of [['model', mainModel], ['vision', vision], ['personMemoryExtraction', personMemoryExtraction],
+  for (const [slot, selected] of [['model', mainModel], ['developmentModel', developmentModel], ['vision', vision], ['personMemoryExtraction', personMemoryExtraction],
     ['midtermSummary', midtermSummary], ['groupMemoryExtraction', groupMemoryExtraction], ['textTriggerModel', textTriggerModel]] as const) {
     if (selected) models[slot] = Object.freeze({ baseUrl: selected.apiUrl, name: selected.model, apiKeyEnv: selected.apiKeyEnv, apiKeyConfigured: !!selected.apiKey })
   }
