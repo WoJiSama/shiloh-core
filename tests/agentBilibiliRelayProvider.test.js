@@ -189,7 +189,7 @@ test('SPI may never receive a configured host or account secret as its device cr
   })
 })
 
-test('a card renderer replaces the intro with one card image and falls back on failure', async t => {
+test('an automatic Bilibili relay keeps a rendered card before its video even when Chromium fails', async t => {
   const card = Buffer.from(PNG)
   const coverView = { pic: 'https://i0.hdslb.com/cover.png' }
   const rendered = []
@@ -212,13 +212,27 @@ test('a card renderer replaces the intro with one card image and falls back on f
     assert.ok(!f.events.some(event => event.code === 'card_unavailable'))
     await result.release(); await f.clean()
   })
-  await t.test('a failing render keeps the plain text and cover intro with one diagnostic', async t => {
+  await t.test('a failing browser renders a summary card and records the failure', async t => {
     const f = await fixture(t, { view: coverView, options: { cardRenderer: { render: async () => { throw Error('render down') } } } })
     const result = await f.prepare(); assert.equal(result.status, 'ready')
     assert.deepEqual(result.plan.items[0].parts.map(part => part.kind), ['text', 'image'])
-    assert.deepEqual(await f.read(result.plan.items[0].parts[1].artifact), PNG)
-    assert.ok(result.plan.items[0].parts[0].text.includes('示例视频'))
+    const summary = await f.read(result.plan.items[0].parts[1].artifact)
+    assert.deepEqual(summary.subarray(0, 8), PNG.subarray(0, 8))
+    assert.ok(summary.readUInt32BE(16) > 100, 'the summary is a rendered card, larger than the source cover')
+    assert.match(result.plan.items[0].parts[0].text, /《示例视频》\nhttps:\/\/www\.bilibili\.com\/video\//u)
+    assert.deepEqual(result.plan.items.slice(1).map(item => item.parts.map(part => part.kind)), [['video']])
+    assert.ok(result.plan.items[1].parts[0].thumbnail)
     assert.ok(f.events.some(event => event.operation === 'bilibili_provider_card' && event.code === 'card_unavailable'))
+    await result.release(); await f.clean()
+  })
+  await t.test('a card without a video includes the explicit reason and original page', async t => {
+    const f = await fixture(t, { view: { duration: 1801 }, options: {
+      cardRenderer: { render: async () => ({ mime: 'image/png', base64: PNG.toString('base64') }) },
+    } })
+    const result = await f.prepare(); assert.equal(result.status, 'metadata-only')
+    assert.equal(result.plan.items.length, 1)
+    assert.match(result.plan.items[0].parts[0].text, /超过30分钟，未附带视频本体/u)
+    assert.ok(result.plan.items[0].parts[0].text.includes(result.pageUrl))
     await result.release(); await f.clean()
   })
 })

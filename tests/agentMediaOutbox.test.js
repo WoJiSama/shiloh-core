@@ -20,8 +20,13 @@ const sent = messageId => ({ state: 'sent', messageId })
 const resourceFailure = () => ({ state: 'failed', code: 'media_resource_preprocessing_failed' })
 const artifact = (id, kind = 'video') => ({ id: id.repeat(32), kind, mime: kind === 'video' ? 'video/mp4' : 'image/jpeg', sizeBytes: 64, sha256: id.repeat(64) })
 const cover = artifact('1', 'image'), firstVideo = artifact('2'), secondVideo = artifact('3'), thumbnail = artifact('4', 'image')
-const plan = title => ({ version: 1, items: [{ parts: [{ kind: 'text', text: title }, { kind: 'image', artifact: cover }] },
-  { parts: [{ kind: 'video', artifact: firstVideo, thumbnail }, { kind: 'text', text: '中间说明' }, { kind: 'video', artifact: secondVideo, thumbnail }] }] })
+const plan = (title, separateNodes = false) => {
+  const intro = { parts: [{ kind: 'text', text: title }, { kind: 'image', artifact: cover }] }
+  const videos = [firstVideo, secondVideo].map(artifact => ({ kind: 'video', artifact, thumbnail }))
+  const videoNodes = separateNodes ? videos.map(video => ({ parts: [video] }))
+    : [{ parts: [videos[0], { kind: 'text', text: '中间说明' }, videos[1]] }]
+  return { version: 1, items: [intro, ...videoNodes] }
+}
 const douyinShare = (kind = 'video', id = '7123456789012345678') => ({ provider: 'douyin', reference: { kind, id } })
 const xiaohongshuShare = (kind = 'note', id = '6ad4a9c200000000290162d4') => ({ provider: 'xiaohongshu', reference: { kind, id } })
 const youtubeShare = (id = 'Ab_Cd-9xYz0') => ({ provider: 'youtube', reference: { kind: 'video', id } })
@@ -61,7 +66,7 @@ async function fixture(t) {
         : selected.provider === 'youtube' ? `https://www.youtube.com/watch?v=${selected.reference.id}`
           : selected.provider === 'pixiv' ? `https://www.pixiv.net/artworks/${selected.reference.id}`
             : `https://www.xiaohongshu.com/explore/${selected.reference.kind === 'short' ? '6ad4a9c200000000290162d4' : selected.reference.id}`
-    return { status: 'ready', pageUrl, infoText: `搬运 ${job.source.messageId}`, plan: ['note', 'artwork'].includes(selected.reference.kind) ? structuredClone(gallery) : plan(`搬运 ${job.source.messageId}`),
+    return { status: 'ready', pageUrl, infoText: `搬运 ${job.source.messageId}`, plan: ['note', 'artwork'].includes(selected.reference.kind) ? structuredClone(gallery) : plan(`搬运 ${job.source.messageId}`, selected.provider === 'bilibili'),
       async release() { if (!released) { released = true; releases.set(job.id, (releases.get(job.id) ?? 0) + 1) } } }
   }
   const makeContext = (record, signal) => {
@@ -476,34 +481,41 @@ test('expired preheats release all leases before a fresh preparation can deliver
   assert.equal(f.preparations.filter(id => id === second.id).length, 2); assert.equal(f.releases.get(second.id), 2)
 })
 
-test('video plans deliver an intro message then every direct video, with a final link fallback in durable order', redisTest, async t => {
+test('Bilibili delivers one forward with the card followed by every video and thumbnail', redisTest, async t => {
   const f = await fixture(t), job = await f.enqueue()
-  f.setSend(call => call.effect === 'directVideo' ? { state: 'failed', code: 'native_rejected' } : sent(`receipt-${f.calls.length}`))
   await f.outbox.start(); const record = await f.finished(job)
-  assert.equal(record.state, 'completed'); assert.deepEqual(f.calls.map(call => call.effect), ['directIntro', 'directVideo', 'link'])
-  const intro = f.calls[0].action, direct = f.calls[1].action
-  assert.equal(intro.mode, 'direct-video'); assert.equal(direct.mode, 'direct-video')
-  assert.deepEqual(intro.plan.items[0].parts.map(part => part.kind), ['text', 'image', 'text'])
-  assert.deepEqual(direct.plan.items.flatMap(item => item.parts.filter(part => part.kind === 'video').map(part => part.artifact.id)), [firstVideo.id, secondVideo.id])
-  assert.deepEqual(record.effects.map(effect => effect.state), ['sent', 'failed', 'sent']); assert.equal(f.releases.get(job.id), 1)
+  assert.equal(record.state, 'completed'); assert.deepEqual(f.calls.map(call => call.effect), ['forward'])
+  const forward = f.calls[0].action
+  assert.equal(forward.mode, 'forward'); assert.deepEqual(forward.plan, plan(`搬运 ${job.source.messageId}`, true))
+  assert.deepEqual(record.effects.map(row => [row.effect, row.state]), [['forward', 'sent']]); assert.equal(f.releases.get(job.id), 1)
   const raw = await f.reader.get(f.prefix + `agent:media-outbox:v1:job:${job.id}`)
   for (const secret of ['sha256', firstVideo.id, '搬运 source', 'bilivideo.com', 'base64', '/tmp/']) assert.equal(raw.includes(secret), false)
 })
 
-for (const stage of ['directIntro', 'directVideo', 'link']) test(`${stage} unknown stops every later fallback and cannot replay on restart`, redisTest, async t => {
+test('Bilibili retries the entire forward once after definite resource rejection before sending the original link', redisTest, async t => {
   const f = await fixture(t), job = await f.enqueue()
-  f.setSend(call => call.effect === stage ? { state: 'unknown' }
-    : call.effect === 'directVideo' ? { state: 'failed', code: 'native_rejected' } : sent(`receipt-${f.calls.length}`))
-  await f.outbox.start(); const record = await f.finished(job), expected = ['directIntro', 'directVideo', 'link'].slice(0, ['directIntro', 'directVideo', 'link'].indexOf(stage) + 1)
+  f.setSend(call => call.effect === 'link' ? sent('bilibili-link') : resourceFailure())
+  await f.outbox.start(); const record = await f.finished(job)
+  assert.equal(record.state, 'completed'); assert.deepEqual(f.calls.map(call => call.effect), ['forward', 'forwardRetry', 'link'])
+  assert.deepEqual(f.calls[1].action, f.calls[0].action)
+  assert.match(f.calls[2].action.parts[0].text, /已改为发送原作品链接/u)
+  assert.deepEqual(record.effects.map(effect => effect.state), ['failed', 'failed', 'sent'])
+})
+
+for (const stage of ['forward', 'forwardRetry', 'link']) test(`Bilibili ${stage} unknown stops every later fallback and cannot replay on restart`, redisTest, async t => {
+  const f = await fixture(t), job = await f.enqueue()
+  f.setSend(call => call.effect === stage ? { state: 'unknown' } : resourceFailure())
+  const sequence = ['forward', 'forwardRetry', 'link'], expected = sequence.slice(0, sequence.indexOf(stage) + 1)
+  await f.outbox.start(); const record = await f.finished(job)
   assert.equal(record.state, 'unknown'); assert.deepEqual(f.calls.map(call => call.effect), expected)
   await f.outbox.stop(); const restarted = f.create(); await restarted.start(); await f.idle(); assert.equal(f.calls.length, expected.length)
 })
 
 test('a channel thumbnail rejection uses one plain link while neutral complete videos stay provider-owned until cleanup', redisTest, async t => {
   const f = await fixture(t), job = await f.enqueue()
-  f.setSend(call => call.effect === 'directVideo' ? { state: 'failed', code: 'video_thumbnail_missing' } : sent(`receipt-${f.calls.length}`))
+  f.setSend(call => call.effect === 'forward' ? { state: 'failed', code: 'video_thumbnail_missing' } : sent(`receipt-${f.calls.length}`))
   await f.outbox.start(); const record = await f.finished(job)
-  assert.equal(record.state, 'completed'); assert.deepEqual(f.calls.map(call => call.effect), ['directIntro', 'directVideo', 'link']); assert.equal(f.releases.get(job.id), 1)
+  assert.equal(record.state, 'completed'); assert.deepEqual(f.calls.map(call => call.effect), ['forward', 'link']); assert.equal(f.releases.get(job.id), 1)
 })
 
 for (const fault of ['begin-not-written', 'begin-ack-lost', 'finish-not-written', 'finish-ack-lost']) test(`${fault} obeys durable pending evidence and never advances an uncertain effect`, redisTest, async t => {
@@ -519,9 +531,9 @@ for (const fault of ['begin-not-written', 'begin-ack-lost', 'finish-not-written'
   })
   await f.outbox.start(); const record = await f.finished(job)
   assert.equal(faults, 1)
-  if (fault === 'begin-not-written') { assert.equal(record.state, 'completed'); assert.equal(f.calls.length, 2); assert.equal(f.preparations.length, 2) }
+  if (fault === 'begin-not-written') { assert.equal(record.state, 'completed'); assert.equal(f.calls.length, 1); assert.equal(f.preparations.length, 2) }
   else { assert.equal(record.state, 'unknown'); assert.equal(f.calls.length, fault === 'begin-ack-lost' ? 0 : 1) }
-  await f.outbox.stop(); await f.create().start(); await f.idle(); assert.equal(f.calls.length, fault === 'begin-ack-lost' ? 0 : fault === 'begin-not-written' ? 2 : 1)
+  await f.outbox.stop(); await f.create().start(); await f.idle(); assert.equal(f.calls.length, fault === 'begin-ack-lost' ? 0 : 1)
 })
 
 test('source revocation cleans a preheat and a late preparation result without any native send', redisTest, async t => {
@@ -584,7 +596,7 @@ for (const stage of ['preparing', 'prepared', 'sending']) test(`a sibling accoun
   assert.ok(faults >= 8, 'durable cancellation exhausted its CAS retries after saving the tombstone')
   f.setEval(undefined); nativeHeld.release(); await f.finished(unaffected); await f.idle()
   assert.equal((await f.finished(victim)).state, stage === 'sending' ? 'unknown' : 'cancelled')
-  assert.deepEqual(f.calls.filter(call => call.id === victim.id).map(call => call.effect), stage === 'sending' ? ['directIntro'] : [])
+  assert.deepEqual(f.calls.filter(call => call.id === victim.id).map(call => call.effect), stage === 'sending' ? ['forward'] : [])
   await f.outbox.stop(); await f.outbox.stop()
   for (const job of [victim, unaffected]) { assert.equal(f.contextReleases.get(job.id), 1); assert.equal(releaseCalls.get(job.id), 1); assert.equal(f.releases.get(job.id), 1) }
 })
@@ -598,7 +610,7 @@ test('three bounded preparation failures preserve FIFO and emit one safe final l
   assert.equal(f.calls.length, 0); f.advance(3000); await f.outbox.tick()
   const record = await f.finished(first); await f.finished(second)
   assert.equal(record.prepareAttempts, 3); assert.equal(record.state, 'completed')
-  assert.deepEqual(f.calls.map(call => [call.id, call.effect]), [[first.id, 'link'], [second.id, 'directIntro'], [second.id, 'directVideo']])
+  assert.deepEqual(f.calls.map(call => [call.id, call.effect]), [[first.id, 'link'], [second.id, 'forward']])
   const message = f.calls[0].action.parts[0].text; assert.match(message, /视频资源准备失败/); assert.equal(message.includes('SECRET'), false)
 })
 
@@ -608,7 +620,7 @@ test('stop during preparation cleans late results and restart safely re-prepares
   await f.outbox.start(); await bounded(reached.promise); await bounded(f.outbox.stop())
   held.release(); await waitFor(() => f.releases.get(job.id) === 1, 'stopped late preheat release')
   assert.equal(f.calls.length, 0); f.setPrepare(undefined); await f.create().start(); assert.equal((await f.finished(job)).state, 'completed')
-  assert.equal(f.calls.length, 2); assert.equal(f.releases.get(job.id), 2)
+  assert.equal(f.calls.length, 1); assert.equal(f.releases.get(job.id), 2)
 })
 
 test('stop while Redis claim is pending never opens a context after returning or leaves a live owner', redisTest, async t => {

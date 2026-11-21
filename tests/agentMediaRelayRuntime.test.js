@@ -272,12 +272,16 @@ test('Douyin unknown forward cannot emit links or repeat after restart', { timeo
 
 for (const selectedShare of [youtubeShare, pixivShare]) for (const mode of ['simulation', 'text']) for (const native of [false, true]) test(`Core ${mode} routes verified ${selectedShare.provider} ${native ? 'native' : 'text'} shares without a model`, { timeout: 20000 }, async t => {
   const f = await fixture(t, { mode, share: selectedShare, providers: [selectedShare.provider], ...(selectedShare.provider === 'pixiv' ? { plan: gallery } : {}) })
-  const text = selectedShare.provider === 'youtube' ? 'https://youtu.be/AbC_123-xYz' : `https://www.pixiv.net/artworks/${selectedShare.reference.id}`
+  const youtube = selectedShare.provider === 'youtube'
+  const text = youtube ? 'https://youtu.be/AbC_123-xYz' : `https://www.pixiv.net/artworks/${selectedShare.reference.id}`
   await f.emit(f.message(native ? { text: '', parts: [{ kind: 'extension', platform: 'fixture', type: selectedShare.provider }] } : { parts: [{ kind: 'text', text }] }))
   await f.drain(); assert.equal((await f.terminal()).state, 'completed')
-  assert.deepEqual(f.preparations[0].selected, selectedShare); assert.deepEqual(f.calls.map(row => row.stage), ['forward'])
+  const expectedModes = youtube ? ['direct-video', 'direct-video'] : ['forward']
+  assert.deepEqual(f.preparations[0].selected, selectedShare)
+  assert.deepEqual(f.calls.map(row => row.action.mode), expectedModes)
+  if (youtube) assert.deepEqual(f.calls.map(row => row.action.plan.items.flatMap(item => item.parts.map(part => part.kind))), [['text'], ['video']])
   await f.emit(); await f.drain(); await f.restart(); await f.emit(); await f.drain()
-  assert.equal(f.calls.length, 1); await f.assertPrivate()
+  assert.equal(f.calls.length, expectedModes.length); await f.assertPrivate()
 })
 
 for (const selectedShare of [youtubeShare, pixivShare]) for (const queued of [false, true]) test(`${selectedShare.provider} remains disabled under the original Bilibili-only activation (${queued ? 'persisted' : 'new'})`, { timeout: 20000 }, async t => {

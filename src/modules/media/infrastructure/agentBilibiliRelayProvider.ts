@@ -1,9 +1,11 @@
 import { types } from 'node:util'
+import sharp from 'sharp'
 import type { AgentMediaArtifact, AgentMediaArtifactLease, AgentMediaRelayItem, AgentMediaResourceContext } from '../../../contracts/agentMediaRelay.js'
 import type { AgentMediaRelayProvider, AgentMediaShare, AgentPreparedMediaRelay } from '../../../contracts/agentMediaRelayWorkflow.js'
 import type { AgentPreparedBilibiliQuality } from '../../../contracts/agentBilibiliQuality.js'
 import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agentSecretText.js'
+import { buildTextImageChatSvg } from '../../rendering/infrastructure/textImageTemplates.js'
 import { validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
 import { bilibiliFailure, bilibiliGuard, bilibiliOfficialUrl, createBilibiliHttp, nativeAgentBilibiliRequest } from './agentBilibiliRelayHttp.js'
@@ -34,7 +36,7 @@ export interface AgentBilibiliRelayProviderOptions {
 }
 const META_BYTES = 2 * 1024 * 1024, IMAGE_BYTES = 32 * 1024 * 1024, VIDEO_BYTES = 512 * 1024 * 1024
 const MAX_SECONDS = 1800, MAX_PARTS = 20
-// One optional cover plus one owned video and JPEG thumbnail per segment must fit
+// The optional cover and card plus one video and JPEG thumbnail per segment must fit
 // the artifact store's 128 descriptor limit. Text nodes do not consume artifacts.
 const MAX_VIDEOS = Math.floor(128 / 2)
 const row = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -85,6 +87,7 @@ export function createAgentBilibiliRelayProvider(options: AgentBilibiliRelayProv
 
 function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profile: Readonly<AgentBilibiliRelayProfile>): AgentBilibiliProfileProvider {
   const strict = profile.mode !== 'automatic', requiredAuth = profile.mode === 'quality'
+  const cardRenderer = strict ? undefined : options.cardRenderer
   const videoLimit = profile.mode === 'attachment' ? 30 * 1024 * 1024 : VIDEO_BYTES
   const videoCapacity = profile.mode === 'attachment' ? 2 : MAX_VIDEOS
   const diagnose = (operation: string, code: string, context?: AgentMediaResourceContext) => {
@@ -346,7 +349,8 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       else if (meta.partCount > MAX_PARTS) lines.push(`视频共有${meta.partCount}个分P，超过20个分P上限，未附带视频本体`)
       else if (meta.duration <= 0 || strict && meta.parts.some(part => part.duration <= 0)) lines.push('视频时长未知，未附带视频本体')
       else {
-        const capacity = profile.mode === 'attachment' ? videoCapacity : cover ? videoCapacity - 1 : videoCapacity
+        const reserveIntroArtifacts = profile.mode !== 'attachment' && (cover || cardRenderer)
+        const capacity = reserveIntroArtifacts ? videoCapacity - 1 : videoCapacity
         let play = await playback(meta, guard.context, requiredAuth ? [cookie, buvid].filter(Boolean).join('; ') : buvid, capacity), authorized = requiredAuth
         if (!strict && !play.overCapacity && cookie && options.autoAuthorizedRetry === true && (play.preview || play.login)) {
           play = await playback(meta, guard.context, [cookie, buvid].filter(Boolean).join('; '), capacity); authorized = true
@@ -385,28 +389,34 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       const outputAllowed = (value: string) => allowed(value) && outputCheck(value)
       const infoText = safe(lines.join('\n')), pageUrl = safe(meta.pageUrl)
       if (!outputAllowed(infoText) || !outputAllowed(pageUrl) || actualQualities.some(value => !outputAllowed(value.label))) throw bilibiliFailure()
-      // The rendered card carries the metadata visually; failures keep the plain text+cover intro.
       let introParts: readonly ({ kind: 'text', text: string } | { kind: 'image', artifact: AgentMediaArtifact })[] | undefined
-      if (!strict && options.cardRenderer) {
+      if (cardRenderer) {
+        let card: { bytes: Buffer; mime: string }
         try {
           let coverData: { readonly mime: string; readonly bytes: Buffer } | undefined
           if (cover) {
             const reader = await options.artifacts.open(cover, guard.context)
             try { const chunks: Buffer[] = []; for await (const bytes of reader.chunks) chunks.push(Buffer.from(bytes)); coverData = { mime: cover.mime, bytes: Buffer.concat(chunks) } } finally { await reader.close?.() }
           }
-          const statLabels: Record<string, string> = { view: '播放', like: '点赞', coin: '投币', favorite: '收藏', share: '转发', reply: '评论', danmaku: '弹幕' }
-          const image = await options.cardRenderer.render({ title: meta.title, owner: meta.owner, durationText: durationText(meta.duration),
+          const image = await cardRenderer.render({ title: meta.title, owner: meta.owner, durationText: durationText(meta.duration),
             partText: meta.partCount > 1 ? `${meta.partCount}个分P` : '', publishedText: meta.published ? new Date(meta.published * 1000).toISOString().slice(0, 10) : '',
             pageUrl: meta.pageUrl, stats: Object.fromEntries(Object.entries(statLabels).filter(([key]) => meta.stats[key] !== undefined).map(([key, label]) => [label, meta.stats[key]!.toLocaleString('zh-CN')])),
             description: meta.description.slice(0, 300), episode: meta.episode, ...(coverData ? { cover: coverData } : {}) }, guard.context)
-          const bytes = Buffer.from(image.base64, 'base64')
-          const lease = await guard.wait(options.artifacts.stage({ kind: 'image', mime: image.mime, chunks: (async function* () { yield bytes })() }, guard.context), late => releaseLeases([late]))
-          leases.push(lease)
-          introParts = [{ kind: 'text', text: safe(`《${meta.title}》\n${meta.pageUrl}`) }, { kind: 'image', artifact: lease.artifact }]
+          card = { bytes: Buffer.from(image.base64, 'base64'), mime: image.mime }
         } catch (error) {
           diagnose('bilibili_provider_card', error instanceof AgentBilibiliCardError ? error.code : 'card_unavailable', context)
           await guard.ensure()
+          // Render a compact summary with the existing browserless text image layout.
+          const { svg, visibleText } = buildTextImageChatSvg({ text: infoText, nickname: '哔哩哔哩' })
+          if (!outputAllowed(visibleText)) throw bilibiliFailure()
+          const bytes = await guard.wait(sharp(Buffer.from(svg), { limitInputPixels: 8_000_000 }).timeout({ seconds: 5 }).png().toBuffer())
+          card = { bytes, mime: 'image/png' }
         }
+        const { bytes, mime } = card
+        const lease = await guard.wait(options.artifacts.stage({ kind: 'image', mime, chunks: (async function* () { yield bytes })() }, guard.context), late => releaseLeases([late]))
+        leases.push(lease)
+        const introText = mediaItems.length ? safe(`《${meta.title}》\n${meta.pageUrl}`) : infoText
+        introParts = [{ kind: 'text', text: introText }, { kind: 'image', artifact: lease.artifact }]
       }
       const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: introParts ?? [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover } as const] : [])] }, ...mediaItems] }, { allowsText: outputAllowed })
       await guard.ensure()
