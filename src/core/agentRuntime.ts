@@ -101,7 +101,7 @@ import { createGroupMemory } from '../modules/memory/infrastructure/groupMemory.
 import { createGroupMemoryManagement } from '../modules/memory/infrastructure/groupMemoryManagement.js'
 import { createGroupKnowledgeTool } from '../modules/memory/infrastructure/groupKnowledgeTool.js'
 import { createPersonaSnapshot } from '../modules/conversation/infrastructure/personaSnapshot.js'
-import { createAgentPersonalRuntime, type AgentPersonalSeed } from '../modules/simulation/infrastructure/agentPersonalRuntime.js'
+import { createAgentPersonalRuntime, type AgentPersonalSeed, type PersonalPorts } from '../modules/simulation/infrastructure/agentPersonalRuntime.js'
 import { createAgentGroupModeration } from '../modules/groupAdmin/infrastructure/agentGroupModeration.js'
 import { sanitizeFinalReplyText } from '../modules/conversation/domain/replySanitizer.js'
 import { createSimulationRuntime, type SimulationRuntimePorts } from '../modules/simulation/infrastructure/simulationRuntime.js'
@@ -167,6 +167,7 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   unifiedGroupChat?: boolean
   personalSeeds?: readonly AgentPersonalSeed[]
   codingWorker?(agentId: string, task: string, signal: AbortSignal): Promise<string | undefined>
+  personalToolAuthor?: NonNullable<PersonalPorts['publishTool']>
   migratedGroupToolNames?(target: ConversationAddress): readonly string[] | undefined
   textGroupRevision?: string
   textTrigger?: AgentTextTriggerConfig
@@ -1965,6 +1966,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     readPublicFile: (url, guard) => readAgentPublicFile(url, guard),
     isMessageRecalled: (target, messageId) => inbox.isRecalled(target, messageId),
   })
+  async function verifyPersonalText(binding: AgentBindingSnapshot, proof: { sha256: string; from: number; until: number },
+    signal: AbortSignal, guard: () => boolean) {
+    const { target } = binding, adapter = adapterFor(target)
+    const current = () => guard() && !signal.aborted && adapterFor(target) === adapter && isPersonalBindingCurrent(binding)
+    if (!current()) return undefined
+    const found = await adapter?.findOwnTextDelivery?.(target, proof, { signal, isCurrent: current })
+    if (!found || !current() || await inbox.isRecalled(target, found.messageId) || !current()) return undefined
+    return found.messageId
+  }
+
   const commitments = createCommitmentRuntime({
     redis: storage, logger: toolLogger, diagnostics, getBot: () => null,
     messageActions,
@@ -2002,6 +2013,26 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       return requester && bot && groupCurrent() && !await inbox.isRecalled(target, request.messageId)
         ? { destinationBindingIdentity: agentBindingIdentity(binding) } : undefined
     } } : {}),
+    async authorizeOwnedSource(binding, proof, guard) {
+      const { target } = binding, adapter = adapterFor(target), token = agentBindingToken(binding)
+      const signal = AbortSignal.any([toolCancellation.signal, AbortSignal.timeout(5_000)])
+      const current = () => !signal.aborted && guard() && isRunning() && adapter?.isReady() === true &&
+        conversationEnabled(target) && allowsConversationAI(target) && bindingIsCurrent(target, token) &&
+        !privacyBlocked(platformAccountKey(target.account))
+      if (!current() || target.kind !== 'group' || proof.authorId === target.account.id ||
+          !isMessageId(proof.messageId) || !adapter?.readMessage || await inbox.isRecalled(target, proof.messageId)) return false
+      const message = await adapter.readMessage(target, proof.messageId, { signal, isCurrent: current })
+      if (!message || message.messageId !== proof.messageId || message.sender.id !== proof.authorId ||
+          !samePlatformNamespace(message.sender, target.account) || message.occurredAt !== proof.at ||
+          conversationAddressKey(message.conversation) !== conversationAddressKey(target) ||
+          !message.text.trim() || options.allowsText?.(message.text, 'incoming') === false) return false
+      const { botId, scene } = personMemoryAddress(target, proof.authorId)
+      const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: proof.authorId })
+      return !isPersonMemoryRedacted({ ...proof, scene, excerpt: message.text }, message.text, redactions) &&
+        !await inbox.isRecalled(target, proof.messageId) && current()
+    },
+    verifyOwnedDelivery: (binding, proof) =>
+      verifyPersonalText(binding, proof, AbortSignal.any([toolCancellation.signal, AbortSignal.timeout(10_000)]), isRunning),
     allowsExecution: allowsConversationAI,
     captureExecution: target => activity.capture(target),
     isSimulationGroup: (_id, target) => target ? runtime.isConversationActive(target) : false,
@@ -2015,13 +2046,18 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   const personalTargetList = (agentId: string) => (options.managementBindings?.list() ?? [])
     .filter(binding => binding.agentId === agentId && binding.source === 'configured')
   const personalTargetKey = (binding: AgentBindingSnapshot) =>
-    createHash('sha256').update(JSON.stringify([agentConversationKey(binding), agentBindingToken(binding)])).digest('hex').slice(0, 24)
+    createHash('sha256').update(agentBindingIdentity(binding)).digest('hex').slice(0, 24)
+  const personalBindingFor = (agentId: string, key: string) => personalTargetList(agentId).find(binding => personalTargetKey(binding) === key)
+  function isPersonalBindingCurrent(binding: AgentBindingSnapshot) {
+    return isRunning() && adapterFor(binding.target)?.isReady() === true && conversationEnabled(binding.target) &&
+      allowsConversationAI(binding.target) && bindingIsCurrent(binding.target, agentBindingToken(binding)) &&
+      !privacyBlocked(platformAccountKey(binding.target.account))
+  }
   async function personalContactAllowed(binding: AgentBindingSnapshot) {
     const { target } = binding, adapter = adapterFor(target)
-    if (!isRunning() || !adapter?.isReady() || !conversationEnabled(target) || !allowsConversationAI(target) ||
-        !bindingIsCurrent(target, agentBindingToken(binding))) return false
+    if (!isPersonalBindingCurrent(binding)) return false
     if (target.kind === 'group') return runtime.canInitiateGroupChat(target)
-    return target.kind === 'private' && !!privatePeerFor(target, adapter) && typeof adapter.verifyPrivateFriend === 'function' &&
+    return target.kind === 'private' && !!privatePeerFor(target, adapter) && typeof adapter?.verifyPrivateFriend === 'function' &&
       await storage.get(personalContactKey(binding)) !== 'off'
   }
   if (options.personalSeeds?.length) {
@@ -2041,14 +2077,38 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         }
         return rows
       },
-      async contact(agentId, key, text, inheritedSignal, guard) {
-        const binding = personalTargetList(agentId).find(row => personalTargetKey(row) === key)
+      async groupContext(agentId, key, guard) {
+        const binding = personalBindingFor(agentId, key)
+        if (!binding || binding.target.kind !== 'group' || !await personalContactAllowed(binding)) return undefined
+        const context = await runtime.readPersonalWorkContext(binding, () => guard() && isPersonalBindingCurrent(binding),
+          value => options.allowsText?.(value, 'incoming') !== false && options.allowsToolInput?.(value) !== false)
+        return context && { messages: context.messages, isCurrent: async () => await context.isCurrent() && await personalContactAllowed(binding) }
+      },
+      async reservation(agentId, key, goalId) {
+        const binding = personalBindingFor(agentId, key)
+        return binding && isPersonalBindingCurrent(binding) ? commitments.ownedReservation(binding, goalId) : undefined
+      },
+      async reserve(agentId, key, goalId, source, at, message, guard, contextCurrent) {
+        const binding = personalBindingFor(agentId, key)
+        const current = () => !!binding && guard() && isPersonalBindingCurrent(binding)
+        if (!binding || !current() || options.allowsText?.(message, 'outgoing') === false ||
+            !await personalContactAllowed(binding) || !await contextCurrent()) return undefined
+        const config = defaultSimRuntimeConfig(options.getSection())
+        if (config.toolPolicy.denyTools.includes('commitmentTool') || config.toolPolicy.groups[binding.target.id]?.includes('commitmentTool')) return undefined
+        return commitments.reserveOwned(binding, goalId, source, at, message, current)
+      },
+      async verifyContact(agentId, key, proof, signal, guard) {
+        const binding = personalBindingFor(agentId, key)
+        return binding ? verifyPersonalText(binding, proof, signal, guard) : undefined
+      },
+      async contact(agentId, key, text, inheritedSignal, guard, contextCurrent) {
+        const binding = personalBindingFor(agentId, key)
         const clean = sanitizeFinalReplyText(text)
         if (!binding || !clean) return { state: 'failed', code: 'contact_unavailable' }
         const { target } = binding, adapter = adapterFor(target), token = agentBindingToken(binding)
         const signal = AbortSignal.any([inheritedSignal, AbortSignal.timeout(15_000), toolCancellation.signal])
-        const current = () => !signal.aborted && guard() && isRunning() && allowsConversationAI(target) &&
-          adapter?.isReady() === true && bindingIsCurrent(target, token)
+        const current = () => !signal.aborted && guard() && adapterFor(target) === adapter &&
+          bindingIsCurrent(target, token) && isPersonalBindingCurrent(binding)
         const ensureCurrent = async () => {
           if (!current() || !await personalContactAllowed(binding)) throw new Error('主动联系权限已改变')
           if (target.kind === 'group') {
@@ -2059,7 +2119,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           if (target.kind === 'private' && !await adapter?.verifyPrivateFriend?.(target, { signal, isCurrent: current })) {
             throw new Error('好友关系未核实')
           }
-          if (!current() || !await personalContactAllowed(binding)) throw new Error('主动联系权限已改变')
+          if (!current() || !await personalContactAllowed(binding) || contextCurrent && !await contextCurrent() || !current()) {
+            throw new Error('主动联系权限或本群资料已改变')
+          }
         }
         try { await ensureCurrent() } catch { return { state: 'failed', code: 'contact_unavailable' } }
         return messageActions.send({ version: 1, kind: 'message.send', target, binding, parts: [{ kind: 'text', text: clean }] },
@@ -2073,6 +2135,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         return current() && result.status === 'succeeded' ? result.content : undefined
       } } : {}),
       ...(options.codingWorker ? { coding: options.codingWorker } : {}),
+      ...(options.personalToolAuthor ? { publishTool: options.personalToolAuthor } : {}),
       recordUsage: (agentId, stage, reply) => options.recordTokens?.({ scope: 'agent:' + agentId, stage, model: String(reply.model ?? ''), usage: reply.usage }),
       failed: (operation, error, code) => diagnostics.emit({ stage: 'runtime', operation, outcome: 'failed', ...(code ? { code } : {}), error }),
     })
@@ -3798,6 +3861,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     runtime,
     management,
     selfProfiles: (id: string) => personal?.profiles(id) ?? [],
+    personalWork: (id: string, visible: readonly AgentBindingSnapshot[]) =>
+      personal?.workSummary(id, key => visible.some(binding => binding.agentId === id && personalTargetKey(binding) === key)),
     /** Trusted host cleanup only; never installed as a model tool. */
     semanticMemoryCleanup,
     semanticMemoryAdmin: semanticMemory.administration,

@@ -2,7 +2,7 @@
 import {createHash,randomUUID} from 'node:crypto'
 import type {CommitmentData,CommitmentRedisLike} from '../../../contracts/commitments.js'
 import type {AgentDeferredActionData} from '../../../contracts/agentDeferredAction.js'
-import {agentConversationKey,decodeAgentConversationKey} from '../../runtime/domain/agentBindings.js'
+import {agentConversationKey,decodeAgentConversationKey,isPlatformIdentifier} from '../../runtime/domain/agentBindings.js'
 import {reportAgentFailure,type AgentDiagnostics} from '../../runtime/infrastructure/agentDiagnostics.js'
 import {assertDeferredGrant,decodeAgentDeferredAction} from './agentDeferredActionData.js'
 import type {AgentSourceMemoryCleanupGuard,AgentSourceMemoryPurgeSubject} from '../../../contracts/sourceMemoryCleanup.js'
@@ -60,6 +60,22 @@ export function decodeCommitment(data:string):CommitmentData {
     return { messageId:origin.messageId, ...(typeof origin.groupId==='string'?{
       groupId:origin.groupId,destinationBindingIdentity:String(origin.destinationBindingIdentity)}:{}) }
   })()
+  const ownedReservation=r.ownedReservation===undefined?undefined:(()=>{
+    const value=record(r.ownedReservation), source=record(value.source)
+    if(typeof value.goalId!=='string'||!value.goalId||value.goalId.length>64||
+      typeof source.messageId!=='string'||!source.messageId||source.messageId.length>128||
+      !isPlatformIdentifier(source.authorId)||typeof source.at!=='number'||!Number.isSafeInteger(source.at)||source.at<0||
+      value.attemptedAt!==undefined&&(typeof value.attemptedAt!=='number'||!Number.isSafeInteger(value.attemptedAt)||value.attemptedAt<0)||
+      value.verifiedMessageId!==undefined&&(typeof value.verifiedMessageId!=='string'||!value.verifiedMessageId||value.verifiedMessageId.length>128)||
+      scope?.target.kind!=='group'||r.creator_id!==r.bot_id||source.authorId===r.bot_id||
+      deliver!=='static'||normalizedSchedule.kind!=='once'||typeof r.static_message!=='string'||!r.static_message.trim()||
+      r.mentionCreator!==false||r.expiry_at!==0||importedReminder||privateRequest||r.deferredAction!==undefined) {
+      throw new Error('自主预约来源损坏')
+    }
+    return {goalId:value.goalId,source:{messageId:source.messageId,authorId:source.authorId,at:source.at},
+      ...(typeof value.attemptedAt==='number'?{attemptedAt:value.attemptedAt}:{}),
+      ...(typeof value.verifiedMessageId==='string'?{verifiedMessageId:value.verifiedMessageId}:{})}
+  })()
   if(r.sourceAt!==undefined&&(!Number.isSafeInteger(r.sourceAt)||Number(r.sourceAt)<0))throw new Error('承诺来源时间损坏')
   if(r.mentionCreator!==undefined&&typeof r.mentionCreator!=='boolean')throw new Error('承诺提醒方式损坏')
   const deferredAction=r.deferredAction===undefined?undefined:decodeAgentDeferredAction(r.deferredAction)
@@ -85,6 +101,7 @@ export function decodeCommitment(data:string):CommitmentData {
     ...(typeof r.mentionCreator==='boolean'?{mentionCreator:r.mentionCreator}:{}),
     ...(importedReminder?{importedReminder:true as const}:{}),
     ...(privateRequest?{privateRequest}:{}),
+    ...(ownedReservation?{ownedReservation}:{}),
     ...(deferredAction?{deferredAction}:{}),
     expiry_at:Number(r.expiry_at)||0,renewal_asked_at:Number(r.renewal_asked_at)||0,
     next_run_at:Number(r.next_run_at)||0,status:status as CommitmentData['status'],
@@ -164,7 +181,9 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
     return {raw:result[0] as string|null,fenceRaw:result[1] as string|null,retired:result[2]!==null,fences:parseConversationCleanup(result[1] as string|null)}
   }
   const sourceAt=(c:CommitmentData)=>c.deferredAction?.grant.source.at??c.sourceAt??c.created_at
-  const permitted=(c:CommitmentData,fences:ReturnType<typeof parseConversationCleanup>)=>!c.scope||conversationCleanupAllows(c.scope,{authorId:c.creator_id,at:sourceAt(c)},fences)
+  const permitted=(c:CommitmentData,fences:ReturnType<typeof parseConversationCleanup>)=>!c.scope||(
+    conversationCleanupAllows(c.scope,{authorId:c.creator_id,at:sourceAt(c)},fences)&&
+    (!c.ownedReservation||conversationCleanupAllows(c.scope,c.ownedReservation.source,fences)))
   function sameSource(left:CommitmentData,right:CommitmentData):boolean{
     return left.creator_id===right.creator_id&&left.created_at===right.created_at&&sourceAt(left)===sourceAt(right)&&left.bot_id===right.bot_id&&
       (left.scope?agentConversationKey(left.scope):'')===(right.scope?agentConversationKey(right.scope):'')&&left.bindingIdentity===right.bindingIdentity
@@ -267,7 +286,8 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
     return withLock(async token=>{
       const current=await getCommitment(c.id)
       if(!current||current.status!=='active'||!c.run_id||current.run_id!==c.run_id||(current.lease_until||0)<=at)return false
-      return await persist({...current,lease_until:at+COMMITMENT_LEASE_MS,...(begin?{execution_state:'executing' as const}:{})},token,isCurrent)
+      return await persist({...current,lease_until:at+COMMITMENT_LEASE_MS,...(begin?{execution_state:'executing' as const,
+        ...(current.ownedReservation?{ownedReservation:{...current.ownedReservation,attemptedAt:at}}:{})}:{})},token,isCurrent)
     })
   }
   async function expireClaim(c:CommitmentData,at:number):Promise<'expired'|'current'|'cancelled'>{
@@ -291,7 +311,18 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
       const current=await getCommitment(c.id)
       if(!current||current.status!=='active'||!c.run_id||current.run_id!==c.run_id)return false
       // Preserve concurrent renewal fields. Only the owner of this run may settle it.
-      return await persist({...withoutRun(c),...(current.deferredAction?{deferredAction:current.deferredAction}:{}),expiry_at:current.expiry_at,renewal_asked_at:current.renewal_asked_at||0,revision:(current.revision||0)+1},token)
+      return await persist({...withoutRun(c),...(current.deferredAction?{deferredAction:current.deferredAction}:{}),
+        ...(current.ownedReservation?{ownedReservation:current.ownedReservation}:{}),
+        expiry_at:current.expiry_at,renewal_asked_at:current.renewal_asked_at||0,revision:(current.revision||0)+1},token)
+    })
+  }
+  async function confirmOwnedReservation(c:CommitmentData,messageId:string,isCurrent:()=>boolean):Promise<CommitmentData|undefined>{
+    return withLock(async token=>{
+      const current=await getCommitment(c.id)
+      if(!current?.ownedReservation||current.status!=='unknown'||current.revision!==c.revision||!isCurrent())return undefined
+      const verified:CommitmentData={...current,status:'completed',last_result:'sent',revision:(current.revision||0)+1,
+        ownedReservation:{...current.ownedReservation,verifiedMessageId:messageId}}
+      return await persist(verified,token,isCurrent)?verified:undefined
     })
   }
   /** A cancellation fence shared by local workers using this same storage port. */
@@ -431,7 +462,7 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
   async function purgeSubject(input:AgentSourceMemoryPurgeSubject,guard:AgentSourceMemoryCleanupGuard){
     const cleanup=createSubjectMemoryCleanup(redis,COMMITMENT_CLEANUP_KEY,'commitments')
     return cleanup.purge(input,guard,async(selector,authorize,counts)=>{
-      const selected=(c:CommitmentData)=>!!c.scope&&!conversationCleanupAllows(c.scope,{authorId:c.creator_id,at:sourceAt(c)},{version:1,entries:[selector]})
+      const selected=(c:CommitmentData)=>!permitted(c,{version:1,entries:[selector]})
       const selectedFailure=(value:unknown)=>{
         const row=record(value),scope=typeof row.scopeKey==='string'?decodeAgentConversationKey(row.scopeKey):null
         return !!scope&&typeof row.bindingIdentity==='string'&&typeof row.creator_id==='string'&&Number.isSafeInteger(row.sourceAt)&&Number(row.sourceAt)>=0&&
@@ -514,5 +545,5 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
       }
     }
   }
-  return {createCommitment,getCommitment,cancelCommitment,takeDueCommitments,commitRunOutcome,requeueForRetry,listActiveCommitments,appendFailLog,readFailLog,clearFailLog,updateActive,refreshClaim,releaseUnstartedClaim,expireClaim,recoverLegacyIndex,onInvalidated,isClaimCurrent,updateDeferredActionClaim,listDeferredActions,listManagementCommitments,readManagementFailLog,clearManagementFailLog,purgeSubject}
+  return {createCommitment,getCommitment,cancelCommitment,takeDueCommitments,commitRunOutcome,confirmOwnedReservation,requeueForRetry,listActiveCommitments,appendFailLog,readFailLog,clearFailLog,updateActive,refreshClaim,releaseUnstartedClaim,expireClaim,recoverLegacyIndex,onInvalidated,isClaimCurrent,updateDeferredActionClaim,listDeferredActions,listManagementCommitments,readManagementFailLog,clearManagementFailLog,purgeSubject}
 }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { once } from 'node:events'
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, get } from 'node:http'
@@ -170,6 +171,49 @@ test('reverse OneBot stop cancels initial verification and releases the listenin
   t.after(() => server.close())
   server.listen(Number(new URL(url).port), '127.0.0.1')
   await once(server, 'listening')
+})
+
+test('the standalone listener survives a wrong peer and the initial login deadline', { timeout: 25_000 }, async t => {
+  const url = await address()
+  const adapter = adapterAt(url, { keepReverseListenerWaiting: true, onError() { assert.fail('the listener should stay open') } })
+  t.after(() => adapter.stop())
+  const started = adapter.start(async () => {})
+  let done = false
+  void started.then(() => { done = true }, () => { done = true })
+  const bad = await peerAt(t, url, (client, request) => login(client, request, '987654321'))
+  await waitFor(() => bad.readyState === WebSocket.CLOSED, 'unverified peer removed')
+  await delay(15_100)
+  assert.equal(adapter.isReady(), false)
+  assert.equal(done, false)
+  await peerAt(t, url, login)
+  await started
+  assert.equal(adapter.isReady(), true)
+})
+
+test('uncertain group text is confirmed only by a single exact, self-authored history match', { timeout: 10_000 }, async t => {
+  const url = await address(), time = Math.floor(Date.now() / 1000)
+  const target = { account, kind: 'group', id: '315320' }, body = '已安排组队'
+  const matched = { message_type: 'group', message_id: 870000001, group_id: target.id, time, self_id: account.id, user_id: account.id,
+    sender: { user_id: account.id }, message: [{ type: 'text', data: { text: body } }] }
+  const wrongGroup = { ...matched, message_id: 870000002, group_id: '315321' }
+  const wrongAuthor = { ...matched, message_id: 870000003, sender: { user_id: '987654321' } }
+  const adapter = adapterAt(url)
+  t.after(() => adapter.stop())
+  const started = adapter.start(async () => {})
+  let ambiguous = false
+  await peerAt(t, url, (client, request) => {
+    if (request.action === 'get_login_info') return login(client, request)
+    assert.equal(request.action, 'get_group_msg_history')
+    assert.equal(String(request.params.group_id), target.id)
+    client.send(JSON.stringify({ status: 'ok', retcode: 0, echo: request.echo,
+      data: { messages: [wrongGroup, wrongAuthor, matched, ...(ambiguous ? [{ ...matched, message_id: 870000004 }] : [])] } }))
+  })
+  await started
+  const guard = { signal: new AbortController().signal, isCurrent: () => true }
+  const proof = { sha256: createHash('sha256').update(body).digest('hex'), from: time * 1000, until: time * 1000 + 60_000 }
+  assert.equal((await adapter.findOwnTextDelivery(target, proof, guard))?.messageId, '870000001')
+  ambiguous = true
+  assert.equal(await adapter.findOwnTextDelivery(target, proof, guard), undefined)
 })
 
 test('a retired socket cannot disconnect an immediately restarted OneBot adapter', { timeout: 10_000 }, async t => {

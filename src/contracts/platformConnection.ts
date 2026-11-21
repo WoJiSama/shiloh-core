@@ -134,6 +134,9 @@ export interface PlatformConnectionAdapter extends PlatformConnection {
   readMessage?(target: ConversationAddress, messageId: string, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<IncomingMessage | undefined>
   /** Verify an already referenced self-authored message in this exact conversation. */
   readOwnMessage?(target: ConversationAddress, messageId: string, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<OwnMessageSnapshot | undefined>
+  /** Bounded lookup for an uncertain self-authored text send, with a fresh conversation and exact body proof. */
+  findOwnTextDelivery?(target: ConversationAddress, proof: { readonly sha256: string; readonly from: number; readonly until: number },
+    options: { readonly signal: AbortSignal; isCurrent(): boolean }): Promise<OwnMessageSnapshot | undefined>
   /** Read a forwarded bundle attached to a verified message in this conversation. */
   readForward?(target: ConversationAddress, source: ForwardReference, options?: MessageActionOptions): Promise<ForwardContent | undefined>
   /** Materialize image parts of one message after verifying its conversation and source. */

@@ -8,6 +8,7 @@ export interface CommitmentScheduleOnce { kind:'once'; time:number }
 export interface CommitmentScheduleDaily { kind:'daily'; time:string }
 export type CommitmentSchedule = CommitmentScheduleOnce | CommitmentScheduleDaily
 export type CommitmentStatus = 'active'|'completed'|'failed'|'expired'|'cancelled'|'unknown'
+export interface CommitmentSourceMessage { messageId:string; authorId:string; at:number }
 export interface CommitmentData {
   id:string
   group_id:string
@@ -23,6 +24,8 @@ export interface CommitmentData {
   importedReminder?:true
   /** The owning scope stays private. A destination, when present, is a bound group on the same account. */
   privateRequest?: { messageId:string; groupId?:string; destinationBindingIdentity?:string }
+  /** A reminder accepted by the agent itself in a single bound group. */
+  ownedReservation?: { goalId:string; source:CommitmentSourceMessage; attemptedAt?:number; verifiedMessageId?:string }
   /** Frozen extra_action delegation; executed by the dedicated worker, never by wakeSim. */
   deferredAction?:AgentDeferredActionData
   expiry_at:number                 // 到期不再执行(默认30天,防遗忘永动机)

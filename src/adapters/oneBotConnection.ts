@@ -2,7 +2,7 @@ import { createQqInteractionDeliveryPort, QQ_INTERACTION_TIMEOUT_MS } from './qq
 import { captureQqOwnMessageTarget, isQqOwnMessageId, proveQqFriend, proveQqOwnMessage } from './qqOwnMessageProof.js'
 export { createQqInteractionDeliveryPort, QQ_INTERACTION_TIMEOUT_MS } from './qqInteractionDelivery.js'
 export type { QqInteractionApiAction, QqInteractionApiOptions } from './qqInteractionDelivery.js'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { types } from 'node:util'
 import WebSocket from 'ws'
 import type { ConversationAddress, PlatformConnection, PlatformUserRef } from '../contracts/agentBinding.js'
@@ -324,6 +324,8 @@ interface OneBotEndpoint {
 }
 
 interface OneBotConnectionOptions extends OneBotEndpoint {
+  /** A running host keeps its reverse listener available until an authenticated peer arrives. */
+  keepReverseListenerWaiting?: boolean
   onDisconnect(): void
   onReconnect(): void
   onError(): void
@@ -602,7 +604,11 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     })
   }
 
+  let reverseGeneration = 0
   async function listen(): Promise<void> {
+    const generation = ++reverseGeneration
+    const waiting = options.keepReverseListenerWaiting === true
+    const live = () => !stopped && generation === reverseGeneration
     let firstPeer = true
     let complete!: () => void
     let fail!: (error: Error) => void
@@ -610,31 +616,36 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     // Register rejection handling before opening the listener, including when bind fails.
     void ready.catch(() => {})
     cancelFirstPeer = () => fail(new Error(`OneBot 连接 ${connection.id} 未能验证 QQ 账号`))
-    const timer = setTimeout(() => cancelFirstPeer?.(), 15_000)
+    const cancel = cancelFirstPeer
+    const timer = waiting ? undefined : setTimeout(cancel, 15_000)
     try {
-      listener = await listenOneBotReverseSocket({
+      const listening = await listenOneBotReverseSocket({
         url, accountId: connection.account.id, accessToken: options.accessToken!,
-        available: () => !stopped && !socket,
+        available: () => live() && !socket,
         accept(client) {
-          if (stopped) { client.terminate(); return }
+          if (!live()) { client.terminate(); return }
           const initial = firstPeer
-          void attach(client, initial).then(() => {
+          void attach(client, initial || waiting).then(() => {
+            if (!live()) return
             firstPeer = false
             complete()
-          }, error => { if (initial) fail(error instanceof Error ? error : new Error('OneBot 账号核验失败')) })
+            if (waiting && !initial) options.onReconnect()
+          }, error => { if (live() && initial && !waiting) fail(error instanceof Error ? error : new Error('OneBot 账号核验失败')) })
         },
         onError: options.onError,
       })
-      if (stopped) { listener.close(); listener = undefined; throw new Error('OneBot 连接已停止') }
+      if (!live()) { listening.close(); throw new Error('OneBot 连接已停止') }
+      listener = listening
       await ready
     } finally {
       clearTimeout(timer)
-      cancelFirstPeer = undefined
+      if (cancelFirstPeer === cancel) cancelFirstPeer = undefined
     }
   }
 
   function stop(): void {
     stopped = true
+    reverseGeneration++
     accept = undefined
     verified = false
     redPacketPort?.close()
@@ -1039,6 +1050,39 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       if (!client || !isCurrent() || target.kind !== 'private' || !servesAccount(target)) return false
       const friends = await call(client, 'get_friend_list', {}, isCurrent, 5000, signal, undefined, false)
       return isCurrent() && proveQqFriend(friends, target)
+    },
+    async findOwnTextDelivery(target, proof, guard) {
+      const selected = captureQqOwnMessageTarget(target), client = socket
+      if (!selected || !client || !servesAccount(selected) || !/^[a-f0-9]{64}$/u.test(proof.sha256) ||
+          !Number.isSafeInteger(proof.from) || !Number.isSafeInteger(proof.until) || proof.until <= proof.from ||
+          proof.until - proof.from > 60_000) return undefined
+      const key = conversationAddressKey(selected)
+      const current = () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN &&
+        !guard.signal.aborted && guard.isCurrent() && conversationAddressKey(target) === key
+      if (!current()) return undefined
+      if (selected.kind === 'private') {
+        const friends = await call(client, 'get_friend_list', {}, current, 5_000, guard.signal, undefined, false)
+        if (!current() || !proveQqFriend(friends, selected)) return undefined
+      }
+      const response = record(await call(client, selected.kind === 'group' ? 'get_group_msg_history' : 'get_friend_msg_history',
+        selected.kind === 'group' ? { group_id: selected.id, count: 50 } : { user_id: selected.id, count: 50 },
+        current, 3_000, guard.signal, undefined, false))
+      const messages = record(response.data).messages
+      if (!current() || response.status !== 'ok' || response.retcode !== 0 || !Array.isArray(messages) || messages.length > 50) return undefined
+      let match: Awaited<ReturnType<NonNullable<PlatformConnectionAdapter['findOwnTextDelivery']>>>
+      for (const raw of messages) {
+        const row = record(raw), id = opaqueMessageId(row.message_id)
+        if (!id) continue
+        const evidence = proveQqOwnMessage({ ...response, data: row }, selected, id)
+        if (!evidence || evidence.occurredAt < proof.from || evidence.occurredAt > proof.until) continue
+        const parts = typeof row.message === 'string' ? parseCqMessage(row.message) : row.message
+        if (!Array.isArray(parts) || !parts.length || parts.some(part => record(part).type !== 'text' || typeof record(record(part).data).text !== 'string')) continue
+        const text = parts.map(part => String(record(record(part).data).text)).join('')
+        if (createHash('sha256').update(text).digest('hex') !== proof.sha256) continue
+        if (match && match.messageId !== evidence.messageId) return undefined
+        match = evidence
+      }
+      return current() ? match : undefined
     },
     async moderateMessage(source, action, guard) {
       const { conversation, sender, messageId } = source

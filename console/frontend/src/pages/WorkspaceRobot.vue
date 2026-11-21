@@ -39,7 +39,13 @@ interface SelfProfileVersion {
   reason: string
   changedAt: number
 }
+interface PersonalWorkSummary {
+  goals: { id: string; title: string; nextAt: number; state: 'active' | 'completed' | 'abandoned'; waitingFor?: string }[]
+  actions: { id: string; kind: 'contact' | 'reserve' | 'research' | 'coding'; state: 'pending' | 'confirmed' | 'failed' | 'unknown'; at: number; goalId?: string }[]
+  tools: { name: string; description: string; activeRevision?: number; versions?: number[] }[]
+}
 const selfProfiles = ref<SelfProfileVersion[]>([])
+const personalWork = ref<PersonalWorkSummary>()
 const profileError = ref('')
 const profileLoading = ref(false)
 const selfProfile = computed(() => selfProfiles.value.at(-1))
@@ -50,19 +56,29 @@ watch(() => [tab.value, agent.value?.id, capability('self-profile.read').status]
   const controller = new AbortController()
   cleanup(() => controller.abort())
   selfProfiles.value = []
+  personalWork.value = undefined
   profileError.value = ''
   profileLoading.value = false
-  if (selected !== 'self' || !id || status !== 'available') return
+  if (!['self', 'actions'].includes(selected) || !id || status !== 'available') return
   profileLoading.value = true
   try {
-    const result = await api('/api/self-profile/' + encodeURIComponent(id), { signal: controller.signal }) as { profiles: SelfProfileVersion[] }
-    if (!controller.signal.aborted) selfProfiles.value = result.profiles
+    const result = await api('/api/self-profile/' + encodeURIComponent(id), { signal: controller.signal }) as {
+      profiles: SelfProfileVersion[]; work?: PersonalWorkSummary
+    }
+    if (!controller.signal.aborted) {
+      selfProfiles.value = result.profiles
+      personalWork.value = result.work
+    }
   } catch (error) {
     if (!controller.signal.aborted) profileError.value = (error as Error).message
   } finally {
     if (!controller.signal.aborted) profileLoading.value = false
   }
 }, { immediate: true })
+const goalStates = { active: '进行中', completed: '已完成', abandoned: '已放下' }
+const actionNames = { contact: '联系', reserve: '预约登记', research: '检索', coding: '编程候选' }
+const actionStates = { pending: '待回执', confirmed: '已确认', failed: '失败', unknown: '待核实' }
+const beijingTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Asia/Shanghai' })
 const selection = computed(() => {
   try {
     return {
@@ -259,6 +275,42 @@ watch(
                   <p>{{ entry.reason }}</p>
                 </li>
               </ol>
+            </details>
+          </template>
+        </section>
+        <section v-if="tab === 'actions' && (personalWork || profileLoading || profileError)" class="panel">
+          <h3>自主工作</h3>
+          <NAlert v-if="profileError" type="error">{{ profileError }}</NAlert>
+          <p v-else-if="profileLoading">正在读取自主工作</p>
+          <template v-else-if="personalWork">
+            <div v-for="goal in personalWork.goals" :key="goal.id" class="workspace-row">
+              <span class="row-main">
+                <strong>{{ goal.title }}</strong>
+                <small v-if="goal.state === 'active'">
+                  {{ goal.waitingFor || '下次检查' }} · {{ beijingTime.format(goal.nextAt) }}
+                </small>
+              </span>
+              <NTag size="small">{{ goalStates[goal.state] }}</NTag>
+            </div>
+            <p v-if="!personalWork.goals.length" class="empty-note">暂无自主目标。</p>
+            <details v-if="personalWork.actions.length">
+              <summary>行动回执</summary>
+              <ul>
+                <li v-for="entry in [...personalWork.actions].reverse()" :key="entry.id">
+                  {{ actionNames[entry.kind] }} · {{ actionStates[entry.state] }} · {{ beijingTime.format(entry.at) }}
+                  <span v-if="entry.goalId"> · {{ personalWork.goals.find(goal => goal.id === entry.goalId)?.title }}</span>
+                </li>
+              </ul>
+            </details>
+            <details v-if="personalWork.tools.length">
+              <summary>自建工具</summary>
+              <ul>
+                <li v-for="tool in personalWork.tools" :key="tool.name">
+                  <strong>{{ tool.name }}</strong>
+                  <span v-if="tool.activeRevision !== undefined"> · {{ tool.activeRevision ? '版本 ' + tool.activeRevision : '已停用' }}</span>
+                  <small> · {{ tool.description }}</small>
+                </li>
+              </ul>
             </details>
           </template>
         </section><p class="context-note">

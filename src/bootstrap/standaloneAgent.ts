@@ -88,7 +88,9 @@ import { createAgentManagementBindings } from '../modules/runtime/infrastructure
 import type { AgentManagementBindings } from '../contracts/agentManagement.js'
 import { conversationAddressKey } from '../modules/runtime/domain/agentBindings.js'
 import { createForgetOperationStore } from '../modules/runtime/infrastructure/forgetOperationStore.js'
-import { createStandaloneAgentCodingWorker } from './standaloneAgentCodingWorker.js'
+import { createStandaloneAgentCodingWorker, resolveStandaloneAgentCodingSnapshot } from './standaloneAgentCodingWorker.js'
+import { createStandaloneAgentToolAuthor } from './standaloneAgentToolAuthor.js'
+import type { AgentBindingSnapshot } from '../contracts/agentBinding.js'
 
 const logger = {
   info: (message: string) => console.info(message),
@@ -435,6 +437,7 @@ export async function main(argv: string[]): Promise<void> {
       const groupLogBridge = groupLogHost?.bridgeFor(options.connection.id)
       const alertOwner = options.connection.id === qqAlertConnection ? qqAlertOwner : undefined
       const adapter = createOneBotConnection({ ...options, ...(bridge ? { mediaRelay: { bridge, allowsText: allowsMediaText } } : {}),
+        keepReverseListenerWaiting: true,
         ...(alertOwner ? { alertOwner } : {}),
         dicePrivate: { allowsText: allowsMediaText },
         qzoneOwnPost: (account, postId) => qzoneLedger.readOwnPost(account, postId),
@@ -629,12 +632,27 @@ export async function main(argv: string[]): Promise<void> {
       () => !executionSignal.aborted && storage?.isCurrent() === true && config.isConfigCurrent(),
       diceScriptRunner ? { scriptRunner: diceScriptRunner } : {})
     const managementBindings = createAgentManagementBindings(() => config.listBindings())
-    const codingSource = process.env.BL_AGENT_CODING_SOURCE
-    const codingWorker = codingSource ? createStandaloneAgentCodingWorker({
-      source: codingSource, jobs: path.join(config.dataDir, 'coding-candidates'),
+    const sourceRoot = process.env.BL_AGENT_CODING_SOURCES
+    const legacySource = process.env.BL_AGENT_CODING_SOURCE
+    const codingSnapshot = sourceRoot
+      ? await resolveStandaloneAgentCodingSnapshot(sourceRoot, new URL('../manifest.json', import.meta.url)).catch(error => {
+        diagnostics.emit({ stage: 'host', operation: 'coding_snapshot', outcome: 'failed', code: 'coding_snapshot_unavailable', error })
+        return undefined
+      })
+      : legacySource ? { source: legacySource } : undefined
+    const codingWorker = codingSnapshot ? createStandaloneAgentCodingWorker({
+      ...codingSnapshot, jobs: path.join(config.dataDir, 'coding-candidates'),
       model: (request, signal) => runModel(request, { signal, forceChatBackend: true }),
       allowsText: allowsSecretText,
     }) : undefined
+    const personalToolAuthor = createStandaloneAgentToolAuthor({
+      allowsText: allowsSecretText,
+      async model(agentId, request, signal) {
+        const result = await runModel(request, { signal, forceChatBackend: true })
+        ledger.record({ scope: 'agent:' + agentId, stage: 'personal_tool_author', model: String(result.model ?? ''), usage: result.usage })
+        return result
+      },
+    })
     const gamePorts: StandaloneGroupGamesOptions = {
       config: config.games, dataDir: config.dataDir, execution: config.execution, executionSignal,
       isCurrent: () => !executionSignal.aborted && storage?.isCurrent() === true && config.isConfigCurrent(),
@@ -716,6 +734,7 @@ export async function main(argv: string[]): Promise<void> {
       privateTextTools: config.privateTextTools,
       unifiedGroupChat: true,
       personalSeeds: config.personalSeeds,
+      personalToolAuthor,
       ...(codingWorker ? { codingWorker } : {}),
       ...(config.migratedGroupToolNames ? { migratedGroupToolNames: config.migratedGroupToolNames, groupTextTools: config.groupTextTools, textGroupRevision: config.textGroupRevision } : {}),
       getExecutionConfig: () => config.execution,
@@ -806,17 +825,16 @@ export async function main(argv: string[]): Promise<void> {
             return { kind: 'json', status: 404, value: { code: 'not_found' } }
           }
           const related = config.loadedBindings.filter(binding => binding.agentId === id)
-          let permitted = false
+          const visible: AgentBindingSnapshot[] = []
           for (const binding of related) {
-            if (await consoleAuth!.authorize(context.principal, 'bindings.read', binding, context) === 'allowed') {
-              permitted = true
-              break
-            }
+            if (await consoleAuth!.authorize(context.principal, 'bindings.read', binding, context) === 'allowed') visible.push(binding)
           }
-          if (!related.length) permitted = await consoleAuth!.authorize(context.principal, 'bindings.list', undefined, context) === 'allowed'
+          const permitted = related.length ? visible.length > 0
+            : await consoleAuth!.authorize(context.principal, 'bindings.list', undefined, context) === 'allowed'
           context.ensureCurrent()
           if (!permitted) return { kind: 'json', status: 403, value: { code: 'forbidden' } }
-          return { kind: 'json', value: { profiles: host!.selfProfiles(id).map(profile => ({ ...profile })) } }
+          const work = host!.personalWork(id, visible)
+          return { kind: 'json', value: { profiles: host!.selfProfiles(id).map(profile => ({ ...profile })), ...(work ? { work } : {}) } }
         },
       })
       services.push(createStandaloneAgentPipeline({ bindings: loadedBindings, auth: consoleAuth, storage: storage.storage,

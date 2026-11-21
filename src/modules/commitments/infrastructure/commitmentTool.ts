@@ -1,6 +1,6 @@
 // 承诺账本运行时:CommitmentTool(create/list/cancel,主链路与仿真共用)+ commitmentTick(每秒到期兑现)。
 // 设计原则见 contracts/commitments.ts 头注。静态直发出站必经 sanitizeFinalReplyText(RULES.md 红线)。
-import {randomUUID} from 'node:crypto'
+import {createHash,randomUUID} from 'node:crypto'
 import {AbstractTool} from '../../toolSupport/infrastructure/AbstractTool.js'
 import {sanitizeFinalReplyText} from '../../conversation/domain/replySanitizer.js'
 import {createCommitmentStore} from './commitmentStore.js'
@@ -12,7 +12,7 @@ import {
   advanceCommitmentAfterRun,buildMissAdmissionText,buildRenewalAskText,checkCommitmentCaps,formatCommitmentLine,formatScheduleText,
   normalizeSchedule,renderCommitmentCard,renderRenewalCard,resolvedCommitmentConfig,shouldAskRenewal
 } from '../domain/commitments.js'
-import type {CommitmentData,CommitmentEvent,CommitmentPorts} from '../../../contracts/commitments.js'
+import type {CommitmentData,CommitmentEvent,CommitmentPorts,CommitmentSourceMessage} from '../../../contracts/commitments.js'
 import type {OutgoingPart} from '../../../contracts/platformMessage.js'
 import type {AgentConversationActivityCapture} from '../../runtime/infrastructure/agentConversationActivity.js'
 import {reportAgentFailure,type AgentDiagnostics} from '../../runtime/infrastructure/agentDiagnostics.js'
@@ -23,6 +23,8 @@ export interface CommitmentExecutionPorts {
   captureExecution?(target:ConversationAddress):AgentConversationActivityCapture
   authorizePrivateSchedule?(origin:AgentBindingSnapshot, request:{messageId:string; sourceAt:number; text:string; groupId?:string},
     guard:()=>boolean):Promise<{ destinationBindingIdentity?:string } | undefined>
+  authorizeOwnedSource?(origin:AgentBindingSnapshot,source:CommitmentSourceMessage,guard:()=>boolean):Promise<boolean>
+  verifyOwnedDelivery?(binding:AgentBindingSnapshot, proof:{sha256:string;from:number;until:number}):Promise<string|undefined>
 }
 type TaskGuard = (()=>boolean) & { signal:AbortSignal; executionCurrent():boolean; release():void }
 
@@ -351,6 +353,69 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
     if(!grant||grant.destinationBindingIdentity!==destinationBindingIdentity||!guard())throw bindingChangedError()
   }
 
+  function ownedReservationId(binding:AgentBindingSnapshot,goalId:string) {
+    return 'cmt_own_'+createHash('sha256').update(JSON.stringify([agentBindingIdentity(binding),goalId])).digest('hex')
+  }
+  async function ownedReservation(binding:AgentBindingSnapshot,goalId:string) {
+    let item=await store.getCommitment(ownedReservationId(binding,goalId))
+    if(!item||item.ownedReservation?.goalId!==goalId||item.bindingIdentity!==agentBindingIdentity(binding))return undefined
+    if(item.status==='unknown'&&item.ownedReservation.attemptedAt!==undefined&&item.static_message&&ports.verifyOwnedDelivery) {
+      const from=Math.floor(item.ownedReservation.attemptedAt/1000)*1000
+      const messageId=await ports.verifyOwnedDelivery(binding,{
+        sha256:createHash('sha256').update(item.static_message).digest('hex'),from,until:from+60_000,
+      })
+      if(messageId){
+        const token=agentBindingToken(binding)
+        const current=()=>{
+          const live=ports.resolveBinding?.(binding.target)
+          return !!live&&agentBindingToken(live)===token
+        }
+        item=await store.confirmOwnedReservation(item,messageId,current)??item
+      }
+    }
+    return { id:item.id, status:item.status, at:item.schedule.kind==='once'?item.schedule.time:item.next_run_at }
+  }
+  async function reserveOwned(binding:AgentBindingSnapshot,goalId:string,source:CommitmentSourceMessage,
+    scheduledTime:string,message:string,guard:()=>boolean) {
+    const target=binding.target, token=agentBindingToken(binding)
+    const current=()=>{
+      const live=ports.resolveBinding?.(target)
+      return guard()&&!!live&&agentBindingToken(live)===token
+    }
+    const ensureCurrent=async()=>{if(!current())throw bindingChangedError()}
+    if(binding.source!=='configured'||target.kind!=='group'||!current()||!ports.authorizeOwnedSource)throw bindingChangedError()
+    const existing=await ownedReservation(binding,goalId)
+    if(existing)return existing
+    const at=now(), schedule=normalizeSchedule('once',scheduledTime,at), safe=sanitizeFinalReplyText(message)
+    if('error'in schedule||!safe||safe!==message||safe.length>300||schedule.nextRunAt>at+30*86400_000)return undefined
+    if(!await ports.authorizeOwnedSource(binding,source,current)||!current())return undefined
+    const item:CommitmentData={
+      id:ownedReservationId(binding,goalId), group_id:target.id, creator_id:target.account.id,
+      creator_name:target.account.id, intent:safe.slice(0,200), schedule:schedule.schedule, deliver:'static',
+      static_message:safe, mentionCreator:false, ownedReservation:{goalId,source}, expiry_at:0,
+      next_run_at:schedule.nextRunAt, status:'active', last_run_at:0, last_result:'', retry_count:0, created_at:at,
+      bot_id:target.account.id, scope:{agentId:binding.agentId,target}, bindingIdentity:agentBindingIdentity(binding),
+    }
+    try {
+      await store.createCommitment(item,active=>{
+        const error=checkCommitmentCaps(active.filter(task=>taskVisible(task,target.id,binding)),target.id,target.account.id,resolvedCommitmentConfig(ports.loadConfig()))
+        if(error)throw new Error(error)
+      },current,ensureCurrent)
+    } catch(error) {
+      // If a concurrent or interrupted registration committed first, use its receipt.
+      if(!current()||!await ownedReservation(binding,goalId))throw error
+    }
+    await ensureCurrent()
+    return ownedReservation(binding,goalId)
+  }
+
+  async function ensureDeliverySource(c:CommitmentData,guard:TaskGuard) {
+    await ensurePrivateGrant(c,guard)
+    if(!c.ownedReservation||!c.scope)return
+    const origin=ports.resolveBinding?.(c.scope.target)
+    if(!origin||!await ports.authorizeOwnedSource?.(origin,c.ownedReservation.source,guard)||!guard())throw bindingChangedError()
+  }
+
   /** 群内通知(失约明说/续约问询)，发送失败只记日志。 */
   async function sendGroupNotice(c:CommitmentData,text:string,isCurrent?:()=>Promise<boolean>){
     let guard:TaskGuard|null|undefined
@@ -486,7 +551,7 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
           if(guard===null)throw bindingChangedError()
           executionGuard=guard
           if(!guard.executionCurrent()){await store.releaseUnstartedClaim(c);continue}
-          await ensurePrivateGrant(c,guard)
+          await ensureDeliverySource(c,guard)
           if(c.deliver==='agent'){
             if(!await ports.isSimulationGroup(c.group_id,target)){
               if(!ports.waitForSimulation)throw new Error('群未开仿真，无法兑现')
@@ -521,7 +586,7 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
               if(!guard())throw bindingChangedError()
               continue
             }
-            await sendTaskText(c,String(c.static_message||c.intent),target,guard,c.privateRequest?()=>ensurePrivateGrant(c,guard):undefined)
+            await sendTaskText(c,String(c.static_message||c.intent),target,guard,c.privateRequest||c.ownedReservation?()=>ensureDeliverySource(c,guard):undefined)
             externalStarted=true
           }
           const advanced=advanceCommitmentAfterRun(c,now())
@@ -573,5 +638,5 @@ export function createCommitmentRuntime(ports:CommitmentPorts & CommitmentExecut
   }
   /** Call after the host has stopped accepting new ticks. */
   async function drainCommitmentTicks():Promise<void>{await Promise.allSettled(ticks.values())}
-  return {CommitmentTool,commitmentTick,drainCommitmentTicks,store}
+  return {CommitmentTool,commitmentTick,drainCommitmentTicks,store,reserveOwned,ownedReservation}
 }

@@ -305,6 +305,10 @@ export interface SimulationRuntime {
   isGroupActive(groupId: string): boolean
   isConversationActive(target: ConversationAddress): Promise<boolean>
   canInitiateGroupChat(target: ConversationAddress): Promise<boolean>
+  readPersonalWorkContext(binding: AgentBindingSnapshot, isCurrent: () => boolean, allowsText: (value: string) => boolean): Promise<{
+    messages: readonly { messageId: string; authorId: string; name: string; at: number; text: string }[]
+    isCurrent(): Promise<boolean>
+  } | undefined>
   groupTextBudget(target: ConversationAddress, at: number): Promise<{
     maxTurns: number; dailyCostCny: number; minGapMs: number; carriedTurns: number; todayCostCny: number
   }>
@@ -841,6 +845,31 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     await refreshGroupState()
     const key = await conversationKey(target)
     return !!key && isSimulationGroup(key) && proactiveAllowed(key)
+  }
+
+  async function readPersonalWorkContext(binding: AgentBindingSnapshot, guard: () => boolean, allowsText: (value: string) => boolean) {
+    const target = binding.target
+    const current = () => guard() && allowsConversationAI(target) && personaFor(target).binding?.agentId === binding.agentId
+    if (binding.source !== 'configured' || target.kind !== 'group' || !current()) return undefined
+    const key = await conversationKey(target)
+    if (!key || !current()) return undefined
+    const resolved = personaFor(target)
+    const scope = characterScopeFor(target, resolved.personaId || 'default')
+    const state = liveStates.get(key) ?? await store.load(key)
+    const candidates = [...new Map([...state.recent, ...state.unread].map(message => [message.seq, message])).values()]
+      .filter(message => message.kind === 'text' && message.text.trim() && message.messageId && message.userId !== target.account.id)
+      .sort((a, b) => a.seq - b.seq).slice(-16)
+    const redacted = await redactSceneMessages(scope, candidates)
+    const visible: SimMessage[] = []
+    for (const message of redacted) {
+      if (allowsText(message.text) && allowsText(message.name) && !await ports.isMessageRecalled?.(target, String(message.messageId))) visible.push(message)
+    }
+    if (!await sideModelSourcesCurrent(scope, target, visible, current)) return undefined
+    return {
+      messages: visible.map(message => ({ messageId: String(message.messageId), authorId: message.userId,
+        name: message.name, at: message.at, text: message.text.slice(0, 800) })),
+      isCurrent: () => sideModelSourcesCurrent(scope, target, visible, current),
+    }
   }
 
   /** 承诺账本兑现口：agent 类承诺到期由 commitmentTick 调这里唤醒仿真回合（timer 类 1s 直醒） */
@@ -5524,7 +5553,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return `【群友好感 · 前8】\n${top}${mineLine}`
   }
 
-  return { runAdministration: administration.run, ingest, ingestNudge, start, stop, drain, sweepOnce, invalidateConversation, enableGroup, disableGroup, setGroupReplyMode, groupStatus, resetGroup, listMemories, listAffinity, ingestPoke, handleRecall, overview, describeGroup, controlCharacter, controlActivity, getInitialPrompt, setInitialPrompt, setGroupBudget, setGroupTurnsCap, setDefaultBudget, conversationKey, isGroupActive: isSimulationGroup, isConversationActive, canInitiateGroupChat, groupTextBudget, wakeForCommitment, listPersonProfiles: () => store.listPersonProfiles(), deletePersonProfile: (userId: string) => store.deletePersonProfile(userId), deletePersonProfileField: (userId: string, field: string, value?: string) => store.deletePersonProfileField(userId, field, value),
+  return { runAdministration: administration.run, ingest, ingestNudge, start, stop, drain, sweepOnce, invalidateConversation, enableGroup, disableGroup, setGroupReplyMode, groupStatus, resetGroup, listMemories, listAffinity, ingestPoke, handleRecall, overview, describeGroup, controlCharacter, controlActivity, getInitialPrompt, setInitialPrompt, setGroupBudget, setGroupTurnsCap, setDefaultBudget, conversationKey, isGroupActive: isSimulationGroup, isConversationActive, canInitiateGroupChat, readPersonalWorkContext, groupTextBudget, wakeForCommitment, listPersonProfiles: () => store.listPersonProfiles(), deletePersonProfile: (userId: string) => store.deletePersonProfile(userId), deletePersonProfileField: (userId: string, field: string, value?: string) => store.deletePersonProfileField(userId, field, value),
   lifeOverview: async (groupIds?: readonly string[]) => {
     const cfg = runtimeConfig()
     const stored = await store.loadRhythm().catch(() => null)

@@ -5,7 +5,7 @@ import ts from 'typescript'
 import { root, digestFiles, filesUnder, run, verifyBackend } from './lib/build-support.mjs'
 
 const backend = path.join(root, 'dist/backend')
-const runtimeEntries = ['bootstrap/standaloneAgent.js', 'modules/platform/infrastructure/admin/backendArtifactGuard.js', 'modules/content/infrastructure/agentExcelWorker.js', 'modules/content/infrastructure/agentFileTextChild.js', 'modules/memory/infrastructure/agentSemanticEvaluation.js']
+const runtimeEntries = ['bootstrap/standaloneAgent.js', 'bootstrap/standaloneAgentToolPublisher.js', 'modules/platform/infrastructure/admin/backendArtifactGuard.js', 'modules/content/infrastructure/agentExcelWorker.js', 'modules/content/infrastructure/agentFileTextChild.js', 'modules/memory/infrastructure/agentSemanticEvaluation.js']
 const exports = {
   '.': 'core/index.js',
   './qq': 'adapters/oneBotConnection.js',
@@ -86,6 +86,13 @@ function collectImports(file, text, isDeclaration, add) {
 
 const manifest = await verifyBackend(backend, { source: true })
 if (!/^[a-f0-9]{40}$/.test(manifest.commit)) throw new Error('Agent release requires a backend build from a Git checkout')
+const withCodingSource = process.argv.includes('--with-coding-source')
+const codingSourceFiles = ['src', 'tsconfig.backend.json', 'package.json', 'package-lock.json']
+if (withCodingSource) {
+  run('git', ['diff', '--quiet', manifest.commit, '--', ...codingSourceFiles])
+  const untracked = run('git', ['ls-files', '--others', '--exclude-standard', '--', ...codingSourceFiles], { encoding: 'utf8', stdio: 'pipe' })
+  if (untracked.stdout.trim()) throw new Error('Coding snapshot requires committed source and lockfiles')
+}
 for (const [files, isDeclaration] of [[runtimeFiles, false], [declarations, true]]) {
   for (const file of files) {
     if (!Object.hasOwn(manifest.files, file)) throw new Error(`Missing Agent dependency ${file}`)
@@ -172,8 +179,11 @@ try {
     import { ensureBackendArtifacts } from './utils/backendArtifactGuard.js'
     await ensureBackendArtifacts()
   `], { cwd: output })
+  if (withCodingSource) run('git', ['archive', '--format=tar.gz', '--output=' + output + '.coding-source.tar.gz',
+    manifest.commit, ...codingSourceFiles])
   console.log(output)
 } catch (error) {
   await fs.rm(output, { recursive: true, force: true })
+  if (withCodingSource) await fs.rm(output + '.coding-source.tar.gz', { force: true })
   throw error
 }
