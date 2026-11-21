@@ -21,7 +21,8 @@ const resourceFailure = () => ({ state: 'failed', code: 'media_resource_preproce
 const artifact = (id, kind = 'video') => ({ id: id.repeat(32), kind, mime: kind === 'video' ? 'video/mp4' : 'image/jpeg', sizeBytes: 64, sha256: id.repeat(64) })
 const cover = artifact('1', 'image'), firstVideo = artifact('2'), secondVideo = artifact('3'), thumbnail = artifact('4', 'image')
 const plan = (title, separateNodes = false) => {
-  const intro = { parts: [{ kind: 'text', text: title }, { kind: 'image', artifact: cover }] }
+  const coverPart = { kind: 'image', artifact: cover }
+  const intro = { parts: separateNodes ? [coverPart] : [{ kind: 'text', text: title }, coverPart] }
   const videos = [firstVideo, secondVideo].map(artifact => ({ kind: 'video', artifact, thumbnail }))
   const videoNodes = separateNodes ? videos.map(video => ({ parts: [video] }))
     : [{ parts: [videos[0], { kind: 'text', text: '中间说明' }, videos[1]] }]

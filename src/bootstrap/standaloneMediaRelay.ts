@@ -10,7 +10,6 @@ import type { AgentDiagnostics } from '../modules/runtime/infrastructure/agentDi
 import { openQqMediaRelayBridge, type QqMediaRelayBridge } from '../adapters/qqMediaRelayBridge.js'
 import { createAgentMediaArtifactStore } from '../modules/media/infrastructure/agentMediaArtifactStore.js'
 import { createAgentBilibiliRelayProvider } from '../modules/media/infrastructure/agentBilibiliRelayProvider.js'
-import { createAgentBilibiliCardRenderer } from '../modules/media/infrastructure/agentBilibiliCardRenderer.js'
 import { createAgentBilibiliQualityProvider, createAgentBilibiliSearchAttachmentProvider } from '../modules/media/infrastructure/agentBilibiliQualityProvider.js'
 import { ownBilibiliQualityData } from '../modules/media/infrastructure/agentBilibiliQualityPolicy.js'
 import { createAgentDouyinRelayProvider } from '../modules/media/infrastructure/agentDouyinRelayProvider.js'
@@ -277,7 +276,7 @@ export async function openStandaloneMediaRelay(options: {
     const bilibili = options.config.enabled ? createAgentBilibiliRelayProvider({ directory: providerDirectory, artifacts,
       ...(options.config.bilibili.authCookie ? { authCookie: options.config.bilibili.authCookie } : {}),
       autoAuthorizedRetry: options.config.bilibili.autoAuthorizedRetry, secrets: options.secrets, allowsText: options.allowsText,
-      cardRenderer: createAgentBilibiliCardRenderer(),
+      cardRenderer: 'summary',
       ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}) }) : undefined
     let douyin: AgentMediaRelayProvider | undefined
     if (options.config.enabled && options.config.douyin?.enabled) {

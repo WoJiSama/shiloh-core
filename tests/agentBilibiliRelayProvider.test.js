@@ -193,7 +193,7 @@ test('an automatic Bilibili relay keeps a rendered card before its video even wh
   const card = Buffer.from(PNG)
   const coverView = { pic: 'https://i0.hdslb.com/cover.png' }
   const rendered = []
-  await t.test('successful render swaps text+cover for title text plus the card artifact', async t => {
+  await t.test('a successful custom render supplies one image for the intro node', async t => {
     const f = await fixture(t, { view: coverView, options: { cardRenderer: { render: async (view, context) => {
       rendered.push({ view, current: context.isCurrent() })
       assert.ok(view.title && view.owner && view.pageUrl)
@@ -205,9 +205,8 @@ test('an automatic Bilibili relay keeps a rendered card before its video even wh
     const result = await f.prepare(); assert.equal(result.status, 'ready')
     assert.equal(rendered.length, 1); assert.equal(rendered[0].current, true)
     const intro = result.plan.items[0]
-    assert.deepEqual(intro.parts.map(part => part.kind), ['text', 'image'])
-    assert.match(intro.parts[0].text, /《示例视频》\nhttps:\/\/www\.bilibili\.com\/video\//u)
-    assert.deepEqual(await f.read(intro.parts[1].artifact), card)
+    assert.deepEqual(intro.parts.map(part => part.kind), ['image'])
+    assert.deepEqual(await f.read(intro.parts[0].artifact), card)
     assert.equal(result.plan.items.slice(1).every(item => item.parts.every(part => part.kind === 'video')), true)
     assert.ok(!f.events.some(event => event.code === 'card_unavailable'))
     await result.release(); await f.clean()
@@ -215,24 +214,21 @@ test('an automatic Bilibili relay keeps a rendered card before its video even wh
   await t.test('a failing browser renders a summary card and records the failure', async t => {
     const f = await fixture(t, { view: coverView, options: { cardRenderer: { render: async () => { throw Error('render down') } } } })
     const result = await f.prepare(); assert.equal(result.status, 'ready')
-    assert.deepEqual(result.plan.items[0].parts.map(part => part.kind), ['text', 'image'])
-    const summary = await f.read(result.plan.items[0].parts[1].artifact)
+    assert.deepEqual(result.plan.items[0].parts.map(part => part.kind), ['image'])
+    const summary = await f.read(result.plan.items[0].parts[0].artifact)
     assert.deepEqual(summary.subarray(0, 8), PNG.subarray(0, 8))
     assert.ok(summary.readUInt32BE(16) > 100, 'the summary is a rendered card, larger than the source cover')
-    assert.match(result.plan.items[0].parts[0].text, /《示例视频》\nhttps:\/\/www\.bilibili\.com\/video\//u)
     assert.deepEqual(result.plan.items.slice(1).map(item => item.parts.map(part => part.kind)), [['video']])
     assert.ok(result.plan.items[1].parts[0].thumbnail)
     assert.ok(f.events.some(event => event.operation === 'bilibili_provider_card' && event.code === 'card_unavailable'))
     await result.release(); await f.clean()
   })
-  await t.test('a card without a video includes the explicit reason and original page', async t => {
-    const f = await fixture(t, { view: { duration: 1801 }, options: {
-      cardRenderer: { render: async () => ({ mime: 'image/png', base64: PNG.toString('base64') }) },
-    } })
+  await t.test('a summary without a video prepares a single card with the explicit reason and original page', async t => {
+    const f = await fixture(t, { view: { duration: 1801 }, options: { cardRenderer: 'summary' } })
     const result = await f.prepare(); assert.equal(result.status, 'metadata-only')
-    assert.equal(result.plan.items.length, 1)
-    assert.match(result.plan.items[0].parts[0].text, /超过30分钟，未附带视频本体/u)
-    assert.ok(result.plan.items[0].parts[0].text.includes(result.pageUrl))
+    assert.deepEqual(result.plan.items.map(item => item.parts.map(part => part.kind)), [['image']])
+    assert.match(result.infoText, /超过30分钟，未附带视频本体/u)
+    assert.ok(result.infoText.includes(result.pageUrl))
     await result.release(); await f.clean()
   })
 })

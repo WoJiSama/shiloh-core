@@ -105,8 +105,7 @@ test('actual CLI checks read-only, then relays a real QQ JSON event through prov
           deliveries.push({ action, params })
           assert.equal(String(params.group_id), String(groupId)); assert.equal(params.messages.length, 2)
           const [intro, video] = params.messages.map(node => node.data.content)
-          assert.deepEqual(intro.map(part => part.type), ['text', 'image'])
-          assert.match(intro[0].data.text, /^《CLI合成视频》\nhttps:\/\/www\.bilibili\.com\/video\//u)
+          assert.deepEqual(intro.map(part => part.type), ['image'])
           assert.deepEqual(video.map(part => part.type), ['video'])
           for (const node of params.messages) {
             assert.equal(node.type, 'node'); assert.equal(String(node.data.uin), String(botId))
@@ -186,7 +185,7 @@ test('actual CLI checks read-only, then relays a real QQ JSON event through prov
   assert.deepEqual(resources.map(resource => resource.type), ['image', 'video', 'thumbnail'])
   assert.deepEqual((await records())[0].effects.map(row => [row.effect, row.state]), [['forward', 'sent']])
   assert.equal(modelRequests, 0)
-  assert.deepEqual(downloads.map(item => new URL(item.url).hostname).sort(), ['api.bilibili.com', 'api.bilibili.com', 'api.bilibili.com', 'cn-media.bilivideo.com', 'i0.hdslb.com'].sort())
+  assert.deepEqual(downloads.map(item => new URL(item.url).hostname).sort(), ['api.bilibili.com', 'api.bilibili.com', 'api.bilibili.com', 'cn-media.bilivideo.com'])
   websocket.send(JSON.stringify(source)); await delay(1200); assert.equal(deliveries.length, 1)
   child.kill('SIGTERM'); assert.deepEqual(await exited, [0, null], log)
   await assert.rejects(fetch(`http://127.0.0.1:${bridgePort}/missing`))
