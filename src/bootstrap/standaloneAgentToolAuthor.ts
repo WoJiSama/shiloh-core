@@ -12,7 +12,7 @@ export function createStandaloneAgentToolAuthor(options: {
   const backend = fileURLToPath(new URL('../', import.meta.url))
   return async (agentId: string, name: string, task: string, signal: AbortSignal) => {
     if (!options.allowsText(task)) throw new Error('文字工具任务含受限内容')
-    const result = await options.model(agentId, { messages: [
+    const result = await options.model(agentId, { response_format: { type: 'json_object' }, messages: [
       { role: 'system', content: [
         '为你自己的任务编写一个纯文字分析工具。返回 JSON，其中 definition 有 name、description、steps，examples 是 1 到 4 条 {before,after,expected}。',
         '输入是两段换行分隔的文字。从 after 的非空、已修剪行开始。steps 最多 8 项。',

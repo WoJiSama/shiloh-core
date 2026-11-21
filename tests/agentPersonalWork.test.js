@@ -41,15 +41,23 @@ function askOnline(request, signal) {
   return new Promise((resolve, reject) => {
     const child = execFile(process.execPath, [process.env.BL_AGENT_PERSONAL_MODEL_BRIDGE], {
       cwd: process.env.BL_CHAT_AGENT_RELEASE_DIR || process.cwd(), signal, timeout: 40_000,
-    }, (error, stdout) => {
-      if (error) { reject(new Error('isolated_model_call_failed')); return }
+    }, (error, stdout, stderr) => {
+      if (error) {
+        const diagnostic = stderr.match(/provider_http_[0-9]{3}|no_model_text|provider_timeout|model_transport_or_configuration_error/u)?.[0]
+        console.log(JSON.stringify({ diagnostic: diagnostic ?? error.code ?? error.name }))
+        reject(new Error('isolated_model_call_failed'))
+        return
+      }
       try {
         const result = JSON.parse(stdout)
         const parsed = JSON.parse(result.content.trim().replace(/^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$/giu, ''))
         console.log(JSON.stringify({ model: result.returnedModel || result.configuredModel, action: parsed.action,
           state: parsed.state, tokens: result.usage?.total_tokens }))
         resolve({ model: result.returnedModel || result.configuredModel, choices: [{ message: { content: result.content } }], usage: result.usage })
-      } catch { reject(new Error('isolated_model_response_invalid')) }
+      } catch {
+        console.log(JSON.stringify({ diagnostic: 'invalid_model_content' }))
+        reject(new Error('isolated_model_response_invalid'))
+      }
     })
     child.stdin.on('error', () => {})
     child.stdin.end(JSON.stringify(request))
