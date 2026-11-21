@@ -2065,7 +2065,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     personal = createAgentPersonalRuntime({
       redis: storage, seeds: options.personalSeeds, ...(options.now ? { now: options.now } : {}),
       isCurrent: isRunning,
-      model: (request, signal, current) => options.YTapi(request, options.getExecutionConfig(), signal, current),
+      model: (request, signal, current, ensureCurrent) => options.YTapi(request, options.getExecutionConfig(), signal, current, ensureCurrent),
       allowsText: text => options.allowsToolInput?.(text) !== false && options.allowsText?.(text, 'outgoing') !== false,
       async targets(agentId) {
         const rows: { key: string; kind: 'group' | 'private'; label: string }[] = []

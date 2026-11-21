@@ -93,11 +93,13 @@ for (const online of [false, true]) test(online ? 'online model continues an XL 
     async YTapi(request, _config, signal) {
       const instruction = request.messages?.[0]?.content
       if (instruction?.includes('自主档案修订')) return response({ action: 'keep' })
-      if (!instruction?.includes('你自己的工作回合')) return response({ action: 'rest' })
+      if (!instruction?.includes('你自己的工作回合') && !instruction?.includes('你在查看自己选中的群')) return response({ action: 'rest' })
       const input = JSON.parse(request.messages[1].content)
-      if (!input.goal) return response({ action: 'goal', title: '给已确认的 XL 活动安排群提醒',
-        draft: '核对本群最新 XL 阵容与正式时间。登记活动前五分钟的单次群提醒，看到已送达的结果后收尾。',
-        key: input.targets.find(target => target.label.includes(group.id)).key, afterMinutes: 5 })
+      if (instruction?.includes('你在查看自己选中的群')) {
+        assert.deepEqual(input.messages.map(row => row.messageId), ['870000001'])
+        return online ? askOnline(request, signal) : response({ action: 'goal', afterMinutes: 5 })
+      }
+      if (!input.goal) return response({ action: 'look-group', key: input.targets.find(target => target.label.includes(group.id)).key })
       assert.ok(input.messages.every(row => row.messageId === '870000001'))
       if (!input.reservation) assert.ok(input.messages[0]?.text.includes(eventTime))
       flows.push(input.reservation?.status ?? 'planning')
@@ -119,8 +121,11 @@ for (const online of [false, true]) test(online ? 'online model continues an XL 
   await message(group, '870000001', 'XL 阵容已确认：四个报名位已满。活动 ' + eventTime + ' 开始，群里 ' + reminderTime + ' 发一条文字提醒就好。')
   await message(sibling, '870000002', '另一个群的阵容和本群的安排无关。')
   clock = start + 10 * minute
-  await waitFor(async () => (await readState()).goals[0]?.targetKey, 'a bound personal goal')
-  clock += 5 * minute + 1
+  const goal = await waitFor(async () => {
+    const goal = (await readState()).goals[0]
+    return goal?.targetKey && goal
+  }, 'a bound personal goal', online ? 45_000 : 8000)
+  clock = goal.nextAt + 1
   const appointment = await waitFor(async () => (await store.listActiveCommitments()).find(item => item.ownedReservation),
     'the real commitments ledger to contain the booking', online ? 45_000 : 8000)
   assert.equal(appointment.schedule.time, Date.parse(reminderTime))
@@ -135,7 +140,7 @@ for (const online of [false, true]) test(online ? 'online model continues an XL 
   await host.start()
   await waitFor(async () => (await store.getCommitment(appointment.id))?.status === 'completed', 'delivery after restart')
   assert.deepEqual(sent.map(action => [action.target.id, action.parts.map(part => part.kind)]), [[group.id, ['text']]])
-  clock += 10 * minute
+  clock = Math.max(clock + 10 * minute, (await readState()).goals[0].nextAt + 1)
   await host.resumePendingWork()
   await waitFor(() => flows.includes('completed'), 'reflection sees the authoritative delivery state', online ? 45_000 : 8000)
   await waitFor(async () => (await readState()).goals.some(goal => goal.state === 'completed'), 'goal closure', online ? 45_000 : 8000)
