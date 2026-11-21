@@ -347,6 +347,8 @@ interface SimTransportReceipt {
 
 interface SimulationToolObservation { failureReported?: boolean }
 
+class CharacterBackgroundRevokedError extends Error {}
+
 interface PendingWake { timer: ReturnType<typeof setTimeout>; reason: SimWakeReason; bindingToken: string | undefined }
 interface CommitmentExecution {
   options: CommitmentRunOptions
@@ -4279,6 +4281,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     let fingerprint = ''
     let sources = new Set<string>()
     const controller = new AbortController()
+    let phase: 'prepare' | 'subscription' | 'reflection' = 'prepare'
+    const started = now()
     let activityVersion = ''
     let memoryInvalidatedAt = 0
     let memoryTurn: Awaited<ReturnType<NonNullable<SimulationRuntimePorts['beginMemoryTurn']>>> | undefined
@@ -4294,13 +4298,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     }
     const guard = async () => {
       await refreshGroupState(true)
-      if (!canCallModel()) throw new Error('角色后台活动范围已改变')
+      if (!canCallModel()) throw new CharacterBackgroundRevokedError('角色后台活动范围已改变')
       const current = await characters.load(scope)
-      if (current.paused || [...sources].some(id => !activeCharacterMemories(current).some(m => m.id === id)) || await shared.fingerprint() !== fingerprint) throw new Error('角色暂停或来源已撤销')
+      if (current.paused || [...sources].some(id => !activeCharacterMemories(current).some(m => m.id === id)) ||
+          await shared.fingerprint() !== fingerprint) throw new CharacterBackgroundRevokedError('角色暂停或来源已撤销')
       if (await store.loadActivityVersion(groupId) !== activityVersion ||
           (await personMemory.getSceneRedactions({ identity: scope, scene })).invalidatedAt !== memoryInvalidatedAt ||
-          memoryTurn?.isCurrent() === false) throw new Error('角色活动或人物记忆来源已撤销')
-      if (!canCallModel()) throw new Error('角色后台活动范围已改变')
+          memoryTurn?.isCurrent() === false) throw new CharacterBackgroundRevokedError('角色活动或人物记忆来源已撤销')
+      if (!canCallModel()) throw new CharacterBackgroundRevokedError('角色后台活动范围已改变')
     }
     try {
       if (ports.isMemoryInputAvailable?.(target.account) === false) return
@@ -4308,9 +4313,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       memoryInvalidatedAt = (await personMemory.getSceneRedactions({ identity: scope, scene })).invalidatedAt
       activityVersion = await store.loadActivityVersion(groupId)
       fingerprint = await shared.fingerprint()
-      sources = new Set(characterMemoryVisibility(await characters.load(scope), memoryInvalidatedAt).memories.map(m => m.id))
+      const before = await characters.load(scope)
+      if (before.paused) return
+      sources = new Set(characterMemoryVisibility(before, memoryInvalidatedAt).memories.map(m => m.id))
       await guard()
       if (!(await checkGroupWakeBudget(state, runtimeConfig(groupId), groupId)).allowed) return
+      phase = 'subscription'
       const subscriptions = subscriptionsFor(scope)
       const dueSubscriptions = (await subscriptions.list()).some(item => item.status === 'active' && item.nextPollAt <= now())
       const pollReceiptId = dueSubscriptions ? randomUUID() : undefined
@@ -4332,6 +4340,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         await store.save(groupId, state)
       }
       if (!update.updates.length && ports.reflectCharacter && ports.getSection().reflection?.enabled !== false) {
+        phase = 'reflection'
         const reflection = reflectionFor(scope)
         if (binding && ports.projectCognition) await ports.projectCognition({ agentId: binding.agentId, conversation: target,
           character: await characters.load(scope), messageRefs: [...state.recent, ...state.unread].filter(message => message.messageId != null).map(message => ({ seq: message.seq, messageId: String(message.messageId) })), expressions: [],
@@ -4383,7 +4392,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           },
           infer: async prompt => {
             if (memoryTurn?.isCurrent() === false) throw new Error('人物记忆权限已改变')
-            const timeout = setTimeout(() => controller.abort(), 30_000)
+            const timeout = setTimeout(() => controller.abort(new DOMException('独立反思超时', 'TimeoutError')), 30_000)
             timeout.unref?.()
             try {
               const signal = memoryTurn ? AbortSignal.any([controller.signal, memoryTurn.signal]) : controller.signal
@@ -4408,8 +4417,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         }
       }
     } catch (error) {
-      diagnose({ stage: 'runtime', operation: 'simulation_character_background', outcome: 'failed', code: 'character_background_failed', error },
-        () => logger.warn(`[仿真] 群 ${groupId} 后台活动停止`))
+      const timedOut = controller.signal.reason instanceof DOMException && controller.signal.reason.name === 'TimeoutError'
+      const revoked = !timedOut && error instanceof CharacterBackgroundRevokedError
+      diagnose({ stage: 'runtime', operation: 'simulation_character_background', outcome: revoked ? 'cancelled' : 'failed',
+        code: revoked ? 'character_background_revoked' : timedOut ? 'character_background_timeout' : `character_background_${phase}_failed`,
+        durationMs: now() - started, ...(revoked ? {} : { error }) },
+        revoked ? undefined : () => logger.warn(`[仿真] 群 ${groupId} 后台活动停止`))
     }
     finally {
       memoryTurn?.release()
