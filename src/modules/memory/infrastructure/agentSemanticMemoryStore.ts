@@ -27,10 +27,11 @@ export interface AgentSemanticMemoryScope {
   scope: AgentConversationScope
 }
 
-interface AgentSemanticMemoryRedis {
+export interface AgentSemanticMemoryRedis {
   get(key: string): Promise<string | null>
+  getSnapshot?(keys: string[]): Promise<(string | null)[]>
   matchesStringDigests?(keys: string[], digests: string[]): Promise<boolean>
-  eval(script: string, options: { keys: string[]; arguments: string[] }): Promise<unknown>
+  eval(script: string, options: { keys: string[]; arguments: string[]; isCurrent?: () => boolean }): Promise<unknown>
 }
 
 const PREFIX = 'agent:semantic-memory:v1'
@@ -178,7 +179,8 @@ export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) 
     return next
   }
   async function snapshot(id: string) {
-    const values = await redis.eval(READ_PAIR, { keys: [CATALOG_KEY, stateKey(id), CLEANUP_KEY], arguments: [] })
+    const keys = [CATALOG_KEY, stateKey(id), CLEANUP_KEY]
+    const values = await (redis.getSnapshot ? redis.getSnapshot(keys) : redis.eval(READ_PAIR, { keys, arguments: [] }))
     if (!Array.isArray(values) || values.length !== 3) fail()
     const catalogRaw = raw(values[0]), stateRaw = raw(values[1]), cleanupRaw = raw(values[2])
     const catalog = parseCatalog(catalogRaw), state = parseState(stateRaw, id)
@@ -221,11 +223,12 @@ export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) 
     return JSON.stringify({ version: 1, entries })
   }
   async function commit(saved: Awaited<ReturnType<typeof snapshot>>, id: string, next: AgentSemanticMemoryState | undefined,
-    stateRaw = next ? JSON.stringify(next) : null) {
+    stateRaw = next ? JSON.stringify(next) : null, isCurrent?: () => boolean) {
     const catalogRaw = catalogFor(saved, id, next)
     const arguments_ = [...expected(saved.catalogRaw), ...expected(saved.stateRaw), ...expected(saved.cleanupRaw),
       catalogRaw, ...expected(stateRaw)]
-    const result = await redis.eval(COMPARE_AND_SET, { keys: [CATALOG_KEY, stateKey(id), CLEANUP_KEY], arguments: arguments_ })
+    const result = await redis.eval(COMPARE_AND_SET, { keys: [CATALOG_KEY, stateKey(id), CLEANUP_KEY], arguments: arguments_,
+      ...(isCurrent ? { isCurrent } : {}) })
     if (result !== 0 && result !== 1) fail()
     if (result === 1 && redis.matchesStringDigests) {
       rememberObservation(id, observation(id, { ...saved, catalogRaw, stateRaw, state: next }))
@@ -325,7 +328,7 @@ export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) 
           if (!current(isCurrent)) return false
           if (nextRaw === stateRaw || !state && !next) return true
           if (!current(isCurrent)) return false
-          if (await commit(saved, id, next, nextRaw)) return true
+          if (await commit(saved, id, next, nextRaw, isCurrent ? () => current(isCurrent) : undefined)) return true
         }
       } catch { fail() }
       return fail()
@@ -354,7 +357,8 @@ export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) 
           const nextRaw = existing && existing.through >= selector.through ? previousRaw! : JSON.stringify({ version: 1, entries })
           if (nextRaw.length > SEMANTIC_CLEANUP_MAX_BYTES) fail()
           await authorize()
-          const result = await redis.eval(PUBLISH_CLEANUP, { keys: [CLEANUP_KEY], arguments: [...expected(previousRaw), nextRaw] })
+          const result = await redis.eval(PUBLISH_CLEANUP, { keys: [CLEANUP_KEY], arguments: [...expected(previousRaw), nextRaw],
+            isCurrent: () => semanticCleanupCurrent(guard) })
           if (result === 1) { published = true; break }
           if (result !== 0) fail()
         }
@@ -378,7 +382,7 @@ export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) 
               const kept = new Set(rows.map(row => row.messageId))
               const vectors = state.rows.filter(row => !kept.has(row.messageId) && row.vector !== undefined).length
               await authorize()
-              if (!await commit(saved, entry.id, rows.length ? { ...state, rows } : undefined)) continue
+              if (!await commit(saved, entry.id, rows.length ? { ...state, rows } : undefined, undefined, () => semanticCleanupCurrent(guard))) continue
               removedRows += removed; removedVectors += vectors
               if (!rows.length) removedPartitions++
               await authorize()

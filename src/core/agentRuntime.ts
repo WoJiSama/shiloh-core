@@ -148,6 +148,7 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   diagnostics?: AgentDiagnostics
   failureNoticeFallback?: string
   storage: SimulationRuntimePorts['redis'] & AgentInboxRedis
+  semanticRedis?: Parameters<typeof createAgentSemanticMemory>[0]['redis']
   adapters: readonly PlatformConnectionAdapter[]
   resolvePersona(target: ConversationAddress): ResolvePersona | undefined
   /** Optional trusted directory for scoped management; never supplied by model or browser input. */
@@ -2444,7 +2445,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     logger, diagnostics, ...(options.now ? { now: options.now } : {}),
   })
   const semanticMemory = createAgentSemanticMemory({
-    redis: storage, memory: personMemory, config: () => options.semanticMemory,
+    redis: options.semanticRedis ?? storage, memory: personMemory, config: () => options.semanticMemory,
     ...(options.semanticMemoryBackend ? { backend: options.semanticMemoryBackend } : {}),
     resolve: target => isRunning() && conversationEnabled(target) ? bindingFor(target) : undefined,
     available: target => allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),

@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { once } from 'node:events'
+import { createConnection, createServer } from 'node:net'
 import test from 'node:test'
 import { agentSemanticMemoryId, createAgentSemanticMemoryStore } from '../dist/backend/modules/memory/infrastructure/agentSemanticMemoryStore.js'
 import { agentConversationKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
+import { openAgentRedis } from '../dist/backend/modules/runtime/infrastructure/agentRedis.js'
 import { commitStandaloneTransfer } from '../dist/backend/bootstrap/standaloneAgentMigration.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
 
@@ -64,6 +67,55 @@ test('semantic sources and vectors survive store recreation with host-prefixed k
   assert.deepEqual(await restarted.list(), [])
   assert.deepEqual(await restarted.listScopes(), [])
   assert.equal(await f.store.update(input.id, () => undefined), true)
+})
+
+test('standalone semantic snapshot traffic cannot hold up the inbox socket or dispatch a revoked queued write', redisTest, async t => {
+  const f = await fixture(t, 'semantic-store-isolation')
+  const peers = []
+  const proxy = createServer(front => {
+    const back = createConnection({ path: new URL(f.url).pathname })
+    front.on('error', () => back.destroy()).once('close', () => back.destroy())
+    back.on('error', () => front.destroy()).once('close', () => front.destroy())
+    front.pipe(back).pipe(front)
+    peers.push({ front, back })
+  })
+  proxy.listen(0, '127.0.0.1')
+  await once(proxy, 'listening')
+  let redis
+  t.after(async () => {
+    await redis?.close()
+    for (const { front, back } of peers) { front.destroy(); back.destroy() }
+    await new Promise(resolve => proxy.close(resolve))
+  })
+  const events = []
+  redis = await openAgentRedis({ url: `redis://127.0.0.1:${proxy.address().port}`, instance: 'isolated-semantic-owner',
+    onLost() {}, onCommandFailure: event => events.push(event) })
+  const input = state(scope(), [row(1, { vector: [0.1, 0.9], providerId })])
+  const corpus = createAgentSemanticMemoryStore(redis.semanticStorage)
+  assert.equal(await corpus.update(input.id, () => input), true)
+  assert.equal(peers.length, 2)
+  await redis.storage.set('inbox', 'ready')
+  const socket = peers[1].back
+  socket.pause()
+  try {
+    const blocked = corpus.read(input.id)
+    let current = true
+    const write = redis.semanticStorage.eval("return redis.call('SET', KEYS[1], ARGV[1])",
+      { keys: ['revoked'], arguments: ['written'], isCurrent: () => current })
+    const remaining = Array.from({ length: 6 }, () => redis.semanticStorage.get('inbox'))
+    await assert.rejects(redis.semanticStorage.get('over-limit'))
+    assert.deepEqual(events.map(event => [event.operation, event.code]), [['semantic_redis_command', 'redis_command_queue_full']])
+    assert.equal(await redis.storage.get('inbox'), 'ready')
+    current = false
+    socket.resume()
+    assert.deepEqual(await blocked, input)
+    assert.equal(await write, 0)
+    assert.deepEqual(await Promise.all(remaining), Array(6).fill('ready'))
+    assert.equal(await redis.storage.get('revoked'), null)
+    await f.reader.lPush('bl-agent:isolated-semantic-owner:wrong-type', 'sample')
+    await assert.rejects(redis.semanticStorage.getSnapshot(['wrong-type']))
+    assert.equal(events.at(-1).code, 'redis_command_rejected')
+  } finally { socket.resume() }
 })
 
 test('source import is read-only until CAS and a concurrent cleanup aborts the parent history commit', redisTest, async t => {

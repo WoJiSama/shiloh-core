@@ -6,13 +6,12 @@ import type { PersonProfileExtractionContext } from '../../../contracts/personPr
 import type { AgentSemanticMemoryBackend, AgentSemanticMemoryConfig, AgentSemanticMemoryRecall, AgentSemanticMemoryQuerySource,
   AgentSemanticMemoryCleanupGuard, AgentSemanticMemoryCleanupReceipt, AgentSemanticMemoryPurgeSubject } from '../../../contracts/semanticMemory.js'
 import { reportAgentFailure, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
-import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey, isPlatformIdentifier, platformAccountKey } from '../../runtime/domain/agentBindings.js'
 import { isPersonMemoryRedacted } from '../domain/personMemory.js'
 import { sanitizeUntrustedText } from '../../simulation/domain/safety.js'
 import { describeMemoryTime } from './engine/temporalContext.js'
 import { canReadUnattributedMemory, personMemoryAddress } from './personMemoryContext.js'
-import { agentSemanticMemoryId, createAgentSemanticMemoryStore, type AgentSemanticMemoryRow } from './agentSemanticMemoryStore.js'
+import { agentSemanticMemoryId, createAgentSemanticMemoryStore, type AgentSemanticMemoryRedis, type AgentSemanticMemoryRow } from './agentSemanticMemoryStore.js'
 import { ensureSemanticCleanup, semanticCleanupCurrent, semanticCleanupMatchesScope, semanticCleanupSelector } from './agentSemanticMemoryCleanup.js'
 import { AgentSemanticMemoryTimeoutError, prepareAgentSemanticRanking, type AgentSemanticRetrievalOptions, type AgentSemanticRetrievalTrace } from './agentSemanticRetrieval.js'
 
@@ -44,7 +43,7 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 
 /** Owns a bounded source corpus, never substitutes a rolling buffer for an archive. */
 export function createAgentSemanticMemory(ports: {
-  redis: AgentInboxRedis
+  redis: AgentSemanticMemoryRedis
   memory: PersonMemoryStore
   config(): AgentSemanticMemoryConfig | undefined
   backend?: AgentSemanticMemoryBackend

@@ -326,7 +326,10 @@ export async function main(argv: string[]): Promise<void> {
     warn() { diagnostics.emit({ stage: 'host', operation: 'forbidden_word_config', outcome: 'failed', code: 'forbidden_regex_invalid' }) },
   })
   try {
-    storage = await openAgentRedis({ url: config.redisUrl, instance: config.instance, onLost: () => fail('[Agent] Redis 执行租约丢失，停止处理') })
+    storage = await openAgentRedis({ url: config.redisUrl, instance: config.instance,
+      onLost: () => fail('[Agent] Redis 执行租约丢失，停止处理'),
+      onCommandFailure: event => diagnostics.emit({ stage: 'host', ...event }),
+    })
     const forgetOperationsStore = createForgetOperationStore({ redis: storage.storage })
     // Console authentication outlives execution retirement, while the process keeps its Redis lease.
     const consoleAuthority = { signal: termination.signal,
@@ -672,6 +675,7 @@ export async function main(argv: string[]): Promise<void> {
     }
     host = createAgentRuntime({
       storage: storage.storage, adapters, logger: safeLogger, diagnostics,
+      ...(config.semanticMemory.enabled ? { semanticRedis: storage.semanticStorage } : {}),
       managementBindings,
       toolRegistry: {
         // Removing a definition also fences its pending HTTP, queued send and late result.
