@@ -363,6 +363,8 @@ interface CommitmentExecution {
 
 function sleep(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, boundedTimerDelay(ms))) }
 
+class SimulationSourceRevokedError extends Error {}
+
 function awaitSideModel<T>(start: () => Promise<T>, signal: AbortSignal, isCurrent: () => boolean): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false, poll: ReturnType<typeof setInterval> | undefined
@@ -1565,10 +1567,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         const visibleQuote = triggerSource && state!.recent.find(message => message.seq === triggerSource.seq)?.quoteSource
         if ((triggerSource?.messageId && await ports.isMessageRecalled?.(target, String(triggerSource.messageId))) ||
             (visibleQuote && await ports.isMessageRecalled?.(target, visibleQuote.messageId))) {
-          throw new Error('消息来源已撤回，停止使用旧上下文')
+          throw new SimulationSourceRevokedError('消息来源已撤回，停止使用旧上下文')
         }
         for (const id of attachmentSourceIds) {
-          if (await ports.isMessageRecalled?.(target, id)) throw new Error('附件来源已撤回，停止使用旧上下文')
+          if (await ports.isMessageRecalled?.(target, id)) throw new SimulationSourceRevokedError('附件来源已撤回，停止使用旧上下文')
         }
       }
       const allowUnprovenAggregates = memorySceneState.invalidatedAt === 0
@@ -1812,9 +1814,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           const gateSources = [...turnState.unread].sort((a, b) => a.seq - b.seq)
             .filter(message => !resolvedPersona.binding || message.kind === 'text' && !!message.messageId && !message.forwardId && !message.textTruncated)
             .slice(-10).map(message => ({ ...message }))
-          let gateRevoked = false, gateUsageRecorded = false, gateActive = true
+          let sourceFailure: 'wake_gate_source_changed' | 'wake_gate_source_check_failed' | undefined
+          let gateUsageRecorded = false, gateActive = true
           const gateSignal = AbortSignal.any([turnSignal, AbortSignal.timeout(8_000)])
-          const gateAuthorized = () => gateActive && !gateRevoked && canCallModel() && gateSources.every(source => turnState.recent.some(message =>
+          const gateAuthorized = () => gateActive && !sourceFailure && canCallModel() && gateSources.every(source => turnState.recent.some(message =>
             message.seq === source.seq && message.messageId === source.messageId && message.userId === source.userId &&
             message.at === source.at && message.text === source.text))
           const gateCurrent = () => !gateSignal.aborted && gateAuthorized()
@@ -1823,9 +1826,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             async ensureCurrent() {
               try {
                 await assertTriggerCurrent()
-                if (!await sideModelSourcesCurrent(characterScope, target, gateSources, gateAuthorized)) throw new Error('唤醒预判来源已失效')
+                if (!await sideModelSourcesCurrent(characterScope, target, gateSources, gateAuthorized)) {
+                  throw new SimulationSourceRevokedError('唤醒预判来源已失效')
+                }
+              } catch (error) {
+                if (!gateSignal.aborted) sourceFailure = error instanceof SimulationSourceRevokedError ? 'wake_gate_source_changed' : 'wake_gate_source_check_failed'
+                throw error
               }
-              catch { gateRevoked = true; throw new Error('唤醒预判来源已失效') }
               gateSignal.throwIfAborted()
             },
             recordUsage(model, usage) {
@@ -1852,7 +1859,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             } finally { gateActive = false }
           }
           const runGate = () => invokeGate().catch(error => {
-            const cancelled = turnSignal.aborted && gateSignal.reason === turnSignal.reason
+            const cancelled = sourceFailure === 'wake_gate_source_changed' || turnSignal.aborted && gateSignal.reason === turnSignal.reason
             const timedOut = gateSignal.aborted && gateSignal.reason instanceof DOMException && gateSignal.reason.name === 'TimeoutError'
             const failure = error instanceof AgentSimulationModelError ? error : undefined
             const httpStatus = failure?.httpStatus
@@ -1861,14 +1868,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               wakeGateRetryAt = now() + 60_000
             }
             diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: cancelled ? 'cancelled' : 'failed',
-              code: cancelled ? 'wake_gate_cancelled' : gateRevoked ? 'wake_gate_source_changed' : timedOut ? 'wake_gate_timeout' : failure?.code ?? 'wake_gate_unavailable',
+              code: sourceFailure ?? (cancelled ? 'wake_gate_cancelled' : timedOut ? 'wake_gate_timeout' : failure?.code ?? 'wake_gate_unavailable'),
               ...(httpStatus === undefined ? {} : { httpStatus }) })
             return null
           })
           const gate = durableWake ? await beginWake(runGate) : { result: runGate() }
           if (!gate) return
           const verdict = await gate.result
-          if (!canCallModel() || gateRevoked) return
+          if (!canCallModel() || sourceFailure) return
           if (verdict && verdict.engage === false) {
             state.lastReadThroughSeq = Math.max(state.lastReadThroughSeq, gateReadThroughSeq)
             state.unread = state.unread.filter(message => message.seq > gateReadThroughSeq)
@@ -4508,7 +4515,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     let memoryInvalidatedAt = 0, activityVersion = ''
     let fresh: SimMessage[] = []
     let memoryTurn: Awaited<ReturnType<NonNullable<SimulationRuntimePorts['beginMemoryTurn']>>> | undefined
-    let active = true, bindingCurrent = true, usageRecorded = false, revoked = false
+    let active = true, bindingCurrent = true, revoked = false
     let processed: 'meme_batch_empty' | 'meme_batch_saved' | undefined
     let phase: 'prepare' | 'model' | 'save' = 'prepare'
     const deadline = AbortSignal.timeout(30_000)
@@ -4556,19 +4563,35 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       fresh = (await redactSceneMessages(scope, candidateMessages())).filter(m => m.at > memoryInvalidatedAt).map(message => ({ ...message }))
       if (fresh.length < cfg.meme.extractMinMessages) return
       await ensureCurrent()
-      const extractStartedAt = now()
       phase = 'model'
-      const context: PersonProfileExtractionContext = { target, ...(resolved.binding ? { binding: resolved.binding } : {}),
-        signal: memoryTurn ? AbortSignal.any([signal, memoryTurn.signal]) : signal, isCurrent, ensureCurrent,
-        recordUsage(model, usage) {
-          if (!active || usageRecorded) return
-          usageRecorded = true
-          ports.recordTokens?.({ scope: groupId, stage: 'meme-extract', model, usage, ms: now() - extractStartedAt })
-        },
+      const input = fresh.map(m => ({ name: m.name, text: m.text }))
+      const requestSignal = memoryTurn ? AbortSignal.any([signal, memoryTurn.signal]) : signal
+      const extract = async () => {
+        const started = now()
+        let requestFinished = false, usageRecorded = false
+        const context: PersonProfileExtractionContext = { target, ...(resolved.binding ? { binding: resolved.binding } : {}),
+          signal: requestSignal, isCurrent, ensureCurrent,
+          recordUsage(model, usage) {
+            if (!active || requestFinished || usageRecorded) return
+            usageRecorded = true
+            ports.recordTokens?.({ scope: groupId, stage: 'meme-extract', model, usage, ms: now() - started })
+          },
+        }
+        try {
+          const raw = await awaitSideModel(() => ports.memeExtract!(input, isCurrent, context), requestSignal, isCurrent)
+          if (!usageRecorded) try { ports.recordTokens?.({ scope: groupId, stage: 'meme-extract', ms: now() - started }) } catch { /* 账本不可用 */ }
+          return parseMemeCandidates(raw, { requireArray: true })
+        } finally { requestFinished = true }
       }
-      const raw = await awaitSideModel(() => ports.memeExtract!(fresh.map(m => ({ name: m.name, text: m.text })), isCurrent, context), context.signal, isCurrent)
-      if (!usageRecorded) try { ports.recordTokens?.({ scope: groupId, stage: 'meme-extract', ms: now() - extractStartedAt }) } catch { /* 账本不可用 */ }
-      const candidates = parseMemeCandidates(raw, { requireArray: true })
+      let candidates: ReturnType<typeof parseMemeCandidates>
+      try { candidates = await extract() }
+      catch (error) {
+        if (!(error instanceof AgentSimulationModelError) || error.code !== 'meme_output_json_invalid' && error.code !== 'meme_output_schema_invalid') throw error
+        await ensureCurrent()
+        candidates = await extract()
+        diagnose({ stage: 'model', operation: 'simulation_meme_extract_response', outcome: 'failed',
+          code: error.code === 'meme_output_json_invalid' ? 'meme_output_json_recovered' : 'meme_output_schema_recovered' })
+      }
       phase = 'save'
       await ensureCurrent()
       if (candidates.length) {

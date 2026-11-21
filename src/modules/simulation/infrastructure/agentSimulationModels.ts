@@ -21,7 +21,9 @@ export interface AgentSimulationMemeMessage { readonly name: string; readonly te
 
 const FAILURE = '仿真侧路模型请求失败：请求已取消、授权失效或模型服务不可用。'
 export class AgentSimulationModelError extends Error {
-  constructor(readonly code: 'provider_timeout' | 'provider_transport_error' | 'http_error' | 'model_response_invalid' | 'model_response_truncated', readonly httpStatus?: number) {
+  constructor(readonly code: 'provider_timeout' | 'provider_transport_error' | 'http_error' | 'model_response_invalid' | 'model_response_truncated' |
+    'model_source_check_failed' | 'model_response_body_invalid' | 'model_response_envelope_invalid' | 'model_response_blocked' |
+    'meme_output_json_invalid' | 'meme_output_schema_invalid', readonly httpStatus?: number) {
     super(FAILURE)
   }
 }
@@ -65,7 +67,11 @@ async function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise
 }
 async function ensureCurrent(context: PersonProfileExtractionContext, signal: AbortSignal, isCurrent?: () => boolean): Promise<void> {
   assertCurrent(context, signal, isCurrent)
-  await abortable(Promise.resolve().then(() => { assertCurrent(context, signal, isCurrent); return context.ensureCurrent() }), signal)
+  try { await abortable(Promise.resolve().then(() => { assertCurrent(context, signal, isCurrent); return context.ensureCurrent() }), signal) }
+  catch {
+    assertCurrent(context, signal, isCurrent)
+    throw new AgentSimulationModelError('model_source_check_failed')
+  }
   assertCurrent(context, signal, isCurrent)
 }
 async function readResponse(response: Response, signal: AbortSignal): Promise<{ raw: string; data: Record<string, unknown> }> {
@@ -103,7 +109,7 @@ function parseOutput(text: string, opener: '{' | '['): unknown {
   }
   throw new Error(FAILURE)
 }
-function client(options: AgentSimulationModelOptions, deadline: number, maxTokens: number, temperature: number) {
+function client(options: AgentSimulationModelOptions, deadline: number, maxTokens: number, temperature: number, jsonObject = false) {
   const secrets = [...new Set([options.apiKey, ...(options.secrets ?? [])].filter(value => typeof value === 'string' && !!value))]
   const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Math.min(deadline, Math.floor(options.timeoutMs!))) : deadline
   return async (input: unknown, prompt: () => readonly { role: string; content: string }[], context: PersonProfileExtractionContext | undefined, isCurrent?: () => boolean) => {
@@ -130,25 +136,32 @@ function client(options: AgentSimulationModelOptions, deadline: number, maxToken
         return (options.fetchImpl ?? fetch)(resolveChatCompletionUrl(endpoint.href), { method: 'POST', redirect: 'error', signal: requestSignal,
           headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: options.name, messages, stream: false, temperature, max_tokens: maxTokens,
+            ...(jsonObject ? { response_format: { type: 'json_object' } } : {}),
             ...glmFlashJsonOptions(endpoint, options.name) }) })
       }), signal)
       waitingForHeaders = false
       response = received
       assertCurrent(context, signal, isCurrent)
-      if (received.redirected) throw new Error(FAILURE)
-      const result = await readResponse(received, signal)
+      if (!received.ok) throw new AgentSimulationModelError('http_error', received.status)
+      if (received.redirected) throw new AgentSimulationModelError('model_response_envelope_invalid')
+      const result = await readResponse(received, signal).catch(() => {
+        requestSignal.throwIfAborted()
+        throw new AgentSimulationModelError('model_response_body_invalid')
+      })
       await ensureCurrent(context, signal, isCurrent)
-      if (hasSecret(result.raw, secrets) || containsSecret(result.data, secrets)) throw new Error(FAILURE)
+      if (hasSecret(result.raw, secrets) || containsSecret(result.data, secrets)) throw new AgentSimulationModelError('model_response_blocked')
       const usage = object(result.data.usage), counts = Object.fromEntries(['prompt_tokens', 'completion_tokens', 'total_tokens', 'input_tokens', 'output_tokens']
         .filter(key => typeof usage[key] === 'number' && Number.isSafeInteger(usage[key]) && Number(usage[key]) >= 0).map(key => [key, usage[key]]))
       if (Object.keys(counts).length) context.recordUsage?.(options.name, counts)
       await ensureCurrent(context, signal, isCurrent)
       const choice = object(Array.isArray(result.data.choices) ? result.data.choices[0] : undefined)
       const message = object(choice.message)
-      if (received.ok && choice.finish_reason === 'length') throw new AgentSimulationModelError('model_response_truncated')
+      if (choice.finish_reason === 'length') throw new AgentSimulationModelError('model_response_truncated')
       const hasToolCalls = message.tool_calls != null && (!Array.isArray(message.tool_calls) || message.tool_calls.length > 0)
-      if (!received.ok || result.data.error || hasToolCalls || message.function_call != null ||
-          typeof message.content !== 'string' || !message.content.trim() || message.content.length > 64_000) throw new Error(FAILURE)
+      if (hasToolCalls || message.function_call != null) throw new AgentSimulationModelError('model_response_blocked')
+      if (result.data.error || typeof message.content !== 'string' || !message.content.trim() || message.content.length > 64_000) {
+        throw new AgentSimulationModelError('model_response_envelope_invalid')
+      }
       return message.content
     } catch (error) {
       if (error instanceof AgentSimulationModelError) throw error
@@ -185,27 +198,36 @@ export function createAgentSimulationWakeGate(options: AgentSimulationModelOptio
 
 /** Returns bounded candidate JSON; the runtime owns permissions and persistence. */
 export function createAgentSimulationMemeExtractor(options: AgentSimulationModelOptions) {
-  const run = client(options, 15_000, 2000, 0.2)
+  // The official GLM Flash endpoint accepts JSON object mode for this task.
+  const endpoint = URL.parse(options.baseUrl)
+  const jsonObject = !!endpoint && glmFlashJsonOptions(endpoint, options.name).thinking?.type === 'disabled'
+  const run = client(options, 15_000, 2000, 0.2, jsonObject)
   return async (messages: readonly AgentSimulationMemeMessage[], isCurrent?: () => boolean, context?: PersonProfileExtractionContext): Promise<string> => {
-    try {
-      const raw = await run(messages, () => {
-        if (!Array.isArray(messages) || !messages.length || messages.length > 40 || messages.some(row => !row || typeof row.name !== 'string' || typeof row.text !== 'string')) throw new Error(FAILURE)
-        return [{ role: 'system', content: '你是群聊梗提取器，只输出 JSON 数组，不输出任何其他内容。' },
-          { role: 'user', content: buildMemeExtractionPrompt(messages.map(row => ({ name: row.name.slice(0, 80), text: row.text }))) }]
-      }, context, isCurrent)
-      const parsed: unknown = parseOutput(raw, '[')
-      if (!Array.isArray(parsed) || parsed.length > 5 || parsed.some(item => {
-        const row = object(item)
-        return !item || Array.isArray(item) || typeof row.content !== 'string' || !row.content.trim() || row.content.length > 120 ||
-          Object.keys(row).some(key => !['content', 'source_id', 'note'].includes(key)) ||
-          row.source_id !== undefined && !((typeof row.source_id === 'string' && /^[1-9]\d?$/u.test(row.source_id) || typeof row.source_id === 'number') &&
-            Number.isSafeInteger(Number(row.source_id)) && Number(row.source_id) >= 1 && Number(row.source_id) <= messages.length) ||
-          row.note !== undefined && (typeof row.note !== 'string' || row.note.length > 1000)
-      })) throw new Error(FAILURE)
-      return JSON.stringify(parsed)
-    } catch (error) {
-      if (error instanceof AgentSimulationModelError) throw error
-      throw new AgentSimulationModelError('model_response_invalid')
+    const raw = await run(messages, () => {
+      if (!Array.isArray(messages) || !messages.length || messages.length > 40 || messages.some(row => !row || typeof row.name !== 'string' || typeof row.text !== 'string')) throw new Error(FAILURE)
+      return [
+        { role: 'system', content: jsonObject
+          ? '你是群聊梗提取器，只输出包含 candidates 字段的 JSON 对象。'
+          : '你是群聊梗提取器，只输出 JSON 数组。' },
+        { role: 'user', content: buildMemeExtractionPrompt(messages.map(row => ({ name: row.name.slice(0, 80), text: row.text })), jsonObject) },
+      ]
+    }, context, isCurrent)
+    let parsed: unknown
+    try { parsed = parseOutput(raw, jsonObject ? '{' : '[') }
+    catch { throw new AgentSimulationModelError('meme_output_json_invalid') }
+    const envelope = object(parsed)
+    if (jsonObject && (Object.keys(envelope).length !== 1 || !Object.hasOwn(envelope, 'candidates'))) {
+      throw new AgentSimulationModelError('meme_output_schema_invalid')
     }
+    const candidates = jsonObject ? envelope.candidates : parsed
+    if (!Array.isArray(candidates) || candidates.length > 5 || candidates.some(item => {
+      const row = object(item)
+      return !item || Array.isArray(item) || typeof row.content !== 'string' || !row.content.trim() || row.content.length > 120 ||
+        Object.keys(row).some(key => !['content', 'source_id', 'note'].includes(key)) ||
+        row.source_id !== undefined && !((typeof row.source_id === 'string' && /^[1-9]\d?$/u.test(row.source_id) || typeof row.source_id === 'number') &&
+          Number.isSafeInteger(Number(row.source_id)) && Number(row.source_id) >= 1 && Number(row.source_id) <= messages.length) ||
+        row.note !== undefined && (typeof row.note !== 'string' || row.note.length > 1000)
+    })) throw new AgentSimulationModelError('meme_output_schema_invalid')
+    return JSON.stringify(candidates)
   }
 }
