@@ -602,10 +602,17 @@ function createOneBotSession(options: OneBotConnectionOptions) {
           heartbeat.unref()
           if (conversationNames.enabled) {
             const current = () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN
-            const refreshNames = () => {
-              void conversationNames.refresh(action => call(client, action, {}, current, 5_000, undefined, undefined, false), current).catch(() => {})
+            let refreshing = false
+            const refreshNames = async () => {
+              if (refreshing || !current()) return
+              refreshing = true
+              try {
+                await conversationNames.refresh((action, params) => call(client, action, params, current, 10_000, undefined, undefined, false), current)
+              } catch {
+                // QQ name availability does not determine connection health.
+              } finally { refreshing = false }
             }
-            refreshNames()
+            void refreshNames()
             nameRefresh = setInterval(refreshNames, 5 * 60_000)
             nameRefresh.unref()
           }
