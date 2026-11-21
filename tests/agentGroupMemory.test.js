@@ -446,6 +446,7 @@ test('group learning frees four stalled slots, resumes a stalled scan and keeps 
   const events = [], calls = []
   let sourceReads, sawSourceWait = false, sawWriteWait = false, sawAckWait = false, lateWriteResult
   const storage = {
+    ...redis.storage,
     get(key) {
       if (stallScan && key === 'agent:group-memory:v1:catalog') {
         stallScan = false
