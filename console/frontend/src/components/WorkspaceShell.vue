@@ -148,6 +148,12 @@ function choose(target: RouteLocationRaw) {
   searchOpen.value = false
   void router.push(target)
 }
+function closeMenuOnCurrentLink(event: MouseEvent) {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
+  if (!(event.target instanceof Element)) return
+  const href = event.target.closest('a[href]')?.getAttribute('href')
+  if (href === router.resolve(route.fullPath).href) menuOpen.value = false
+}
 function keydown(event: KeyboardEvent) {
   const editing = (event.target as HTMLElement)?.closest('input,textarea,[contenteditable="true"]')
   if (
@@ -305,9 +311,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keydown))
       <main id="main-content" class="workspace-content">
         <NAlert v-if="workspaceError" type="warning" title="工作区刷新失败" class="workspace-error"
           >{{ workspaceError }}。下方保留上次读取内容，请刷新后再操作。</NAlert
-        ><RouterView v-slot="{ Component, route: current }"
-          ><component :is="Component" :key="current.path"
-        /></RouterView>
+        >
+        <RouterView v-slot="{ Component, route: current }">
+          <div v-if="Component" :key="current.path" class="workspace-page">
+            <component :is="Component" />
+          </div>
+        </RouterView>
       </main>
     </div>
     <NDrawer v-model:show="menuOpen" placement="left" :width="260"
@@ -319,6 +328,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keydown))
           :active-section="active.path"
           :active-feature="activeFeature"
           :feature-target="featureTarget"
+          @click="closeMenuOnCurrentLink"
         />
         <NButton class="workspace-drawer-logout" @click="logout">退出登录</NButton></NDrawerContent
       ></NDrawer
@@ -361,3 +371,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keydown))
     >
   </div>
 </template>
+
+<style scoped>
+.workspace-page {
+  min-width: 0;
+  animation: workspace-page-enter 180ms ease-out;
+}
+
+@keyframes workspace-page-enter {
+  from {
+    opacity: 0.65;
+    transform: translateY(4px);
+  }
+}
+</style>

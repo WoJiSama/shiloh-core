@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, shallowMount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterLink } from 'vue-router'
-import { NButton, NInput } from 'naive-ui'
+import { NButton, NDrawer, NInput } from 'naive-ui'
 import RobotScene from '../components/RobotScene.vue'
 import WorkspaceRobots from '../pages/WorkspaceRobots.vue'
 import WorkspaceRobot from '../pages/WorkspaceRobot.vue'
@@ -661,15 +661,16 @@ describe('robot workspace components', () => {
     const heading = (label: string) =>
       nav.findAll('button').find((button) => button.text() === label)!
     const links = (label: string) => nav.get('#' + heading(label).attributes('aria-controls'))
+    const collapsed = (label: string) => links(label).element.hasAttribute('inert')
     const current = () => nav.get('a[aria-current="page"]').text()
     expect(heading('运行中心').attributes('aria-expanded')).toBe('true')
     expect(current()).toBe('运行观测')
-    expect(links('运行中心').isVisible()).toBe(true)
-    expect(links('资源库').isVisible()).toBe(false)
+    expect(collapsed('运行中心')).toBe(false)
+    expect(collapsed('资源库')).toBe(true)
     await heading('功能').trigger('click')
     expect(router.currentRoute.value.path).toBe('/observe/details')
-    expect(links('运行中心').isVisible()).toBe(false)
-    expect(links('功能').isVisible()).toBe(true)
+    expect(collapsed('运行中心')).toBe(true)
+    expect(collapsed('功能')).toBe(false)
     expect(links('功能').findAll('a').map((link) => link.text())).toEqual(['骰子', '游戏'])
     await links('功能').get('a[href="/commands"]').trigger('click')
     await flushPromises()
@@ -680,12 +681,12 @@ describe('robot workspace components', () => {
     await flushPromises()
     expect(current()).toBe('游戏')
     await heading('功能').trigger('click')
-    expect(links('功能').isVisible()).toBe(false)
+    expect(collapsed('功能')).toBe(true)
     expect(router.currentRoute.value.path).toBe('/games')
     await router.push('/ai/')
     await flushPromises()
     expect(current()).toBe('模型资源')
-    expect(links('资源库').isVisible()).toBe(true)
+    expect(collapsed('资源库')).toBe(false)
     expect(links('资源库').text()).toContain('记忆检索')
     expect(shell.find('.workspace-subnav').exists()).toBe(false)
     await shell.find('.search-trigger').trigger('click')
@@ -700,7 +701,7 @@ describe('robot workspace components', () => {
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/tokens')
     expect(current()).toBe('模型用量')
-    expect(links('运行中心').isVisible()).toBe(true)
+    expect(collapsed('运行中心')).toBe(false)
     await router.push('/robots/alice/self?connection=19001111&panel=person-profiles')
     await flushPromises()
     expect(current()).toBe('人物记忆')
@@ -716,10 +717,38 @@ describe('robot workspace components', () => {
       panel: 'trusteeship'
     })
     expect(current()).toBe('托付与承诺')
-    expect(links('运行中心').isVisible()).toBe(true)
+    expect(collapsed('运行中心')).toBe(false)
     const details = page(EmbeddedPage, {}, [router])
     expect(details.find('iframe').exists()).toBe(false)
     expect(details.text()).toContain('尚未提供完整运行明细')
+  })
+  it('dismisses the mobile menu when the already open page is selected', async () => {
+    vi.mocked(api).mockResolvedValue(data())
+    vi.stubGlobal('__CONSOLE_BUILD__', { revision: 'test', at: '2026-11-18T00:00:00Z' })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/commands', component: { template: '<div />' } },
+        { path: '/:pathMatch(.*)*', component: { template: '<div />' } }
+      ]
+    })
+    await router.push('/commands')
+    const shell = mount(WorkspaceShell, {
+      props: { appearance: 'light' },
+      attachTo: document.body,
+      global: { plugins: [router] }
+    })
+    wrappers.push(shell)
+    await shell.get('[aria-label="打开导航"]').trigger('click')
+    await flushPromises()
+    expect(shell.getComponent(NDrawer).props('show')).toBe(true)
+    const link = document.querySelector<HTMLAnchorElement>(
+      'nav[aria-label="移动主导航"] a[href="/commands"]'
+    )!
+    link.click()
+    await flushPromises()
+    expect(shell.getComponent(NDrawer).props('show')).toBe(false)
+    expect(router.currentRoute.value.path).toBe('/commands')
   })
 })
 function profile(row = scene(), text = '喜欢天文') {

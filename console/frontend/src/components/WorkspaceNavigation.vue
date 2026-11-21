@@ -40,28 +40,33 @@ const sections = workspaceNavigation.map((section) => ({
             <span>{{ section.label }}</span>
             <ChevronRight class="workspace-nav-chevron" :size="15" aria-hidden="true" />
           </button>
-          <ul
-            v-show="expanded === section.path"
+          <div
             :id="id + section.path.replace('/', '-')"
-            class="workspace-nav-children"
+            class="workspace-nav-panel"
+            :class="{ expanded: expanded === section.path }"
+            :inert="expanded !== section.path"
           >
-            <li v-if="section.overviewLabel">
-              <RouterLink
-                class="workspace-nav-link"
-                :to="section.path"
-                :aria-current="currentPath === section.path ? 'page' : undefined"
-                >{{ section.overviewLabel }}</RouterLink
-              >
-            </li>
-            <li v-for="[feature, item] in section.children" :key="feature">
-              <RouterLink
-                class="workspace-nav-link"
-                :to="featureTarget(feature)"
-                :aria-current="activeFeature === feature ? 'page' : undefined"
-                >{{ item.label }}</RouterLink
-              >
-            </li>
-          </ul>
+            <div class="workspace-nav-clip">
+              <ul class="workspace-nav-children">
+                <li v-if="section.overviewLabel">
+                  <RouterLink
+                    class="workspace-nav-link"
+                    :to="section.path"
+                    :aria-current="currentPath === section.path ? 'page' : undefined"
+                    >{{ section.overviewLabel }}</RouterLink
+                  >
+                </li>
+                <li v-for="[feature, item] in section.children" :key="feature">
+                  <RouterLink
+                    class="workspace-nav-link"
+                    :to="featureTarget(feature)"
+                    :aria-current="activeFeature === feature ? 'page' : undefined"
+                    >{{ item.label }}</RouterLink
+                  >
+                </li>
+              </ul>
+            </div>
+          </div>
         </template>
         <RouterLink
           v-else
@@ -78,6 +83,10 @@ const sections = workspaceNavigation.map((section) => ({
 </template>
 
 <style scoped>
+.workspace-navigation {
+  --nav-duration: 200ms;
+  --nav-easing: cubic-bezier(0.2, 0.72, 0.24, 1);
+}
 .workspace-nav-list,
 .workspace-nav-children {
   display: grid;
@@ -97,6 +106,9 @@ const sections = workspaceNavigation.map((section) => ({
   color: var(--c-muted);
   text-align: start;
   line-height: 1.4;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
 }
 .workspace-nav-heading {
   min-height: 40px;
@@ -128,10 +140,30 @@ const sections = workspaceNavigation.map((section) => ({
   outline-offset: -2px;
 }
 .workspace-nav-chevron {
-  transition: transform 0.15s ease;
+  transition: transform var(--nav-duration) var(--nav-easing);
 }
 [aria-expanded='true'] > .workspace-nav-chevron {
   transform: rotate(90deg);
+}
+.workspace-nav-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    grid-template-rows var(--nav-duration) var(--nav-easing),
+    opacity 160ms ease,
+    visibility 0s linear var(--nav-duration);
+}
+.workspace-nav-panel.expanded {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+.workspace-nav-clip {
+  min-height: 0;
+  overflow: hidden;
 }
 .workspace-nav-children {
   margin: 4px 0 7px 19px;
@@ -147,11 +179,6 @@ const sections = workspaceNavigation.map((section) => ({
   .workspace-nav-heading,
   .workspace-nav-link {
     min-height: 44px;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .workspace-nav-chevron {
-    transition: none;
   }
 }
 </style>
