@@ -29,6 +29,7 @@ export interface CharacterTurnToolContext extends Pick<CharacterToolContext, 'no
 const GOAL_ACTIONS = { schedule: 'create', wait: 'wait', complete: 'complete', abandon: 'abandon' } as const
 const DECISION_CHOICES = new Set(['silent', 'cannot', 'unauthorized', 'unwilling', 'deferred'])
 const TOP_FIELDS = ['choice', 'reason', 'memories', 'goal', 'messages', 'replyToSeq', 'atUserIds', 'throughSeq']
+const ROUTINE_REASONS = new Map([['chat', '普通聊天收尾'], ['interest_only', '表达兴趣后收尾'], ['silent', '安静收尾']])
 
 function object(value: unknown, allowed: string[], field: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${field} 必须是对象`)
@@ -112,21 +113,25 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
       this.name = 'simFinishTurn'
       this.description = '显式选择本轮如何结束。chat普通聊天、interest_only仅有兴趣不承诺后续、silent旁听、cannot做不到、unauthorized未授权、unwilling不愿意、deferred暂缓；这些选择不自动建目标。schedule创建新自主目标，wait调整已有目标，complete完成有本目标成功回执的目标，abandon放弃目标。可显式保存至多两条有来源记忆；所有变更先完整校验再一次保存，成功后才交运行时发送可选消息、标读并结束本轮。reason只写简短选择理由。goal与memories都不传action，schedule也不传id；不支持focus。不推测聊天文字、不补来源、不自动发消息或重试。保存失败不表示安排或完成已生效，拒绝仍然自由。silent/deferred禁止messages；其余选择可发1至5条消息。throughSeq仅能提交实际看过的范围，由运行时再核对。'
       this.parameters = {
-        type: 'object', additionalProperties: false, required: ['choice', 'reason'], properties: {
+        type: 'object', additionalProperties: false, required: ['choice'], properties: {
           choice: { type: 'string', enum: [...CHARACTER_TURN_CHOICES] },
-          reason: { type: 'string', minLength: 1, maxLength: 600, description: '本轮选择的简短理由，不写思考链。' },
+          reason: { type: 'string', minLength: 1, maxLength: 600, description: '本轮选择的简短理由。chat、interest_only、silent 可省略，其余 choice 必填。' },
           memories: { type: 'array', maxItems: 2, description: '仅角色自己的经历、兴趣、观点。社交待办 pendingEvent 和本群相处习惯 interaction 请在收尾前单独调用 simRemember。每项不传 action 或新记录 id。', items: nestedSchema(memoryTool) },
           goal: { ...nestedSchema(goalTool), description: `仅 schedule/wait/complete/abandon 使用，操作由 choice 固定，不传 action。${goalTool.description}` },
           messages: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', minLength: 1, maxLength: 500 }, description: '可选的最终群消息；兼容单个字符串。silent/deferred 禁止。' },
           replyToSeq: { type: 'number', minimum: 1, description: '可选：引用已展示的消息序号，须为整数。' },
           atUserIds: { type: 'array', maxItems: 3, items: { type: 'string', ...(ctx.platformUserId ? { minLength: 1, maxLength: 128 } : { pattern: '^\\d{1,12}$' }) } },
-          throughSeq: { type: 'number', minimum: 0, description: '可选：显式标读到实际看过的连续消息位置，须为整数。' },
+          throughSeq: { type: 'number', minimum: 0, description: '仅在主动标读时填写。使用本轮显示的 readThroughSeq 或更小的非负整数，不确定就省略。' },
         },
       }
     }
     override normalizeParameters(params: unknown) {
       const input = object(params, TOP_FIELDS, '收尾参数')
-      return typeof input.messages === 'string' ? { ...input, messages: [input.messages] } : input
+      const normalized = { ...input }
+      if (typeof input.messages === 'string') normalized.messages = [input.messages]
+      const reason = typeof input.choice === 'string' && !Object.hasOwn(input, 'reason') ? ROUTINE_REASONS.get(input.choice) : undefined
+      if (reason !== undefined) normalized.reason = reason
+      return normalized
     }
     override validateParameters(params: Record<string, unknown>) {
       try { parse(params, memoryFields, goalFields, isUserId); return true }

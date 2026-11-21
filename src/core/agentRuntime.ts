@@ -2074,7 +2074,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       } } : {}),
       ...(options.codingWorker ? { coding: options.codingWorker } : {}),
       recordUsage: (agentId, stage, reply) => options.recordTokens?.({ scope: 'agent:' + agentId, stage, model: String(reply.model ?? ''), usage: reply.usage }),
-      failed: (operation, error) => diagnostics.emit({ stage: 'runtime', operation, outcome: 'failed', error }),
+      failed: (operation, error, code) => diagnostics.emit({ stage: 'runtime', operation, outcome: 'failed', ...(code ? { code } : {}), error }),
     })
   }
 
@@ -2383,7 +2383,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     ...(options.semanticMemoryBackend ? { backend: options.semanticMemoryBackend } : {}),
     resolve: target => isRunning() && conversationEnabled(target) ? bindingFor(target) : undefined,
     available: target => allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
-    privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, begin: beginMemoryTurn, isRunning,
+    privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, recalledMessageIds: inbox.recalledMessageIds, begin: beginMemoryTurn, isRunning,
+    ...(options.observeExecutionCurrent ? { observeCurrent } : {}),
     authorizePrivateSource,
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
     logger, diagnostics, ...(options.now ? { now: options.now } : {}),

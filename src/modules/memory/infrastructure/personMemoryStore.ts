@@ -5,6 +5,7 @@ import type { PersonMemoryCommand } from '../domain/personMemoryCommands.js'
 
 interface PersonMemoryRedis {
   get(key: string): Promise<unknown>
+  getMany?(keys: string[]): Promise<(string | null)[]>
   set(key: string, value: string, options?: { NX?: boolean; PX?: number }): Promise<unknown>
   del(key: string): Promise<unknown>
   eval?(script: string, options: { keys: string[]; arguments: string[] }): Promise<unknown>
@@ -415,6 +416,32 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
     const { person, scope } = await load(input)
     return redactions(person, scope)
   }
+  async function getRedactionsBatch(identity: PersonMemoryIdentity, subjects: readonly string[] | undefined, signal: AbortSignal) {
+    requireIdentity(identity)
+    const scopeName = scopeKey(identity)
+    signal.throwIfAborted()
+    let scopeRaw = subjects === undefined ? await redis.get(scopeName) : undefined
+    signal.throwIfAborted()
+    let scope = scopeRaw === undefined ? undefined : parseScope(scopeRaw, identity)
+    const ids = [...new Set(subjects ?? scope!.subjects)]
+    const result = new Map<string, PersonMemoryRedactions>()
+    for (let offset = 0; offset < ids.length; offset += 32) {
+      signal.throwIfAborted()
+      const batch = ids.slice(offset, offset + 32).map(subjectId => ({ identity, subjectId }))
+      batch.forEach(requireSubject)
+      const [currentScope, ...people] = await redis.getMany!([scopeName, ...batch.map(subject => personKey(identity, subject.subjectId))])
+      signal.throwIfAborted()
+      if (!scope) {
+        scopeRaw = currentScope
+        scope = parseScope(currentScope, identity)
+      }
+      if (currentScope !== scopeRaw || people.length !== batch.length) throw new Error('人物记忆权限来源已改变')
+      for (const [index, subject] of batch.entries()) {
+        result.set(subject.subjectId, redactions(parsePerson(people[index], subject), scope))
+      }
+    }
+    return result
+  }
   async function participantsAllow(input: PersonMemoryDraft, scope: ScopeDocument, reader: Pick<Transaction, 'get'>,
     cache: Map<string, Promise<PersonMemoryRedactions>>): Promise<boolean> {
     const ids = memoryParticipants(input)
@@ -682,6 +709,7 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
   return {
     remember, registerSource, query, list: query, listScene: input => query(input, undefined, true),
     read: input => query(input, input.ids), getRedactions, getSceneRedactions,
+    ...(redis.getMany ? { getRedactionsBatch } : {}),
     forget, revokeSource, forgetScene, setEnabled, scenes, identities, listSubjects, applyPrivacyCommand,
   }
 }

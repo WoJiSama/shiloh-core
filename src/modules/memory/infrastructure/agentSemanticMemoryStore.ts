@@ -29,6 +29,7 @@ export interface AgentSemanticMemoryScope {
 
 interface AgentSemanticMemoryRedis {
   get(key: string): Promise<string | null>
+  matchesStringDigests?(keys: string[], digests: string[]): Promise<boolean>
   eval(script: string, options: { keys: string[]; arguments: string[] }): Promise<unknown>
 }
 
@@ -37,9 +38,11 @@ const CATALOG_KEY = `${PREFIX}:catalog`
 const MAX_STATES = 200
 const MAX_ROWS = 2000
 const MAX_ATTEMPTS = 20
+const MAX_OBSERVED_CHARS = 64 * 1024 * 1024
 const FAILURE = '语义记忆存储不可用或状态无效，已停止读写。'
 const ID_PATTERN = /^[\da-f]{64}$/u
 const stateKey = (id: string) => `${PREFIX}:state:${id}`
+const digestValue = (value: string | null) => value === null ? 'absent' : createHash('sha1').update(value).digest('hex')
 
 // Declare every Redis key so the standalone host applies its prefix and lease
 // to the same atomic catalog/state snapshot and compare-and-set operation.
@@ -138,6 +141,42 @@ function sameSource(left: AgentSemanticMemoryRow, right: AgentSemanticMemoryRow)
 }
 
 export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) {
+  const observations = new Map<string, ReturnType<typeof observation>>()
+  let observedChars = 0
+  function observation(id: string, saved: {
+    state: AgentSemanticMemoryState | undefined; catalogRaw: string | null; stateRaw: string | null; cleanupRaw: string | null; cleanup: SemanticCleanupFences
+  }) {
+    const state = visible(saved.state, saved.cleanup)
+    if (state) {
+      for (const row of state.rows) { if (row.vector) Object.freeze(row.vector); Object.freeze(row) }
+      Object.freeze(state.rows)
+      Object.freeze(state.scope.target.account)
+      Object.freeze(state.scope.target)
+      Object.freeze(state.scope)
+      Object.freeze(state)
+    }
+    const matches = redis.matchesStringDigests
+    const digests = matches ? [saved.catalogRaw, saved.stateRaw, saved.cleanupRaw].map(digestValue) : []
+    return {
+      state,
+      hiddenRows: (saved.state?.rows.length ?? 0) !== (state?.rows.length ?? 0),
+      size: saved.stateRaw?.length ?? 0,
+      isUnchanged: () => matches?.call(redis, [CATALOG_KEY, stateKey(id), CLEANUP_KEY], digests) ?? Promise.resolve(false),
+    }
+  }
+  function rememberObservation(id: string, next: ReturnType<typeof observation>) {
+    const prior = observations.get(id)
+    if (prior) { observedChars -= prior.size; observations.delete(id) }
+    if (!redis.matchesStringDigests || !next.state || next.size > MAX_OBSERVED_CHARS) return next
+    observations.set(id, next)
+    observedChars += next.size
+    while (observedChars > MAX_OBSERVED_CHARS) {
+      const first = observations.keys().next().value!
+      observedChars -= observations.get(first)!.size
+      observations.delete(first)
+    }
+    return next
+  }
   async function snapshot(id: string) {
     const values = await redis.eval(READ_PAIR, { keys: [CATALOG_KEY, stateKey(id), CLEANUP_KEY], arguments: [] })
     if (!Array.isArray(values) || values.length !== 3) fail()
@@ -181,11 +220,16 @@ export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) 
     if (entries.length > MAX_STATES) fail()
     return JSON.stringify({ version: 1, entries })
   }
-  async function commit(saved: Awaited<ReturnType<typeof snapshot>>, id: string, next: AgentSemanticMemoryState | undefined) {
+  async function commit(saved: Awaited<ReturnType<typeof snapshot>>, id: string, next: AgentSemanticMemoryState | undefined,
+    stateRaw = next ? JSON.stringify(next) : null) {
+    const catalogRaw = catalogFor(saved, id, next)
     const arguments_ = [...expected(saved.catalogRaw), ...expected(saved.stateRaw), ...expected(saved.cleanupRaw),
-      catalogFor(saved, id, next), ...expected(next ? JSON.stringify(next) : null)]
+      catalogRaw, ...expected(stateRaw)]
     const result = await redis.eval(COMPARE_AND_SET, { keys: [CATALOG_KEY, stateKey(id), CLEANUP_KEY], arguments: arguments_ })
     if (result !== 0 && result !== 1) fail()
+    if (result === 1 && redis.matchesStringDigests) {
+      rememberObservation(id, observation(id, { ...saved, catalogRaw, stateRaw, state: next }))
+    }
     return result === 1
   }
 
@@ -244,6 +288,18 @@ export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) 
         return visible(saved.state, saved.cleanup)
       } catch { return fail() }
     },
+    async observe(id: string, signal?: AbortSignal) {
+      try {
+        if (!ID_PATTERN.test(id)) fail()
+        signal?.throwIfAborted()
+        const prior = observations.get(id)
+        if (prior && await prior.isUnchanged()) return rememberObservation(id, prior)
+        signal?.throwIfAborted()
+        const saved = await snapshot(id)
+        signal?.throwIfAborted()
+        return rememberObservation(id, observation(id, saved))
+      } catch { signal?.throwIfAborted(); return fail() }
+    },
     async update(id: string, mutate: (state: AgentSemanticMemoryState | undefined) => AgentSemanticMemoryState | undefined, isCurrent?: () => boolean): Promise<boolean> {
       try {
         if (!ID_PATTERN.test(id)) fail()
@@ -269,7 +325,7 @@ export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) 
           if (!current(isCurrent)) return false
           if (nextRaw === stateRaw || !state && !next) return true
           if (!current(isCurrent)) return false
-          if (await commit(saved, id, next)) return true
+          if (await commit(saved, id, next, nextRaw)) return true
         }
       } catch { fail() }
       return fail()

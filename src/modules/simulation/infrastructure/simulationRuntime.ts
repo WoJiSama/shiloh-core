@@ -96,6 +96,7 @@ import { sanitizeFinalReplyText, looksLikeToolArguments } from '../../conversati
 import { normalizeDelegatedEntries, formatDelegatedSection } from '../../memory/domain/delegatedMemory.js'
 import { createSimTools, simToolsAsFunctions, type SimSendResult, type SimWaitResult, type SimToolContext } from './simTools.js'
 import { prepareSimulationToolInput, SIMULATION_TOOL_INPUT_MAX_CHARS } from './simulationToolInput.js'
+import { semanticMemoryFailureCode } from '../../memory/infrastructure/agentSemanticMemory.js'
 import { normalizeDeliveryReceipt } from '../../messaging/domain/deliveryReceipt.js'
 import { validateAgentToolImage } from '../../image/infrastructure/agentToolImage.js'
 import { validateMessageBundle } from '../../messaging/infrastructure/messageBundle.js'
@@ -632,6 +633,27 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   // Pass only names of installed tools; a rejected call can carry arbitrary model text.
   const toolOperation = (name?: string) => name && /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(name) ? name : 'simulation_tool'
 
+  function confirmedReadResult(name: string, result: string): boolean {
+    if (!['simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simGetMessageImages',
+      'simGetForward', 'simGetGroupMembers', 'simWaitForMessages'].includes(name)) return false
+    try {
+      const value: unknown = JSON.parse(result)
+      if (name === 'simGetGroupMembers') return Array.isArray(value) && value.every(member => typeof record(member).userId === 'string')
+      const row = record(value)
+      if (row.status === 'unknown' || row.unknown === true || row.uncertain === true) return false
+      switch (name) {
+        case 'simGetUnreadMessages':
+        case 'simGetRecentMessages': return Array.isArray(row.messages) && Number.isSafeInteger(row.readThroughSeq)
+        case 'simGetMessageDetail': return typeof row.found === 'boolean'
+        case 'simGetMessageImages': return Number.isSafeInteger(row.seq) &&
+          (typeof row.description === 'string' && row.description.trim().length > 0 || Array.isArray(row.images) && row.images.length > 0)
+        case 'simGetForward': return Array.isArray(row.lines) && row.lines.every(line => typeof line === 'string')
+        case 'simWaitForMessages': return typeof row.hint === 'string' && Number.isSafeInteger(row.readThroughSeq)
+        default: return false
+      }
+    } catch { return false }
+  }
+
   function rejectToolCall(name: string | undefined, code: string, reply: string, observed?: SimulationToolObservation, error?: unknown): string {
     diagnose({ stage: 'tool', operation: toolOperation(name), outcome: 'failed', code, ...(error === undefined ? {} : { error }) })
     if (observed) observed.failureReported = true
@@ -647,16 +669,18 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (observed) observed.failureReported = true
       return text
     }
-    diagnose({ stage: 'tool', operation, outcome: 'started' })
+    if (!tool.agentDiagnosesExecution) diagnose({ stage: 'tool', operation, outcome: 'started' })
     try {
       const result = await tool.execute(args, event)
-      const text = typeof result === 'string' ? result : JSON.stringify(result) ?? 'null', status = classifyCharacterResult(text)
-      diagnose({ stage: 'tool', operation, outcome: status, code: status === 'succeeded' ? 'completed' : `returned_${status}`, durationMs: Date.now() - started })
+      const text = typeof result === 'string' ? result : JSON.stringify(result) ?? 'null'
+      const classified = classifyCharacterResult(text)
+      const status = classified === 'unknown' && confirmedReadResult(tool.name, text) ? 'succeeded' : classified
+      if (!tool.agentDiagnosesExecution) diagnose({ stage: 'tool', operation, outcome: status, code: status === 'succeeded' ? 'completed' : `returned_${status}`, durationMs: Date.now() - started })
       if (observed && status !== 'succeeded') observed.failureReported = true
       return text
     } catch (error) {
       const uncertain = error && typeof error === 'object' && 'uncertain' in error && error.uncertain === true
-      diagnose({ stage: 'tool', operation, outcome: uncertain ? 'unknown' : 'failed', code: 'tool_threw', error, durationMs: Date.now() - started })
+      if (!tool.agentDiagnosesExecution) diagnose({ stage: 'tool', operation, outcome: uncertain ? 'unknown' : 'failed', code: 'tool_threw', error, durationMs: Date.now() - started })
       if (observed) observed.failureReported = true
       if (uncertain) return JSON.stringify({ kind: 'tool_outcome', status: 'unknown', error: { message: safeToolErrorText(String(tool.name || ''), error) } })
       return safeToolErrorText(String(tool.name || ''), error)
@@ -1806,7 +1830,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               wakeGateRetryAt = now() + 60_000
             }
             diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: cancelled ? 'cancelled' : 'failed',
-              code: cancelled ? 'wake_gate_cancelled' : timedOut ? 'wake_gate_timeout' : failure?.code ?? 'wake_gate_unavailable',
+              code: cancelled ? 'wake_gate_cancelled' : gateRevoked ? 'wake_gate_source_changed' : timedOut ? 'wake_gate_timeout' : failure?.code ?? 'wake_gate_unavailable',
               ...(httpStatus === undefined ? {} : { httpStatus }) })
             return null
           })
@@ -1945,8 +1969,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             semanticProjection = await ports.readSemanticMemory(target, recallQuery, canCallModel, memoryTurn?.signal,
               state.unread.flatMap(message => message.messageId == null ? [] : [String(message.messageId)]))
             semanticRecall = semanticProjection?.text ?? ''
-          } catch {
-            diagnose({ stage: 'memory', operation: 'simulation_semantic_memory_read', outcome: 'failed', code: 'semantic_recall_unavailable' })
+            semanticRecallIncomplete = semanticProjection?.incomplete === true
+          } catch (error) {
+            diagnose({ stage: 'memory', operation: 'simulation_semantic_memory_read', outcome: 'failed',
+              code: semanticMemoryFailureCode(error, 'recall') ?? 'semantic_recall_unavailable', error })
             semanticRecallIncomplete = true
           }
         } else if (recallQuery && typeof ports.getSemanticRecall === 'function') {
@@ -3239,7 +3265,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           }
           if (tool === finishTool && Object.hasOwn(args, 'throughSeq') &&
               (typeof args.throughSeq !== 'number' || !Number.isSafeInteger(args.throughSeq) || args.throughSeq < 0 || args.throughSeq > readThroughSeq(state!))) {
-            return reject('finish_read_range_invalid', 'error: throughSeq 超过了实际看过的范围或不是非负整数，本次未保存')
+            return reject('finish_read_range_invalid', `error: throughSeq 只能是 0 到 ${readThroughSeq(state!)} 的整数。若不需要显式标读，省略 throughSeq 后重新提交。本次未保存或发送。`)
           }
           if (tool === finishTool && Object.hasOwn(args, 'replyToSeq') &&
               (typeof args.replyToSeq !== 'number' || !Number.isSafeInteger(args.replyToSeq) || args.replyToSeq < 1 || ![...state!.unread, ...state!.recent].some(message => message.seq === args.replyToSeq))) {
@@ -3353,8 +3379,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           rounds += 1
           const closing = requiresClosing || rounds > cfg.turn.maxToolRounds - 2
           const roundTools = closing ? [finishTool] : tools.filter(tool => allowedTool(tool.name))
+          const maxReadSeq = readThroughSeq(durableWake && rounds === 1 ? projectedWatermark : state)
           const context = buildCharacterTurnContext({ phase: closing ? 'closing' : 'acting', remainingToolRounds: cfg.turn.maxToolRounds - rounds + 1, ...(focusedGoalId ? { focusedGoalId } : {}), visibleEvidenceRefs: visibleEvidenceRefs() }) +
-            (anchor ? `\n当前只回应 #${anchor.seq} 的话题；同一人的前文也仅在有关时用。throughSeq 当前上限是 ${readThroughSeq(durableWake && rounds === 1 ? projectedWatermark : state)}，可省略。` : '') +
+            `\nsimFinishTurn 的 throughSeq 可省略。要标读时，当前上限 readThroughSeq 是 ${maxReadSeq}。` +
+            (anchor ? `\n当前只回应 #${anchor.seq} 的话题；同一人的前文也仅在有关时用。` : '') +
             (reviewer ? `\n本轮剩余提交检查次数：${Math.max(0, 3 - reviewer.stats().checks)}。将需要保存的观点、目标和最终消息合并进 simFinishTurn；检查退回后自行修正或安静放弃，检查提示不发到群里。` : '')
           const requestHistory = history.map(({ conversationUserId: _user, ...message }) => message)
           const currentContext = personRecall ? `${personRecall}\n\n${context}` : context

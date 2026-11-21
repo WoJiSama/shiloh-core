@@ -41,6 +41,20 @@ test('successful append waits for file fsync and a newly created directory entry
   assert.equal(await pending, true); assert.equal(fileSyncs, 1); assert.ok(directorySyncs >= 1)
 })
 
+test('concurrent events share a durable file sync and keep their order', async t => {
+  const f = await fixture(t), journal = await f.open(), original = fs.open
+  let fileSyncs = 0
+  t.mock.method(fs, 'open', async (...args) => {
+    const handle = await original(...args), sync = handle.sync.bind(handle)
+    if (String(args[0]).endsWith('.ndjson')) handle.sync = async () => { fileSyncs++; await sync() }
+    return handle
+  })
+  const events = Array.from({ length: 24 }, (_, index) => event(index))
+  assert.ok((await Promise.all(events.map(item => journal.append(item)))).every(Boolean))
+  assert.equal(fileSyncs, 1)
+  assert.deepEqual((await rows(f.directory)).map(item => item.id), events.map(item => item.id))
+})
+
 test('date and size rotation applies global maxFiles and retention while keeping complete bounded records', async t => {
   const f = await fixture(t); await fs.mkdir(f.directory, { mode: 0o700 })
   const expired = path.join(f.directory, '2000-01-01.000000.ndjson'); await fs.writeFile(expired, JSON.stringify(event()) + '\n', { mode: 0o600 })

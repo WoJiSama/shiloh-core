@@ -10,6 +10,16 @@ table.remove(KEYS); table.remove(ARGV)
 `
 const setValue = `return redis.call('SET', KEYS[1], unpack(ARGV))`
 const deleteKeys = `return redis.call('DEL', unpack(KEYS))`
+const getMany = `
+local values = {}
+for i = 1, #KEYS do values[i] = redis.call('GET', KEYS[i]) or false end
+return values`
+const matchStringDigests = `
+for i = 1, #KEYS do
+  local value = redis.call('GET', KEYS[i])
+  if (value and redis.sha1hex(value) or 'absent') ~= ARGV[i] then return 0 end
+end
+return 1`
 
 export function agentRedisPrefix(instance: string): string {
   return `bl-agent:${instance}:`
@@ -72,6 +82,16 @@ export async function openAgentRedis({ url, instance, onLost }: { url: string; i
 
   const storage = {
     get: (name: string) => client.get(key(name)),
+    async getMany(names: string[]): Promise<(string | null)[]> {
+      const values: unknown = await client.eval(getMany, { keys: names.map(key), arguments: [] })
+      if (!Array.isArray(values) || values.length !== names.length || !values.every((value): value is string | null => value === null || typeof value === 'string')) {
+        throw new Error('Redis 批量读取结果无效')
+      }
+      return values
+    },
+    async matchesStringDigests(names: string[], digests: string[]): Promise<boolean> {
+      return await client.eval(matchStringDigests, { keys: names.map(key), arguments: digests }) === 1
+    },
     set(name: string, value: string, options?: { EX?: number; PX?: number; NX?: boolean }) {
       const args = [value]
       if (options?.NX) args.push('NX')

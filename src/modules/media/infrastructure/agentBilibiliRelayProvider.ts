@@ -11,6 +11,7 @@ import type { AgentBilibiliLookup, AgentBilibiliRequest } from './agentBilibiliR
 import { parseAgentBilibiliReference, validateAgentMediaShare } from './agentBilibiliRelayReference.js'
 import { prepareBilibiliThumbnail } from './agentBilibiliRelayThumbnail.js'
 import type { AgentBilibiliThumbnail } from './agentBilibiliRelayThumbnail.js'
+import { AgentBilibiliCardError } from './agentBilibiliCardRenderer.js'
 
 export type { AgentBilibiliLookup, AgentBilibiliRequest, AgentBilibiliResponse, AgentBilibiliRequestPolicy } from './agentBilibiliRelayHttp.js'
 export type { AgentBilibiliThumbnail } from './agentBilibiliRelayThumbnail.js'
@@ -402,7 +403,10 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
           const lease = await guard.wait(options.artifacts.stage({ kind: 'image', mime: image.mime, chunks: (async function* () { yield bytes })() }, guard.context), late => releaseLeases([late]))
           leases.push(lease)
           introParts = [{ kind: 'text', text: safe(`《${meta.title}》\n${meta.pageUrl}`) }, { kind: 'image', artifact: lease.artifact }]
-        } catch { diagnose('bilibili_provider_card', 'card_unavailable', context); await guard.ensure() }
+        } catch (error) {
+          diagnose('bilibili_provider_card', error instanceof AgentBilibiliCardError ? error.code : 'card_unavailable', context)
+          await guard.ensure()
+        }
       }
       const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: introParts ?? [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover } as const] : [])] }, ...mediaItems] }, { allowsText: outputAllowed })
       await guard.ensure()

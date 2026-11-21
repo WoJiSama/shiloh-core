@@ -107,6 +107,7 @@ export interface PersonMemoryStore {
   list(input: PersonMemoryQuery): Promise<PersonMemoryQueryResult>
   read(input: PersonMemoryQuery & { ids: string[] }): Promise<PersonMemoryQueryResult>
   getRedactions(input: PersonMemorySubject): Promise<PersonMemoryRedactions>
+  getRedactionsBatch?(identity: PersonMemoryIdentity, subjects: readonly string[] | undefined, signal: AbortSignal): Promise<ReadonlyMap<string, PersonMemoryRedactions>>
   getSceneRedactions(input: { identity: PersonMemoryIdentity; scene: PersonMemoryScene }): Promise<{ revision: string; invalidatedAt: number; forgottenBefore: number }>
   forget(input: PersonMemoryForget, isCurrent?:()=>boolean): Promise<number>
   revokeSource(input: { identity: PersonMemoryIdentity; scene: PersonMemoryScene; messageId: string; at?: number }): Promise<void>

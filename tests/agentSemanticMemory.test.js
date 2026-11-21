@@ -111,6 +111,10 @@ async function fixture(t, options = {}) {
         available: target => !unavailable.has(conversationAddressKey(target)),
         privatePeer: target => target.kind === 'private' ? actor.id : undefined,
         isRecalled: async (target, messageId) => recalled.has(recallKey(target, messageId)),
+        ...(options.batchRecall ? { async recalledMessageIds(target, messageIds, signal) {
+          signal.throwIfAborted()
+          return new Set(messageIds.filter(id => recalled.has(recallKey(target, id))))
+        } } : {}),
         isRunning: () => redis.isCurrent(), allowsText: text => !text.includes('blocked-source'),
         async begin(binding) {
           const controller = new AbortController()
@@ -131,6 +135,26 @@ async function fixture(t, options = {}) {
   await f.restart()
   return f
 }
+
+test('batched source and privacy reads preserve missing, wrong-type, and changed-source behavior', redisTest, async t => {
+  const f = await fixture(t)
+  assert.deepEqual(await f.storage.getMany(['absent-a', 'absent-b']), [null, null])
+  await f.reader.lPush(f.prefix + 'list-instead-of-string', 'wrong type')
+  await assert.rejects(f.storage.getMany(['absent-a', 'list-instead-of-string']), /WRONGTYPE/u)
+  const incoming = await f.capture('first independent source')
+  const id = agentSemanticMemoryId(f.binding())
+  const before = await f.store.observe(id)
+  assert.equal(await before.isUnchanged(), true)
+  await f.capture('second independent source')
+  assert.equal(await before.isUnchanged(), false)
+  assert.equal((await f.store.observe(id)).state.rows.length, 2)
+  const author = f.subject()
+  const signal = new AbortController().signal
+  const batch = await f.memory.getRedactionsBatch(author.identity, [author.subjectId], signal)
+  assert.deepEqual(batch.get(author.subjectId), await f.memory.getRedactions(author))
+  await f.memory.setEnabled({ identity: author.identity, subjectId: author.subjectId, enabled: false })
+  assert.equal((await f.memory.getRedactionsBatch(author.identity, undefined, signal)).get(incoming.sender.id).disabled, true)
+})
 
 test('the migrated group-only policy keeps private messages out of the semantic corpus', redisTest, async t => {
   const f = await fixture(t, { config: { groupOnly: true } })
@@ -489,4 +513,19 @@ test('Core deadline is reported as a timeout and still releases the read lease',
   await assert.rejects(f.read('unresponsive semantic query'), { code: 'semantic_memory_timeout' })
   await f.drained()
   assert.equal(f.activeTurns, 0)
+})
+
+test('stalled group embedding still returns current keyword matches and marks recall incomplete', redisTest, async t => {
+  const f = await fixture(t, { batchRecall: true, config: { timeoutMs: 300 } })
+  const original = await f.capture('copper handbook source')
+  await f.indexed()
+  f.behavior.embed = () => new Promise(() => {})
+  const result = await f.read('copper')
+  assert.equal(result.incomplete, true)
+  assert.match(result.text, /copper handbook source/u)
+  assert.equal(await result.isCurrent(), true)
+  f.recall(room, original.messageId)
+  assert.equal(await result.isCurrent(), false)
+  assert.equal(f.activeTurns, 0)
+  assert.equal(f.warnings.length, 1)
 })

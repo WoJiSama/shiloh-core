@@ -54,6 +54,8 @@ export interface AgentSemanticMemoryBackend {
 /** Revalidate the actual sources before using a retained projection. */
 export interface AgentSemanticMemoryRecall {
   readonly text: string
+  /** A local keyword projection was available while semantic ranking was interrupted. */
+  readonly incomplete?: boolean
   isCurrent(): Promise<boolean>
 }
 

@@ -83,10 +83,10 @@ export function createAgentDiagnostics(options: {
     try { options.onFailure?.(Object.freeze(event)) }
     catch { try { console.error('[Agent] diagnostic_failure_observer_failed') } catch { /* No writable terminal. */ } }
   }
-  function journalFailure(event: AgentDiagnosticEvent, line: string, code: string): void {
+  function journalFailure(event: AgentDiagnosticEvent, line: string, code: string, outcome: 'failed' | 'unknown' = 'failed'): void {
     try { console.error(`[Agent] ${code} ${line}`) } catch { /* Terminal unavailable. */ }
     if (options.onFailure) notifyFailure({ version: 1, id: randomUUID(), traceId: event.traceId, at: now(), scope: { kind: 'host' },
-      stage: 'host', operation: 'operation_journal', outcome: 'failed', code })
+      stage: 'host', operation: 'operation_journal', outcome, code })
   }
   function emit(input: AgentDiagnosticInput): void {
     const context = contexts.getStore()
@@ -113,9 +113,10 @@ export function createAgentDiagnostics(options: {
       }
       // A failed custom sink cannot retain arbitrary turns forever or hang shutdown.
       let timer: ReturnType<typeof setTimeout> | undefined
-      const timeout = new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 5_000) })
+      const timeout = new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), 5_000) })
       const write = Promise.race([Promise.resolve().then(() => options.sink!.append(event)), timeout]).then(ok => {
-        if (!ok) journalFailure(event, line, 'diagnostic_journal_failed')
+        if (ok === undefined) journalFailure(event, line, 'diagnostic_journal_timeout', 'unknown')
+        else if (!ok) journalFailure(event, line, 'diagnostic_journal_failed')
       }, () => journalFailure(event, line, 'diagnostic_journal_failed')).finally(() => { if (timer) clearTimeout(timer) })
       pending.add(write)
       void write.finally(() => pending.delete(write))

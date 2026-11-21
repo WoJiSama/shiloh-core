@@ -222,6 +222,7 @@ export function createTextConversation(ports: {
     const semantic = await ports.readSemanticMemory?.(incoming, isCurrent, signal).catch(error => {
       semanticIncomplete = true; log('runtime', 'text_semantic_memory', 'failed', 'memory_read_failed', error); return undefined
     })
+    semanticIncomplete ||= semantic?.incomplete === true
     if (!await memoryCurrent()) return
     const groupMemory = !isPrivateChat ? await ports.readGroupMemory?.(incoming, snapshot, isCurrent) : ''
     if (!await memoryCurrent()) return

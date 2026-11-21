@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
+import sharp from 'sharp'
 import test from 'node:test'
 import { buildAgentBilibiliCardHtml, createAgentBilibiliCardRenderer } from '../dist/backend/modules/media/infrastructure/agentBilibiliCardRenderer.js'
 
@@ -89,6 +91,17 @@ test('each card owns an isolated offline browser, blocks every request, validate
     assert.equal(screenshot.type, 'png')
     assert.equal(screenshot.clip.width, 980)
   }
+})
+
+test('a large upstream cover is fitted before it reaches the offline browser', async () => {
+  const width = 1600, height = 900
+  const bytes = await sharp(randomBytes(width * height * 3), { raw: { width, height, channels: 3 } }).png().toBuffer()
+  assert.ok(bytes.length > 256 * 1024)
+  const row = fixture(), renderer = createAgentBilibiliCardRenderer({ launch: row.launch })
+  await renderer.render({ ...view, cover: { mime: 'image/png', bytes } }, context())
+  const html = row.calls.find(call => call[0] === 'html')[1]
+  assert.match(html, /data:image\/jpeg;base64,/u)
+  assert.ok(html.length < 256 * 1024)
 })
 
 test('cancellation and expiry stop rendering with fixed errors and no late page writes', async () => {

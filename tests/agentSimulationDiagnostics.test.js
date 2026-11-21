@@ -354,6 +354,20 @@ test('failed host tools remain one execution and return to the main model before
 })
 
 
+test('routine closing can omit its reason and confirmed read payloads succeed', async t => {
+  const diagnostics = spy()
+  const h = fixture({ diagnostics, script: (_request, index) => index === 0 ? tools(toolCall('simGetUnreadMessages', {}))
+    : tools(toolCall('simFinishTurn', { choice: 'chat', messages: ['正常收尾'] })) })
+  t.after(() => h.runtime.stop())
+  await h.ingest()
+  await settled(h, 2)
+  assert.equal(h.sent.length, 1)
+  for (const operation of ['simGetUnreadMessages', 'simFinishTurn']) {
+    assert.deepEqual(diagnostics.events.filter(row => row.operation === operation).map(row => row.outcome), ['started', 'succeeded'])
+  }
+  assert.match(h.calls[1].messages.at(-1).content, /throughSeq 可省略.*readThroughSeq 是 \d+/u)
+})
+
 test('finish preflight reports fixed rejection reasons to QQ and allows a corrected call', async t => {
   const params = { choice: 'chat', reason: '群聊收尾', messages: ['修改后成功发送'] }
   const invalidJson = toolCall('simFinishTurn', params)

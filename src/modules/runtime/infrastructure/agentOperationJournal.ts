@@ -119,7 +119,8 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
   const allows = raw.allowsText as AgentOperationJournalOptions['allowsText'], emergency = raw.onEmergency as AgentOperationJournalOptions['onEmergency']
   const dataDir = path.resolve(raw.dataDir), directory = path.join(dataDir, 'operations')
   let degraded = false, written = 0, failed = 0, lastWrittenAt: number | undefined, closing = false
-  let tail: Promise<void> = Promise.resolve(), pending = 0, pendingBytes = 0
+  const queue: { safe: AgentDiagnosticEvent; line: string; size: number; resolve(ok: boolean): void }[] = []
+  let draining: Promise<void> | undefined, pending = 0, pendingBytes = 0
   let closeResult: Promise<boolean> | undefined, latest: { name: string; size: number } | undefined
   let rootIdentity: { dev: number; ino: number } | undefined, directoryIdentity: { dev: number; ino: number } | undefined
   let reporting = false
@@ -202,20 +203,69 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
   async function write(line: string): Promise<void> {
     await directories()
     const bytes = Buffer.from(line, 'utf8'), today = day()
-    let created = false
-    if (!latest || !latest.name.startsWith(today + '.') || latest.size + bytes.length > maximum) {
+    let file = latest
+    const created = !file || !file.name.startsWith(today + '.') || file.size + bytes.length > maximum
+    if (created) {
       const existing = (await names()).filter(name => name.startsWith(today + '.'))
       const sequence = Number(existing.at(-1)?.match(filePattern)?.[2] ?? -1) + 1
       if (sequence > 999999) throw failure()
-      latest = { name: `${today}.${String(sequence).padStart(6, '0')}.ndjson`, size: 0 }; created = true
+      file = { name: `${today}.${String(sequence).padStart(6, '0')}.ndjson`, size: 0 }
     }
-    const handle = await privateFile(latest.name, constants.O_WRONLY | constants.O_APPEND | (created ? constants.O_CREAT | constants.O_EXCL : 0))
+    if (!file) throw failure()
+    const handle = await privateFile(file.name, constants.O_WRONLY | constants.O_APPEND | (created ? constants.O_CREAT | constants.O_EXCL : 0))
+    latest = file
     try {
-      if ((await handle.stat()).size !== latest.size) throw failure()
-      await handle.writeFile(bytes); await handle.sync(); latest.size += bytes.length
+      if ((await handle.stat()).size !== file.size) throw failure()
+      try {
+        await handle.writeFile(bytes)
+        await handle.sync()
+        file.size += bytes.length
+      } catch (error) {
+        // A failed append can leave a partial line. Only truncate bytes from
+        // this writer's failed batch, keeping every acknowledged event.
+        try { await handle.truncate(file.size); await handle.sync() } catch { /* Keep the last confirmed offset for recovery. */ }
+        throw error
+      }
     } finally { await handle.close() }
-    if (created) await syncDirectory()
-    await prune()
+    if (created) {
+      await syncDirectory()
+      await prune().catch(() => report(undefined, 'JOURNAL_RETENTION_FAILED'))
+    }
+  }
+  function drain() {
+    if (draining) return
+    draining = Promise.resolve().then(async () => {
+      while (queue.length) {
+        const first = queue[0]!
+        const remaining = latest?.name.startsWith(day() + '.') ? maximum - latest.size : maximum
+        const budget = Math.min(64 * 1024, first.size <= remaining ? remaining : maximum)
+        let count = 0, batchBytes = 0
+        while (count < Math.min(queue.length, 64) && batchBytes + queue[count]!.size <= budget) {
+          batchBytes += queue[count]!.size
+          count++
+        }
+        const batch = queue.splice(0, count)
+        let committed = false
+        try {
+          await write(batch.map(item => item.line).join(''))
+          committed = true
+          written += batch.length
+          lastWrittenAt = Date.now()
+        } catch (error) {
+          const code = error && typeof error === 'object' && Object.getOwnPropertyDescriptor(error, 'code')?.value === 'ENOSPC'
+            ? 'JOURNAL_NO_SPACE' : 'JOURNAL_WRITE_FAILED'
+          for (const item of batch) report(item.safe, code)
+        } finally {
+          pending -= batch.length
+          pendingBytes -= batchBytes
+          for (const item of batch) item.resolve(committed)
+        }
+      }
+    }).finally(() => { draining = undefined; if (queue.length) drain() })
+  }
+  async function flush() {
+    while (draining) await draining
+    return !degraded
   }
   try { await directories(true); releaseWriter = await localWriterLock(dataDir); await recover(); await syncDirectory() }
   catch { await releaseWriter?.().catch(() => {}); report(undefined, 'JOURNAL_OPEN_FAILED'); throw failure() }
@@ -236,18 +286,12 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
       const size = Buffer.byteLength(line)
       if (pending >= MAX_PENDING || pendingBytes + size > MAX_PENDING_BYTES) { report(safe, 'JOURNAL_OVERFLOW'); return Promise.resolve(false) }
       pending++; pendingBytes += size
-      const result = tail.then(async () => {
-        try { await write(line); written++; lastWrittenAt = Date.now(); return true }
-        catch { report(safe, 'JOURNAL_WRITE_FAILED'); return false }
-        finally { pending--; pendingBytes -= size }
-      })
-      tail = result.then(() => {}, () => {})
-      return result
+      return new Promise(resolve => { queue.push({ safe, line, size, resolve }); drain() })
     },
-    async flush(): Promise<boolean> { await tail; return !degraded },
+    flush,
     close(): Promise<boolean> {
       closing = true
-      closeResult ??= tail.then(async () => { try { await releaseWriter?.() } catch { report(undefined, 'JOURNAL_CLOSE_FAILED') } return !degraded })
+      closeResult ??= flush().then(async () => { try { await releaseWriter?.() } catch { report(undefined, 'JOURNAL_CLOSE_FAILED') } return !degraded })
       return closeResult.then(result => result && !degraded)
     },
     health() { return { degraded, written, failed, ...(lastWrittenAt === undefined ? {} : { lastWrittenAt }) } },

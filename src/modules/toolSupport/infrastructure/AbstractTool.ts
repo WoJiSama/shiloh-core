@@ -10,6 +10,8 @@ export class AbstractTool {
  agentDataPolicy?: 'ephemeral';
  /** Optional Core host admission before action receipts or temporary-data handling. */
  agentPreflight?(input: Record<string, unknown>, event: unknown): string | undefined;
+ /** Core host tools can emit their own execution receipt. */
+ agentDiagnosesExecution = false;
  name:string;parameters:ToolParameters;description:string;skill:Record<string,unknown>|null;
   constructor() {
     this.name = '';

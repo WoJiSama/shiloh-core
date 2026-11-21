@@ -33,6 +33,26 @@ import { authorizeAgentToolContext, isAgentToolEffect } from './agentToolAuthori
 
 const maxChars = 16_000
 const outcome = (status: 'success' | 'error' | 'unknown', content: string) => ({ kind: 'tool_outcome', status, content })
+const memberFailureCodes = new Map([
+  ['invalid_target', 'member_lookup_invalid_target'],
+  ['needs_clarification', 'member_lookup_needs_clarification'],
+  ['not_found', 'member_lookup_not_found'],
+  ['forbidden', 'member_lookup_forbidden'],
+  ['unavailable', 'member_lookup_unavailable'],
+])
+
+function memberFailureCode(value: unknown): string | undefined {
+  const content = value && typeof value === 'object' ? (value as { content?: unknown }).content : undefined
+  if (typeof content !== 'string') return
+  try {
+    const result: { status?: string; unavailable?: string } | null = JSON.parse(content)
+    if (result?.status === 'unavailable') {
+      if (result.unavailable === 'list') return 'member_lookup_list_unavailable'
+      if (result.unavailable === 'detail') return 'member_lookup_detail_unavailable'
+    }
+    return result?.status && memberFailureCodes.get(result.status) || undefined
+  } catch { return undefined }
+}
 
 /** Adapt public host tools into the existing policy and durable action executor. */
 export function createAgentTools(registry: AgentToolRegistry | undefined, ports: {
@@ -115,6 +135,7 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
             this.name = definition.name
             this.description = definition.description
             this.parameters = JSON.parse(schema)
+            this.agentDiagnosesExecution = ports.diagnostics !== undefined
             if (dataPolicy) this.agentDataPolicy = dataPolicy
           }
           override async execute(input: unknown, event: unknown): Promise<unknown> {
@@ -122,7 +143,8 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
             diagnose({ stage: 'tool', operation: this.name, outcome: 'started' })
             try {
               const result = await super.execute(input, event), status = classify(result)
-              diagnose({ stage: 'tool', operation: this.name, outcome: status, code: status === 'succeeded' ? 'completed' : `returned_${status}`, durationMs: Date.now() - started })
+              const specific = status === 'failed' && origin === 'builtin' && this.name === 'memberInfoTool' ? memberFailureCode(result) : undefined
+              diagnose({ stage: 'tool', operation: this.name, outcome: status, code: status === 'succeeded' ? 'completed' : specific ?? `returned_${status}`, durationMs: Date.now() - started })
               return result
             } catch (error) {
               diagnose({ stage: 'tool', operation: this.name, outcome: 'unknown', code: 'tool_threw', error, durationMs: Date.now() - started })

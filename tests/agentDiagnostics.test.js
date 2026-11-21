@@ -167,5 +167,5 @@ test('stalled sink times out visibly so flush completes without waiting for the 
   await flushing
   assert.equal(calls, 1)
   assert.equal(lines.length, 1)
-  assert.ok(lines[0].includes('diagnostic_journal_failed'))
+  assert.ok(lines[0].includes('diagnostic_journal_timeout'))
 })
