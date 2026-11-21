@@ -416,8 +416,7 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
     const { person, scope } = await load(input)
     return redactions(person, scope)
   }
-  async function getRedactionsBatch(identity: PersonMemoryIdentity, subjects: readonly string[] | undefined, signal: AbortSignal) {
-    requireIdentity(identity)
+  async function readRedactionsBatch(identity: PersonMemoryIdentity, subjects: readonly string[] | undefined, signal: AbortSignal) {
     const scopeName = scopeKey(identity)
     signal.throwIfAborted()
     let scopeRaw = subjects === undefined ? await redis.get(scopeName) : undefined
@@ -431,16 +430,33 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
       batch.forEach(requireSubject)
       const [currentScope, ...people] = await redis.getMany!([scopeName, ...batch.map(subject => personKey(identity, subject.subjectId))])
       signal.throwIfAborted()
-      if (!scope) {
+      if (people.length !== batch.length) throw new Error('人物记忆批量读取结果无效')
+      if (!scope || currentScope !== scopeRaw) {
+        const next = parseScope(currentScope, identity)
+        // Registering a source also updates the scope revision. Keep batches
+        // compatible across those writes if the privacy rules are identical.
+        if (scope && (next.invalidatedAt !== scope.invalidatedAt ||
+            JSON.stringify([next.scenes, next.revokedSources, next.tombstones]) !==
+            JSON.stringify([scope.scenes, scope.revokedSources, scope.tombstones]) ||
+            subjects === undefined && JSON.stringify(next.subjects) !== JSON.stringify(scope.subjects))) return
         scopeRaw = currentScope
-        scope = parseScope(currentScope, identity)
+        scope = next
       }
-      if (currentScope !== scopeRaw || people.length !== batch.length) throw new Error('人物记忆权限来源已改变')
       for (const [index, subject] of batch.entries()) {
         result.set(subject.subjectId, redactions(parsePerson(people[index], subject), scope))
       }
     }
     return result
+  }
+  async function getRedactionsBatch(identity: PersonMemoryIdentity, subjects: readonly string[] | undefined, signal: AbortSignal) {
+    requireIdentity(identity)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await readRedactionsBatch(identity, subjects, signal)
+      if (result) return result
+    }
+    // A privacy change invalidates earlier person documents. Never return the
+    // mixed result, even when contention lasts for the entire retry window.
+    throw new Error('人物记忆权限来源持续变化，无法完成批量核验')
   }
   async function participantsAllow(input: PersonMemoryDraft, scope: ScopeDocument, reader: Pick<Transaction, 'get'>,
     cache: Map<string, Promise<PersonMemoryRedactions>>): Promise<boolean> {

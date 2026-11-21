@@ -156,6 +156,33 @@ test('batched source and privacy reads preserve missing, wrong-type, and changed
   assert.equal((await f.memory.getRedactionsBatch(author.identity, undefined, signal)).get(incoming.sender.id).disabled, true)
 })
 
+test('privacy batches tolerate ordinary intake and restart if an earlier subject opts out', redisTest, async t => {
+  const f = await fixture(t)
+  const authors = Array.from({ length: 33 }, (_, index) => ({ ...actor, id: `speaker-${index}` }))
+  for (const author of authors) await f.capture('initial source', { author })
+  const { identity } = f.subject(room, authors[0])
+  const subjects = authors.map(author => author.id)
+  const signal = new AbortController().signal
+  let readCount = 0, betweenBatches
+  const memory = createPersonMemoryStore({ redis: { ...f.storage, async getMany(keys) {
+    if (++readCount === 2) await betweenBatches()
+    return f.storage.getMany(keys)
+  } } })
+
+  betweenBatches = () => f.capture('new source during the scan', { author: authors[0] })
+  const snapshots = await memory.getRedactionsBatch(identity, subjects, signal)
+  assert.equal(snapshots.size, 33)
+  assert.equal(readCount, 2)
+  assert.equal(snapshots.get(subjects[0]).disabled, false)
+
+  readCount = 0
+  betweenBatches = () => f.memory.setEnabled({ identity, subjectId: subjects[0], enabled: false })
+  const refreshed = await memory.getRedactionsBatch(identity, undefined, signal)
+  assert.equal(refreshed.size, 33)
+  assert.equal(refreshed.get(subjects[0]).disabled, true)
+  assert.equal(readCount, 4)
+})
+
 test('the migrated group-only policy keeps private messages out of the semantic corpus', redisTest, async t => {
   const f = await fixture(t, { config: { groupOnly: true } })
   await f.capture('private observation', { target: privateRoom })
