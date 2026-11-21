@@ -51,7 +51,7 @@ export function prepareAgentSemanticRanking(
   providerId: string,
   threshold: number,
   mode: AgentSemanticRetrievalMode,
-): AgentSemanticRankedHit[] {
+): (queryVector?: readonly number[]) => AgentSemanticRankedHit[] {
   const chunks = new Map(evidence.map(item => [item.id, { id: item.id, text: item.row.text, end_ts: item.row.at }]))
   const bm25 = new BM25Index()
   if (mode !== 'vector') for (const item of evidence) bm25.add(item.id, tokenizeForBM25(item.row.text))
