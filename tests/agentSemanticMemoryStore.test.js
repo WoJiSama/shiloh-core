@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { once } from 'node:events'
 import { createConnection, createServer } from 'node:net'
 import test from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { agentSemanticMemoryId, createAgentSemanticMemoryStore } from '../dist/backend/modules/memory/infrastructure/agentSemanticMemoryStore.js'
 import { agentConversationKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
 import { openAgentRedis } from '../dist/backend/modules/runtime/infrastructure/agentRedis.js'
@@ -107,6 +108,8 @@ test('standalone semantic snapshot traffic cannot hold up the inbox socket or di
     assert.deepEqual(events.map(event => [event.operation, event.code]), [['semantic_redis_command', 'redis_command_queue_full']])
     assert.equal(await redis.storage.get('inbox'), 'ready')
     current = false
+    const pending = await Promise.race([blocked.then(() => false, () => false), delay(2_150, true)])
+    assert.equal(pending, true)
     socket.resume()
     assert.deepEqual(await blocked, input)
     assert.equal(await write, 0)

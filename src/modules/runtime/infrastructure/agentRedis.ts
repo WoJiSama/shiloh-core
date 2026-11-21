@@ -1,10 +1,11 @@
 import { ClientClosedError, ClientOfflineError, ConnectionTimeoutError, createClient, ErrorReply,
-  SocketClosedUnexpectedlyError, TimeoutError, type RedisClientOptions } from '@redis/client'
+  SocketClosedUnexpectedlyError, SocketTimeoutError, TimeoutError, type RedisClientOptions } from '@redis/client'
 import { randomUUID } from 'node:crypto'
 
 const heartbeatMs = 10_000
 const leaseMs = 45_000
 const commandTimeoutMs = 2_000
+const semanticSocketIdleMs = 15_000
 const semanticQueueLimit = 8
 const renewLease = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) end return 0`
 const releaseLease = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0`
@@ -48,9 +49,8 @@ export async function connectAgentRedis(url: string) {
 
 type RedisCommandOperation = 'redis_command' | 'semantic_redis_command'
 type RedisFailureCode = 'redis_command_queue_timeout' | 'redis_connection_unavailable' | 'redis_command_rejected' |
-  'redis_command_queue_full' | 'redis_command_reply_timeout' | 'redis_command_failed'
+  'redis_command_queue_full' | 'redis_socket_idle_timeout' | 'redis_command_failed'
 class SemanticRedisQueueFull extends Error {}
-class SemanticRedisReplyTimeout extends Error {}
 
 export async function openAgentRedis({ url, instance, onLost, onCommandFailure }: {
   url: string
@@ -93,13 +93,13 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure }
       if (running && onCommandFailure) {
         let code: RedisFailureCode = 'redis_command_failed'
         if (error instanceof SemanticRedisQueueFull) code = 'redis_command_queue_full'
-        else if (error instanceof SemanticRedisReplyTimeout) code = 'redis_command_reply_timeout'
+        else if (error instanceof SocketTimeoutError && operation === 'semantic_redis_command') code = 'redis_socket_idle_timeout'
         else if (error instanceof TimeoutError) code = 'redis_command_queue_timeout'
         else if (error instanceof ClientClosedError || error instanceof ClientOfflineError ||
           error instanceof SocketClosedUnexpectedlyError || error instanceof ConnectionTimeoutError) code = 'redis_connection_unavailable'
         else if (error instanceof ErrorReply) code = 'redis_command_rejected'
         try {
-          onCommandFailure({ operation, code, outcome: code === 'redis_command_reply_timeout' ? 'unknown' : 'failed',
+          onCommandFailure({ operation, code, outcome: code === 'redis_socket_idle_timeout' ? 'unknown' : 'failed',
             durationMs: performance.now() - started })
         }
         catch { /* The observer cannot change Redis command results. */ }
@@ -163,21 +163,14 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure }
         if (!isCurrent()) throw new Error('独立宿主执行租约已失效')
         if (!semanticClient?.isReady) {
           if (semanticClient?.isOpen) semanticClient.destroy()
-          semanticClient = client.duplicate()
+          // A stalled socket must release the lane. Incoming or outgoing bytes
+          // reset this timer, including while Redis sends a large snapshot.
+          semanticClient = client.duplicate({ socket: { ...client.options.socket, socketTimeout: semanticSocketIdleMs } })
           semanticClient.on('error', () => {})
           await semanticClient.connect()
         }
         if (!isCurrent()) throw new Error('独立宿主执行租约已失效')
-        const connection = semanticClient
-        let timedOut = false
-        const timeout = setTimeout(() => {
-          timedOut = true
-          if (connection.isOpen) connection.destroy()
-        }, commandTimeoutMs)
-        timeout.unref()
-        try { return await run(connection) }
-        catch (error) { if (timedOut) throw new SemanticRedisReplyTimeout(); throw error }
-        finally { clearTimeout(timeout) }
+        return run(semanticClient)
       })
       semanticTail = work.then(() => {}, () => {})
       try { return await work } finally { pendingSemantic-- }

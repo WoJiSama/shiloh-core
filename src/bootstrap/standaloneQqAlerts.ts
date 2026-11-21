@@ -200,7 +200,7 @@ const failureReasons = new Map(Object.entries({
   model_response_invalid: '模型返回的内容或格式无效。',
   redis_command_queue_timeout: 'Redis 命令等待发送超时。',
   redis_command_queue_full: '语义记忆 Redis 命令积压，等待队列已满。',
-  redis_command_reply_timeout: '语义记忆 Redis 命令未收到回执，已关闭本次连接。',
+  redis_socket_idle_timeout: '语义记忆 Redis 连接长时间没有数据传输，本次命令结果待确认。',
   redis_connection_unavailable: 'Redis 连接暂不可用。',
   redis_command_rejected: 'Redis 拒绝执行命令，请核对数据类型或服务状态。',
   redis_command_failed: 'Redis 命令执行失败。',
