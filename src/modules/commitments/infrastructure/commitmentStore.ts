@@ -8,6 +8,8 @@ import {assertDeferredGrant,decodeAgentDeferredAction} from './agentDeferredActi
 import type {AgentSourceMemoryCleanupGuard,AgentSourceMemoryPurgeSubject} from '../../../contracts/sourceMemoryCleanup.js'
 import {conversationCleanupAllows,parseConversationCleanup,type ConversationCleanupSelector} from '../../memory/infrastructure/conversationMemoryCleanup.js'
 import {cleanupExpected,createSubjectMemoryCleanup} from '../../memory/infrastructure/subjectMemoryCleanup.js'
+import {createAgentTaskClaim,hasLiveTaskClaim} from '../../runtime/infrastructure/agentTaskScheduler.js'
+import {isOneTimeGroupReminder} from '../domain/commitments.js'
 
 const REDIS_KEY_PREFIX='bl-chat:commitment:'
 export const COMMITMENT_PENDING_KEY=`${REDIS_KEY_PREFIX}pending:list`
@@ -94,6 +96,27 @@ export function decodeCommitment(data:string):CommitmentData {
     if(deferredAction.grant.dueAt!==normalizedSchedule.time)throw new Error('延期委托授权与排期不符')
     if(deferredAction.state==='unknown'&&status==='active')throw new Error('未知延期动作不能处于待执行状态')
   }
+  const groupSource=r.groupSource===undefined?undefined:(()=>{
+    const source=record(r.groupSource)
+    if(!isPlatformIdentifier(source.messageId)||source.authorId!==r.creator_id||source.authorId===r.bot_id||
+      !Number.isSafeInteger(source.at)||Number(source.at)<0||source.at!==r.sourceAt||scope?.target.kind!=='group'||
+      normalizedSchedule.kind!=='once'||deliver!=='static'||importedReminder||ownedReservation||deferredAction)throw new Error('群提醒来源损坏')
+    return {messageId:source.messageId,authorId:String(source.authorId),at:Number(source.at)}
+  })()
+  const groupDispatch=r.groupDispatch===undefined?undefined:(()=>{
+    const dispatch=record(r.groupDispatch)
+    if(scope?.target.kind!=='group'||normalizedSchedule.kind!=='once'||deliver!=='static'||deferredAction||
+      !Number.isSafeInteger(dispatch.at)||Number(dispatch.at)<0||typeof dispatch.sha256!=='string'||!/^[a-f0-9]{64}$/u.test(dispatch.sha256)||
+      (dispatch.mentionId!==undefined&&dispatch.mentionId!==r.creator_id)||
+      (dispatch.nextCheckAt!==undefined&&(!Number.isSafeInteger(dispatch.nextCheckAt)||Number(dispatch.nextCheckAt)<Number(dispatch.at)))||
+      (dispatch.checks!==undefined&&(!Number.isSafeInteger(dispatch.checks)||Number(dispatch.checks)<0||Number(dispatch.checks)>3))||
+      (dispatch.messageId!==undefined&&!isPlatformIdentifier(dispatch.messageId)))throw new Error('群提醒投递记录损坏')
+    return {at:Number(dispatch.at),sha256:dispatch.sha256,
+      ...(typeof dispatch.mentionId==='string'?{mentionId:dispatch.mentionId}:{}),
+      ...(typeof dispatch.nextCheckAt==='number'?{nextCheckAt:dispatch.nextCheckAt}:{}),
+      ...(typeof dispatch.checks==='number'?{checks:dispatch.checks}:{}),
+      ...(typeof dispatch.messageId==='string'?{messageId:dispatch.messageId}:{})}
+  })()
   return {
     id:r.id,group_id:r.group_id,creator_id:r.creator_id,creator_name:String(r.creator_name||''),
     intent:r.intent,schedule:normalizedSchedule,deliver,
@@ -102,6 +125,8 @@ export function decodeCommitment(data:string):CommitmentData {
     ...(importedReminder?{importedReminder:true as const}:{}),
     ...(privateRequest?{privateRequest}:{}),
     ...(ownedReservation?{ownedReservation}:{}),
+    ...(groupSource?{groupSource}:{}),
+    ...(groupDispatch?{groupDispatch}:{}),
     ...(deferredAction?{deferredAction}:{}),
     expiry_at:Number(r.expiry_at)||0,renewal_asked_at:Number(r.renewal_asked_at)||0,
     next_run_at:Number(r.next_run_at)||0,status:status as CommitmentData['status'],
@@ -186,7 +211,8 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
     (!c.ownedReservation||conversationCleanupAllows(c.scope,c.ownedReservation.source,fences)))
   function sameSource(left:CommitmentData,right:CommitmentData):boolean{
     return left.creator_id===right.creator_id&&left.created_at===right.created_at&&sourceAt(left)===sourceAt(right)&&left.bot_id===right.bot_id&&
-      (left.scope?agentConversationKey(left.scope):'')===(right.scope?agentConversationKey(right.scope):'')&&left.bindingIdentity===right.bindingIdentity
+      (left.scope?agentConversationKey(left.scope):'')===(right.scope?agentConversationKey(right.scope):'')&&left.bindingIdentity===right.bindingIdentity&&
+      left.groupSource?.messageId===right.groupSource?.messageId
   }
   async function getCommitment(id:string,ensureCurrent?:()=>Promise<void>):Promise<CommitmentData|null>{
     const saved=await snapshot(id,ensureCurrent)
@@ -201,14 +227,16 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
       if(snapshotValue.retired||!permitted(c,snapshotValue.fences))return false
       if(snapshotValue.raw&&!sameSource(decodeCommitment(snapshotValue.raw),c))throw new Error('承诺来源不可改变')
       const list=(await getPendingList(ensureCurrent)).filter(item=>item.id!==c.id)
-      if(c.status==='active')list.push({id:c.id,next_run_at:c.run_id?c.lease_until||0:c.next_run_at})
+      const due=c.status==='active'?(c.run_id?c.lease_until||0:c.next_run_at):
+        c.status==='unknown'?c.groupDispatch?.nextCheckAt:undefined
+      if(due!==undefined)list.push({id:c.id,next_run_at:due})
       list.sort((a,b)=>a.next_run_at-b.next_run_at)
       const data=encodeCommitment(c)
       decodeCommitment(data)
       await ensureCurrent?.()
       if(isCurrent?.()===false)return false
       const saved=await redis.eval(WRITE_STATE,{keys:[COMMITMENT_LOCK_KEY,commitmentDetailKey(c.id),COMMITMENT_PENDING_KEY,COMMITMENT_CLEANUP_KEY,cleanupIdKey(c.id)],
-        arguments:[token,data,JSON.stringify(list),c.status==='active'||c.deferredAction?'0':'86400',...cleanupExpected(snapshotValue.fenceRaw),...cleanupExpected(snapshotValue.raw)]})
+        arguments:[token,data,JSON.stringify(list),due!==undefined||c.deferredAction?'0':'86400',...cleanupExpected(snapshotValue.fenceRaw),...cleanupExpected(snapshotValue.raw)]})
       if(Number(saved)===1)return true
       if(Number(saved)===-1)return false
       await ensureCurrent?.()
@@ -267,7 +295,7 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
         if(item.next_run_at>at)continue
         const c=await getCommitment(item.id)
         if(!c||c.status!=='active'||canClaim?.(c)===false)continue
-        if(c.run_id&&(c.lease_until||0)>at)continue
+        if(c.run_id&&hasLiveTaskClaim(c.lease_until,at))continue
         if(c.run_id&&c.execution_state==='executing'){
           const reason='上次执行中断且结果未知，已停止自动重发'
           await persist({...withoutRun(c),status:'unknown',last_result:reason,next_run_at:0,revision:(c.revision||0)+1,
@@ -275,7 +303,8 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
           await appendFailLogUnlocked({id:c.id,intent:c.intent,group_id:c.group_id,reason,at},token)
           continue
         }
-        const claimed:CommitmentData={...c,run_id:randomUUID(),lease_until:at+COMMITMENT_LEASE_MS,execution_state:'claimed',revision:(c.revision||0)+1}
+        const claim=createAgentTaskClaim(at,COMMITMENT_LEASE_MS)
+        const claimed:CommitmentData={...c,run_id:claim.id,lease_until:claim.leaseUntil,execution_state:'claimed',revision:(c.revision||0)+1}
         if(await persist(claimed,token))out.push(claimed)
         if(out.length>=limit)break
       }
@@ -306,14 +335,61 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
       return await persist({...withoutRun(current),revision:(current.revision||0)+1},token)
     })
   }
-  async function commitRunOutcome(c:CommitmentData):Promise<boolean>{
+  async function beginGroupDispatch(c:CommitmentData,dispatch:NonNullable<CommitmentData['groupDispatch']>,isCurrent:()=>boolean):Promise<boolean>{
     return withLock(async token=>{
       const current=await getCommitment(c.id)
-      if(!current||current.status!=='active'||!c.run_id||current.run_id!==c.run_id)return false
+      if(!current||!isOneTimeGroupReminder(current)||current.status!=='active'||!c.run_id||current.run_id!==c.run_id||
+        current.revision!==c.revision||current.execution_state!=='claimed'||!hasLiveTaskClaim(current.lease_until,dispatch.at)||!isCurrent())return false
+      return persist({...current,groupDispatch:dispatch,execution_state:'executing',lease_until:dispatch.at+COMMITMENT_LEASE_MS,
+        ...(current.ownedReservation?{ownedReservation:{...current.ownedReservation,attemptedAt:dispatch.at}}:{})},token,isCurrent)
+    })
+  }
+  async function isGroupDispatchCurrent(c:CommitmentData,at:number):Promise<boolean>{
+    const current=await getCommitment(c.id)
+    return !!current&&current.status==='active'&&current.revision===c.revision&&!!c.run_id&&
+      current.run_id===c.run_id&&hasLiveTaskClaim(current.lease_until,at)
+  }
+  async function listDueGroupDispatches(at:number,handles:(c:CommitmentData)=>boolean,limit:number):Promise<CommitmentData[]>{
+    const out:CommitmentData[]=[]
+    for(const entry of await getPendingList()){
+      if(entry.next_run_at>at)break
+      const c=await getCommitment(entry.id)
+      if(c?.status!=='unknown'||c.groupDispatch?.nextCheckAt===undefined||c.groupDispatch.nextCheckAt>at||!handles(c))continue
+      out.push(c)
+      if(out.length>=limit)break
+    }
+    return out
+  }
+  async function settleGroupDispatchCheck(c:CommitmentData,messageId:string|undefined,nextCheckAt:number,isCurrent:()=>boolean):Promise<void>{
+    await withLock(async token=>{
+      const current=await getCommitment(c.id)
+      if(current?.status!=='unknown'||current.revision!==c.revision||current.groupDispatch?.nextCheckAt===undefined||!isCurrent())return
+      const {nextCheckAt:_previous,...dispatch}=current.groupDispatch
+      const checks=(dispatch.checks??0)+1
+      const next:CommitmentData={...current,revision:(current.revision||0)+1,
+        groupDispatch:{...dispatch,checks,...(messageId?{messageId}:checks<3?{nextCheckAt}:{})}}
+      if(messageId){
+        next.status='completed'
+        next.last_result='sent'
+        if(current.ownedReservation)next.ownedReservation={...current.ownedReservation,verifiedMessageId:messageId}
+      }
+      await persist(next,token,isCurrent)
+    })
+  }
+  async function commitRunOutcome(c:CommitmentData,messageId?:string):Promise<boolean>{
+    return withLock(async token=>{
+      const current=await getCommitment(c.id)
+      if(!current||current.status!=='active'||!c.run_id||current.run_id!==c.run_id||
+        current.groupDispatch&&current.revision!==c.revision)return false
       // Preserve concurrent renewal fields. Only the owner of this run may settle it.
-      return await persist({...withoutRun(c),...(current.deferredAction?{deferredAction:current.deferredAction}:{}),
+      const next={...withoutRun(c),...(current.deferredAction?{deferredAction:current.deferredAction}:{}),
         ...(current.ownedReservation?{ownedReservation:current.ownedReservation}:{}),
-        expiry_at:current.expiry_at,renewal_asked_at:current.renewal_asked_at||0,revision:(current.revision||0)+1},token)
+        expiry_at:current.expiry_at,renewal_asked_at:current.renewal_asked_at||0,revision:(current.revision||0)+1}
+      if(current.groupDispatch&&c.status!=='active'){
+        const {nextCheckAt,...dispatch}=current.groupDispatch
+        next.groupDispatch={...dispatch,...(c.status==='unknown'&&nextCheckAt!==undefined?{nextCheckAt}:{}),...(messageId?{messageId}:{})}
+      }else delete next.groupDispatch
+      return await persist(next,token)
     })
   }
   async function confirmOwnedReservation(c:CommitmentData,messageId:string,isCurrent:()=>boolean):Promise<CommitmentData|undefined>{
@@ -545,5 +621,6 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
       }
     }
   }
-  return {createCommitment,getCommitment,cancelCommitment,takeDueCommitments,commitRunOutcome,confirmOwnedReservation,requeueForRetry,listActiveCommitments,appendFailLog,readFailLog,clearFailLog,updateActive,refreshClaim,releaseUnstartedClaim,expireClaim,recoverLegacyIndex,onInvalidated,isClaimCurrent,updateDeferredActionClaim,listDeferredActions,listManagementCommitments,readManagementFailLog,clearManagementFailLog,purgeSubject}
+  return {createCommitment,getCommitment,cancelCommitment,takeDueCommitments,commitRunOutcome,confirmOwnedReservation,requeueForRetry,listActiveCommitments,appendFailLog,readFailLog,clearFailLog,updateActive,refreshClaim,releaseUnstartedClaim,expireClaim,recoverLegacyIndex,onInvalidated,isClaimCurrent,updateDeferredActionClaim,listDeferredActions,listManagementCommitments,readManagementFailLog,clearManagementFailLog,purgeSubject,
+    beginGroupDispatch,isGroupDispatchCurrent,listDueGroupDispatches,settleGroupDispatchCheck}
 }

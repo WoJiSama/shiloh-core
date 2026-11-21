@@ -26,6 +26,9 @@ export interface CommitmentData {
   privateRequest?: { messageId:string; groupId?:string; destinationBindingIdentity?:string }
   /** A reminder accepted by the agent itself in a single bound group. */
   ownedReservation?: { goalId:string; source:CommitmentSourceMessage; attemptedAt?:number; verifiedMessageId?:string }
+  /** Verified triggering message for a newly accepted one-time group reminder. */
+  groupSource?: CommitmentSourceMessage
+  groupDispatch?: { at:number; sha256:string; mentionId?:string; nextCheckAt?:number; checks?:number; messageId?:string }
   /** Frozen extra_action delegation; executed by the dedicated worker, never by wakeSim. */
   deferredAction?:AgentDeferredActionData
   expiry_at:number                 // 到期不再执行(默认30天,防遗忘永动机)
@@ -59,7 +62,7 @@ export interface CommitmentRedisLike {
 export interface CommitmentBotLike { uin?:string|number; sendApi?:(action:string,params:Record<string,unknown>)=>Promise<unknown> }
 export interface CommitmentEvent extends AgentBindingTurn {
   sourceAt?:number
-  _agentToolRequest?:{readonly occurredAt?:number|undefined}
+  _agentToolRequest?:{readonly occurredAt?:number|undefined;readonly messageId?:string}
   group_id?:string|number|undefined
   user_id?:string|number|undefined
   isMaster?:boolean|undefined

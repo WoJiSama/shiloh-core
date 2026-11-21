@@ -36,9 +36,10 @@ interface FeedXmlParser {
 const { SaxesParser } = createRequire(import.meta.url)('saxes') as { SaxesParser: new (options: { xmlns: false }) => FeedXmlParser }
 export interface PublicFeedDependencies {
   lookup?(hostname: string): Promise<LookupAddress[]>
-  request?(url: URL, address: LookupAddress, timeoutMs: number): Promise<PublicResponse>
+  request?(url: URL, address: LookupAddress, timeoutMs: number, signal?: AbortSignal): Promise<PublicResponse>
   guard?(): Promise<void>
   allowRequest?(url: URL): boolean
+  signal?: AbortSignal
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -84,11 +85,11 @@ export function normalizePublicFeedUrl(input: unknown, kind: Kind = 'rss'): stri
   return url.href
 }
 
-function nativeRequest(url: URL, address: LookupAddress, timeoutMs: number): Promise<PublicResponse> {
+function nativeRequest(url: URL, address: LookupAddress, timeoutMs: number, signal?: AbortSignal): Promise<PublicResponse> {
   return new Promise((resolve, reject) => {
     const pinnedLookup = ((_host: string, _options: unknown, callback: (error: NodeJS.ErrnoException | null, address: string, family: number) => void) => callback(null, address.address, address.family)) as LookupFunction
     const request = https.request(url, {
-      method: 'GET', agent: false, family: address.family, lookup: pinnedLookup,
+      method: 'GET', agent: false, family: address.family, lookup: pinnedLookup, ...(signal ? { signal } : {}),
       headers: { Accept: 'application/rss+xml, application/atom+xml, application/json, application/xml, text/xml', 'Accept-Encoding': 'identity', 'User-Agent': 'Shiloh-Character-Subscriptions/1.0' },
     }, response => {
       const status = response.statusCode || 0
@@ -130,13 +131,15 @@ export async function fetchPublicFeed(input: string, kind: Kind, dependencies: P
     finally { if (timer) clearTimeout(timer) }
   }
   for (let redirects = 0; redirects <= 3; redirects++) {
+    dependencies.signal?.throwIfAborted()
     await dependencies.guard?.()
     if (dependencies.allowRequest?.(url) === false) throw new Error('订阅地址与公开来源不符')
     const host = url.hostname.replace(/^\[|\]$/gu, '')
     const addresses = isIP(host) ? [{ address: host, family: isIP(host) }] : await guarded(lookup(host))
     if (!addresses.length || addresses.some(address => !isPublicFeedAddress(address.address) || isIP(address.address) !== address.family)) throw new Error('订阅DNS包含非公共地址')
+    dependencies.signal?.throwIfAborted()
     await dependencies.guard?.()
-    const response = await guarded(request(url, addresses[0]!, Math.max(1, deadline - Date.now())))
+    const response = await guarded(request(url, addresses[0]!, Math.max(1, deadline - Date.now()), dependencies.signal))
     if (response.status >= 300 && response.status < 400) {
       if (redirects === 3 || !response.location) throw new Error('订阅重定向过多或无目标')
       url = new URL(normalizePublicFeedUrl(new URL(response.location, url).href, kind))

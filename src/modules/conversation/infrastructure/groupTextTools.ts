@@ -173,7 +173,7 @@ export function createGroupTextTools(options: {
       group_id: context.binding.target.id, user_id: actor.user.id, self_id: context.binding.target.account.id,
       _agentBinding: context.binding, _isAgentBindingCurrent: context.isCurrent,
       _ensureAgentToolCurrent: ensureContextCurrent,
-      _agentToolRequest: { occurredAt: request.occurredAt ?? context.requestAt },
+      _agentToolRequest: { messageId: request.messageId, occurredAt: request.occurredAt ?? context.requestAt },
     }
     const owner = name === 'delegateMemoryTool' ? options.memory : options.commitment
     const execute = name === 'delegateMemoryTool' ? options.memory.executeForOwner

@@ -232,13 +232,19 @@ for (const fence of ['configuration', 'binding', 'recall', 'privacy']) {
 
   test(`Core rechecks ${fence} after a native extra is queued and blocks its dispatch`, redisTest, async t => {
     let original, revoked = false
-    const f = await fixture(t, { async beforeEffect(run) { revoked = true; await revoke(run, fence, original) } })
+    const finished = Promise.withResolvers()
+    const f = await fixture(t, { async beforeEffect(run) {
+      revoked = true
+      try { await revoke(run, fence, original) } finally { finished.resolve() }
+    } })
     original = await f.run(); const task = await f.task()
     if (fence === 'privacy') assert.equal(await f.reader.exists(f.prefix + commitmentDetailKey(task.id)), 1)
     const saved = await f.due(task.id, fence === 'privacy' ? [null] : undefined)
     assert.equal(revoked, true); assert.equal(f.attempts.length, 1)
     if (fence === 'privacy') {
       assert.equal(saved, null)
+      // The source fence is installed before the privacy command settles and acknowledges cleanup.
+      await finished.promise
       assert.equal(await f.reader.exists(f.prefix + commitmentDetailKey(task.id)), 0)
       assert.deepEqual(await f.store.listDeferredActions(), [])
     } else assert.equal(saved.status, 'unknown')

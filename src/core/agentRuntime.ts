@@ -8,6 +8,8 @@ import { createAgentProfileManagement } from '../modules/memory/infrastructure/a
 import { createAgentTrusteeshipManagement } from '../modules/commitments/infrastructure/agentTrusteeshipManagement.js'
 import { captureSynchronousGuardCheck, createSynchronousGuard } from '../modules/runtime/domain/synchronousGuard.js'
 import { createAgentToolSourceGuard } from '../modules/runtime/infrastructure/agentToolSourceGuard.js'
+import { createAgentTaskScheduler, type AgentScheduledWork } from '../modules/runtime/infrastructure/agentTaskScheduler.js'
+import { createAgentActionExecutor } from '../modules/runtime/infrastructure/agentActionExecutor.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest } from '../contracts/agentFiles.js'
 import type { AgentFileUpload, FileDeliveryReceipt } from '../contracts/agentFileDelivery.js'
 import type { AgentAudioBytes, AgentVideoBytes, SendMediaAction } from '../contracts/agentMedia.js'
@@ -49,8 +51,8 @@ import { readAgentPublicFile } from '../modules/tools/infrastructure/agentPublic
 import { abortableAgentWeb } from '../modules/tools/infrastructure/agentPublicWeb.js'
 import { validateAgentFileBytes } from '../modules/content/infrastructure/agentFileBytes.js'
 import type { AgentBindingSnapshot, ConversationAddress, PlatformAccountRef, PlatformUserRef } from '../contracts/agentBinding.js'
-import type { ConversationMember, ConversationMemberSnapshot, ConversationMembersSnapshot, MessageImage, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
-import type { IncomingMessage, MessageActionPort, MessageBundleItem } from '../contracts/platformMessage.js'
+import type { ConversationMember, ConversationMemberSnapshot, ConversationMembersSnapshot, MessageImage, OwnTextDeliveryProof, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
+import type { IncomingMessage, MessageActionOptions, MessageActionPort, MessageBundleItem } from '../contracts/platformMessage.js'
 import type { AgentToolRegistry, AgentToolMessage, AgentToolRequest } from '../contracts/agentTool.js'
 import type { DeliveryReceipt } from '../contracts/delivery.js'
 import { normalizeDeliveryReceipt } from '../modules/messaging/domain/deliveryReceipt.js'
@@ -638,6 +640,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
 
   const outboundMessages = createAgentOutboundMessages(storage)
+  const actionExecutor = createAgentActionExecutor(isRunning)
   const rawMessageActions: MessageActionPort = {
     async interact(action, guard) {
       const target = action.target, live = isConversationAddress(target) && bindingFor(target), adapter = isConversationAddress(target) && adapterFor(target)
@@ -978,7 +981,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (options.allowsText?.(text, 'outgoing') === false) return { state: 'failed', code: 'forbidden_text' }
       if (replyTo !== undefined && !isMessageId(replyTo)) return { state: 'failed', code: 'reply_source_unavailable' }
       const expected = agentBindingToken(binding)
-      const send = guardPendingSend(targetKey, () => isRunning() && adapter.isReady() && adapterFor(target) === adapter &&
+      const send = guardPendingSend(targetKey, () => !guard?.signal?.aborted && isRunning() && adapter.isReady() && adapterFor(target) === adapter &&
         conversationAddressKey(target) === targetKey && enabled() &&
         guard?.isCurrent?.() !== false && bindingIsCurrent(target, expected))
       try {
@@ -987,37 +990,50 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           catch { return { state: 'failed', code: 'reply_source_unavailable' } }
         }
         if (!send.isCurrent()) return { state: 'failed', code: 'binding_changed' }
+        const authority: MessageActionOptions = { isCurrent: send.isCurrent,
+          ...(guard?.signal ? { signal: guard.signal } : {}), ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}) }
         try {
-          const ensureCurrent = async () => {
-            if (!send.isCurrent()) throw new Error('消息来源已失效')
-            await guard?.ensureCurrent?.()
-            if (!send.isCurrent()) throw new Error('消息来源已失效')
-          }
-          await ensureCurrent()
-          const receipt = await adapter.actions.send({ ...action, binding }, { isCurrent: send.isCurrent, ensureCurrent })
-          if (receipt.state === 'failed') return receipt
-          if (receipt.state === 'sent' && isMessageId(receipt.messageId)) return receipt
-        } catch { /* Transport may have accepted the send before failing. */ }
-        return { state: 'unknown' }
+          return await actionExecutor.run(authority, async verified => {
+            if (guard?.beforeDispatch && !await guard.beforeDispatch()) return { state: 'failed', code: 'claim_changed' }
+            if (!verified.isCurrent()) return { state: 'failed', code: 'binding_changed' }
+            try {
+              const receipt = await adapter.actions.send({ ...action, binding }, {
+                ...verified, ...(authority.signal ? { signal: authority.signal } : {}) })
+              if (receipt.state === 'failed') return receipt
+              if (receipt.state === 'sent' && isMessageId(receipt.messageId)) return receipt
+            } catch { /* Transport may have accepted the send before failing. */ }
+            return { state: 'unknown' }
+          })
+        } catch (error) {
+          if (!guard?.beforeDispatch) return { state: 'unknown' }
+          const changed = error instanceof Error && 'claimChanged' in error && error.claimChanged === true
+          return { state: 'failed', code: changed ? 'claim_changed' : 'binding_changed' }
+        }
       } finally {
         send.release()
       }
     },
   }
+  const queuedMessageMethods = new Set(['send', 'sendBundle', 'sendMedia', 'sendMediaRelay', 'sendMusic', 'sendVideoCard', 'sendFile', 'sendAudioFile', 'sendGroupLog'])
   function instrumentActions(ai: boolean): MessageActionPort { return Object.fromEntries(Object.entries(rawMessageActions).map(([name, method]) => [name,
     (action: Parameters<MessageActionPort['send']>[0], guard: Parameters<MessageActionPort['send']>[1]) => {
       let binding: AgentBindingSnapshot | undefined
       const target = (action as unknown as { source?: { target?: ConversationAddress }; binding?: AgentBindingSnapshot })?.source?.target ??
         action?.target ?? (action as unknown as { binding?: AgentBindingSnapshot })?.binding?.target
       try { if (isConversationAddress(target)) binding = bindingFor(target)?.binding } catch { /* Invalid requests remain host-scoped. */ }
+      const queued = isConversationAddress(action?.target) && queuedMessageMethods.has(name) ? conversationAddressKey(action.target) : undefined
+      const token = binding && agentBindingToken(binding)
       const permission = ai && isConversationAddress(target) ? activity.capture(target) : undefined
       if (!ai && action && typeof action === 'object') controlActions.add(action)
-      const current = () => (!permission || allowsConversationAI(target) && permission.isCurrent()) && guard?.isCurrent?.() !== false
-      const originalSignal = (guard as { signal?: AbortSignal } | undefined)?.signal
+      const current = () => (!queued || !!token && conversationAddressKey(action.target) === queued && bindingIsCurrent(action.target, token)) &&
+        (!permission || allowsConversationAI(target) && permission.isCurrent()) && guard?.isCurrent?.() !== false
+      const originalSignal = guard?.signal
       const signal = permission ? AbortSignal.any([permission.signal, ...(originalSignal ? [originalSignal] : [])]) : originalSignal
       return diagnostics.run(binding ? { kind: 'conversation', binding } : { kind: 'host' }, `send_${name}`, async () => {
-          const receipt = await controlDelivery.run(!ai, () => method(action as never,
-            { isCurrent: current, ...(signal ? { signal } : {}), ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}) }))
+          const dispatch = () => controlDelivery.run(!ai, () => method(action as never,
+            { isCurrent: current, ...(signal ? { signal } : {}), ...(guard?.ensureCurrent ? { ensureCurrent: guard.ensureCurrent } : {}),
+              ...(name === 'send' && guard?.beforeDispatch ? { beforeDispatch: guard.beforeDispatch } : {}) }))
+          const receipt = queued ? await actionExecutor.send(queued, dispatch) : await dispatch()
           const confirmed = receipt && typeof receipt === 'object' ? receipt as { state?: unknown; messageId?: unknown } : undefined
           // Requester archives and authentication notices use a different native
           // destination; their source conversation never acquires recall ownership.
@@ -1968,13 +1984,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     readPublicFile: (url, guard) => readAgentPublicFile(url, guard),
     isMessageRecalled: (target, messageId) => inbox.isRecalled(target, messageId),
   })
-  async function verifyPersonalText(binding: AgentBindingSnapshot, proof: { sha256: string; from: number; until: number },
+  async function verifyPersonalText(binding: AgentBindingSnapshot, proof: OwnTextDeliveryProof,
     signal: AbortSignal, guard: () => boolean) {
     const { target } = binding, adapter = adapterFor(target)
     const current = () => guard() && !signal.aborted && adapterFor(target) === adapter && isPersonalBindingCurrent(binding)
     if (!current()) return undefined
     const found = await adapter?.findOwnTextDelivery?.(target, proof, { signal, isCurrent: current })
-    if (!found || !current() || await inbox.isRecalled(target, found.messageId) || !current()) return undefined
+    if (!found || !isMessageId(found.messageId) || conversationAddressKey(found.conversation) !== conversationAddressKey(target) ||
+        platformAccountKey(found.author) !== platformAccountKey(target.account) || !Number.isSafeInteger(found.occurredAt) ||
+        found.occurredAt < proof.from || found.occurredAt > proof.until || !current() ||
+        await inbox.isRecalled(target, found.messageId) || !current()) return undefined
     return found.messageId
   }
 
@@ -2035,6 +2054,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
     verifyOwnedDelivery: (binding, proof) =>
       verifyPersonalText(binding, proof, AbortSignal.any([toolCancellation.signal, AbortSignal.timeout(10_000)]), isRunning),
+    verifyGroupDelivery: (binding, proof, signal, current) =>
+      actionExecutor.run({ signal, isCurrent: current }, guard =>
+        verifyPersonalText(binding, proof, AbortSignal.any([signal, toolCancellation.signal]), guard.isCurrent)),
     allowsExecution: allowsConversationAI,
     captureExecution: target => activity.capture(target),
     isSimulationGroup: (_id, target) => target ? runtime.isConversationActive(target) : false,
@@ -2103,7 +2125,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         const binding = personalBindingFor(agentId, key)
         return binding ? verifyPersonalText(binding, proof, signal, guard) : undefined
       },
-      async contact(agentId, key, text, inheritedSignal, guard, contextCurrent) {
+      async contact(agentId, key, text, inheritedSignal, guard, contextCurrent, beforeDispatch) {
         const binding = personalBindingFor(agentId, key)
         const clean = sanitizeFinalReplyText(text)
         if (!binding || !clean) return { state: 'failed', code: 'contact_unavailable' }
@@ -2127,7 +2149,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         }
         try { await ensureCurrent() } catch { return { state: 'failed', code: 'contact_unavailable' } }
         return messageActions.send({ version: 1, kind: 'message.send', target, binding, parts: [{ kind: 'text', text: clean }] },
-          { isCurrent: current, ensureCurrent })
+          { isCurrent: current, ensureCurrent, signal, ...(beforeDispatch ? { beforeDispatch } : {}) })
       },
       ...(publicSearch ? { research: async (agentId: string, query: string, signal: AbortSignal, guard: () => boolean) => {
         const binding = personalTargetList(agentId).find(row => bindingIsCurrent(row.target, agentBindingToken(row)))
@@ -2138,7 +2160,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       } } : {}),
       ...(options.codingWorker ? { coding: options.codingWorker } : {}),
       ...(options.personalToolAuthor ? { publishTool: options.personalToolAuthor } : {}),
-      ...(options.personalFollowFeed ? { followFeed: options.personalFollowFeed } : {}),
+      ...(options.personalFollowFeed ? { followFeed: (url: string, isCurrent: () => boolean, signal: AbortSignal) =>
+        actionExecutor.run({ signal, isCurrent }, guard => options.personalFollowFeed!(url, guard.isCurrent, signal)) } : {}),
       recordUsage: (agentId, stage, reply) => options.recordTokens?.({ scope: 'agent:' + agentId, stage, model: String(reply.model ?? ''), usage: reply.usage }),
       failed: (operation, error, code) => diagnostics.emit({ stage: 'runtime', operation, outcome: 'failed', ...(code ? { code } : {}), error }),
     })
@@ -3746,19 +3769,23 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     return recovery
   }
 
-  const commitmentTasks = new Map<string, Promise<void>>()
-  function tickCommitments(): void {
-    if (!isRunning()) return
+  const taskScheduler = createAgentTaskScheduler({
+    isCurrent: isRunning,
+    failed: (operation, error) => diagnostics.emit({ stage: 'runtime', operation, outcome: 'failed', error }),
+  })
+  function *scheduledWork(): Iterable<AgentScheduledWork> {
+    if (personal) yield* personal.dueFollowWork()
     for (const adapter of adapters.values()) {
       if (!adapter.isReady()) continue
-      const key = platformAccountKey(adapter.account)
-      if (commitmentTasks.has(key)) continue
-      const operation = Promise.resolve().then(async () => {
-        await commitments.commitmentTick(adapter.account)
-        if (isRunning()) await deferredActions.tick(adapter.account)
-      }).catch(error => { void diagnostics.run({ kind: 'account', account: adapter.account }, 'commitment_tick', async () => { diagnostics.emit({ stage: 'runtime', operation: 'commitment_tick', outcome: 'failed', code: 'commitment_retry_pending', error }) }) })
-        .finally(() => { if (commitmentTasks.get(key) === operation) commitmentTasks.delete(key) })
-      commitmentTasks.set(key, operation)
+      const scope = platformAccountKey(adapter.account)
+      yield { kind: 'group_reminder_receipt_tick', scope, run: () => commitments.groupReminderReceiptTick(adapter.account) }
+      yield {
+        kind: 'commitment_tick', scope,
+        async run() {
+          await commitments.commitmentTick(adapter.account)
+          if (isRunning()) await deferredActions.tick(adapter.account)
+        },
+      }
     }
   }
 
@@ -3809,7 +3836,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const recovered = kickInboxes()
       maintenance = setInterval(() => {
         kickInboxes()
-        tickCommitments()
+        void taskScheduler.tick(scheduledWork())
         if (mediaRelayConfig.enabled) void runMaintenance('media_outbox_tick', () => mediaOutbox.tick())
         if (torrentConfig.enabled) void runMaintenance('torrent_tick', () => torrent.tick())
         void runMaintenance('person_memory_tick', () => textPersonMemory.tick())
@@ -3828,7 +3855,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       await semanticMemory.tick()
       await history.tick()
       await groupMemory.tick()
-      if (isRunning()) tickCommitments()
+      if (isRunning()) void taskScheduler.tick(scheduledWork())
     } catch (error) {
       await stop()
       throw error
@@ -3851,7 +3878,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     privacyWaiters.clear()
     for (const adapter of adapters.values()) adapter.stop()
     runtime.stop()
-    shuttingDown = Promise.allSettled([textDrained, deferredDrained, personalDrained, moderationDrained, localEmojiIngress?.stop(), ...commitmentTasks.values(), ...pendingAdmissions, ...automaticQqWork.values(), ...gameHandlers.map(handler => Promise.resolve().then(() => handler.stop())), ...consumers.values(), ...(bilibiliQuality ? [bilibiliQuality.stop()] : []), torrent.stop(), mediaOutbox.stop(), commitments.drainCommitmentTicks(), runtime.drain(), textPersonMemory.stop(), conversationMemory.stop(), semanticMemory.stop(), history.stop(), groupMemory.stop()]).then(async results => {
+    shuttingDown = Promise.allSettled([textDrained, deferredDrained, personalDrained, moderationDrained, localEmojiIngress?.stop(), taskScheduler.drain(), ...pendingAdmissions, ...automaticQqWork.values(), ...gameHandlers.map(handler => Promise.resolve().then(() => handler.stop())), ...consumers.values(), ...(bilibiliQuality ? [bilibiliQuality.stop()] : []), torrent.stop(), mediaOutbox.stop(), commitments.drainCommitmentTicks(), runtime.drain(), textPersonMemory.stop(), conversationMemory.stop(), semanticMemory.stop(), history.stop(), groupMemory.stop()]).then(async results => {
       for (const result of results) if (result.status === 'rejected') diagnostics.emit({ stage: 'runtime', operation: 'shutdown', outcome: 'failed', error: result.reason })
       await diagnostics.flush()
     })
@@ -3881,8 +3908,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     async resumePendingWork() {
       if (started && !stopping) {
         kickInboxes()
+        void taskScheduler.tick(scheduledWork())
         if (torrentConfig.enabled) await torrent.tick()
-        tickCommitments()
         await runtime.sweepOnce()
         await textPersonMemory.tick()
         await conversationMemory.tick()

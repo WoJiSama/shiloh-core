@@ -249,6 +249,7 @@ test('uncertain group text is confirmed only by a single exact, self-authored hi
     sender: { user_id: account.id }, message: [{ type: 'text', data: { text: body } }] }
   const wrongGroup = { ...matched, message_id: 870000002, group_id: '315321' }
   const wrongAuthor = { ...matched, message_id: 870000003, sender: { user_id: '987654321' } }
+  const mentioned = { ...matched, message_id: 870000005, message: [{ type: 'at', data: { qq: 315321 } }, ...matched.message] }
   const adapter = adapterAt(url)
   t.after(() => adapter.stop())
   const started = adapter.start(async () => {})
@@ -258,12 +259,14 @@ test('uncertain group text is confirmed only by a single exact, self-authored hi
     assert.equal(request.action, 'get_group_msg_history')
     assert.equal(String(request.params.group_id), target.id)
     client.send(JSON.stringify({ status: 'ok', retcode: 0, echo: request.echo,
-      data: { messages: [wrongGroup, wrongAuthor, matched, ...(ambiguous ? [{ ...matched, message_id: 870000004 }] : [])] } }))
+      data: { messages: [wrongGroup, wrongAuthor, matched, mentioned, ...(ambiguous ? [{ ...matched, message_id: 870000004 }] : [])] } }))
   })
   await started
   const guard = { signal: new AbortController().signal, isCurrent: () => true }
   const proof = { sha256: createHash('sha256').update(body).digest('hex'), from: time * 1000, until: time * 1000 + 60_000 }
   assert.equal((await adapter.findOwnTextDelivery(target, proof, guard))?.messageId, '870000001')
+  assert.equal((await adapter.findOwnTextDelivery(target, { ...proof, mentionId: '315321' }, guard))?.messageId, '870000005')
+  assert.equal(await adapter.findOwnTextDelivery(target, { ...proof, mentionId: '315322' }, guard), undefined)
   ambiguous = true
   assert.equal(await adapter.findOwnTextDelivery(target, proof, guard), undefined)
 })

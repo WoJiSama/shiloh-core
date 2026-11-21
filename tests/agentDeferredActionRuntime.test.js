@@ -269,7 +269,7 @@ test('existing commitment management can inspect and cancel unresolved migrated 
   const old=createCommitmentRuntime({redis:f.redis,logger,getBot:()=>null,resolveBinding:()=>privateBinding,resolvePrivatePeer:()=>creator.id,isSimulationGroup:()=>false,wakeSim:async()=>assert.fail('private migrated reminder must not plan'),loadConfig:()=>({}),now:()=>f.clock.at})
   const tool=new old.CommitmentTool(),ev={user_id:creator.id,self_id:account.id,isMaster:true,_agentBinding:privateBinding}
   const listed=await tool.managePrivateReminder({action:'list'},ev);assert.match(listed,/legacy-private-id/);assert.match(listed,/unknown/)
-  assert.match(await tool.managePrivateReminder({action:'create'},ev),/查看和取消/)
+  assert.match(await tool.managePrivateReminder({action:'create'},ev),/查看、取消/)
   assert.match(await tool.managePrivateReminder({action:'cancel',commitment_id:'legacy-private-id'},ev),/已取消/)
   assert.equal((await old.store.getCommitment('legacy-private-id')).status,'cancelled')
   assert.doesNotMatch(await tool.managePrivateReminder({action:'list'},{...ev,user_id:'other'}),/legacy-private-id/)

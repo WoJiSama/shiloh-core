@@ -1077,6 +1077,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     async findOwnTextDelivery(target, proof, guard) {
       const selected = captureQqOwnMessageTarget(target), client = socket
       if (!selected || !client || !servesAccount(selected) || !/^[a-f0-9]{64}$/u.test(proof.sha256) ||
+          (proof.mentionId !== undefined && (selected.kind !== 'group' || qqId(proof.mentionId) !== proof.mentionId)) ||
           !Number.isSafeInteger(proof.from) || !Number.isSafeInteger(proof.until) || proof.until <= proof.from ||
           proof.until - proof.from > 60_000) return undefined
       const key = conversationAddressKey(selected)
@@ -1098,7 +1099,11 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         if (!id) continue
         const evidence = proveQqOwnMessage({ ...response, data: row }, selected, id)
         if (!evidence || evidence.occurredAt < proof.from || evidence.occurredAt > proof.until) continue
-        const parts = typeof row.message === 'string' ? parseCqMessage(row.message) : row.message
+        let parts = typeof row.message === 'string' ? parseCqMessage(row.message) : row.message
+        if (proof.mentionId !== undefined) {
+          if (!Array.isArray(parts) || record(parts[0]).type !== 'at' || String(record(record(parts[0]).data).qq) !== proof.mentionId) continue
+          parts = parts.slice(1)
+        }
         if (!Array.isArray(parts) || !parts.length || parts.some(part => record(part).type !== 'text' || typeof record(record(part).data).text !== 'string')) continue
         const text = parts.map(part => String(record(record(part).data).text)).join('')
         if (createHash('sha256').update(text).digest('hex') !== proof.sha256) continue

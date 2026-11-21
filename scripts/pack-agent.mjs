@@ -188,11 +188,13 @@ try {
   await fs.writeFile(chromiumLauncher, launcherSource.replaceAll('\r\n', '\n'))
   await fs.chmod(chromiumLauncher, 0o755)
   for (const name of ['docs/project-status.md', 'docs/architecture/agent-bindings.md', 'docs/architecture/agent-bindings-history.md',
+    'docs/architecture/core-scheduling-and-actions-v1.md',
     'docs/architecture/message-pipeline.md', 'docs/architecture/legacy-core-migration.md', 'docs/architecture/ai-brain-construction-2026-11-17.md', 'docs/evals/semantic-retrieval.md', 'console/README.md']) await copy(path.join(root, name), name)
   const agentReadme = await fs.readFile(path.join(root, 'docs/architecture/agent-bindings.md'), 'utf8')
   await fs.writeFile(path.join(output, 'README.md'), agentReadme
     .replaceAll('](../project-status.md', '](docs/project-status.md')
     .replaceAll('](agent-bindings-history.md', '](docs/architecture/agent-bindings-history.md')
+    .replaceAll('](core-scheduling-and-actions-v1.md', '](docs/architecture/core-scheduling-and-actions-v1.md')
     .replaceAll('](../evals/semantic-retrieval.md', '](docs/evals/semantic-retrieval.md')
     .replaceAll('](../../console/README.md', '](console/README.md'))
   await writeJson('package.json', packageJson)

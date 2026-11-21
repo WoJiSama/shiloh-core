@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { readPersonalFollowFeed } from '../dist/backend/modules/simulation/infrastructure/agentPersonalFollow.js'
 import { createAgentPersonalRuntime } from '../dist/backend/modules/simulation/infrastructure/agentPersonalRuntime.js'
+import { createAgentTaskScheduler } from '../dist/backend/modules/runtime/infrastructure/agentTaskScheduler.js'
 
 const hour = 3600_000
 const seed = { id: 'shiloh', name: '希洛', identity: '我喜欢了解游戏更新。' }
@@ -63,7 +64,12 @@ function harness({ model, followFeed, contact }) {
       },
     })
   }
-  return { clock, failures, create }
+  const scheduler = createAgentTaskScheduler({ isCurrent: () => true, failed: (_kind, error) => { throw error } })
+  async function tick(runtime) {
+    await runtime.tick()
+    await scheduler.tick(runtime.dueFollowWork())
+  }
+  return { clock, failures, values, create, tick }
 }
 
 test('an autonomous follow starts silently, sends one chosen update after a restart, and can end itself', async () => {
@@ -79,13 +85,16 @@ test('an autonomous follow starts silently, sends one chosen update after a rest
       return stop ? { action: 'stop-follow', id: data.follows[0].id } : { action: 'rest' }
     },
     async followFeed(url, current) { assert.ok(current()); fetched.push(url); return batch },
-    async contact(id, key, body) { sent.push({ id, key, body }); return { state: 'unknown' } },
+    async contact(id, key, body, _signal, _current, _context, beforeDispatch) {
+      assert.ok(await beforeDispatch())
+      sent.push({ id, key, body })
+      return { state: 'unknown' }
+    },
   })
   let runtime = h.create()
   await runtime.load()
   h.clock.now += 10 * 60_000
-  await runtime.tick()
-  await runtime.tick()
+  await h.tick(runtime)
   const read = () => runtime.workSummary(seed.id, () => true)
   assert.deepEqual(fetched, [repo])
   assert.equal(read().follows[0].lastCheckedAt, h.clock.now)
@@ -97,7 +106,7 @@ test('an autonomous follow starts silently, sends one chosen update after a rest
   batch = [next, old, release('foreign', 'https://github.com/other/repo/releases/tag/v1'),
     { ...release('secret'), summary: 'FIXTURE_SECRET' }]
   h.clock.now += hour
-  await runtime.tick()
+  await h.tick(runtime)
   assert.deepEqual(seenByModel, [[next.id]])
   assert.equal(read().follows[0].latest.url, next.url)
   assert.deepEqual(sent, [{ id: seed.id, key: 'allowed-group', body: `这个游戏发布了 v2，修复了存档。\n${next.url}` }])
@@ -107,17 +116,17 @@ test('an autonomous follow starts silently, sends one chosen update after a rest
   runtime = h.create()
   await runtime.load()
   h.clock.now += hour
-  await runtime.tick()
+  await h.tick(runtime)
   assert.equal(read().actions[0].state, 'confirmed')
   assert.equal(read().actions[0].followId, read().follows[0].id)
   assert.equal(seenByModel.length, 1)
   const count = fetched.length
   stop = true
   h.clock.now += 4 * hour
-  await runtime.tick()
+  await h.tick(runtime)
   assert.equal(read().follows[0].state, 'stopped')
   h.clock.now += hour
-  await runtime.tick()
+  await h.tick(runtime)
   assert.equal(fetched.length, count)
   assert.equal(sent.length, 1)
   assert.deepEqual(h.failures, [])
@@ -138,25 +147,24 @@ test('checks back off, reject attempts to change recipients, and preserve a note
   const runtime = h.create()
   await runtime.load()
   h.clock.now += 10 * 60_000
-  await runtime.tick()
-  await runtime.tick()
+  await h.tick(runtime)
   const read = () => runtime.workSummary(seed.id, () => true).follows[0]
   assert.equal(read().failures, 1)
   assert.equal(read().nextAt, h.clock.now + hour)
-  await runtime.tick()
+  await h.tick(runtime)
   assert.equal(fetched.length, 1)
   forceError = false
   h.clock.now += hour
-  await runtime.tick()
+  await h.tick(runtime)
   assert.equal(read().failures, 0)
   batch = [next]
   h.clock.now += hour
-  await runtime.tick()
+  await h.tick(runtime)
   assert.equal(read().latest, undefined)
   assert.equal(read().failures, 1)
   forged = false
   h.clock.now += hour
-  await runtime.tick()
+  await h.tick(runtime)
   assert.equal(read().latest.text, '记录 v2 的更新。')
   assert.equal(sent.length, 0)
   assert.deepEqual(h.failures.map(([, code]) => code), ['personal_follow_source_failed', 'personal_follow_decision_failed'])
@@ -164,9 +172,84 @@ test('checks back off, reject attempts to change recipients, and preserve a note
   const disabled = h.create(false), count = fetched.length
   await disabled.load()
   h.clock.now += hour
-  await disabled.tick()
+  await h.tick(disabled)
   assert.equal(fetched.length, count)
   assert.equal(disabled.workSummary(seed.id, () => true).followEnabled, false)
   assert.equal(disabled.workSummary(seed.id, () => true).follows[0].latest.url, next.url)
   await disabled.stop()
+})
+
+test('ending an interest invalidates a simultaneously claimed public check', { timeout: 5000 }, async () => {
+  const gate = Promise.withResolvers(), entered = Promise.withResolvers()
+  let stop = false
+  const h = harness({
+    model(data) {
+      if (data.updates) assert.fail('a stopped interest cannot submit a summary')
+      if (!data.follows.length) return { action: 'follow', url: repo, title: '跟进发布', intervalHours: 1 }
+      return stop ? { action: 'stop-follow', id: data.follows[0].id } : { action: 'rest' }
+    },
+    async followFeed(_url, current) {
+      entered.resolve()
+      await gate.promise
+      assert.equal(current(), false)
+      return [release('v3')]
+    },
+    async contact() { assert.fail('a stopped interest cannot send') },
+  })
+  const runtime = h.create()
+  try {
+    await runtime.load()
+    h.clock.now += 10 * 60_000
+    await runtime.tick()
+    const first = runtime.workSummary(seed.id, () => true).follows[0]
+    // Make the personal review due alongside the old interest check.
+    h.clock.now += 6 * hour
+    const [work] = runtime.dueFollowWork()
+    const poll = work.run()
+    await entered.promise
+    stop = true
+    await runtime.tick()
+    gate.resolve()
+    await poll
+    const saved = runtime.workSummary(seed.id, () => true).follows[0]
+    assert.equal(saved.id, first.id)
+    assert.equal(saved.state, 'stopped')
+    assert.equal(saved.lastCheckedAt, undefined)
+    assert.equal(saved.failures, 0)
+    assert.deepEqual([...runtime.dueFollowWork()], [])
+  } finally { gate.resolve(); await runtime.stop() }
+})
+
+test('restart resumes a saved interest share that had only reached the queue', async () => {
+  const body = `Vite 发布了新版本。\n${repo}/releases/tag/v2`, sends = []
+  const key = 'bl-chat:agent-personal:v1:' + seed.id
+  const h = harness({
+    model() { assert.fail('the saved decision does not need another model call') },
+    async followFeed() { assert.fail('the saved update does not need to be read again') },
+    async contact(_id, recipient, text, _signal, _current, _context, beforeDispatch) {
+      assert.equal(JSON.parse(h.values.get(key)).receipts[0].followBody, body)
+      assert.ok(await beforeDispatch())
+      assert.equal(JSON.parse(h.values.get(key)).receipts[0].followBody, undefined)
+      sends.push([recipient, text])
+      return { state: 'sent', messageId: '870000030' }
+    },
+  })
+  const initial = h.create()
+  await initial.load()
+  await initial.stop()
+  const state = JSON.parse(h.values.get(key))
+  state.follows.push({ id: 'resumable', title: '跟进发布', url: repo, state: 'active', intervalHours: 1,
+    nextAt: h.clock.now + hour, lastCheckedAt: h.clock.now, failures: 0, seen: [] })
+  state.receipts.push({ id: 'queued-share', followId: 'resumable', state: 'pending', kind: 'contact',
+    targetKey: 'allowed-group', at: h.clock.now, followBody: body,
+    bodySha256: createHash('sha256').update(body).digest('hex') })
+  h.values.set(key, JSON.stringify(state))
+  const runtime = h.create()
+  try {
+    await runtime.load()
+    await h.tick(runtime)
+    await h.tick(runtime)
+    assert.deepEqual(sends, [['allowed-group', body]])
+    assert.equal(runtime.workSummary(seed.id, () => true).actions[0].state, 'confirmed')
+  } finally { await runtime.stop() }
 })

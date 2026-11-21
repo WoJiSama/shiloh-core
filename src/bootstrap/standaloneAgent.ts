@@ -748,7 +748,8 @@ export async function main(argv: string[]): Promise<void> {
       unifiedGroupChat: true,
       personalSeeds: config.personalSeeds,
       personalToolAuthor,
-      ...(config.personalFollow.enabled ? { personalFollowFeed: readPersonalFollowFeed } : {}),
+      ...(config.personalFollow.enabled ? { personalFollowFeed: (url: string, current: () => boolean, signal: AbortSignal) =>
+        readPersonalFollowFeed(url, current, { signal }) } : {}),
       ...(codingWorker ? { codingWorker } : {}),
       ...(config.migratedGroupToolNames ? { migratedGroupToolNames: config.migratedGroupToolNames, groupTextTools: config.groupTextTools, textGroupRevision: config.textGroupRevision } : {}),
       getExecutionConfig: () => config.execution,
