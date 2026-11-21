@@ -109,9 +109,14 @@ function parseOutput(text: string, opener: '{' | '['): unknown {
   }
   throw new Error(FAILURE)
 }
-function client(options: AgentSimulationModelOptions, deadline: number, maxTokens: number, temperature: number, jsonObject = false) {
+function client(options: AgentSimulationModelOptions, { deadlineMs, temperature, maxTokens, jsonObject = false }: {
+  deadlineMs: number
+  temperature: number
+  maxTokens?: number
+  jsonObject?: boolean
+}) {
   const secrets = [...new Set([options.apiKey, ...(options.secrets ?? [])].filter(value => typeof value === 'string' && !!value))]
-  const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Math.min(deadline, Math.floor(options.timeoutMs!))) : deadline
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Math.min(deadlineMs, Math.floor(options.timeoutMs!))) : deadlineMs
   return async (input: unknown, prompt: () => readonly { role: string; content: string }[], context: PersonProfileExtractionContext | undefined, isCurrent?: () => boolean) => {
     const lifecycle = new AbortController()
     let response: Response | undefined
@@ -129,7 +134,7 @@ function client(options: AgentSimulationModelOptions, deadline: number, maxToken
       const messages = prompt()
       if (hasSecret(JSON.stringify(messages), secrets)) throw new Error(FAILURE)
       await ensureCurrent(context, signal, isCurrent)
-      // This official GLM endpoint otherwise uses the small output budget for reasoning.
+      // Keep reasoning off where the official GLM endpoint supports it.
       const received = await abortable<Response>(Promise.resolve().then(() => {
         assertCurrent(context, requestSignal, isCurrent)
         waitingForHeaders = true
@@ -175,7 +180,7 @@ function client(options: AgentSimulationModelOptions, deadline: number, maxToken
 
 /** Low-signal wake screening; unavailable or malformed verdicts preserve fail-open behavior. */
 export function createAgentSimulationWakeGate(options: AgentSimulationModelOptions & { readonly throwOnFailure?: boolean }) {
-  const run = client(options, 8000, 64, 0.1)
+  const run = client(options, { deadlineMs: 8_000, temperature: 0.1 })
   return async (input: AgentSimulationWakeInput, isCurrent?: () => boolean, context?: PersonProfileExtractionContext): Promise<{ engage: boolean; reason?: string } | null> => {
     try {
       const raw = await run(input, () => {
@@ -201,7 +206,7 @@ export function createAgentSimulationMemeExtractor(options: AgentSimulationModel
   // The official GLM Flash endpoint accepts JSON object mode for this task.
   const endpoint = URL.parse(options.baseUrl)
   const jsonObject = !!endpoint && glmFlashJsonOptions(endpoint, options.name).thinking?.type === 'disabled'
-  const run = client(options, 15_000, 2000, 0.2, jsonObject)
+  const run = client(options, { deadlineMs: 15_000, temperature: 0.2, maxTokens: 2000, jsonObject })
   return async (messages: readonly AgentSimulationMemeMessage[], isCurrent?: () => boolean, context?: PersonProfileExtractionContext): Promise<string> => {
     const raw = await run(messages, () => {
       if (!Array.isArray(messages) || !messages.length || messages.length > 40 || messages.some(row => !row || typeof row.name !== 'string' || typeof row.text !== 'string')) throw new Error(FAILURE)

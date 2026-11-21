@@ -21,14 +21,14 @@ async function rejected(operation) {
   await assert.rejects(operation, error => error.message === FAILURE && error.cause === undefined)
 }
 
-test('wake and meme providers use real local JSON HTTP with fixed model budgets and scoped usage', async t => {
+test('wake uses the provider output budget and meme extraction sends its own budget over HTTP', async t => {
   const received = [], usage = []
   const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk
     const data = JSON.parse(body)
     received.push({ path: req.url, method: req.method, authorization: req.headers.authorization, data })
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
-      choices: [{ message: { content: data.max_tokens === 64 ? '```json\n{"engage":false,"reason":"群友闲聊"}\n```' : JSON.stringify(memeResult) } }],
+      choices: [{ message: { content: received.length === 1 ? '```json\n{"engage":false,"reason":"群友闲聊"}\n```' : JSON.stringify(memeResult) } }],
       usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7, hidden: 99 },
     }))
   })
@@ -50,7 +50,7 @@ test('wake and meme providers use real local JSON HTTP with fixed model budgets 
     assert.deepEqual(req.data.messages.map(message => message.role), ['system', 'user'])
     assert.doesNotMatch(JSON.stringify(req.data), /private-(?:account|group|binding|revision|agent|persona|connection)/u)
   }
-  assert.equal(received[0].data.max_tokens, 64)
+  assert.equal(Object.hasOwn(received[0].data, 'max_tokens'), false)
   assert.equal(received[0].data.temperature, 0.1)
   assert.equal(received[1].data.max_tokens, 2000)
   assert.equal(received[1].data.temperature, 0.2)
@@ -65,11 +65,12 @@ test('official GLM flash side tasks request content without spending the JSON bu
     async fetchImpl(_url, init) {
       const body = JSON.parse(init.body)
       bodies.push(body)
-      return answer(body.max_tokens === 64 ? '{"engage":false,"reason":"普通闲聊"}' : JSON.stringify({ candidates: memeResult }))
+      return answer(bodies.length === 1 ? '{"engage":false,"reason":"普通闲聊"}' : JSON.stringify({ candidates: memeResult }))
     } }
   assert.deepEqual(await createAgentSimulationWakeGate(config)(input, undefined, context()), { engage: false, reason: '普通闲聊' })
   assert.deepEqual(JSON.parse(await createAgentSimulationMemeExtractor(config)(memes, undefined, context())), memeResult)
   assert.deepEqual(bodies.map(body => body.thinking), [{ type: 'disabled' }, { type: 'disabled' }])
+  assert.equal(Object.hasOwn(bodies[0], 'max_tokens'), false)
   assert.equal(bodies[0].response_format, undefined)
   assert.deepEqual(bodies[1].response_format, { type: 'json_object' })
   assert.match(bodies[1].messages[1].content, /\{"candidates":\[\]\}/u)
@@ -86,6 +87,12 @@ test('the standalone wake judge can report a verified upstream error while calle
     assert.doesNotMatch(JSON.stringify(error), /private upstream detail/u)
     return true
   })
+  const truncated = { ...options, fetchImpl: async () => answer(undefined, {
+    choices: [{ finish_reason: 'length', message: { content: '{"engage":' } }],
+  }) }
+  assert.equal(await createAgentSimulationWakeGate(truncated)(input, undefined, context()), null)
+  await assert.rejects(createAgentSimulationWakeGate({ ...truncated, throwOnFailure: true })(input, undefined, context()),
+    { code: 'model_response_truncated' })
 })
 
 test('meme provider failures carry only a fixed label and optional HTTP status', async () => {
