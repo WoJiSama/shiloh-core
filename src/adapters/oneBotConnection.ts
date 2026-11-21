@@ -21,6 +21,7 @@ import { conversationAddressKey, platformAccountKey } from '../modules/runtime/d
 import { safeTruncateUnicode } from '../modules/models/domain/unicodeText.js'
 import { queuedDeliveryAllowed } from '../modules/messaging/infrastructure/deliveryScope.js'
 import { qqId, resolveQqConversationAddress } from './qqIdentity.js'
+import { createQqConversationNames } from './qqConversationNames.js'
 import { decodeQqIncomingMessage, decodeQqNudge, opaqueMessageId } from './qqMessage.js'
 import { parseQqCqMessage as parseCqMessage } from './qqCqMessage.js'
 import { readQqMessageImage } from './qqMessageImage.js'
@@ -332,6 +333,7 @@ interface OneBotConnectionOptions extends OneBotEndpoint {
   onEventError(): void
   onApiFailure?(action: string, outcome: 'failed' | 'unknown', code: string): void
   readonly alertOwner?: PlatformUserRef
+  readonly conversationNameTargets?: readonly ConversationAddress[]
 }
 
 interface OwnerAlertGuard { readonly signal: AbortSignal; isCurrent(): boolean }
@@ -358,9 +360,11 @@ function createOneBotSession(options: OneBotConnectionOptions) {
   let cancelFirstPeer: (() => void) | undefined
   let retry: ReturnType<typeof setTimeout> | undefined
   let heartbeat: ReturnType<typeof setInterval> | undefined
+  let nameRefresh: ReturnType<typeof setInterval> | undefined
   let stopped = true
   let verified = false
   let botName = connection.account.id
+  const conversationNames = createQqConversationNames(connection.account, options.conversationNameTargets ?? [])
   let accept: ((event: PlatformConversationEvent) => Promise<void>) | undefined
   let receiveQueue = Promise.resolve()
   let queued = 0
@@ -530,6 +534,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         redPacketPort = undefined
         recalledWalletSources.clear()
         if (heartbeat) { clearInterval(heartbeat); heartbeat = undefined }
+        if (nameRefresh) { clearInterval(nameRefresh); nameRefresh = undefined }
         for (const request of pending.values()) request.finish()
       }
       client.on('error', () => {})
@@ -595,6 +600,15 @@ function createOneBotSession(options: OneBotConnectionOptions) {
             client.ping()
           }, 15_000)
           heartbeat.unref()
+          if (conversationNames.enabled) {
+            const current = () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN
+            const refreshNames = () => {
+              void conversationNames.refresh(action => call(client, action, {}, current, 5_000, undefined, undefined, false), current).catch(() => {})
+            }
+            refreshNames()
+            nameRefresh = setInterval(refreshNames, 5 * 60_000)
+            nameRefresh.unref()
+          }
           if (!initial) options.onReconnect()
           resolve()
         })().catch(() => client.terminate())
@@ -654,6 +668,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     cancelFirstPeer?.()
     if (retry) { clearTimeout(retry); retry = undefined }
     if (heartbeat) { clearInterval(heartbeat); heartbeat = undefined }
+    if (nameRefresh) { clearInterval(nameRefresh); nameRefresh = undefined }
     const client = socket
     const drainingAlerts = !!client && client === ownerDrainSocket
     for (const request of pending.values()) if (!drainingAlerts || !request.ownerAlert) request.finish()
@@ -1040,6 +1055,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     botUserId: connection.account.id,
     ...(alertTarget ? { sendOwnerAlert, beginOwnerAlertDrain } : {}),
     get botName() { return botName },
+    ...(conversationNames.enabled ? { conversationName: conversationNames.read } : {}),
     resolvePrivatePeer(target) {
       if (target.kind !== 'private' || !servesAccount(target) || qqId(target.id) !== target.id || target.id === connection.account.id) return undefined
       return { ...connection.account, id: target.id }

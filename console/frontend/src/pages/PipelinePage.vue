@@ -7,6 +7,7 @@ import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
 import { api } from '../lib/api'
 import IdentityLabel from '../components/IdentityLabel.vue'
+import { workspaceRobotLabel } from '../lib/workspaceNames'
 import {
   parsePipelineSnapshot,
   pipelineAccountLabel,
@@ -161,7 +162,7 @@ onBeforeUnmount(() => {
                   ></span
                 ><template v-if="job.mode === 'standalone'">
                   <span class="muted job-identity"
-                    >Agent {{ job.agentId }} · 连接 {{ job.connectionId }}</span
+                    >Agent {{ workspaceRobotLabel(job.agentId) }} · 连接 {{ job.connectionId }}</span
                   ><span class="muted job-identity"
                     >账号 {{ pipelineAccountLabel(job) }} · {{ pipelineConversationLabel(job) }}</span
                   ><span v-if="job.kind === 'event'" class="muted"
@@ -217,7 +218,7 @@ onBeforeUnmount(() => {
             <dt>任务 ID</dt><dd>{{ detail.id }}</dd>
             <dt>类型</dt><dd>{{ detail.kind === 'event' ? '未确认消息事件' : '媒体交付' }}</dd>
             <dt>最后持久化状态</dt><dd>{{ pipelineStateLabel(detail) }}</dd>
-            <dt>Agent</dt><dd>{{ detail.agentId }}</dd>
+            <dt>Agent</dt><dd>{{ workspaceRobotLabel(detail.agentId) }}</dd>
             <dt>连接</dt><dd>{{ detail.connectionId }}</dd>
             <dt>账号（平台 / 命名空间 / ID）</dt><dd>{{ pipelineAccountLabel(detail) }}</dd>
             <dt>会话</dt><dd>{{ pipelineConversationLabel(detail) }}</dd>

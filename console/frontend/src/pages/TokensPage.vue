@@ -4,6 +4,7 @@ import { NAlert, NButton, NDataTable, NSelect, NTag, type DataTableColumns } fro
 import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
 import { api } from '../lib/api'
+import { namedId, qqGroupName, scopedConversationLabel, workspaceRobotLabel } from '../lib/workspaceNames'
 
 interface StageRow { tokens: number; cost: number; calls: number }
 interface ModelRow extends StageRow { estimated: boolean }
@@ -58,8 +59,9 @@ const scopeColumns: DataTableColumns<{ scope: string; tokens: number; cost: numb
     key: 'scope',
     render: row => {
       if (row.scope === 'global') return '全局（未归组）'
-      const name = summary.value?.groupNames?.[row.scope]
-      return name ? `${name}（${row.scope}）` : row.scope
+      if (row.scope.startsWith('agent:')) return workspaceRobotLabel(row.scope.slice('agent:'.length))
+      return scopedConversationLabel(row.scope, true) ??
+        namedId(row.scope, qqGroupName(row.scope) || summary.value?.groupNames?.[row.scope])
     },
   },
   { title: 'tokens', key: 'tokens', render: row => row.tokens.toLocaleString() },

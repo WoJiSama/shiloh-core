@@ -1,5 +1,6 @@
 import { shallowRef } from 'vue'
 import { api } from './api'
+import { qqAccountName, qqGroupName } from './workspaceNames'
 
 export interface NamedIdentity {
   id: string
@@ -19,11 +20,12 @@ export function clearIdentities() {
   identities.value = { bots: [], groups: [] }
 }
 export function entityName(kind: 'bot' | 'group', id: string | number, fallback = '') {
+  const live = kind === 'bot' ? qqAccountName(String(id)) : qqGroupName(String(id))
   const name = identities.value[kind === 'bot' ? 'bots' : 'groups'].find(
     (item) => item.id === String(id)
   )?.name
   const suppliedName = fallback.trim() === String(id) ? '' : fallback.trim()
-  return name || suppliedName || (kind === 'bot' ? '昵称未获取' : '群名未获取')
+  return live || name || suppliedName || (kind === 'bot' ? '昵称未获取' : '群名未获取')
 }
 export function entityLabel(kind: 'bot' | 'group', id: string | number, fallback = '') {
   return id ? String(id) + ' · ' + entityName(kind, id, fallback) : '—'

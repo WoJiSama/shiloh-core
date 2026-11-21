@@ -16,6 +16,7 @@ export interface StandaloneAgentWorkspaceAgent {
 export interface StandaloneAgentWorkspaceConnection {
   readonly id: string
   readonly account: PlatformAccountRef
+  readonly name?: string
   readonly state: 'connected' | 'disconnected' | 'unknown'
   readonly capabilities: readonly string[]
 }
@@ -26,6 +27,7 @@ export interface StandaloneAgentWorkspaceOptions {
   readonly auth: Pick<AgentConsoleAuthPort, 'authorize' | 'isCurrent'>
   readonly agents: () => readonly StandaloneAgentWorkspaceAgent[]
   readonly connections: () => readonly StandaloneAgentWorkspaceConnection[]
+  readonly conversationName?: (binding: AgentBindingSnapshot) => string | undefined
   /** Include only installed services. A declaration without a handler is unavailable. */
   readonly services: () => readonly AgentConsoleService[]
   readonly configState: (context: AgentConsoleContext) => Record<string, unknown>
@@ -107,7 +109,9 @@ function connections(input: unknown): readonly StandaloneAgentWorkspaceConnectio
   const rows = array(input, maximumRows, input => {
     const row = object(input), state = own(row, 'state'), capabilities = array(own(row, 'capabilities'), 64, value => label(value))
     if (state !== 'connected' && state !== 'disconnected' && state !== 'unknown') return fail('unavailable')
-    return Object.freeze({ id: identifier(own(row, 'id')), account: account(own(row, 'account')), state, capabilities: Object.freeze([...new Set(capabilities)].sort()) })
+    const name = own(row, 'name', true)
+    return Object.freeze({ id: identifier(own(row, 'id')), account: account(own(row, 'account')), state, capabilities: Object.freeze([...new Set(capabilities)].sort()),
+      ...(name === undefined ? {} : { name: label(name) }) })
   })
   unique(rows, row => row.id); unique(rows, row => platformAccountKey(row.account))
   return sort(rows, row => row.id)
@@ -211,9 +215,11 @@ export function createStandaloneAgentWorkspace(options: StandaloneAgentWorkspace
       const showUnboundConnections = await globalVisibility('connections.read', connectionRows.some(row => !visibleConnections.has(row.id)))
       ensureCurrent()
       const outputAgents = Object.freeze(agentRows.filter(row => showUnboundAgents || visibleAgents.has(row.id)).map(row => Object.freeze({ ...row,
-        conversations: Object.freeze(visible.filter(selected => selected.agentId === row.id).map(selected => Object.freeze({
-          scopeKey: agentConversationKey(selected), bindingToken: agentBindingToken(selected), binding: selected,
-        }))),
+        conversations: Object.freeze(visible.filter(selected => selected.agentId === row.id).map(selected => {
+          const name = options.conversationName?.(selected)
+          return Object.freeze({ scopeKey: agentConversationKey(selected), bindingToken: agentBindingToken(selected), binding: selected,
+            ...(name === undefined ? {} : { name: label(name) }) })
+        })),
       })))
       const outputConnections = Object.freeze(connectionRows.filter(row => showUnboundConnections || visibleConnections.has(row.id)).map(row => Object.freeze({ ...row,
         conversationCount: visible.filter(selected => selected.connectionId === row.id).length,

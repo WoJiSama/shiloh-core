@@ -1,11 +1,10 @@
 import {
-  accountLabel,
-  conversationLabel,
   robotLocation,
   type ConsoleWorkspace,
   type WorkspaceAccount,
   type WorkspaceConversation
 } from './workspaceModel'
+import { accountLabel, conversationAddressLabel, workspaceRobotLabel } from './workspaceNames'
 
 export type DiagnosticOutcome = 'started' | 'succeeded' | 'failed' | 'unknown' | 'cancelled'
 export interface DiagnosticEvent {
@@ -269,7 +268,7 @@ export function diagnosticScopeLabel(event: DiagnosticEvent): string {
   if (event.scope.kind === 'host') return '宿主'
   if (event.scope.kind === 'account') return `账号 ${accountLabel(event.scope.account)}`
   const { binding } = event.scope
-  return `本人 ${binding.agentId} · 连接 ${binding.connectionId} · 账号 ${accountLabel(binding.target.account)} · ${conversationLabel({ binding } as WorkspaceConversation)}`
+  return `本人 ${workspaceRobotLabel(binding.agentId)} · 连接 ${binding.connectionId} · 账号 ${accountLabel(binding.target.account)} · ${conversationAddressLabel(binding.target)}`
 }
 export function diagnosticLocation(event: DiagnosticEvent, workspace: ConsoleWorkspace | null) {
   if (

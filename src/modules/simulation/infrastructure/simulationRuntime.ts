@@ -5335,6 +5335,16 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       .map(([userId, value]) => ({ userId, score: Math.max(0, Math.min(100, Math.floor(Number(record(value).score ?? 50)))) }))
       .sort((a, b) => b.score - a.score)
       .slice(0, 10)
+    const affinityIds = new Set(affinityList.map(row => row.userId))
+    const nameSources = state.recent.filter(message => affinityIds.has(message.userId))
+    const names = new Map<string, string>()
+    if (scope && nameSources.length) {
+      for (const message of await redactSceneMessages(scope, nameSources)) {
+        const name = typeof message.name === 'string' ? message.name.trim() : ''
+        if (name && name !== message.userId && name.length <= 128 &&
+            !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(name) && ports.allowsToolInput?.(name) !== false) names.set(message.userId, name)
+      }
+    }
     return {
       groupId,
       ...(target ? { conversation: target } : {}),
@@ -5358,7 +5368,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       initialPrompt: await store.getInitPrompt(groupId),
       pendingEvents: memories.filter(m => m.kind === 'pendingEvent' && !m.done).slice(0, 10).map(m => ({ id: m.id, content: m.content, dueAt: m.dueAt })),
       memes: memes.map(m => ({ id: m.id, content: m.content, count: m.count || 1, origin: m.origin || '' })),
-      affinity: affinityList,
+      affinity: affinityList.map(row => {
+        const name = names.get(row.userId)
+        return name ? { ...row, name } : row
+      }),
       characterBinding: scope
         ? { status: 'bound', botId: target?.account.id ?? scope.botId, personaId: scope.personaId }
         : { status: 'pending', botId: null, personaId: null, reason: '等待机器人收到本群消息后绑定角色' },

@@ -5,8 +5,6 @@ import { NAlert, NButton, NInput, NPagination, NTag } from 'naive-ui'
 import { workspace, capability } from '../lib/workspace'
 import { api } from '../lib/api'
 import {
-  accountLabel,
-  conversationLabel,
   connectionStateLabel,
   robotLabel,
   robotLocation,
@@ -14,6 +12,7 @@ import {
   statusLabel,
   type WorkspaceConversation
 } from '../lib/workspaceModel'
+import { accountLabel, conversationLabel, namedId } from '../lib/workspaceNames'
 import PageHeader from '../components/PageHeader.vue'
 import CapabilityGate from '../components/CapabilityGate.vue'
 import RobotScene from '../components/RobotScene.vue'
@@ -227,7 +226,7 @@ watch(
             <h2>接入连接</h2>
             <div v-for="connection in connections" :key="connection.id" class="workspace-list-row">
               <RouterLink :to="`/connections/${encodeURIComponent(connection.id)}`">{{
-                connection.id
+                namedId(connection.id, connection.name)
               }}</RouterLink
               ><NTag
                 size="small"

@@ -5,12 +5,8 @@ import { NAlert, NButton, NPagination, NSwitch, NTag, useDialog, useMessage } fr
 import { api } from '../lib/api'
 import { capability, workspace } from '../lib/workspace'
 import { consoleRestart } from '../lib/consoleRestart'
-import {
-  accountLabel,
-  conversationLabel,
-  conversationSourceLabel,
-  type WorkspaceConversation
-} from '../lib/workspaceModel'
+import type { WorkspaceConversation } from '../lib/workspaceModel'
+import { accountLabel, conversationLabel, conversationSourceLabel } from '../lib/workspaceNames'
 import PageState from './PageState.vue'
 import ForgetReceipt from './ForgetReceipt.vue'
 import { forgetRequestId, useForgetReceipt } from '../lib/forgetReceipt'

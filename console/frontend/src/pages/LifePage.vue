@@ -4,6 +4,7 @@ import { NAlert, NButton, NInputNumber, NTag, useMessage } from 'naive-ui'
 import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
 import { api } from '../lib/api'
+import { namedId, qqGroupName, scopedConversationLabel } from '../lib/workspaceNames'
 
 interface Rhythm { sleepFrom: number; sleepTo: number; setBy?: string }
 interface Thread { groupId: string; title: string; status: string; lastEpisode?: number; notes: string[]; kind: string; addedAt: number; lastSyncAt: number }
@@ -86,7 +87,7 @@ async function saveRhythm() {
         <div v-for="t in overview.threads" :key="`${t.groupId}:${t.title}`" class="thread-card" :class="{ dropped: t.status === 'dropped' }">
           <div class="thread-head">
             <strong>《{{ t.title }}》</strong>
-            <NTag size="small">群 {{ t.groupId }}</NTag>
+            <NTag size="small">{{ scopedConversationLabel(t.groupId, true) ?? namedId(`群 ${t.groupId}`, qqGroupName(t.groupId)) }}</NTag>
             <NTag :type="t.status === 'active' ? 'success' : 'default'" size="small">
               {{ t.status === 'active' ? `关注中${t.lastEpisode ? ` · 更新至 ${t.lastEpisode} 集` : ''}` : '已停止关注' }}
             </NTag>

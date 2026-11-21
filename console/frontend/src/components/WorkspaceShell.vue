@@ -22,7 +22,8 @@ import {
   workspaceNavigation,
   type WorkspaceFeature
 } from '../lib/navigation'
-import { accountLabel, conversationLabel, robotLabel, robotLocation } from '../lib/workspaceModel'
+import { robotLabel, robotLocation } from '../lib/workspaceModel'
+import { accountLabel, accountReference, conversationLabel, namedId } from '../lib/workspaceNames'
 import { confirmLeave, installUnsavedDialog } from '../composables/useUnsavedGuard'
 import { useOpsResource } from '../lib/operations'
 import { consoleRestart } from '../lib/consoleRestart'
@@ -77,9 +78,15 @@ const selectedAgent = computed(() =>
     ? data.value?.agents.find((item) => item.id === route.params.id)
     : undefined
 )
+const selectedConnection = computed(() =>
+  route.path.startsWith('/connections/')
+    ? data.value?.connections.find((item) => item.id === route.params.id)
+    : undefined
+)
 const breadcrumbs = computed(() => [
   active.value.label,
   ...(selectedAgent.value ? [robotLabel(selectedAgent.value, data.value?.agents ?? [])] : []),
+  ...(selectedConnection.value ? [namedId(selectedConnection.value.id, selectedConnection.value.name)] : []),
   ...(activeFeature.value ? [workspaceFeatures[activeFeature.value].label] : [])
 ])
 function featureTarget(feature: WorkspaceFeature) {
@@ -112,15 +119,15 @@ const results = computed(() => {
       to: robotLocation(item)
     })),
     ...(data.value?.connections ?? []).map((item) => ({
-      label: item.id,
-      hint: `连接 · ${accountLabel(item.account)}`,
+      label: namedId(item.id, item.name),
+      hint: `连接 · ${accountReference(item.account)}`,
       keywords: '',
       to: { path: `/connections/${encodeURIComponent(item.id)}` }
     })),
     ...(data.value?.agents ?? []).flatMap((agent) =>
       agent.conversations.map((row) => ({
-        label: `${robotLabel(agent, data.value?.agents ?? [])} · ${conversationLabel(row)}`,
-        hint: `${row.binding.connectionId} · ${accountLabel(row.binding.target.account)}`,
+        label: conversationLabel(row),
+        hint: `${robotLabel(agent, data.value?.agents ?? [])} · ${row.binding.connectionId} · ${accountLabel(row.binding.target.account)}`,
         keywords: '',
         to: robotLocation(agent, 'conversations', row)
       }))

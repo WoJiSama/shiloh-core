@@ -6,6 +6,7 @@ import PageState from '../components/PageState.vue'
 import { api } from '../lib/api'
 import ForgetReceiptView from '../components/ForgetReceipt.vue'
 import { forgetRequestId, useForgetReceipt } from '../lib/forgetReceipt'
+import { accountLabel, conversationAddressLabel, namedId, qqAccountName, qqGroupName, scopedConversationLabel } from '../lib/workspaceNames'
 
 type CharacterOperation = 'pause' | 'resume' | 'cancel-goal' | 'pause-goal' | 'resume-goal' | 'delete-memory'
 type ActivityOperation = 'work-archive' | 'work-restore' | 'work-delete' | 'subscription-pause' | 'subscription-resume' | 'subscription-remove' | 'shared-approve' | 'shared-delete' | 'reflection-reset'
@@ -41,7 +42,7 @@ interface GroupRow {
   historyLength: number
   pendingEvents: { id: string; content: string; dueAt?: number }[]
   memes: { id: string; content: string; count: number; origin: string }[]
-  affinity: { userId: string; score: number }[]
+  affinity: { userId: string; name?: string; score: number }[]
   initialPrompt: string
   character?: CharacterView
   activities?: ActivitiesView
@@ -180,7 +181,7 @@ async function resetGroup(groupId: string) {
   const request = detailRequest
   dialog.warning({
     title: '重置仿真会话',
-    content: `将清空 ${detail.value ? conversationLabel(detail.value) : groupId} 的回合历史、未读水位与今日预算（长期记忆与好感度保留）。此操作不可撤销，确定继续吗？`,
+    content: `将清空 ${detail.value ? conversationLabel(detail.value) : scopedConversationLabel(groupId) ?? groupId} 的回合历史、未读水位与今日预算（长期记忆与好感度保留）。此操作不可撤销，确定继续吗？`,
     positiveText: '重置',
     negativeText: '取消',
     onPositiveClick: () => detailId.value === groupId && request === detailRequest
@@ -390,12 +391,10 @@ async function saveCap() {
 
 function conversationLabel(row: GroupRow) {
   const target = row.conversation
-  if (!target) return overview.value?.groupNames?.[row.groupId] ? `${overview.value.groupNames[row.groupId]}（${row.groupId}）` : row.groupId
-  const account = target.account
-  const qq = account.platform === 'qq' && account.namespace === 'global'
-  const name = qq ? overview.value?.groupNames?.[target.id] : undefined
-  const conversation = name ? `${name}（${target.id}）` : target.id
-  return row.groupId === target.id ? conversation : `${conversation} · ${qq ? 'QQ' : `${account.platform}/${account.namespace}`} ${account.id}`
+  if (!target) return scopedConversationLabel(row.groupId, true) ??
+    namedId(row.groupId, qqGroupName(row.groupId) ?? overview.value?.groupNames?.[row.groupId])
+  if (row.groupId === target.id) return conversationAddressLabel(target, overview.value?.groupNames?.[target.id])
+  return `${conversationAddressLabel(target)} · ${accountLabel(target.account)}`
 }
 
 const columns: DataTableColumns<GroupRow> = [
@@ -483,7 +482,9 @@ const detailTitle = computed(() => `${detail.value ? conversationLabel(detail.va
           </div>
           <div v-if="detail.character" class="block character-block" aria-label="角色与自主目标">
             <h4>角色与自主目标</h4>
-            <div class="character-meta">机器人 {{ detail.character.scope.botId }} · 人设 {{ detail.character.scope.personaId }}</div>
+            <div class="character-meta">
+              机器人 {{ namedId(detail.character.scope.botId, qqAccountName(detail.character.scope.botId)) }} · 人设 {{ detail.character.scope.personaId }}
+            </div>
             <div class="row">
               <NTag size="small" :type="detail.character.paused ? 'warning' : 'success'">{{ detail.character.paused ? '自主行动已暂停' : '自主行动可用' }}</NTag>
               <NButton size="tiny" :loading="characterBusy" @click="controlCharacter(detail.character.paused ? 'resume' : 'pause')">{{ detail.character.paused ? '恢复自主行动' : '暂停自主行动' }}</NButton>
@@ -600,7 +601,7 @@ const detailTitle = computed(() => `${detail.value ? conversationLabel(detail.va
           <div class="block">
             <h4>好感度 Top</h4>
             <div v-if="!detail.affinity.length" class="empty">还没有记录</div>
-            <div v-for="a in detail.affinity" :key="a.userId" class="line">{{ a.userId }}：{{ a.score }}</div>
+            <div v-for="a in detail.affinity" :key="a.userId" class="line">{{ namedId(a.userId, a.name) }}：{{ a.score }}</div>
           </div>
         </div>
       </NDrawerContent>

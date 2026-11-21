@@ -157,6 +157,45 @@ test('reverse OneBot reconnect rechecks identity and never replays an uncertain 
   assert.equal((await adapter.actions.send(action)).state, 'failed')
 })
 
+test('OneBot caches only configured QQ names and ignores replies from a retired socket', { timeout: 15_000 }, async t => {
+  const url = await address()
+  const group = { account, kind: 'group', id: '315320' }
+  const friend = { account, kind: 'private', id: '324152' }
+  const unbound = { ...group, id: '315321' }
+  const foreign = { ...group, account: { ...account, id: '987654321' } }
+  const adapter = adapterAt(url, { conversationNameTargets: [group, friend, foreign] })
+  t.after(() => adapter.stop())
+  const started = adapter.start(async () => {})
+  void started.catch(() => {})
+  const reply = (peer, request, data) => peer.send(JSON.stringify({ status: 'ok', retcode: 0, data, echo: request.echo }))
+  let previousRequest
+  const first = await peerAt(t, url, (peer, request) => {
+    if (request.action === 'get_login_info') login(peer, request)
+    if (request.action === 'get_group_list') previousRequest = request
+    if (request.action === 'get_friend_list') reply(peer, request, [{ user_id: 324152, nickname: '  第一位好友  ' }])
+  })
+  await started
+  await waitFor(() => !!previousRequest && adapter.conversationName(friend) === '第一位好友', 'first name reads')
+  assert.equal(adapter.conversationName(group), undefined)
+  first.terminate()
+  await waitFor(() => !adapter.isReady(), 'first socket retirement')
+  const second = await peerAt(t, url, (peer, request) => {
+    if (request.action === 'get_login_info') login(peer, request)
+    if (request.action === 'get_group_list') reply(peer, request, [
+      { group_id: group.id, group_name: '今天的群名' },
+      { group_id: unbound.id, group_name: '不可见群名' },
+    ])
+    if (request.action === 'get_friend_list') reply(peer, request, [{ user_id: friend.id, nickname: '更新后的昵称' }])
+  })
+  await waitFor(() => adapter.conversationName(group) === '今天的群名' &&
+    adapter.conversationName(friend) === '更新后的昵称', 'refreshed conversation names')
+  reply(second, previousRequest, [{ group_id: group.id, group_name: '过期的群名' }])
+  await delay(40)
+  assert.equal(adapter.conversationName(group), '今天的群名')
+  assert.equal(adapter.conversationName(unbound), undefined)
+  assert.equal(adapter.conversationName(foreign), undefined)
+})
+
 test('reverse OneBot stop cancels initial verification and releases the listening address', { timeout: 10_000 }, async t => {
   const url = await address()
   const adapter = adapterAt(url)

@@ -1,4 +1,5 @@
-import { accountLabel, type WorkspaceAccount } from './workspaceModel'
+import type { WorkspaceAccount } from './workspaceModel'
+import { accountLabel, conversationAddressLabel } from './workspaceNames'
 
 export type PipelineMode = 'unknown' | 'standalone' | 'legacy'
 export const corePipelineStates = {
@@ -264,7 +265,7 @@ export function pipelineStateLabel(job: PipelineJob) {
   return names[job.state] || job.state
 }
 export function pipelineConversationLabel(job: CoreInboxJob | CoreMediaJob) {
-  return `${{ private: '私聊', group: '群聊', channel: '频道', thread: '话题' }[job.conversation.kind] || job.conversation.kind} ${job.conversation.id}`
+  return conversationAddressLabel({ ...job.conversation, account: job.account })
 }
 export function pipelineAccountLabel(job: CoreInboxJob | CoreMediaJob) {
   return accountLabel(job.account)

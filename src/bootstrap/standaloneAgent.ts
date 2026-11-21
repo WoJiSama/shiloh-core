@@ -440,6 +440,7 @@ export async function main(argv: string[]): Promise<void> {
       const alertOwner = options.connection.id === qqAlertConnection ? qqAlertOwner : undefined
       const adapter = createOneBotConnection({ ...options, ...(bridge ? { mediaRelay: { bridge, allowsText: allowsMediaText } } : {}),
         keepReverseListenerWaiting: true,
+        ...(config.console.enabled ? { conversationNameTargets: config.loadedBindings.filter(binding => binding.connectionId === options.connection.id).map(binding => binding.target) } : {}),
         ...(alertOwner ? { alertOwner } : {}),
         dicePrivate: { allowsText: allowsMediaText },
         qzoneOwnPost: (account, postId) => qzoneLedger.readOwnPost(account, postId),
@@ -852,16 +853,20 @@ export async function main(argv: string[]): Promise<void> {
         read: guard => readAgentOperationJournal({ dataDir: config.dataDir, maxFiles: config.operationLogging.maxFiles, guard, allowsText: allowsSecretText }),
         health: () => journal!.health(), configState: persistence.state }))
       services.push(createStandaloneAgentWorkspace({ bindings: loadedBindings, auth: consoleAuth,
+        conversationName: directory.conversationName,
         agents: () => config.workspaceAgents.map(agent => {
           const current = host!.selfProfiles(agent.id).at(-1)
           return current?.revision && allowsSecretText(current.name) ? { ...agent, name: current.name } : agent
         }),
-        connections: () => adapters.map(adapter => ({ id: adapter.id, account: adapter.account,
-          state: adapter.isReady() ? 'connected' as const : 'disconnected' as const,
-          capabilities: ['message.send', ...(adapter.readMessage ? ['message.read'] : []),
-            ...(adapter.readConversationMember ? ['member.read'] : []), ...(adapter.listConversationMembers ? ['members.read'] : []),
-            ...(adapter.gift ? ['qq.gift'] : []), ...(adapter.qzone ? ['qq.qzone'] : []), ...(adapter.redPackets ? ['qq.red-packet'] : [])],
-        })), services: () => services, configState: persistence.state }))
+        connections: () => adapters.map(adapter => {
+          const name = directory.accountName(adapter)
+          return { id: adapter.id, account: adapter.account, ...(name ? { name } : {}),
+            state: adapter.isReady() ? 'connected' as const : 'disconnected' as const,
+            capabilities: ['message.send', ...(adapter.readMessage ? ['message.read'] : []),
+              ...(adapter.readConversationMember ? ['member.read'] : []), ...(adapter.listConversationMembers ? ['members.read'] : []),
+              ...(adapter.gift ? ['qq.gift'] : []), ...(adapter.qzone ? ['qq.qzone'] : []), ...(adapter.redPackets ? ['qq.red-packet'] : [])],
+          }
+        }), services: () => services, configState: persistence.state }))
       consoleHost = createStandaloneAgentConsole({ frontendDir: config.console.frontendDir, host: config.console.host, port: config.console.port,
         authority, bindings, auth: consoleAuth, services, execution: persistence.execution, commits: persistence.commits,
         allowsResponse: body => allowsSecretText(typeof body === 'string' ? body : Buffer.from(body).toString('utf8')),

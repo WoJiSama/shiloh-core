@@ -17,6 +17,8 @@ import {
 } from 'naive-ui'
 import { api } from '../lib/api'
 import { capability, workspace } from '../lib/workspace'
+import { robotLabel } from '../lib/workspaceModel'
+import { accountLabel, conversationAddressLabel, namedId, qqGroupName } from '../lib/workspaceNames'
 import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
 import SchemaPage from './SchemaPage.vue'
@@ -250,11 +252,16 @@ const scopeOptions = computed(() => {
       const partition = JSON.stringify([agent.id, account.platform, account.namespace, account.id])
       if (accounts.has(partition)) return []
       accounts.add(partition)
-      return [{ label: agent.name + ' · ' + account.id, value: row.scopeKey, bindingToken: row.bindingToken }]
+      return [{ label: `${robotLabel(agent, workspace.data.value?.agents ?? [])} · ${accountLabel(account)}`,
+        value: row.scopeKey, bindingToken: row.bindingToken, account }]
     })
   )
 })
 const gameScope = computed(() => scopeOptions.value.find((row) => row.value === gameScopeKey.value) ?? scopeOptions.value[0])
+function gameGroupLabel(id: string) {
+  const account = gameScope.value?.account
+  return account ? conversationAddressLabel({ account, kind: 'group', id }) : namedId(`群 ${id}`, qqGroupName(id))
+}
 const writes = ref(0)
 let scopeAbort = new AbortController()
 
@@ -666,7 +673,7 @@ const formatTime = (at: number) => new Date(at).toLocaleString()
                   :key="item.groupId"
                   size="small"
                   :bordered="false"
-                  >群 {{ item.groupId }} · {{ phaseLabel[item.phase] }} · {{ item.players }}人</NTag
+                  >{{ gameGroupLabel(item.groupId) }} · {{ phaseLabel[item.phase] }} · {{ item.players }}人</NTag
                 >
               </div>
             </div>

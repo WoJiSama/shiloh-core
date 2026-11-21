@@ -4,6 +4,7 @@ import { ArrowUpRight, Bot, Cable, MessageCircle, ShieldCheck } from 'lucide-vue
 import { NTag } from 'naive-ui'
 import { workspace, configurationLabel } from '../lib/workspace'
 import { connectionStateLabel, robotLabel, robotLocation } from '../lib/workspaceModel'
+import { accountReference, namedId } from '../lib/workspaceNames'
 import PageHeader from '../components/PageHeader.vue'
 const data = workspace.data
 const total = computed(
@@ -81,8 +82,8 @@ const pending = computed(
           :to="`/connections/${encodeURIComponent(connection.id)}`"
           class="workspace-list-row"
           ><span class="row-main"
-            ><strong>{{ connection.id }}</strong
-            ><small>{{ connection.account.platform }} · {{ connection.account.id }}</small></span
+            ><strong>{{ namedId(connection.id, connection.name) }}</strong
+            ><small>{{ accountReference(connection.account) }}</small></span
           ><NTag size="small" :type="connection.state === 'connected' ? 'success' : 'default'">{{
             connectionStateLabel(connection.state)
           }}</NTag></RouterLink

@@ -15,6 +15,7 @@ import SchemaField from './SchemaField.vue'
 import SchemaPage from '../pages/SchemaPage.vue'
 import { workspace } from '../lib/workspace'
 import { robotLabel, robotLocation } from '../lib/workspaceModel'
+import { accountLabel, conversationAddressLabel } from '../lib/workspaceNames'
 const restartBlocked = consoleRestart.blocked
 interface Persona {
   id: string
@@ -332,12 +333,8 @@ onBeforeUnmount(() => controllers.forEach((controller) => controller.abort()))
           <code>agentId · {{ agent.agentId }}</code>
         </details>
         <div v-for="target in agent.targets" :key="target.scopeKey" class="assignment-target">
-          <span
-            >{{ target.connectionId }} · {{ target.target.account.platform }}/{{
-              target.target.account.namespace
-            }}/{{ target.target.account.id }}</span
-          >
-          <strong>{{ target.target.kind }} · {{ target.target.id }}</strong>
+          <span>{{ target.connectionId }} · {{ accountLabel(target.target.account) }}</span>
+          <strong>{{ conversationAddressLabel(target.target) }}</strong>
         </div>
         <NSelect
           :value="agentDraft.find((item) => item.agentId === agent.agentId)?.personaId"

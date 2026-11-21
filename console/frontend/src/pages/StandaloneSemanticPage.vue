@@ -5,6 +5,8 @@ import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
 import { api } from '../lib/api'
 import { capability, workspace } from '../lib/workspace'
+import { robotLabel } from '../lib/workspaceModel'
+import { accountLabel, conversationLabel } from '../lib/workspaceNames'
 
 interface Status {
   enabled: boolean
@@ -39,7 +41,7 @@ const scopes = computed(() => (workspace.data.value?.agents ?? []).flatMap((agen
     if (capability('semantic.records', row.scopeKey).status !== 'available') return []
     const target = row.binding.target
     return [{ value: row.scopeKey, token: row.bindingToken, kind: target.kind,
-      label: agent.name + ' · ' + target.account.id + ' · ' + (target.kind === 'group' ? '群 ' : '会话 ') + target.id }]
+      label: `${conversationLabel(row)} · ${robotLabel(agent, workspace.data.value?.agents ?? [])} · ${accountLabel(target.account)}` }]
   })
 ))
 const sourceOptions = computed(() => [

@@ -4,6 +4,7 @@ import { NAlert, NButton, NDataTable, NTabPane, NTabs, NTag, type DataTableColum
 import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
 import { api } from '../lib/api'
+import { namedId, scopedConversationLabel } from '../lib/workspaceNames'
 
 interface RuleRow { key: string; label: string; rule: string; confidence: number }
 interface WordRow { word: string; count: number }
@@ -86,7 +87,7 @@ function timeAgo(iso?: string) {
 const groupLabel = (group: GroupStyle) => {
   const name = overview.value?.groupNames?.[group.groupId]
   const id = group.displayGroupId ?? group.groupId
-  return name && !group.displayGroupId ? `${name}（${id}）` : `群 ${id}`
+  return scopedConversationLabel(group.groupId) ?? (name && !group.displayGroupId ? namedId(id, name) : `群 ${id}`)
 }
 const RHYTHM_LABELS: Record<string, string> = {
   single: '完整单条',

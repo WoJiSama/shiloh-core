@@ -4,12 +4,8 @@ import { NAlert, NButton, NInput, NPagination, NTag, useDialog, useMessage } fro
 import { api } from '../lib/api'
 import { workspace, capability } from '../lib/workspace'
 import { consoleRestart } from '../lib/consoleRestart'
-import {
-  accountLabel,
-  conversationLabel,
-  conversationSourceLabel,
-  type WorkspaceConversation
-} from '../lib/workspaceModel'
+import type { WorkspaceConversation } from '../lib/workspaceModel'
+import { accountLabel, conversationLabel, conversationSourceLabel, namedId } from '../lib/workspaceNames'
 import PageHeader from './PageHeader.vue'
 import PageState from './PageState.vue'
 import ForgetReceipt from './ForgetReceipt.vue'
@@ -68,6 +64,13 @@ const sceneFor = (row: Profile) =>
   scenes.value.find(
     (scene) => scene.scopeKey === row.scopeKey && scene.bindingToken === row.bindingToken
   )
+function subjectLabel(row: Profile) {
+  const scene = sceneFor(row), target = scene?.binding.target
+  const peerName = target?.kind === 'private' && target.id === row.userId ? scene?.name : undefined
+  const selfReported = row.entries.find(entry => entry.category === 'name' && entry.evidenceKind === 'self' &&
+    entry.source.authorId === row.userId && entry.text.length <= 24)?.text
+  return namedId(row.userId, peerName || selfReported)
+}
 const sourceVersion = computed(() =>
   JSON.stringify([
     consoleRestart.state.reloadGeneration,
@@ -79,7 +82,7 @@ const filtered = computed(
     rows.value
       ?.filter((row) => !!sceneFor(row))
       .filter((row) =>
-        `${row.userId} ${row.entries.map((entry) => entry.text + ' ' + entry.category).join(' ')}`
+        `${subjectLabel(row)} ${row.entries.map((entry) => entry.text + ' ' + entry.category).join(' ')}`
           .toLowerCase()
           .includes(query.value.toLowerCase())
       ) ?? []
@@ -159,7 +162,7 @@ function erase(row: Profile, entry?: Entry) {
   if (!selected) return
   dialog.warning({
     title: entry ? '删除这条人物记忆' : '清空当前来源会话的人物记忆',
-    content: `仅删除 ${conversationSourceLabel(selected)} 中关于 ${row.userId} 的${entry ? '这一条记录' : '人物记录'}。其他来源会话的记录不在本次删除范围内。`,
+    content: `仅删除 ${conversationSourceLabel(selected)} 中关于 ${subjectLabel(row)} 的${entry ? '这一条记录' : '人物记录'}。其他来源会话的记录不在本次删除范围内。`,
     positiveText: '删除',
     negativeText: '保留',
     onPositiveClick: async () => {
@@ -253,7 +256,7 @@ onBeforeUnmount(() => {
       @retry="load"
       ><section v-for="row in visible" :key="entryKey(row)" class="panel">
         <div class="panel-heading">
-          <h2>{{ row.userId }}</h2>
+          <h2>{{ subjectLabel(row) }}</h2>
           <NButton
             size="small"
             type="error"
@@ -289,7 +292,7 @@ onBeforeUnmount(() => {
           <p>{{ entry.text }}</p>
           <blockquote v-if="entry.source.excerpt">{{ entry.source.excerpt }}</blockquote>
           <p class="field-help">
-            来源作者 {{ entry.source.authorId }} · 消息 {{ entry.source.messageId }} ·
+            来源作者 {{ entry.source.authorId === row.userId ? subjectLabel(row) : entry.source.authorId }} · 消息 {{ entry.source.messageId }} ·
             {{ time(entry.source.at) }}
           </p>
           <details class="technical-details">

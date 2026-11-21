@@ -6,13 +6,8 @@ import PageHeader from '../components/PageHeader.vue'
 import WorkspaceOnboarding from '../components/WorkspaceOnboarding.vue'
 import QzoneComposer from '../components/QzoneComposer.vue'
 import { workspace, capability } from '../lib/workspace'
-import {
-  accountLabel,
-  conversationLabel,
-  connectionStateLabel,
-  robotLabel,
-  robotLocation
-} from '../lib/workspaceModel'
+import { connectionStateLabel, robotLabel, robotLocation } from '../lib/workspaceModel'
+import { accountLabel, accountReference, conversationLabel, namedId } from '../lib/workspaceNames'
 const route = useRoute(),
   data = workspace.data,
   query = ref(''),
@@ -24,27 +19,34 @@ const createCapability = computed(() =>
     .map((operation) => capability(operation))
     .find((item) => item.status !== 'available')
 )
-const connections = computed(
-  () =>
-    data.value?.connections.filter(
-      (item) =>
-        (!route.params.id || item.id === route.params.id) &&
-        `${item.id} ${accountLabel(item.account)}`.toLowerCase().includes(query.value.toLowerCase())
-    ) ?? []
-)
+const connections = computed(() => {
+  const snapshot = data.value
+  const search = query.value.trim().toLocaleLowerCase()
+  if (!snapshot) return []
+  const scenes = snapshot.agents.flatMap((agent) =>
+    agent.conversations.map((conversation) => ({ agent, conversation }))
+  )
+  return snapshot.connections.flatMap((connection) => {
+    if (route.params.id && connection.id !== route.params.id) return []
+    const rows = scenes.filter(({ conversation }) => conversation.binding.connectionId === connection.id)
+    if (!search || `${connection.id} ${accountLabel(connection.account)}`.toLocaleLowerCase().includes(search))
+      return [{ connection, rows }]
+    const matching = rows.filter(({ agent, conversation }) =>
+      `${conversationLabel(conversation)} ${agent.name}`.toLocaleLowerCase().includes(search))
+    return matching.length ? [{ connection, rows: matching }] : []
+  })
+})
 const visible = computed(() => connections.value.slice((page.value - 1) * 12, page.value * 12))
-const scenes = (id: string) =>
-  data.value?.agents.flatMap((agent) =>
-    agent.conversations
-      .filter((row) => row.binding.connectionId === id)
-      .map((conversation) => ({ agent, conversation }))
-  ) ?? []
-watch(query, () => (page.value = 1))
+const title = computed(() => {
+  const id = route.params.id
+  return typeof id === 'string' ? namedId(id, data.value?.connections.find(row => row.id === id)?.name) : '连接'
+})
+watch([query, () => route.params.id], () => (page.value = 1))
 </script>
 <template>
   <div class="page-stack">
     <PageHeader
-      :title="route.params.id ? String(route.params.id) : '连接'"
+      :title="title"
       description="连接是机器人的平台接入方式。连接状态来自当前适配器，不代表本人正在交流或思考。"
       ><template #actions
         ><NButton
@@ -62,15 +64,17 @@ watch(query, () => (page.value = 1))
     <RouterLink v-if="route.params.id" to="/connections">← 全部连接</RouterLink
     ><NInput
       v-model:value="query"
-      placeholder="搜索连接或平台账号"
-      aria-label="搜索连接"
+      placeholder="搜索连接、群名、QQ 昵称或号码"
+      :input-props="{ 'aria-label': '搜索连接或会话' }"
       clearable
     />
-    <section v-for="connection in visible" :key="connection.id" class="panel">
+    <section v-for="{ connection, rows } in visible" :key="connection.id" class="panel">
       <div class="panel-heading">
         <div>
-          <h2>{{ connection.id }}</h2>
-          <p class="field-help">{{ accountLabel(connection.account) }}</p>
+          <h2>{{ connection.name || connection.id }}</h2>
+          <p class="field-help">
+            <template v-if="connection.name">{{ connection.id }} · </template>{{ accountReference(connection.account) }}
+          </p>
         </div>
         <NTag :type="connection.state === 'connected' ? 'success' : 'default'">{{
           connectionStateLabel(connection.state)
@@ -86,17 +90,17 @@ watch(query, () => (page.value = 1))
       </div>
       <div
         class="workspace-list-row"
-        v-for="{ agent, conversation } in scenes(connection.id)"
+        v-for="{ agent, conversation } in rows"
         :key="conversation.scopeKey"
       >
         <span class="row-main"
-          ><strong>{{ robotLabel(agent, data?.agents ?? []) }}</strong
-          ><small>{{ conversationLabel(conversation) }}</small></span
+          ><strong>{{ conversationLabel(conversation) }}</strong
+          ><small>{{ robotLabel(agent, data?.agents ?? []) }}</small></span
         ><RouterLink :to="robotLocation(agent, 'conversations', conversation)"
           >进入会话 →</RouterLink
         >
       </div>
-      <p v-if="!scenes(connection.id).length" class="empty-note">
+      <p v-if="!rows.length" class="empty-note">
         当前可见范围内没有绑定此连接的会话。
       </p>
     </section>

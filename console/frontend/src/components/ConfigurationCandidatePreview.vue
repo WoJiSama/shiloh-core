@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { NAlert, NTag } from 'naive-ui'
-import { accountLabel } from '../lib/workspaceModel'
+import { accountLabel, conversationAddressLabel } from '../lib/workspaceNames'
 import { configurationScopeKey, type ConfigurationPreview } from '../lib/workspaceChangeModel'
 defineProps<{ value: ConfigurationPreview; expired?: boolean }>()
 const files = { host: '宿主配置', personas: '人设库', bindings: '本人、连接与会话绑定' }
@@ -43,7 +43,7 @@ const json = (value: unknown) => JSON.stringify(value, null, 2)
         <strong>本人标识 · {{ row.agentId }}</strong>
         <p class="candidate-source">
           连接 {{ row.connectionId }} · 账号 {{ accountLabel(row.target.account) }} ·
-          {{ row.target.kind === 'group' ? '群聊' : '私聊' }} {{ row.target.id }}
+          {{ conversationAddressLabel(row.target) }}
         </p>
         <template
           v-for="permission in value.permissions.filter(

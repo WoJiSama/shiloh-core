@@ -41,17 +41,20 @@ function invoke(services, operation, actor = context(), options = {}) {
   return service.handle({ method: service.method, pathname: service.path, params: {}, query: {}, body: {}, ...options }, actor)
 }
 
-test('the restored directory projects only current authorized bindings and the original cached group names', async t => {
+test('the directory projects authorized group names by full address and falls back to the original cache', async t => {
   const dataDir = temp(t)
   save(dataDir, 'legacy-source/data/group_names.json', { 3011: '原群名', 3012: '未绑定群' })
-  const visible = binding('2001')
-  const hidden = binding('2002')
+  const visible = { ...binding('2001'), connectionId: 'qq-2001' }
+  const hidden = { ...binding('2002'), connectionId: 'qq-2002' }
+  const addresses = [visible, hidden]
+  let showSecond = false
   const directory = createStandaloneAgentConsoleDirectory({
-    dataDir, bindings: { list: () => [visible, hidden], resolve: () => visible },
-    adapters: [visible, hidden].map(row => ({
-      account: row.target.account, id: 'qq-' + row.target.account.id, botName: '机器人', isReady: () => true,
+    dataDir, bindings: { list: () => addresses, resolve: target => addresses.find(row => row.target.account.id === target.account.id) },
+    adapters: addresses.map(row => ({
+      account: row.target.account, id: row.connectionId, botName: `昵称 ${row.target.account.id}`, isReady: () => true,
+      conversationName: target => target === hidden.target ? '第二个账号的群名' : undefined,
     })),
-    auth: { authorize: async (_principal, _operation, selected) => selected === visible ? 'allowed' : 'denied' },
+    auth: { authorize: async (_principal, _operation, selected) => selected === visible || showSecond && selected === hidden ? 'allowed' : 'denied' },
     allowsText: allowed,
   })
   const result = await directory.read(context())
@@ -59,6 +62,13 @@ test('the restored directory projects only current authorized bindings and the o
   assert.equal(result.groups[0].name, '原群名')
   assert.equal(result.groups[0].account.id, '2001')
   assert.deepEqual(result.bots.map(bot => bot.id), ['2001'])
+  assert.equal(result.bots[0].name, '昵称 2001')
+  assert.doesNotMatch(JSON.stringify(result), /第二个账号的群名|未绑定群|昵称 2002/u)
+  showSecond = true
+  assert.deepEqual((await directory.groups(context())).map(row => [row.id, row.name]), [
+    ['3011', '原群名'], ['3011', '第二个账号的群名'],
+  ])
+  assert.equal(directory.conversationName({ ...hidden, connectionId: visible.connectionId }), undefined)
 })
 
 test('the image console saves real Core output, serves its bytes and keeps the history across process construction', async t => {

@@ -8,7 +8,8 @@ import { api } from '../lib/api'
 import { count, useOpsResource } from '../lib/operations'
 import { capability, workspace } from '../lib/workspace'
 import { consoleRestart } from '../lib/consoleRestart'
-import { accountLabel, robotLabel } from '../lib/workspaceModel'
+import { robotLabel } from '../lib/workspaceModel'
+import { accountLabel } from '../lib/workspaceNames'
 import {
   diagnosticLocation,
   diagnosticOutcomeLabel,

@@ -6,6 +6,7 @@ import RobotScene from '../components/RobotScene.vue'
 import WorkspaceRobots from '../pages/WorkspaceRobots.vue'
 import WorkspaceRobot from '../pages/WorkspaceRobot.vue'
 import WorkspaceOverview from '../pages/WorkspaceOverview.vue'
+import WorkspaceConnections from '../pages/WorkspaceConnections.vue'
 import WorkspaceShell from '../components/WorkspaceShell.vue'
 import StandaloneProfiles from '../components/StandaloneProfiles.vue'
 import StandalonePersonaConfig from '../components/StandalonePersonaConfig.vue'
@@ -145,6 +146,35 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 describe('robot workspace components', () => {
+  it('searches connections by conversation name and retains the full selector for equal group IDs', async () => {
+    const snapshot = data()
+    const first = snapshot.agents[0]!.conversations[0]!
+    const second = snapshot.agents[1]!.conversations[0]!
+    first.name = '周末桌游'
+    second.name = '晚间读书'
+    snapshot.connections[0]!.name = '希洛 QQ'
+    workspace.data.value = parseWorkspace(snapshot)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/connections', component: { template: '<div />' } },
+        { path: '/robots/:id/:tab', component: { template: '<div />' } }
+      ]
+    })
+    await router.push('/connections')
+    const wrapper = page(WorkspaceConnections, {}, [router])
+    expect(wrapper.text()).toContain('希洛 QQ')
+    expect(wrapper.text()).toContain('19001111')
+    expect(wrapper.text()).toContain('晚间读书（群聊 33001111）')
+    await wrapper.get('input[aria-label="搜索连接或会话"]').setValue(' 周末桌游 ')
+    const rows = wrapper.findAll('.workspace-list-row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.text()).toContain('周末桌游（群聊 33001111）')
+    const link = new URL(rows[0]!.get('a').attributes('href')!, 'http://console')
+    expect(link.pathname).toBe('/robots/alice/conversations')
+    expect(link.searchParams.get('scopeKey')).toBe(first.scopeKey)
+    expect(link.searchParams.get('bindingToken')).toBe(first.bindingToken)
+  })
   it('renders separate people sharing one template without inventing online or activity state', () => {
     const wrapper = page(WorkspaceRobots)
     expect(wrapper.findAll('.robot-card')).toHaveLength(2)

@@ -115,6 +115,8 @@ export interface ConversationMemberReadOptions extends MessageActionOptions {
 export interface PlatformConnectionAdapter extends PlatformConnection {
   readonly botUserId: string
   readonly botName: string
+  /** Cached display metadata for one configured address. This does not attest membership or grant authority. */
+  conversationName?(target: ConversationAddress): string | undefined
   readonly actions: MessageActionPort
   /** Explicitly declared platform extensions; omission keeps each capability unavailable. */
   readonly gift?: AgentGiftDeliveryPort

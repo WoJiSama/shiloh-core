@@ -516,8 +516,8 @@ describe('standalone persistence page requests', () => {
     await flushPromises()
     wrapper.findComponent(NTabs).vm.$emit('update:value', 'assignments')
     await flushPromises()
-    expect(wrapper.text()).toContain('qq/global/123456')
-    expect(wrapper.text()).toContain('group · 999999')
+    expect(wrapper.text()).toContain('qq / global / 123456')
+    expect(wrapper.text()).toContain('群聊 999999')
     const selector = wrapper
       .findAllComponents(NSelect)
       .find((item) => item.attributes('aria-label') === '机器人 人设')!
