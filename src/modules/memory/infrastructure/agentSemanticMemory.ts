@@ -196,15 +196,22 @@ export function createAgentSemanticMemory(ports: {
       }
       const batch = allowed.filter(row => !row.vector || row.providerId !== ports.backend!.id).slice(0, 8)
       if (!batch.length || !context.isCurrent()) return
+      // The backend can wrap a rejected authorization check as a provider error.
+      let sourceChange: SemanticSourceChangedError | undefined
       const ensureCurrent = async () => {
+        if (sourceChange) throw sourceChange
         await context.ensureCurrent()
         if (!await present(binding, batch, context.signal) || (await permitted(binding, batch, context.signal)).length !== batch.length ||
-            !context.isCurrent()) throw new SemanticSourceChangedError('语义索引来源已失效')
+            !context.isCurrent()) {
+          sourceChange = new SemanticSourceChangedError('语义索引来源已失效')
+          throw sourceChange
+        }
       }
       step('source_check')
       await ensureCurrent()
       step('embedding')
       const result = await abortable(ports.backend!.embed(batch.map(row => row.text), { ...context, ensureCurrent }), context.signal)
+        .catch((error: unknown) => { throw sourceChange ?? error })
       step('source_check')
       await ensureCurrent()
       const vectors = new Map(batch.map((row, position) => [row.messageId, vector(result[position])]))
@@ -420,6 +427,15 @@ export function createAgentSemanticMemory(ports: {
         let step: IndexStep = 'store'
         const started = now()
         const work = maintain(state.scope, value => { step = value }).catch(error => {
+          if (error instanceof SemanticSourceChangedError) {
+            if (enabled()) {
+              dirty.add(state.id)
+              retryAt.set(state.id, now() + 5000)
+            }
+            ports.diagnostics?.emit({ stage: 'memory', operation: 'semantic_memory_index', outcome: 'cancelled',
+              code: 'semantic_index_source_changed', durationMs: now() - started })
+            return
+          }
           retryAt.set(state.id, now() + 60_000)
           reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'semantic_memory_index',
             code: semanticMemoryFailureCode(error, 'index') ?? `semantic_index_${step}_failed`, durationMs: now() - started, error },

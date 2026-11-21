@@ -126,6 +126,7 @@ async function fixture(t, options = {}) {
           }
         },
         logger: { warn: message => warnings.push(message) },
+        ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
         ...(options.retrieval ? { retrieval: options.retrieval } : {}),
       })
       composers.push(composer)
@@ -313,26 +314,41 @@ test('opt-out, host recall and source revocation forbid capture and indexing bef
 })
 
 test('forget during pending indexing blocks a late vector commit and subsequent prompt injection', redisTest, async t => {
-  const f = await fixture(t)
+  const events = []
+  const f = await fixture(t, { diagnostics: { emit: event => events.push(event) } })
   const pending = Promise.withResolvers()
   f.behavior.embed = () => pending.promise
-  t.after(() => pending.resolve([[1, 0, 0]]))
+  t.after(() => pending.resolve([[1, 0, 0], [1, 0, 0]]))
   const original = await f.capture('forgotten pending source')
+  const retained = await f.capture('retained pending source', { author: otherActor })
   await f.composer.tick()
   await waitFor(() => f.calls.embed.length === 1, 'pending index provider call')
-  assert.deepEqual(f.calls.embed[0].texts, [original.text])
+  assert.deepEqual(f.calls.embed[0].texts, [original.text, retained.text])
   await f.memory.forget({ ...f.subject(), sourceMessageId: original.messageId })
-  pending.resolve([[1, 0, 0]])
+  pending.resolve([[1, 0, 0], [1, 0, 0]])
   await f.drained()
   assert.ok((await f.state()).rows.every(row => row.vector === undefined))
-  assert.equal((await f.read('forgotten pending source')).text, '')
+  await waitFor(() => events.length, 'index cancellation recorded')
+  assert.deepEqual(events.map(({ outcome, code }) => [outcome, code]), [['cancelled', 'semantic_index_source_changed']])
+  assert.equal((await f.read('forgotten pending source', room, { excludeMessageIds: [retained.messageId] })).text, '')
+  await f.composer.tick()
   assert.equal(f.calls.embed.length, 1)
+  f.behavior.embed = undefined
+  f.clock.at += 5000
+  assert.deepEqual((await f.indexed()).rows.map(row => row.messageId), [retained.messageId])
+  assert.deepEqual(f.calls.embed.map(call => call.texts), [[original.text, retained.text], [retained.text]])
 })
 
 test('source deletion during embedding invalidates the provider guard and cannot recreate a vector corpus', redisTest, async t => {
-  const f = await fixture(t)
+  const events = []
+  const f = await fixture(t, { diagnostics: { emit: event => events.push(event) } })
   const pending = Promise.withResolvers()
-  f.behavior.embed = () => pending.promise
+  f.behavior.embed = async ({ context }) => {
+    await pending.promise
+    try { await context.ensureCurrent() }
+    catch { throw new Error('embedding backend rejected the request') }
+    return [[1, 0, 0]]
+  }
   t.after(() => pending.resolve([[1, 0, 0]]))
   await f.capture('removed pending source')
   await f.composer.tick()
@@ -342,9 +358,22 @@ test('source deletion during embedding invalidates the provider guard and cannot
   await assert.rejects(() => request.context.ensureCurrent())
   pending.resolve([[1, 0, 0]])
   await f.drained()
+  await waitFor(() => events.length, 'wrapped cancellation recorded')
+  assert.deepEqual(events.map(({ outcome, code }) => [outcome, code]), [['cancelled', 'semantic_index_source_changed']])
   assert.equal(await f.state(), undefined)
   assert.equal((await f.read('removed pending source')).text, '')
   assert.equal(f.calls.embed.length, 1)
+})
+
+test('embedding provider errors still emit an index failure', redisTest, async t => {
+  const events = []
+  const f = await fixture(t, { diagnostics: { emit: event => events.push(event) } })
+  f.behavior.embed = () => { throw new Error('embedding backend unavailable') }
+  await f.capture('valid pending source')
+  await f.composer.tick()
+  await waitFor(() => events.length, 'provider failure recorded')
+  assert.deepEqual(events.map(({ outcome, code }) => [outcome, code]), [['failed', 'semantic_index_embedding_failed']])
+  assert.equal((await f.state()).rows[0].vector, undefined)
 })
 
 test('forget while reranking rejects the late recall instead of retaining erased documents', redisTest, async t => {
