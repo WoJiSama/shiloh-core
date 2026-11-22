@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { cp, lstat, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { ChatRequestData, ChatResponse } from '../contracts/modelGateway.js'
+import type { PersonalCodingOptions } from '../modules/simulation/infrastructure/agentPersonalRuntime.js'
 
 const maxSourceBytes = 2 * 1024 * 1024
 const maxResultBytes = 128 * 1024
@@ -80,12 +81,14 @@ export function createStandaloneAgentCodingWorker(options: {
   allowsText(value: string): boolean
 }) {
   let active = false
-  return async function code(agentId: string, task: string, inheritedSignal: AbortSignal): Promise<string | undefined> {
+  return async function code(agentId: string, task: string, inheritedSignal: AbortSignal, work?: PersonalCodingOptions): Promise<string | undefined> {
     if (active || !options.allowsText(task)) return undefined
     active = true
     const signal = AbortSignal.any([inheritedSignal, AbortSignal.timeout(12 * 60_000)])
     let scratch: string | undefined, jobDir: string | undefined
     try {
+      await work?.ensureCurrent()
+      const investigate = work?.mode === 'investigate'
       const source = await realpath(options.source)
       if (options.baseCommit && (await readFile(path.join(source, 'source-commit'), 'utf8')).trim() !== options.baseCommit) {
         throw new Error('编程快照与运行版本不一致')
@@ -111,12 +114,18 @@ export function createStandaloneAgentCodingWorker(options: {
         ['--permission', '--allow-fs-read=' + directory, '--allow-fs-read=' + dependencies,
           compiler, '-p', 'tsconfig.backend.json', '--noEmit', '--pretty', 'false'], directory, signal)
       const messages: NonNullable<ChatRequestData['messages']> = [
-        { role: 'system', content: systemPrompt }, { role: 'user', content: task },
+        { role: 'system', content: investigate
+          ? [systemPrompt, '本次是只读调查。使用 find/read 取得源码依据，在 done.summary 中写出原因、文件位置及建议修法。编辑操作不可用。'].join('\n')
+          : systemPrompt },
+        { role: 'user', content: task },
       ]
-      let summary = '', explicitCompletion = false
+      let summary = '', explicitCompletion = false, examinedSource = false
       for (let round = 0; round < maxRounds; round++) {
         signal.throwIfAborted()
+        await work?.ensureCurrent()
         const reply = await options.model({ messages }, signal)
+        await work?.ensureCurrent()
+        signal.throwIfAborted()
         const content = reply.choices?.[0]?.message?.content
         if (typeof content !== 'string' || content.length > 40_000) continue
         let action: Record<string, unknown>
@@ -143,6 +152,7 @@ export function createStandaloneAgentCodingWorker(options: {
               if (matches.length >= 30) break
             }
             result = matches.join('\n')
+            examinedSource ||= matches.length > 0
           } else if (action.op === 'check') {
             const proof = await check(scratch)
             result = JSON.stringify({ passed: proof.code === 0, diagnostics: proof.output.slice(0, 4000) })
@@ -156,7 +166,9 @@ export function createStandaloneAgentCodingWorker(options: {
               if (!Number.isSafeInteger(start) || start < 1 || !Number.isSafeInteger(count) || count < 1 || count > 140) throw new Error('行号或范围无效')
               result = contents.split(/\r?\n/u).slice(start - 1, start + count - 1)
                 .map((text, index) => String(start + index) + ' ' + text).join('\n')
+              examinedSource ||= Boolean(result)
             } else if (action.op === 'edit') {
+              if (investigate) throw new Error('本次任务只允许读取源码')
               const next = changeLines(contents, action)
               if (next !== contents) {
                 if (edited.size >= 12 && !edited.has(action.path)) throw new Error('本次实现的文件数已达上限')
@@ -171,6 +183,11 @@ export function createStandaloneAgentCodingWorker(options: {
         messages.push({ role: 'assistant', content }, { role: 'user', content: result.slice(0, 8500) })
         while (JSON.stringify(messages).length > 70_000 && messages.length >= 4) messages.splice(2, 2)
       }
+      if (investigate) {
+        const result = summary.replace(/\s+/gu, ' ').trim()
+        await work.ensureCurrent()
+        return examinedSource && explicitCompletion && result && options.allowsText(result) ? result : undefined
+      }
       const changes = []
       for (const name of edited) {
         const before = await readFile(path.join(source, name), 'utf8')
@@ -184,6 +201,8 @@ export function createStandaloneAgentCodingWorker(options: {
         ...(options.baseCommit ? { baseCommit: options.baseCommit } : {}),
         typecheckPassed: proof.code === 0, diagnostics: proof.output.replaceAll(scratch, '.').slice(0, 6000), changes }, null, 2)
       if (!options.allowsText(result)) return undefined
+      await work?.ensureCurrent()
+      signal.throwIfAborted()
       await writeFile(path.join(jobDir, id + '.json'), result + '\n', { flag: 'wx', mode: 0o600 })
       return '代码候选 ' + id + (proof.code === 0 ? ' 已通过类型检查' : ' 未通过类型检查')
     } finally {

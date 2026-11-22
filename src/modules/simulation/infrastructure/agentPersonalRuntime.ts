@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { ChatRequestData, ChatResponse } from '../../../contracts/modelGateway.js'
+import type { AgentToolResult } from '../../../contracts/agentTool.js'
 import type { DeliveryReceipt } from '../../../contracts/delivery.js'
 import type { CommitmentSourceMessage, CommitmentStatus } from '../../../contracts/commitments.js'
 import type { CharacterFeedItem } from '../../../contracts/characterActivities.js'
 import { parseAgentToolArguments } from '../../tools/infrastructure/agentToolSchema.js'
+import type { AgentCoreCapabilities, CoreCapability, CoreCapabilityContext, CoreCapabilityOrigin } from '../../tools/infrastructure/agentCoreCapabilities.js'
 import { sanitizeFinalReplyText } from '../../conversation/domain/replySanitizer.js'
 import { createAgentTaskClaim, hasLiveTaskClaim, type AgentScheduledWork, type AgentTaskClaim } from '../../runtime/infrastructure/agentTaskScheduler.js'
 import { abortableAgentWeb } from '../../tools/infrastructure/agentPublicWeb.js'
@@ -49,6 +51,19 @@ interface PersonalGoal {
   state: 'active' | 'completed' | 'abandoned'
   targetKey?: string
   waitingFor?: string
+  engineering?: PersonalEngineering
+}
+
+export interface PersonalCodingOptions {
+  readonly mode: 'investigate' | 'candidate'
+  ensureCurrent(): Promise<void>
+}
+
+interface PersonalEngineering {
+  mode: PersonalCodingOptions['mode']
+  status: 'queued' | 'running' | 'confirmed' | 'failed' | 'unknown'
+  origin?: CoreCapabilityOrigin
+  result?: string
 }
 
 interface PersonalReceipt {
@@ -132,7 +147,10 @@ export interface PersonalPorts {
   publishTool?(agentId: string, name: string, task: string, signal: AbortSignal): Promise<PersonalToolDefinition>
   followFeed?(url: string, current: () => boolean, signal: AbortSignal): Promise<CharacterFeedItem[]>
   research?(agentId: string, query: string, signal: AbortSignal, current: () => boolean): Promise<string | undefined>
-  coding?(agentId: string, task: string, signal: AbortSignal, current: () => boolean): Promise<string | undefined>
+  coding?(agentId: string, task: string, signal: AbortSignal, options: PersonalCodingOptions): Promise<string | undefined>
+  capabilities?: AgentCoreCapabilities
+  capabilityOrigin?(agentId: string, key: string): CoreCapabilityOrigin | undefined
+  workSourceCurrent?(agentId: string, origin: CoreCapabilityOrigin, signal: AbortSignal, current: () => boolean): Promise<boolean>
   allowsText(value: string): boolean
   recordUsage?(agentId: string, stage: string, reply: ChatResponse): void
   failed(stage: string, error: unknown, code?: string): void
@@ -155,6 +173,20 @@ function text(value: unknown, limit: number, empty = false): string {
 function time(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new Error('本人计划时间无效')
   return value
+}
+
+function engineering(value: unknown): PersonalEngineering {
+  const raw = record(value), { mode, status } = raw
+  if (mode !== 'investigate' && mode !== 'candidate' ||
+      status !== 'queued' && status !== 'running' && status !== 'confirmed' && status !== 'failed' && status !== 'unknown') {
+    throw new Error('工程任务状态无效')
+  }
+  const source = raw.origin === undefined ? undefined : record(raw.origin)
+  const message = source && record(source.message)
+  const origin = source && message ? { key: text(source.key, 64), revision: text(source.revision, 64),
+    message: { messageId: text(message.messageId, 128), authorId: text(message.authorId, 128), at: time(message.at) } } : undefined
+  return { mode, status, ...(origin ? { origin } : {}),
+    ...(raw.result === undefined ? {} : { result: text(raw.result, 1200) }) }
 }
 
 function list<T>(value: unknown, limit: number, parse: (entry: unknown) => T): T[] {
@@ -231,9 +263,12 @@ function personalState(value: unknown): PersonalState {
   const goals = list<PersonalGoal>(raw.goals, goalLimit, value => {
     const goal = record(value), state = goal.state
     if (state !== 'active' && state !== 'completed' && state !== 'abandoned') throw new Error('本人目标状态无效')
+    const work = goal.engineering === undefined ? undefined : engineering(goal.engineering)
+    if (work && work.origin?.key !== goal.targetKey) throw new Error('工程任务来源范围不一致')
     return { id: text(goal.id, 64), title: text(goal.title, 120), draft: text(goal.draft, 4000, true), nextAt: time(goal.nextAt), state,
       ...(goal.targetKey === undefined ? {} : { targetKey: text(goal.targetKey, 64) }),
-      ...(goal.waitingFor === undefined ? {} : { waitingFor: text(goal.waitingFor, 200, true) }) }
+      ...(goal.waitingFor === undefined ? {} : { waitingFor: text(goal.waitingFor, 200, true) }),
+      ...(work ? { engineering: work } : {}) }
   })
   const receipts = list<PersonalReceipt>(raw.receipts, receiptLimit, value => {
     const item = record(value), { kind, state } = item
@@ -283,11 +318,15 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
   async function load() {
     for (const [id, store] of stores) {
       let state = await store.load()
-      if (!state.nextReviewAt || !state.nextWorkAt || state.receipts.some(item => item.state === 'pending' && !item.followBody)) {
+      if (!state.nextReviewAt || !state.nextWorkAt || state.receipts.some(item => item.state === 'pending' && !item.followBody) ||
+          state.goals.some(goal => goal.engineering?.status === 'running')) {
         state = await store.update(value => {
           requireCurrent()
           value.nextReviewAt ||= now() + firstTurnDelay
           value.nextWorkAt ||= now() + firstTurnDelay
+          for (const goal of value.goals) {
+            if (goal.engineering?.status === 'running') settleEngineering(goal, 'unknown')
+          }
           for (const item of value.receipts) {
             if (item.state !== 'pending' || item.followBody) continue
             item.state = 'unknown'
@@ -307,24 +346,31 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
     return next
   }
 
-  async function decide(id: string, stage: string, instructions: string, data: unknown, contextCurrent?: () => Promise<boolean>) {
+  async function decide(id: string, stage: string, instructions: string, data: unknown, contextCurrent?: () => Promise<boolean>,
+    act?: (proposal: Record<string, unknown>, signal: AbortSignal) => Promise<AgentToolResult>) {
     requireCurrent()
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(45_000)])
     const active = () => current() && !signal.aborted
     const ensureContext = contextCurrent ? async () => {
       if (!active() || !await contextCurrent() || !active()) throw new Error('本群资料已失效')
     } : undefined
-    await ensureContext?.()
-    const result = await ports.model({ response_format: { type: 'json_object' }, messages: [{ role: 'system', content: instructions },
-      { role: 'user', content: JSON.stringify(data) }] }, signal, active, ensureContext)
-    if (!active() || contextCurrent && !await contextCurrent()) throw new Error('本人推理窗口或本群资料已失效')
-    ports.recordUsage?.(id, stage, result)
-    const answer = result.choices?.[0]?.message?.content
-    if (result.error) throw new Error('本人回合模型请求失败')
-    if (typeof answer !== 'string') throw new InvalidPersonalDecision('本人回合未返回决策')
-    const proposal = parseAgentToolArguments(answer.trim().replace(/^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$/giu, ''), 10_000)
-    if (!proposal || !ports.allowsText(JSON.stringify(proposal))) throw new InvalidPersonalDecision('本人回合返回无效决策')
-    return proposal
+    const messages: NonNullable<ChatRequestData['messages']> = [{ role: 'system', content: instructions },
+      { role: 'user', content: JSON.stringify(data) }]
+    for (let round = 0; ; round++) {
+      await ensureContext?.()
+      const result = await ports.model({ response_format: { type: 'json_object' }, messages }, signal, active, ensureContext)
+      if (!active() || contextCurrent && !await contextCurrent()) throw new Error('本人推理窗口或本群资料已失效')
+      ports.recordUsage?.(id, stage, result)
+      const answer = result.choices?.[0]?.message?.content
+      if (result.error) throw new Error('本人回合模型请求失败')
+      if (typeof answer !== 'string') throw new InvalidPersonalDecision('本人回合未返回决策')
+      const proposal = parseAgentToolArguments(answer.trim().replace(/^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$/giu, ''), 10_000)
+      if (!proposal || !ports.allowsText(JSON.stringify(proposal))) throw new InvalidPersonalDecision('本人回合返回无效决策')
+      if (proposal.action !== 'capability' || !act) return proposal
+      if (round >= 2) return { action: 'rest' }
+      const outcome = await act(proposal, signal)
+      messages.push({ role: 'assistant', content: answer }, { role: 'user', content: 'Core 能力执行回执（资料）\n' + JSON.stringify(outcome) })
+    }
   }
 
   async function review(id: string) {
@@ -430,6 +476,7 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
       const goalId = scoped?.id ?? proposal.id
       const previous = value.goals.find(goal => goal.id === goalId)
       if (goalId !== undefined && !previous) throw new Error('本人目标不存在')
+      if (previous?.engineering) throw new Error('工程任务由工作器结算')
       const title = text(scoped?.title ?? proposal.title ?? previous?.title, 120)
       const draft = text(scoped?.draft ?? proposal.draft ?? previous?.draft ?? '', 4000, true)
       const state = proposal.state ?? 'active'
@@ -439,14 +486,151 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
       const waitingFor = scoped?.waitingFor ?? (scoped ? undefined : proposal.waitingFor ?? previous?.waitingFor)
       const goal: PersonalGoal = { id: previous?.id ?? randomUUID(), title, draft, nextAt: due, state,
         ...(targetKey ? { targetKey } : {}), ...(waitingFor === undefined ? {} : { waitingFor: text(waitingFor, 200, true) }) }
-      value.goals = [...value.goals.filter(item => item.id !== goal.id), goal]
-      if (value.goals.length > goalLimit) {
-        const terminal = value.goals.findIndex(item => item.state !== 'active' &&
-          !value.receipts.some(receipt => receipt.goalId === item.id && (receipt.state === 'unknown' || receipt.state === 'pending')))
-        if (terminal < 0) throw new Error('本人目标已满')
-        value.goals.splice(terminal, 1)
-      }
+      saveGoal(value, goal)
     })
+  }
+
+  function saveGoal(state: PersonalState, goal: PersonalGoal) {
+    state.goals = [...state.goals.filter(item => item.id !== goal.id), goal]
+    if (state.goals.length <= goalLimit) return
+    const terminal = state.goals.findIndex(item => item.state !== 'active' && item.engineering?.status !== 'unknown' &&
+      !state.receipts.some(receipt => receipt.goalId === item.id && (receipt.state === 'unknown' || receipt.state === 'pending')))
+    if (terminal < 0) throw new Error('本人目标已满')
+    state.goals.splice(terminal, 1)
+  }
+
+  const engineeringProgress = {
+    queued: '等待开发工作器',
+    running: '开发工作器处理中',
+    confirmed: '开发工作器已返回结果',
+    failed: '工程任务未取得结果',
+    unknown: '工程任务中断，结果待核实',
+  } as const
+
+  function settleEngineering(goal: PersonalGoal, status: 'confirmed' | 'failed' | 'unknown', result?: string) {
+    const work = goal.engineering!
+    work.status = status
+    if (result) work.result = result
+    goal.state = status === 'confirmed' ? 'completed' : 'abandoned'
+    goal.waitingFor = engineeringProgress[status]
+  }
+
+  const jobReceipt = (goal: PersonalGoal) => ({
+    id: goal.id, status: goal.engineering!.status, ...(goal.engineering!.result ? { result: goal.engineering!.result } : {}),
+  })
+  const capabilityIsCurrent = (context: CoreCapabilityContext) => current() && stores.has(context.agentId) &&
+    context.isCurrent() && !context.signal.aborted
+  const sourceCurrent = (agentId: string, origin: CoreCapabilityOrigin | undefined, signal: AbortSignal, guard: () => boolean) =>
+    origin ? ports.workSourceCurrent?.(agentId, origin, signal, guard) ?? Promise.resolve(false) : Promise.resolve(guard())
+
+  function registerCapabilities() {
+    if (!ports.capabilities || !ports.coding) return
+    const capabilities: CoreCapability[] = [
+      {
+        name: 'engineering.submit',
+        mutates: true,
+        description: '自主接下 Core 工程调查或生成隔离代码候选。明确要求先查原因时选 investigate。返回已保存的任务编号',
+        available: context => capabilityIsCurrent(context) && (!context.origin || !!context.origin.message && !!ports.workSourceCurrent),
+        parameters: { type: 'object', required: ['title', 'task', 'mode'], additionalProperties: false, properties: {
+          title: { type: 'string', minLength: 1, maxLength: 120 },
+          task: { type: 'string', minLength: 1, maxLength: 1600, description: '自己的工程摘要、观察到的现象及验收条件。只含排查所需的技术信息' },
+          mode: { type: 'string', enum: ['investigate', 'candidate'] },
+        } },
+        async execute(input, context) {
+          const origin = context.origin, guard = () => capabilityIsCurrent(context) && context.allowsMutation?.() !== false
+          const title = text(String(input.title).replace(/\s+/gu, ' '), 120)
+          const draft = text(String(input.task).replace(/\s+/gu, ' '), 1600)
+          if (!await sourceCurrent(context.agentId, origin, context.signal, guard) || !guard() ||
+              !ports.allowsText(title) || !ports.allowsText(draft)) return { status: 'failed', content: '来源或工程摘要未获授权' }
+          await context.ensureCurrent?.()
+          let selected: PersonalGoal | undefined
+          await update(context.agentId, state => {
+            if (!guard()) throw new Error('工程任务来源已改变')
+            const duplicate = state.goals.find(item => {
+              const work = item.engineering
+              return work && work.origin?.key === origin?.key && work.origin?.revision === origin?.revision &&
+                (origin?.message ? work.origin?.message?.messageId === origin.message.messageId :
+                  work.mode === input.mode && item.draft === draft)
+            })
+            if (duplicate) { selected = duplicate; return }
+            selected = { id: randomUUID(), title, draft, state: 'active', nextAt: now(), waitingFor: engineeringProgress.queued,
+              ...(origin ? { targetKey: origin.key } : {}),
+              engineering: { mode: input.mode as PersonalCodingOptions['mode'], status: 'queued', ...(origin ? { origin } : {}) } }
+            saveGoal(state, selected)
+          })
+          return { status: 'succeeded', content: JSON.stringify(jobReceipt(selected!)) }
+        },
+      },
+      {
+        name: 'engineering.status',
+        description: '查看本会话或当前自主工作范围内的工程任务进度，可按任务编号查；省略编号列出最近任务',
+        available: capabilityIsCurrent,
+        parameters: { type: 'object', required: [], additionalProperties: false, properties: { id: { type: 'string', maxLength: 64 } } },
+        async execute(input, context) {
+          const guard = () => capabilityIsCurrent(context)
+          const goals = states.get(context.agentId)?.goals.filter(goal => goal.engineering &&
+            goal.engineering.origin?.key === context.origin?.key && goal.engineering.origin?.revision === context.origin?.revision &&
+            (input.id === undefined || input.id === goal.id)).slice(-5) ?? []
+          const rows = []
+          for (const goal of goals) {
+            const origin = goal.engineering!.origin
+            const check = () => sourceCurrent(context.agentId, origin, context.signal, guard)
+            if (!await check()) continue
+            if (origin) context.protect?.(check)
+            rows.push(jobReceipt(goal))
+          }
+          await context.ensureCurrent?.()
+          if (!guard()) return { status: 'failed', content: '工程任务查询已失效' }
+          return { status: 'succeeded', content: JSON.stringify(rows) }
+        },
+      },
+    ]
+    ports.capabilities.register(capabilities)
+  }
+  registerCapabilities()
+
+  function *dueEngineeringWork(): Iterable<AgentScheduledWork> {
+    const coding = ports.coding
+    if (!coding || !current()) return
+    const next = [...states].flatMap(([id, state]) => state.goals.filter(goal => goal.engineering?.status === 'queued').map(goal => ({ id, goal })))
+      .sort((a, b) => a.goal.nextAt - b.goal.nextAt)[0]
+    if (!next) return
+    yield { kind: 'personal_engineering', scope: 'development', async run() {
+      const { id, goal } = next, work = goal.engineering!
+      const signal = controller.signal
+      let claimed = false, started = false
+      await update(id, state => {
+        const live = state.goals.find(item => item.id === goal.id)
+        if (live?.engineering?.status !== 'queued') return
+        live.engineering.status = 'running'
+        live.waitingFor = engineeringProgress.running
+        claimed = true
+      })
+      if (!claimed) return
+      const ensureCurrent = async () => {
+        if (!current() || !await sourceCurrent(id, work.origin, signal, current) || !current()) throw new Error('工程任务来源已失效')
+      }
+      let status: 'confirmed' | 'failed' | 'unknown' = 'failed'
+      let result: string | undefined
+      try {
+        await ensureCurrent()
+        started = true
+        const response = await coding(id, goal.draft, signal, { mode: work.mode, ensureCurrent })
+        await ensureCurrent()
+        if (response && ports.allowsText(response)) {
+          result = text(response.replace(/\s+/gu, ' ').slice(0, 1200), 1200)
+          status = 'confirmed'
+        }
+      } catch (error) {
+        if (!current()) return
+        status = started ? 'unknown' : 'failed'
+        ports.failed('personal_engineering', error, started ? 'engineering_outcome_unknown' : 'engineering_source_unavailable')
+      }
+      await update(id, state => {
+        const live = state.goals.find(item => item.id === goal.id)
+        if (live?.engineering?.status === 'running') settleEngineering(live, status, result)
+      })
+    } }
   }
 
   function addReceipt(state: PersonalState, receipt: PersonalReceipt) {
@@ -678,7 +862,7 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
   }
 
   async function work(id: string) {
-    const scheduled = states.get(id)!.goals.filter(goal => goal.state === 'active' && goal.nextAt <= now())
+    const scheduled = states.get(id)!.goals.filter(goal => !goal.engineering && goal.state === 'active' && goal.nextAt <= now())
       .sort((left, right) => left.nextAt - right.nextAt)[0]
     const captured = await update(id, state => {
       state.nextWorkAt = now() + reviewInterval
@@ -692,11 +876,24 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
       ? await ports.groupContext?.(id, scoped.targetKey, current) : undefined
     if (scoped && !context) return
     const reservation = scoped?.targetKey ? await ports.reservation?.(id, scoped.targetKey, scoped.id) : undefined
+    const capabilities = ports.capabilities
+    const origin = scoped?.targetKey ? ports.capabilityOrigin?.(id, scoped.targetKey) : undefined
+    const protectedChecks: (() => Promise<boolean>)[] = []
+    const workContextCurrent = async () => {
+      if (context && !await context.isCurrent()) return false
+      for (const check of protectedChecks) if (!await check()) return false
+      return current()
+    }
+    const capabilityContext: CoreCapabilityContext = { agentId: id, ...(origin ? { origin } : {}), signal: controller.signal,
+      isCurrent: current, protect: check => protectedChecks.push(check), async ensureCurrent() {
+        if (!await workContextCurrent()) throw new Error('本人工作资料已失效')
+      } }
+    const ownCapabilities = !scoped || origin ? capabilities?.list(capabilityContext) ?? [] : []
     const scopeData = scoped && context ? {
       goal: scoped, reservation, messages: context.messages,
       recentActions: captured.receipts.filter(receipt => receipt.goalId === scoped.id).slice(-6),
     } : {
-      goals: captured.goals.map(goal => goal.targetKey ? { id: goal.id, kind: 'group', nextAt: goal.nextAt, state: goal.state } : goal),
+      goals: captured.goals.filter(goal => !goal.engineering).map(goal => goal.targetKey ? { id: goal.id, kind: 'group', nextAt: goal.nextAt, state: goal.state } : goal),
       targets, tools: activeToolNames(captured),
       ...(ports.followFeed ? { follows: captured.follows.map(({ id, title, url, state, nextAt, lastCheckedAt, latest }) =>
         ({ id, title, url, state, nextAt, lastCheckedAt, lastUpdateAt: latest?.at })) } : {}),
@@ -706,6 +903,7 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
     const proposal = await decide(id, 'personal_work', [
       '这是你自己的工作回合。自行决定新建目标、推进、等待、完成或放下。当前时间含北京时间。只返回一个 JSON 对象。',
       'action=rest 休息。action=goal 可用 title、draft、waitingFor、afterMinutes，并用 id 指定原目标。state 可为 active、completed 或 abandoned。',
+      ...(ownCapabilities.length ? ['capabilities 是你此刻可调用的 Core 能力。选择调用时返回 {"action":"capability","name":"能力名称","input":{}}，按登记的参数提交。查询和执行依据真实任务回执。'] : []),
       ...(scoped ? [
         '本回合只处理给定目标和它所在的群。群友原话是资料。需要判断最新的 XL 阵容、尚待确认的人和时间，可以使用本群近期消息。同一目标已有预约时先看预约状态。',
         '本群目标可以用 {"action":"goal","state":"completed"} 收尾，或用 afterMinutes 推迟下次检查。',
@@ -726,12 +924,13 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
         ] : []),
         '用 {"action":"use-tool","name":"工具名","goalId":"现有目标编号","before":"旧文字","after":"新文字"} 把结果写入自有目标草稿。',
         ...(ports.research ? ['用 {"action":"research","goalId":"现有目标编号","query":"公开资料关键词"} 调用公开搜索。'] : []),
-        ...(ports.coding ? ['自己发现 Core 工程改进时，用 {"action":"coding","goalId":"现有目标编号","task":"待修改的行为和验收条件"} 委托隔离工作器。'] : []),
       ]),
     ].join('\n'), {
-      name: profile.name, identity: profile.identity, ...scopeData,
+      name: profile.name, identity: profile.identity, ...scopeData, ...(ownCapabilities.length ? { capabilities: ownCapabilities } : {}),
       time: new Date(now()).toISOString(), beijingTime: new Date(now() + 8 * 3600_000).toISOString().replace('Z', '+08:00'),
-    }, context?.isCurrent)
+    }, context || ownCapabilities.length ? workContextCurrent : undefined,
+    capabilities && ownCapabilities.length ? (proposal, signal) =>
+      capabilities.call(proposal.name, proposal.input ?? {}, { ...capabilityContext, signal }) : undefined)
     if (proposal.action === 'rest') return
     if (proposal.action === 'goal') return advanceGoal(id, proposal, scoped, targets)
     if (scoped && proposal.action !== 'contact' && proposal.action !== 'reserve') throw new Error('本群目标的行动超出范围')
@@ -740,7 +939,7 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
     if (proposal.action === 'make-tool') return publish(id, proposal)
     if (proposal.action === 'rollback-tool') return rollbackTool(id, proposal)
     const goalId = scoped?.id ?? proposal.goalId ?? proposal.id ?? scheduled?.id
-    const goal = captured.goals.find(goal => goal.id === goalId && goal.state === 'active')
+    const goal = captured.goals.find(goal => goal.id === goalId && !goal.engineering && goal.state === 'active')
     if (!goal || goal.targetKey && !scoped) throw new Error('请先选择可用的本人目标')
     if (proposal.action === 'use-tool') {
       const tool = captured.publishedTools.find(item => item.name === proposal.name)
@@ -786,17 +985,17 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
         if (result.state === 'sent') receipt.messageId = result.messageId
       })
     }
-    if (kind !== 'research' && kind !== 'coding') throw new Error('本人行动无效')
-    const operation = kind === 'research' ? ports.research : ports.coding
+    if (kind !== 'research') throw new Error('本人行动无效')
+    const operation = ports.research
     if (!operation) throw new Error('本人行动入口不可用')
-    const input = text(kind === 'research' ? proposal.query : proposal.task, kind === 'research' ? 300 : 1600)
+    const input = text(proposal.query, 300)
     const receipt: PersonalReceipt = { id: receiptId, kind, state: 'pending', goalId: goal.id, at }
     await recordEffect(id, receipt, nextTime(proposal.afterMinutes ?? 5), async () => {
       const result = await operation(id, input, controller.signal, current)
       receipt.state = result ? 'confirmed' : 'failed'
       if (result && ports.allowsText(result)) await update(id, state => {
         const live = state.goals.find(item => item.id === goal.id)
-        if (live) live.draft = (live.draft + (kind === 'research' ? ' 公开检索资料：' : ' 工程工作回执：') +
+        if (live) live.draft = (live.draft + ' 公开检索资料：' +
           result.replace(/\s+/gu, ' ')).trim().slice(-4000)
       })
     })
@@ -821,7 +1020,7 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
       const uncertain = state.receipts.find(receipt => receipt.state === 'unknown' && receipt.targetKey &&
         (receipt.checks ?? 0) < 3 && (receipt.nextCheckAt ?? Infinity) <= at)
       const reviewDue = state.nextReviewAt <= at && (reviewBackoff.get(id) ?? 0) <= at
-      const workDue = state.nextWorkAt <= at || state.goals.some(goal => goal.state === 'active' && goal.nextAt <= at)
+      const workDue = state.nextWorkAt <= at || state.goals.some(goal => !goal.engineering && goal.state === 'active' && goal.nextAt <= at)
       if (!uncertain && !reviewDue && !workDue) continue
       const task = (async () => {
         if (uncertain) await reconcile(id, uncertain)
@@ -833,7 +1032,7 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
     }
     return Promise.all(started).then(() => undefined)
   }
-  return { load, tick, dueFollowWork, stop: async () => { controller.abort(); await Promise.all(pending.values()) },
+  return { load, tick, dueFollowWork, dueEngineeringWork, stop: async () => { controller.abort(); await Promise.all(pending.values()) },
     profile: (id: string) => states.get(id)?.profiles.at(-1), profiles: (id: string) => states.get(id)?.profiles ?? [],
     workSummary(id: string, canReadTarget: (key: string) => boolean) {
       const state = states.get(id)

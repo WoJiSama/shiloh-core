@@ -5,6 +5,7 @@ import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnos
 import { createAgentConversationActivity, type AgentConversationActivityCapture } from '../../runtime/infrastructure/agentConversationActivity.js'
 import { generateAgentFailureNotice } from '../../conversation/infrastructure/agentFailureNotice.js'
 import type { CommitmentRunOptions, CommitmentRunResult } from '../../../contracts/commitments.js'
+import type { CoreCapabilityToolFactory } from '../../tools/infrastructure/agentCoreCapabilities.js'
 import type { ChatRequestData, ChatResponse } from '../../../contracts/modelGateway.js'
 import type { ExecutionOptions } from '../../../contracts/modelExecution.js'
 import type { AgentHistoryRecall, AgentHistoryRequestSource } from '../../../contracts/agentHistory.js'
@@ -125,6 +126,7 @@ interface NudgeIngressOptions extends MessageActionOptions {
 }
 
 export interface SimulationRuntimePorts {
+  coreCapabilityTool?: CoreCapabilityToolFactory
   diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'>
   /** Start a scope after resolving the actual wake owner; timers must not inherit an unrelated ingress. */
   withDiagnosticScope?<T>(scope: AgentDiagnosticScope, operation: string, run: () => Promise<T>): Promise<T>
@@ -2602,7 +2604,21 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           memoryInvalidatedAt: () => memorySceneState.invalidatedAt, ensureActive: () => ensureExecution(), finish: result => finishTurn(result),
           review: ({ candidate, state }) => reviewCandidate('simFinishTurn', candidate, state),
         })
-        const sceneTools = [...simulationTools, ...characterTools, finishTool, ...activityTools]
+        const binding = resolvedPersona.binding
+        const coreDefinition = binding && ports.coreCapabilityTool?.(binding,
+          triggerMessage?.messageId && !triggerMessage.textTruncated && triggerMessage.userId ?
+            { messageId: String(triggerMessage.messageId), authorId: triggerMessage.userId, at: triggerMessage.at } : undefined,
+          canCallModel, check => historyProjections.push({ text: '', isCurrent: check }),
+          () => !unrelatedEphemeralRead && !uncertainAction && decision !== 'silent' && decision !== 'deferred')
+        const coreTool = coreDefinition && binding ? Object.assign(new AbstractTool(), {
+          name: coreDefinition.name, description: coreDefinition.description,
+          parameters: { ...coreDefinition.parameters, required: [...coreDefinition.parameters.required] },
+          async func(input: Record<string, unknown>) {
+            return coreDefinition.execute(input, { binding, actor: { kind: 'autonomous' }, signal: turnSignal,
+              isCurrent: canCallModel, ensureCurrent: ensureExecution })
+          },
+        }) : undefined
+        const sceneTools = [...simulationTools, ...characterTools, finishTool, ...activityTools, ...(coreTool ? [coreTool] : [])]
         const internalSchemaTools = new Set([...sceneTools, ...boundTools])
         const tools = [...sceneTools, ...extraTools]
         let toolSendQueue: Promise<void> = Promise.resolve()
@@ -3077,7 +3093,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           reply: toolReply,
         })
         const allowedTool = (name: string) => actor.kind === 'user' || (
-          (!AUTONOMOUS_DENIED_SIM_TOOLS.includes(name) || actor.kind === 'autonomous' && name === 'simSendPoke' && scopedInteractions()) && (simulationTools.some(tool => tool.name === name) || characterTools.some(tool => tool.name === name) || name === finishTool.name || activityTools.some(tool => tool.name === name) ||
+          (!AUTONOMOUS_DENIED_SIM_TOOLS.includes(name) || actor.kind === 'autonomous' && name === 'simSendPoke' && scopedInteractions()) && (simulationTools.some(tool => tool.name === name) || characterTools.some(tool => tool.name === name) || name === finishTool.name || name === coreTool?.name || activityTools.some(tool => tool.name === name) ||
             (ports.isExtraToolAutonomous?.(name) !== false && isAutonomousExtraToolAllowed(name, ports.getSection().autonomousTools) &&
               resolveExtraToolNames(runtimeConfig(), groupId).includes(name)))
         )
@@ -3232,7 +3248,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (tool === finishTool) requiresClosing = true
             return reject('tool_arguments_invalid', 'error: 工具参数必须是有效的 JSON 对象，未执行')
           }
-          const ephemeralTool = extraTools.includes(tool) && tool.agentDataPolicy === 'ephemeral'
+          const ephemeralTool = tool === coreTool || extraTools.includes(tool) && tool.agentDataPolicy === 'ephemeral'
           if (ephemeralRead) {
             // Explicit historical evidence has a revocable, per-turn grant. Do
             // not turn it (or a model paraphrase) into durable role state/actions.
@@ -3312,6 +3328,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           const internal = tool === finishTool || characterTools.includes(tool) || ['simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simMarkRead', 'simWaitForMessages', 'simSetWakeConfig', 'simGetGroupMembers', 'simGetMessageImages', 'simGetForward'].includes(tool.name)
             || (['simRemember', 'simLifeThread'].includes(tool.name) && args.action === 'list')
           const activityRead = ['simWorkspace', 'simSubscription', 'simSharedSelf'].includes(tool.name) && ['list', 'read'].includes(String(args.action))
+          if (tool === coreTool) {
+            if (args.action === 'call') ephemeralRead = true
+            const result = await runSimTool(tool, args, event, observed)
+            try { await ensureExecution() } catch (error) { return resultUnavailable(error) }
+            return result
+          }
           if (uncertainAction && !internal && !activityRead) return reject('tool_prior_outcome_unknown', 'error: 前序外部动作结果未知，本回合不再执行外部动作，核实前禁止重复提交或发送')
           if (extraTools.includes(tool) && (ephemeralTool || tool.name === 'excelWorkbookTool' || ports.readHistory && tool.name === 'chatHistoryTool')) {
             // File reads (including failures and directory listings) must bypass

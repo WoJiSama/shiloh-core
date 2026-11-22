@@ -13,6 +13,7 @@ import type { AgentRedPacketResult } from '../../../contracts/agentQqRedPacket.j
 import { createAgentHistoryTool } from '../../tools/infrastructure/agentHistoryTool.js'
 import { authorizeAgentToolContext } from '../../tools/infrastructure/agentToolAuthorization.js'
 import { parseAgentToolArguments, validateAgentToolInput } from '../../tools/infrastructure/agentToolSchema.js'
+import type { CoreCapabilityToolFactory } from '../../tools/infrastructure/agentCoreCapabilities.js'
 import type { IncomingMessage, MessageActionPort } from '../../../contracts/platformMessage.js'
 import { formatPersonMemoryFacts, personMemoryAddress } from '../../memory/infrastructure/personMemoryContext.js'
 import { agentPersonaScopeId, conversationAddressKey, samePlatformNamespace } from '../../runtime/domain/agentBindings.js'
@@ -62,6 +63,7 @@ export function createTextConversation(ports: {
   checkToolCurrent?(check: () => boolean): boolean
   scopedTools?(target: ConversationAddress, name?: string): readonly AgentTool[]
   registryTools?(target: ConversationAddress): readonly AgentTool[]
+  coreCapabilityTool?: CoreCapabilityToolFactory
   videoSelection?(incoming: IncomingMessage, binding: AgentBindingSnapshot): Promise<string | undefined>
   allowsToolInput?(text: string): boolean
   /** The scope checks the supplied turn fence before and after reading live source evidence. */
@@ -204,10 +206,13 @@ export function createTextConversation(ports: {
       groupTextScopedToolNames.some(name => name === tool.name) && allowed.some(name => name === tool.name) &&
       (!groupTextQqActionToolNames.some(name => name === tool.name) || !isPrivateChat && !isToolActionDenied(user, tool.name))) : []
     const scopedDefinitions = scopedTools.map(tool => ({ type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters } }))
-    const registryAvailable = (tool: AgentTool) => (ports.registryTools?.(target) ?? []).includes(tool) &&
+    const registryProjections: { isCurrent(): Promise<boolean> }[] = [], registryUsedTools: AgentTool[] = []
+    const coreTool = ports.coreCapabilityTool?.(binding, { messageId, authorId: incoming.sender.id, at: incoming.occurredAt },
+      isCurrent, isCurrent => registryProjections.push({ isCurrent }))
+    const registryAvailable = (tool: AgentTool) => tool === coreTool || (ports.registryTools?.(target) ?? []).includes(tool) &&
       (isPrivateChat ? ports.privateToolNames ?? [] : ports.groupToolNames(target)).includes(tool.name) &&
       !groupTextScopedToolNames.some(name => name === tool.name)
-    const registryTools = ports.scopedContext ? (ports.registryTools?.(target) ?? []).filter(registryAvailable) : []
+    const registryTools = ports.scopedContext ? [...(ports.registryTools?.(target) ?? []), ...(coreTool ? [coreTool] : [])].filter(registryAvailable) : []
     const registryDefinitions = registryTools.map(tool => ({ type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters } }))
     const tools = [...ports.groupTools.definitions(allowed, isPrivateChat), ...(historyDefinition ? [historyDefinition] : []), ...scopedDefinitions, ...registryDefinitions]
     const time = tools.length ? new Date(now).toISOString() : undefined
@@ -271,7 +276,6 @@ export function createTextConversation(ports: {
     let usedScoped = false
     let usedRegistry = false, registryActionClaimed = false
     let registrySource: AgentToolContext | undefined
-    const registryProjections: { isCurrent(): Promise<boolean> }[] = [], registryUsedTools: AgentTool[] = []
     let scopedNoticeCurrent: (() => Promise<boolean>) | undefined
     let videoSelection: string | undefined
     const scopedEvidenceCurrent = async () => {

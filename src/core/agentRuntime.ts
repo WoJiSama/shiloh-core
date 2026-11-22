@@ -39,6 +39,8 @@ import { createAgentMusicExtraction, type MusicExtractionProvider } from '../mod
 import { isPersonMemoryRedacted } from '../modules/memory/domain/personMemory.js'
 import { validateAgentMusicCard } from '../modules/media/infrastructure/agentMusicCard.js'
 import type { AgentTool, AgentToolContext } from '../contracts/agentTool.js'
+import type { CommitmentSourceMessage } from '../contracts/commitments.js'
+import { coreCapabilityToolName, createAgentCoreCapabilities, type CoreCapabilityOrigin } from '../modules/tools/infrastructure/agentCoreCapabilities.js'
 import type { AgentQqActionRunner, AgentQqActionGuard } from '../contracts/agentTool.js'
 import { createAgentQqActions, type AgentQqActionsConfig } from '../modules/runtime/infrastructure/agentQqActions.js'
 import { validateAgentRedPacketSnapshot } from '../modules/runtime/infrastructure/agentRedPacketValidation.js'
@@ -169,7 +171,7 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   useTextGroup?(target: ConversationAddress): boolean
   unifiedGroupChat?: boolean
   personalSeeds?: readonly AgentPersonalSeed[]
-  codingWorker?(agentId: string, task: string, signal: AbortSignal): Promise<string | undefined>
+  codingWorker?: PersonalPorts['coding']
   personalToolAuthor?: NonNullable<PersonalPorts['publishTool']>
   personalFollowFeed?: NonNullable<PersonalPorts['followFeed']>
   migratedGroupToolNames?(target: ConversationAddress): readonly string[] | undefined
@@ -315,6 +317,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
   const { storage, logger, resolvePersona } = options
   let personal: ReturnType<typeof createAgentPersonalRuntime> | undefined
+  const coreCapabilities = createAgentCoreCapabilities(value =>
+    options.allowsToolInput?.(value) !== false && options.allowsText?.(value, 'outgoing') !== false)
   if (options.groupLog !== undefined) {
     const config = options.groupLog
     if (!config || typeof config !== 'object' || Object.keys(config).some(key => !['enabled', 'maxBytes', 'masters'].includes(key)) ||
@@ -1769,6 +1773,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     redis: storage,
     durableIngress: true,
     ...registeredTools,
+    coreCapabilityTool,
     extraToolsPlatformNeutral: true,
     messageActions,
     ...(options.interactions?.enabled === true ? { performInteractions,
@@ -2077,6 +2082,42 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       allowsConversationAI(binding.target) && bindingIsCurrent(binding.target, agentBindingToken(binding)) &&
       !privacyBlocked(platformAccountKey(binding.target.account))
   }
+  function capabilityBindingCurrent(binding: AgentBindingSnapshot) {
+    if (binding.source !== 'configured' || !isPersonalBindingCurrent(binding)) return false
+    const policy = defaultSimRuntimeConfig(options.getSection()).toolPolicy
+    return !policy.denyTools.includes(coreCapabilityToolName) &&
+      (binding.target.kind !== 'group' || !policy.groups[binding.target.id]?.includes(coreCapabilityToolName))
+  }
+  function capabilityOrigin(binding: AgentBindingSnapshot): CoreCapabilityOrigin {
+    return { key: personalTargetKey(binding), revision: createHash('sha256').update(agentBindingToken(binding)).digest('hex') }
+  }
+  function coreCapabilityTool(binding: AgentBindingSnapshot, message: CommitmentSourceMessage | undefined,
+    current: () => boolean, protect: (check: () => Promise<boolean>) => void, allowsMutation?: () => boolean) {
+    const origin = capabilityOrigin(binding)
+    const trustedMessage = adapterFor(binding.target)?.readMessage && message
+    return coreCapabilities.tool({ agentId: binding.agentId, origin: { ...origin, ...(trustedMessage ? { message: trustedMessage } : {}) },
+      isCurrent: () => current() && capabilityBindingCurrent(binding), protect, ...(allowsMutation ? { allowsMutation } : {}) })
+  }
+
+  async function workSourceCurrent(agentId: string, origin: CoreCapabilityOrigin, inherited: AbortSignal, guard: () => boolean) {
+    const binding = personalBindingFor(agentId, origin.key), proof = origin.message
+    if (!binding || !proof || !isMessageId(proof.messageId) || capabilityOrigin(binding).revision !== origin.revision) return false
+    const { target } = binding, adapter = adapterFor(target)
+    const signal = AbortSignal.any([inherited, toolCancellation.signal, AbortSignal.timeout(5_000)])
+    const current = () => !signal.aborted && guard() && capabilityBindingCurrent(binding)
+    if (!adapter?.readMessage || !current() || proof.authorId === adapter.botUserId ||
+        target.kind === 'private' && privatePeerFor(target, adapter) !== proof.authorId ||
+        await inbox.isRecalled(target, proof.messageId)) return false
+    const message = await adapter.readMessage(target, proof.messageId, { signal, isCurrent: current })
+    if (!current() || !message || message.messageId !== proof.messageId || message.sender.id !== proof.authorId ||
+        !samePlatformNamespace(message.sender, target.account) || message.occurredAt !== proof.at ||
+        conversationAddressKey(message.conversation) !== conversationAddressKey(target) ||
+        !message.text.trim() || options.allowsText?.(message.text, 'incoming') === false) return false
+    const { botId, scene } = personMemoryAddress(target, proof.authorId)
+    const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(agentId) }, subjectId: proof.authorId })
+    return !isPersonMemoryRedacted({ ...proof, scene, excerpt: message.text }, message.text, redactions) &&
+      !await inbox.isRecalled(target, proof.messageId) && current()
+  }
   async function personalContactAllowed(binding: AgentBindingSnapshot) {
     const { target } = binding, adapter = adapterFor(target)
     if (!isPersonalBindingCurrent(binding)) return false
@@ -2159,6 +2200,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         return current() && result.status === 'succeeded' ? result.content : undefined
       } } : {}),
       ...(options.codingWorker ? { coding: options.codingWorker } : {}),
+      capabilities: coreCapabilities,
+      capabilityOrigin: (agentId, key) => {
+        const binding = personalBindingFor(agentId, key)
+        return binding && capabilityBindingCurrent(binding) ? capabilityOrigin(binding) : undefined
+      },
+      workSourceCurrent,
       ...(options.personalToolAuthor ? { publishTool: options.personalToolAuthor } : {}),
       ...(options.personalFollowFeed ? { followFeed: (url: string, isCurrent: () => boolean, signal: AbortSignal) =>
         actionExecutor.run({ signal, isCurrent }, guard => options.personalFollowFeed!(url, guard.isCurrent, signal)) } : {}),
@@ -2585,6 +2632,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   })
   const textConversation = createTextConversation({
     inbox, actions: messageActions, personMemory, diagnostics, checkToolCurrent,
+    coreCapabilityTool,
     ...(options.failureNoticeFallback ? { fallbackText: options.failureNoticeFallback } : {}),
     bindingToken: textBindingToken,
     groupToolNames: target => options.groupTextTools?.(target) ?? [],
@@ -3774,6 +3822,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     failed: (operation, error) => diagnostics.emit({ stage: 'runtime', operation, outcome: 'failed', error }),
   })
   function *scheduledWork(): Iterable<AgentScheduledWork> {
+    if (personal) yield* personal.dueEngineeringWork()
     if (personal) yield* personal.dueFollowWork()
     for (const adapter of adapters.values()) {
       if (!adapter.isReady()) continue

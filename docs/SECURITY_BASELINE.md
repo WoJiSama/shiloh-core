@@ -389,6 +389,12 @@
 - 只有实际 Linux、systemd 与 cgroup v2 probe 同时成功才获得资格及固定 definition。每次随机 transient service，核对实际 MainPID、Node --permission、MemoryMax=134217728/MemorySwapMax=0、LimitCPU=1、RuntimeMaxSec=1500ms、PrivateNetwork/AF_UNIX与deny @network-io、DynamicUser、NoNewPrivileges、ProtectHome/System及kernel水位。取消、超时或限额先stop+kill all，再等unit inactive、kernel cgroup populated=0/消失及client关闭，不能把VM/heap限制称为总RSS隔离。
 - 真实 Linux conformance 14/14；独立 native Buffer 压测观测memory.current达134217728、Result=oom-kill/ExecMainStatus=9并完成回收，证明该部署的kernel上限。冻结旧97009字节Daggerheart已加载、inspect并运行原命令，状态/名片先返回draft；不是最终安装包或真实QQ投递证明。playerBindings只给完整绑定群中真实发送者自身player/card，Core继续新鲜成员核验；不授予代理、暗骰或admin。最终集中构建、打包及生产资格仍须本轮发布回执。
 
+### Core 本人能力和工程任务
+
+- 群聊仿真、文字会话和本人工作共享 Core 能力定义。能力调用前重新核验当前授权和参数。群聊当前触发消息与私聊真实对话者由宿主提供，模型参数只包含自己的工程摘要和执行方式。会话创建的工程任务绑定 Agent、会话版本、原消息和作者。运营可通过现有 `simulation.toolPolicy.denyTools` 或按群拒绝项停用 `coreCapabilities`。
+- 群或私聊任务按原绑定查询。Core 在登记、工作器调用开发模型、返回结果和使用进度时检查消息来源、撤回、个人资料停用及当前会话授权。原消息与账号不随任务发给开发模型。一次原消息至多登记一个工程任务。工程结果留在本人账本，回合只临时读取。
+- 排队工作通过本人账本保存，经 Core 调度串行领取。重启接续排队任务，已开始且缺回执的工作记为待核实。只读调查允许源码定位和类型检查。代码候选写入受控工作目录，由已配置的开发模型和发布快照提供支持。发布使用独立宿主流程。
+
 ## 三、数据出机清单（谁收到了什么）
 
 下表中接入普通文字/好友的通用工具仍向同一既有提供器发送所列字段；新增的是受会话名单约束的回合入口，移除对应名单可停止该入口，关闭提供器停止全部入口。群专有平台读取不会因好友列名开放。
@@ -401,7 +407,7 @@
 群聊工具在拒绝参数、权限检查或收尾引用时写入固定错误码。诊断使用已装配工具名；模型给出的未知工具名、原始参数和工具回执正文留在回合内。
 | **独立宿主显式配置的 MCP 服务/子进程** | MCP 协议握手、工具列表及本次模型选择的工具参数；参数可能含用户原话。网络头仅作该服务鉴权；子进程只得基本环境白名单和显式环境。结果作为外部资料进入当轮模型 | 默认不连接；配置 `tools.mcp.servers` 后启动连接，工具另需按别名显式授权且只允许真人回合 | 移除服务或设 `enabled: false` 并重启；撤销工具策略放通项阻止调用。停止/换绑/来源撤回取消本地等待，无法保证远端未执行 |
 | **LLM provider**（chatAi/toolsAi/trackAi/intentAi/memoryAi/taskAi 等全部渠道） | 群/私聊消息文本、注入的记忆/人格/梗/好感度摘要、角色经历/观点/目标/回执/参与选择，以及识图时图片 | 开 | 清空对应渠道配置；`simulation.enabled: false` 停用仿真回合与自主目标，不删除已存数据 |
-| **独立宿主开发模型** | 编程任务、受控源码快照的有限摘录、类型检查结果，以及自建工具的任务和名称。API Key 仅用于渠道鉴权 | 默认沿用主对话，`developmentModel` 选择独立渠道 | 控制台「AI 模型 → 开发」可以改用主对话，保存后重启 |
+| **独立宿主开发模型** | 本人提交的工程摘要、受控源码快照的有限摘录、类型检查结果，以及自建工具的任务和名称。API Key 仅用于渠道鉴权 | 默认沿用主对话，`developmentModel` 选择独立渠道 | 控制台「AI 模型 → 开发」可切换渠道。会话入口可按工具策略拒绝 `coreCapabilities` |
 | **独立宿主当前群平台与主模型的成员工具** | 原平台只接收固定群号和单人成员ID；主模型接收名字/角色名单、歧义候选或本次确认单人的白名单资料。通知只向原群提交最多20个具体点名与净化正文 | 平台具备成员端口时普通策略装配查询和精确点名；管理员集合默认禁用，三个普通工具仅真人回合 | `simulation.toolPolicy.denyTools` 禁用各工具；停用仿真或停止宿主阻止后续调用，已提交平台/模型的资料无法保证撤回 |
 | **角色回放的现有模型 provider** | 合成群消息、配置人设、回放内角色记忆/目标/作品/订阅资料/工具定义，以及独立反思/实验审核请求；不加载真实群历史 | 仅手工执行 runner 时 | 不运行脚本；完整回放可传 `--dry-run` 完全离线，固定用例审核脚本仅手工实模执行；`--config-root` 指定配置来源，固定集 `--backend memory|main` 选择既有渠道；搜索/订阅/工作器始终合成 |
 | **embedding provider** | 语义记忆文本块（群聊归档内容） | 开（语义记忆启用时） | 关 memorySystem/semanticMemory |
