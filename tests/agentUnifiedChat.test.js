@@ -222,4 +222,17 @@ test('编程工作器只能修改源码副本，验证后保留候选文件', as
   assert.equal(result.typecheckPassed, true)
   assert.equal(result.changes.length, 1)
   assert.equal(result.changes[0].after, 'export const interval = 2000\r\n')
+
+  const lookup = 'export const cardRenderer = "summary"\nexport const useSummary = cardRenderer === "summary"\n'
+  await writeFile(path.join(source, 'src', 'card.ts'), lookup)
+  actions.push(
+    { op: 'find', text: 'cardRenderer', prefix: 'src/card.ts' },
+    { op: 'edit', path: 'src/card.ts', start: 1, end: 1, before: lookup.split('\n')[0], after: 'export const cardRenderer = "preview"' },
+    { op: 'done', summary: 'src/card.ts 的 cardRenderer 启用 summary' },
+  )
+  assert.match(await code('shiloh', '只读调查卡面', new AbortController().signal, { mode: 'investigate', async ensureCurrent() {} }), /cardRenderer/u)
+  assert.match(seen.at(-2).at(-1), /src\/card\.ts:1.*\nsrc\/card\.ts:2/u)
+  assert.match(seen.at(-1).at(-1), /只允许读取源码/u)
+  assert.equal(await readFile(path.join(source, 'src', 'card.ts'), 'utf8'), lookup)
+  assert.deepEqual(await readdir(jobs), [candidate])
 })
