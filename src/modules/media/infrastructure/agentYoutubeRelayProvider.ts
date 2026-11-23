@@ -41,7 +41,7 @@ const row = (value: unknown): Record<string, unknown> => value && typeof value =
 function text(value: unknown, limit: number, fallback = ''): string {
   if (value === undefined || value === null || value === '') return fallback
   if (typeof value !== 'string' || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) throw youtubeFailure()
-  return Array.from(value.replace(/\s+/gu, ' ').trim()).slice(0, limit).join('') || fallback
+  return Array.from(value.replace(/\s+/gu, ' ').trim()).slice(0, limit).join('').trimEnd() || fallback
 }
 const durationText = (seconds: number) => {
   const total = Math.round(seconds), minutes = Math.floor(total / 60)
