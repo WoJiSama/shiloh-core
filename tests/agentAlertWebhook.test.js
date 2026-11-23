@@ -181,6 +181,7 @@ test('QQ alerts explain known failures and handle unknown or redacted diagnostic
     { ...common, stage: 'runtime', operation: 'host_log', outcome: 'failed', code: 'runtime_warning' },
     { ...common, stage: 'model', operation: 'group_teaching_extract', outcome: 'failed', code: 'group_learning_timeout' },
     { ...common, stage: 'inbox', operation: 'consume_simulation', outcome: 'failed', code: 'semantic_capture_save_timeout' },
+    { ...common, stage: 'memory', operation: 'summary_response_authorization', outcome: 'failed', code: 'summary_timeout' },
     { ...common, stage: 'tool', operation: 'toString', outcome: 'failed', code: 'constructor', errorKind: 'TimeoutError' },
     { ...common, stage: 'runtime', operation: 'redacted', outcome: 'failed', code: 'redacted' },
   ] })
@@ -189,7 +190,8 @@ test('QQ alerts explain known failures and handle unknown or redacted diagnostic
   assert.match(text, /发送消息结果待确认，共 1 次\n暂时无法确认操作是否完成。/u)
   assert.match(text, /后台运行出现警告，共 1 次\n这条兼容日志缺少可确认的原因。/u)
   assert.match(text, /提取群知识教学失败，共 1 次\n群记忆学习超过了任务执行时限。\n错误码 group_learning_timeout/u)
-  assert.match(text, /处理群消息队列失败，共 1 次\n群消息写入语义记忆存储超时，系统会重试。\n错误码 semantic_capture_save_timeout/u)
+  assert.match(text, /处理群消息队列失败，共 1 次\n保存群消息的语义原文长时间无进展，系统会重试。\n错误码 semantic_capture_save_timeout/u)
+  assert.match(text, /复核摘要模型输出的来源权限失败，共 1 次\n本阶段未能在摘要任务的时间预算内完成。\n错误码 summary_timeout/u)
   assert.match(text, /工具执行失败，共 1 次\n等待操作完成超时。\n错误码 constructor · 操作标识 toString/u)
   assert.doesNotMatch(text, /TimeoutError|redacted/u)
 })

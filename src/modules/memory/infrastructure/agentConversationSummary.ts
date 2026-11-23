@@ -122,6 +122,7 @@ export function createAgentConversationSummary(options: AgentConversationSummary
     try {
       if (!context) throw new Error(FAILURE)
       signal = AbortSignal.any([context.signal, lifecycle.signal, AbortSignal.timeout(timeoutMs)])
+      context.observePhase?.('request_prepare')
       assertCurrent(context, signal)
       const endpoint = new URL(options.baseUrl)
       if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
@@ -141,7 +142,9 @@ export function createAgentConversationSummary(options: AgentConversationSummary
         maxChars,
       }
       if (hasSecret(JSON.stringify(material), secrets) || containsSecret(material, secrets)) throw new Error(FAILURE)
+      context.observePhase?.('request_authorization')
       await ensureCurrent(context, signal)
+      context.observePhase?.('provider_http')
       waitingForHeaders = true
       response = await abortable((options.fetchImpl ?? fetch)(url, {
         method: 'POST', redirect: 'error', signal,
@@ -151,6 +154,7 @@ export function createAgentConversationSummary(options: AgentConversationSummary
         ], stream: false, temperature: 0.2, max_tokens: Math.min(8000, maxChars * 2), ...glmFlashJsonOptions(endpoint, options.name) }),
       }), signal)
       waitingForHeaders = false
+      context.observePhase?.('provider_body', response.status)
       assertCurrent(context, signal)
       if (response.redirected) throw new Error(FAILURE)
       const result = await readResponse(response, signal)
@@ -159,13 +163,16 @@ export function createAgentConversationSummary(options: AgentConversationSummary
         .filter(key => typeof usage[key] === 'number' && Number.isSafeInteger(usage[key]) && Number(usage[key]) >= 0)
         .map(key => [key, usage[key]]))
       if (Object.keys(counts).length) context.recordUsage?.(options.name, counts)
+      context.observePhase?.('response_authorization')
       await ensureCurrent(context, signal)
+      context.observePhase?.('response_validation')
       const message = object(object(Array.isArray(result.data.choices) ? result.data.choices[0] : undefined).message)
       const content = message.content
       if (!response.ok || result.data.error || 'tool_calls' in message || 'function_call' in message ||
           hasSecret(result.raw, secrets) || containsSecret(result.data, secrets) ||
           typeof content !== 'string' || !content.trim() || isStructuredText(content.trim())) throw new Error(FAILURE)
       const summary = safeTruncateUnicode(content.trim(), maxChars)
+      context.observePhase?.('response_authorization')
       await ensureCurrent(context, signal)
       return summary
     } catch {

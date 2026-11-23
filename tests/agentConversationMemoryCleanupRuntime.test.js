@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { setTimeout as delay } from 'node:timers/promises'
+import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises'
 import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
 
@@ -21,6 +21,7 @@ const friend = { account, kind: 'private', id: author.id }, otherAccountGroup = 
 const PREFIX = 'agent:conversation-memory:v1'
 const stateKey = (target = group, agentId = 'daily') => `${PREFIX}:state:${conversationMemoryId({ target, agentId })}`
 const physicalRead = (script, args) => args.keys.some(key => key.startsWith(`${PREFIX}:state:`)) && !script.includes("redis.call('SET'")
+const { createAgentDiagnostics } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
 
 async function waitFor(probe, description) {
   const until = performance.now() + 5000
@@ -329,6 +330,70 @@ test('a late summary failure from another owner cannot spend the new cleanup gen
   f.advance(scheduled.dueAt - f.now + 1); await owner.tick()
   await waitFor(async () => (await f.raw())?.summary?.cleanupToken === scheduled.dueCleanupToken, 'old failure blocked the new summary')
   assert.equal(summaries[1].input.previous, '')
+})
+
+test('a timed-out summary logs its active phase, stops authorization reads and respects persisted backoff on a stale sweep', settings, async t => {
+  const f = await fixture(t)
+  const state = await f.seed(group, 'daily', Array.from({ length: 4 }, () => ({})))
+  await f.store.update(state.id, saved => ({ ...saved, summary: undefined, dueAt: f.now - 1 }))
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const pending = Promise.withResolvers(), allowPrivacy = Promise.withResolvers()
+  const oldList = Promise.withResolvers(), allowList = Promise.withResolvers()
+  const retrySaved = Promise.withResolvers(), events = [], failures = []
+  const diagnostics = createAgentDiagnostics({ logger, now: () => f.now, onFailure: event => failures.push(event),
+    sink: { async append(event) {
+      events.push(event)
+      if (event.code === 'summary_retry_scheduled') retrySaved.resolve()
+      return true
+    } },
+  })
+  let holdList = false, tailReads = 0, modelCalls = 0
+  const stalledSubject = 'privacy-stall', tailSubject = 'privacy-tail'
+  const owner = f.createOwner({ diagnostics,
+    redis: { ...f.storage, async eval(script, request) {
+      const result = await f.storage.eval(script, request)
+      if (holdList && script.includes('local result =')) {
+        holdList = false
+        oldList.resolve()
+        await allowList.promise
+      }
+      return result
+    } },
+    memory: { ...f.memory, getRedactionsBatch: undefined,
+      async listSubjects(identity) { return [stalledSubject, tailSubject].map(subjectId => ({ identity, subjectId })) },
+      async getRedactions(subject) {
+        if (subject.subjectId === stalledSubject) { pending.resolve(); await allowPrivacy.promise }
+        if (subject.subjectId === tailSubject) tailReads++
+        return f.memory.getRedactions(subject)
+      } },
+    async summarize() { modelCalls++; return '摘要完成' },
+  })
+  try {
+    await owner.tick()
+    await pending.promise
+    holdList = true
+    const sweep = owner.tick()
+    await oldList.promise
+    f.advance(40_000)
+    t.mock.timers.tick(40_000)
+    await retrySaved.promise
+    await nextTurn()
+    const backedOff = await f.raw()
+    assert.equal(backedOff.attempts, 1)
+    assert.equal(backedOff.retryAt, f.now + 15_000)
+    assert.equal(failures.length, 1)
+    const [failed] = failures
+    assert.equal(failed.operation, 'summary_request_authorization')
+    assert.equal(failed.code, 'summary_timeout')
+    assert.deepEqual(failed.scope, { kind: 'conversation', binding: state.binding })
+    assert.ok(events.filter(event => event.traceId === failed.traceId).some(event => event.code === 'summary_retry_scheduled'))
+    allowPrivacy.resolve()
+    allowList.resolve()
+    await sweep
+    await nextTurn()
+    assert.equal(tailReads, 0)
+    assert.equal(modelCalls, 0)
+  } finally { allowPrivacy.resolve(); allowList.resolve(); await owner.stop(); await diagnostics.flush() }
 })
 
 test('cleanup during an episode source check cannot label its old context with a new generation', settings, async t => {

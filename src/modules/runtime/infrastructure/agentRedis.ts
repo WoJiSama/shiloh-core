@@ -47,7 +47,7 @@ export async function connectAgentRedis(url: string) {
   return client
 }
 
-type RedisCommandOperation = 'redis_command' | 'semantic_redis_command'
+type RedisCommandOperation = 'redis_command' | 'semantic_redis_command' | 'semantic_capture_redis_command'
 type RedisFailureCode = 'redis_command_queue_timeout' | 'redis_connection_unavailable' | 'redis_command_rejected' |
   'redis_command_queue_full' | 'redis_socket_idle_timeout' | 'redis_command_failed'
 class SemanticRedisQueueFull extends Error {}
@@ -93,7 +93,7 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure }
       if (running && onCommandFailure) {
         let code: RedisFailureCode = 'redis_command_failed'
         if (error instanceof SemanticRedisQueueFull) code = 'redis_command_queue_full'
-        else if (error instanceof SocketTimeoutError && operation === 'semantic_redis_command') code = 'redis_socket_idle_timeout'
+        else if (error instanceof SocketTimeoutError && operation !== 'redis_command') code = 'redis_socket_idle_timeout'
         else if (error instanceof TimeoutError) code = 'redis_command_queue_timeout'
         else if (error instanceof ClientClosedError || error instanceof ClientOfflineError ||
           error instanceof SocketClosedUnexpectedlyError || error instanceof ConnectionTimeoutError) code = 'redis_connection_unavailable'
@@ -150,60 +150,66 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure }
     },
   }
 
-  // Multi-megabyte semantic values must not sit ahead of inbox and lease commands
-  // in the same socket write queue. Both connections use the same lease token.
-  let semanticClient: typeof client | undefined
-  let semanticTail = Promise.resolve()
-  let pendingSemantic = 0
-  function semantic<T>(run: (connection: typeof client) => Promise<T>): Promise<T> {
-    return observe('semantic_redis_command', async () => {
-      if (pendingSemantic >= semanticQueueLimit) throw new SemanticRedisQueueFull()
-      pendingSemantic++
-      const work = semanticTail.then(async () => {
-        if (!isCurrent()) throw new Error('独立宿主执行租约已失效')
-        if (!semanticClient?.isReady) {
-          if (semanticClient?.isOpen) semanticClient.destroy()
-          // A stalled socket must release the lane. Incoming or outgoing bytes
-          // reset this timer, including while Redis sends a large snapshot.
-          semanticClient = client.duplicate({ socket: { ...client.options.socket, socketTimeout: semanticSocketIdleMs } })
-          semanticClient.on('error', () => {})
-          await semanticClient.connect()
-        }
-        if (!isCurrent()) throw new Error('独立宿主执行租约已失效')
-        return run(semanticClient)
+  // Large semantic reads, intake and the host lease each have a socket queue.
+  // Every writer uses the same lease token.
+  function semanticConnection(operation: 'semantic_redis_command' | 'semantic_capture_redis_command') {
+    let connection: typeof client | undefined
+    let tail = Promise.resolve()
+    let pending = 0
+    function enqueue<T>(run: (connection: typeof client) => Promise<T>): Promise<T> {
+      return observe(operation, async () => {
+        if (pending >= semanticQueueLimit) throw new SemanticRedisQueueFull()
+        pending++
+        const work = tail.then(async () => {
+          if (!isCurrent()) throw new Error('独立宿主执行租约已失效')
+          if (!connection?.isReady) {
+            if (connection?.isOpen) connection.destroy()
+            connection = client.duplicate({ socket: { ...client.options.socket, socketTimeout: semanticSocketIdleMs } })
+            connection.on('error', () => {})
+            await connection.connect()
+          }
+          if (!isCurrent()) throw new Error('独立宿主执行租约已失效')
+          return run(connection)
+        })
+        tail = work.then(() => {}, () => {})
+        try { return await work } finally { pending-- }
       })
-      semanticTail = work.then(() => {}, () => {})
-      try { return await work } finally { pendingSemantic-- }
-    })
+    }
+    return {
+      storage: {
+        get: (name: string) => enqueue(connection => connection.get(key(name))),
+        getSnapshot: (names: string[]) => enqueue(async connection => {
+          const request = connection.multi().get(leaseKey)
+          for (const name of names) request.get(key(name))
+          const [lease, ...values]: unknown[] = await request.exec()
+          if (lease !== token) { loseLease(); throw new Error('独立宿主执行租约已失效') }
+          if (values.length !== names.length || !values.every((value): value is string | null => value === null || typeof value === 'string')) {
+            throw new Error('Redis 快照读取结果无效')
+          }
+          return values
+        }),
+        matchesStringDigests: (names: string[], digests: string[]) =>
+          enqueue(async connection => await connection.eval(matchStringDigests, { keys: names.map(key), arguments: digests }) === 1),
+        eval: (script: string, options: { keys: string[]; arguments: string[]; isCurrent?: () => boolean }) =>
+          enqueue(connection => options.isCurrent?.() === false ? Promise.resolve(0) : evaluate(connection, script, options.keys, options.arguments)),
+      },
+      async close() {
+        if (connection?.isOpen) connection.destroy()
+        await tail
+      },
+    }
   }
-  const semanticStorage = {
-    get: (name: string) => semantic(connection => connection.get(key(name))),
-    getSnapshot: (names: string[]) => semantic(async connection => {
-      // Native GET replies avoid copying large values through the Lua interpreter.
-      const request = connection.multi().get(leaseKey)
-      for (const name of names) request.get(key(name))
-      const [lease, ...values]: unknown[] = await request.exec()
-      if (lease !== token) { loseLease(); throw new Error('独立宿主执行租约已失效') }
-      if (values.length !== names.length || !values.every((value): value is string | null => value === null || typeof value === 'string')) {
-        throw new Error('Redis 快照读取结果无效')
-      }
-      return values
-    }),
-    matchesStringDigests: (names: string[], digests: string[]) =>
-      semantic(async connection => await connection.eval(matchStringDigests, { keys: names.map(key), arguments: digests }) === 1),
-    eval: (script: string, options: { keys: string[]; arguments: string[]; isCurrent?: () => boolean }) =>
-      semantic(connection => options.isCurrent?.() === false ? Promise.resolve(0) : evaluate(connection, script, options.keys, options.arguments)),
-  }
+  const semantic = semanticConnection('semantic_redis_command')
+  const capture = semanticConnection('semantic_capture_redis_command')
 
   return {
     storage,
-    semanticStorage,
+    semanticStorage: { ...semantic.storage, captureStorage: capture.storage },
     isCurrent,
     async close(): Promise<void> {
       running = false
       clearInterval(timer)
-      if (semanticClient?.isOpen) semanticClient.destroy()
-      await semanticTail
+      await Promise.all([semantic.close(), capture.close()])
       await heartbeat
       try { if (client.isReady) await client.eval(releaseLease, { keys: [leaseKey], arguments: [token] }) }
       finally { if (client.isOpen) await client.close() }

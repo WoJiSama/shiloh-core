@@ -70,6 +70,39 @@ test('semantic sources and vectors survive store recreation with host-prefixed k
   assert.equal(await f.store.update(input.id, () => undefined), true)
 })
 
+test('a legacy indexed corpus migrates once and later intake neither reads nor rewrites its packed vectors', redisTest, async t => {
+  const f = await fixture(t, 'semantic-store-vector-migration')
+  const vector = Array.from({ length: 1024 }, (_, index) => Math.sin(index + 1) / 32)
+  const input = state(scope(), Array.from({ length: 64 }, (_, index) => row(index + 1, { vector, providerId })))
+  await f.rawSet(catalogKey, catalog([input]))
+  await f.rawSet(stateKey(input.id), JSON.stringify(input))
+  let intakeReads = 0, intakeWrites = []
+  const store = createAgentSemanticMemoryStore({ ...f.storage, captureStorage: {
+    get: f.storage.get,
+    async eval(script, options) {
+      assert.ok(!script.includes('HGETALL'), 'intake may only read source metadata')
+      if (script.includes("redis.call('SET'")) intakeWrites.push(options.arguments.reduce((sum, arg) => sum + Buffer.byteLength(arg), 0))
+      else intakeReads++
+      return f.storage.eval(script, options)
+    },
+  } })
+  const append = index => store.updateSources(input.id, saved => ({ ...saved, rows: [...saved.rows, row(index)] }), () => true, () => {})
+  assert.equal(await append(65), true)
+  const text = await f.rawGet(stateKey(input.id))
+  assert.ok(Buffer.byteLength(text) < 16 * 1024)
+  assert.ok(JSON.parse(text).rows.every(row => !row.vector && !row.providerId))
+  const vectors = await f.reader.hGetAll(f.prefix + prefix + ':vectors:' + input.id)
+  assert.equal(Object.keys(vectors).length, input.rows.length)
+  assert.ok(Object.values(vectors).reduce((size, value) => size + Buffer.byteLength(value), 0) < Buffer.byteLength(JSON.stringify(input)) * 0.6)
+  intakeWrites = []
+  assert.equal(await append(66), true)
+  assert.equal(intakeReads, 2)
+  assert.equal(intakeWrites.length, 1)
+  assert.ok(intakeWrites[0] < 32 * 1024)
+  assert.deepEqual(await f.reader.hGetAll(f.prefix + prefix + ':vectors:' + input.id), vectors)
+  assert.deepEqual(await store.read(input.id), { ...input, rows: [...input.rows, row(65), row(66)] })
+})
+
 test('standalone semantic snapshot traffic cannot hold up the inbox socket or dispatch a revoked queued write', redisTest, async t => {
   const f = await fixture(t, 'semantic-store-isolation')
   const peers = []
@@ -107,11 +140,14 @@ test('standalone semantic snapshot traffic cannot hold up the inbox socket or di
     await assert.rejects(redis.semanticStorage.get('over-limit'))
     assert.deepEqual(events.map(event => [event.operation, event.code]), [['semantic_redis_command', 'redis_command_queue_full']])
     assert.equal(await redis.storage.get('inbox'), 'ready')
+    assert.equal(await corpus.updateSources(input.id, saved => ({ ...saved, rows: [...saved.rows, row(2)] }), () => true, () => {}), true)
+    assert.equal(peers.length, 3)
     current = false
     const pending = await Promise.race([blocked.then(() => false, () => false), delay(2_150, true)])
     assert.equal(pending, true)
     socket.resume()
     assert.deepEqual(await blocked, input)
+    assert.deepEqual(await corpus.read(input.id), { ...input, rows: [...input.rows, row(2)] })
     assert.equal(await write, 0)
     assert.deepEqual(await Promise.all(remaining), Array(6).fill('ready'))
     assert.equal(await redis.storage.get('revoked'), null)
@@ -143,6 +179,27 @@ test('source import is read-only until CAS and a concurrent cleanup aborts the p
   await commit(after)
   assert.equal(await f.reader.get(witness), 'history')
   assert.deepEqual((await f.store.read(id)).rows, [row(2, { authorId: 'another-author' })])
+})
+
+test('archive imports preserve the physical rows needed to finish an interrupted vector purge', redisTest, async t => {
+  const f = await fixture(t, 'semantic-store-import-hidden-vector')
+  const input = state(scope(), [row(1, { vector: [1, 0], providerId })])
+  await f.store.update(input.id, () => input)
+  const unavailable = createAgentSemanticMemoryStore({ get: f.storage.get, async eval(script, options) {
+    if (options.keys.includes(stateKey(input.id))) throw new Error('interrupted physical cleanup')
+    return f.storage.eval(script, options)
+  } })
+  const cleanup = { account: input.scope.target.account, agentId: input.scope.agentId, target: input.scope.target,
+    subjectId: input.rows[0].authorId, through: epoch + 1 }
+  const guard = { signal: new AbortController().signal, isCurrent: () => true, async ensureCurrent() {} }
+  assert.equal((await unavailable.purgeSubject(cleanup, guard)).cleanup, 'unknown')
+  const fresh = row(2)
+  const importPlan = await f.store.planSourceImport(input.scope, [fresh], 1)
+  assert.equal(importPlan.imported, 1)
+  await commitStandaloneTransfer(f.reader, importPlan.checks.map(check => ({ ...check, key: f.prefix + check.key })))
+  assert.deepEqual((await f.store.read(input.id)).rows, [fresh])
+  assert.equal((await f.store.purgeSubject(cleanup, guard)).removedVectors, 1)
+  assert.equal(await f.reader.exists(f.prefix + prefix + ':vectors:' + input.id), 0)
 })
 
 test('scope discovery reads only bounded catalog metadata without loading message or vector state bodies', redisTest, async t => {

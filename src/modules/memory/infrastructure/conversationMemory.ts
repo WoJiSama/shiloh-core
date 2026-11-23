@@ -3,11 +3,11 @@ import type { AgentBindingSnapshot, ConversationAddress } from '../../../contrac
 import type { IncomingMessage } from '../../../contracts/platformMessage.js'
 import type { PersonaScope } from '../../../contracts/persona.js'
 import type { PersonMemoryStore } from '../../../contracts/personMemory.js'
-import type { PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
 import type { ConversationEpisodeInput, ConversationMemoryState, ConversationMemoryRecord, ConversationSummaryModel, MidtermMemoryConfig, EpisodicMemoryConfig,
-  AgentConversationMemoryPurgeSubject, AgentConversationMemoryCleanupGuard, AgentConversationMemoryCleanupReceipt } from '../../../contracts/conversationMemory.js'
+  AgentConversationMemoryPurgeSubject, AgentConversationMemoryCleanupGuard, AgentConversationMemoryCleanupReceipt,
+  ConversationSummaryContext, ConversationSummaryModelPhase } from '../../../contracts/conversationMemory.js'
 import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js'
-import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import type { AgentDiagnosticInput, AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey } from '../../runtime/domain/agentBindings.js'
 import { simulationAddressKey } from '../../simulation/infrastructure/simulationAddress.js'
 import { isPersonMemoryRedacted } from '../domain/personMemory.js'
@@ -20,6 +20,13 @@ import { AgentConversationSummaryError } from './agentConversationSummary.js'
 
 type MemoryTurn = { isCurrent(): boolean; signal: AbortSignal; release(): void }
 const DAY = 86_400_000
+const MAX_SUMMARY_ATTEMPTS = 3
+const summaryStages = {
+  acquire: 'memory', sources: 'memory', request_authorization: 'memory', request_prepare: 'model',
+  model: 'model', provider_http: 'model', provider_body: 'model', response_authorization: 'memory',
+  response_validation: 'model', save_authorization: 'memory', save: 'memory', retry: 'memory',
+} satisfies Record<ConversationSummaryModelPhase | 'acquire' | 'sources' | 'model' | 'save_authorization' | 'save' | 'retry', AgentDiagnosticInput['stage']>
+type SummaryPhase = keyof typeof summaryStages
 function boundedNumber(value: number | undefined, fallback: number, minimum: number, maximum: number) {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(minimum, Math.min(maximum, Math.floor(value))) : fallback
 }
@@ -35,12 +42,13 @@ export function createConversationMemory(ports: {
   available(target: ConversationAddress): boolean
   privatePeer(target: ConversationAddress): string | undefined
   isRecalled(target: ConversationAddress, messageId: string): Promise<boolean>
+  recalledMessageIds?(target: ConversationAddress, messageIds: readonly string[], signal: AbortSignal): Promise<ReadonlySet<string>>
   begin(binding: AgentBindingSnapshot): Promise<MemoryTurn>
   isRunning(): boolean
   observeCurrent?(check: () => boolean): boolean
   allowsText(text: string): boolean
   logger: { warn(message: string, error?: unknown): void }
-  diagnostics?: Pick<AgentDiagnostics, 'emit'>
+  diagnostics?: Pick<AgentDiagnostics, 'emit'> & Partial<Pick<AgentDiagnostics, 'withScope'>>
   recordUsage?(input: { scope: string; stage: string; model?: string; usage?: unknown; ms?: number }): void
   now?(): number
 }) {
@@ -88,16 +96,34 @@ export function createConversationMemory(ports: {
   const source = (binding: AgentBindingSnapshot, row: ConversationMemoryRecord) => ({
     scene: scene(binding.target, row.peerId), authorId: row.authorId, messageId: row.messageId, at: row.at, excerpt: row.text,
   })
-  async function safeRecords(binding: AgentBindingSnapshot, rows: readonly ConversationMemoryRecord[]) {
+  async function safeRecords(binding: AgentBindingSnapshot, rows: readonly ConversationMemoryRecord[], signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    const candidates = rows.filter(row => (binding.target.kind !== 'private' || ports.privatePeer(binding.target) === row.authorId) && ports.allowsText(row.text))
+    if (!candidates.length) return []
+    const recalled = signal && ports.recalledMessageIds
+      ? await ports.recalledMessageIds(binding.target, candidates.map(row => row.messageId), signal) : undefined
+    const sources: ConversationMemoryRecord[] = []
+    for (const row of candidates) {
+      signal?.throwIfAborted()
+      if (!(recalled ? recalled.has(row.messageId) : await ports.isRecalled(binding.target, row.messageId))) sources.push(row)
+    }
+    signal?.throwIfAborted()
+    if (!sources.length) return []
+    const owner = identity(binding)
+    const batch = signal && ports.memory.getRedactionsBatch
+      ? await ports.memory.getRedactionsBatch(owner, sources.map(row => row.authorId), signal) : undefined
     const snapshots = new Map<string, Awaited<ReturnType<PersonMemoryStore['getRedactions']>>>()
     const result: ConversationMemoryRecord[] = []
-    for (const row of rows) {
-      if (binding.target.kind === 'private' && ports.privatePeer(binding.target) !== row.authorId) continue
-      if (!ports.allowsText(row.text) || await ports.isRecalled(binding.target, row.messageId)) continue
-      let state = snapshots.get(row.authorId)
-      if (!state) { state = await ports.memory.getRedactions({ identity: identity(binding), subjectId: row.authorId }); snapshots.set(row.authorId, state) }
+    for (const row of sources) {
+      signal?.throwIfAborted()
+      let state = batch?.get(row.authorId) ?? snapshots.get(row.authorId)
+      if (!state) {
+        state = await ports.memory.getRedactions({ identity: owner, subjectId: row.authorId })
+        snapshots.set(row.authorId, state)
+      }
       if (!isPersonMemoryRedacted(source(binding, row), row.text, state)) result.push(row)
     }
+    signal?.throwIfAborted()
     return result
   }
   async function epoch(binding: AgentBindingSnapshot) {
@@ -217,6 +243,22 @@ export function createConversationMemory(ports: {
     let invalidatedAt = state.dueInvalidatedAt ?? 0
     let cleanupToken = state.dueCleanupToken
     let rows: ConversationMemoryRecord[] = []
+    let phase: { name: SummaryPhase; started: number } | undefined
+    function emit(input: AgentDiagnosticInput) {
+      try { ports.diagnostics?.emit(input) } catch { /* Diagnostics must not interrupt the attempt. */ }
+    }
+    function finishPhase(outcome: AgentDiagnosticInput['outcome'], evidence: Pick<AgentDiagnosticInput, 'code' | 'error' | 'httpStatus'> = {}) {
+      if (!phase) return
+      const { name, started } = phase
+      phase = undefined
+      emit({ stage: summaryStages[name], operation: `summary_${name}`, outcome, durationMs: performance.now() - started, ...evidence })
+    }
+    function enterPhase(name: SummaryPhase, httpStatus?: number) {
+      if (phase?.name === name) return
+      finishPhase('succeeded', httpStatus === undefined ? {} : { httpStatus })
+      phase = { name, started: performance.now() }
+      emit({ stage: summaryStages[name], operation: `summary_${name}`, outcome: 'started' })
+    }
     const ready = () => activeTurn && summaryEnabled() && current(binding) && ports.available(target) && turn?.isCurrent() !== false
     const scopeCurrent = () => {
       try { return ports.observeCurrent ? ports.observeCurrent(ready) === true : ready() }
@@ -234,28 +276,40 @@ export function createConversationMemory(ports: {
     const poll = setInterval(() => { if (!isCurrent()) controller.abort() }, 50)
     timer.unref?.(); poll.unref?.()
     const ensureCurrent = () => bounded((async () => {
-      if (!isCurrent() || await epoch(binding) !== invalidatedAt || (await safeRecords(binding, rows)).length !== rows.length ||
-          !await canReadUnattributedMemory(ports.memory, identity(binding), scene(target)) ||
+      if (!isCurrent() || await epoch(binding) !== invalidatedAt || (await safeRecords(binding, rows, controller.signal)).length !== rows.length ||
+          !await canReadUnattributedMemory(ports.memory, identity(binding), scene(target), controller.signal) ||
           await store.cleanupToken(binding) !== cleanupToken || !isCurrent()) throw new Error('主线摘要来源已改变')
     })())
     try {
+      enterPhase('acquire')
       const acquired = await bounded(ports.begin(binding).then(value => {
         if (!activeTurn || controller.signal.aborted) { value.release(); throw new Error('主线摘要已取消') }
         turn = value; return value
       }))
       acquired.signal.addEventListener('abort', abortPrivacy, { once: true })
       if (acquired.signal.aborted) controller.abort()
+      enterPhase('sources')
       cleanupToken = await bounded(store.cleanupToken(binding))
       state = await bounded(store.filterState(state))
       invalidatedAt = await bounded(epoch(binding))
-      if (!sameScheduleGeneration(state, invalidatedAt, cleanupToken)) return
+      if (!sameScheduleGeneration(state, invalidatedAt, cleanupToken)) {
+        finishPhase('cancelled', { code: 'summary_source_changed' })
+        return
+      }
       const previous = state.summary && state.summary.cleanupToken === cleanupToken && state.summary.invalidatedAt === invalidatedAt && state.summary.updatedAt >= now() - retention() ? state.summary : undefined
-      rows = await safeRecords(binding, state.records.filter(row => row.seq > (previous?.coveredSeq ?? 0) && row.at > invalidatedAt && row.at >= now() - retention()).slice(0, 200))
-      if (rows.length < minMessages()) return
+      rows = await bounded(safeRecords(binding, state.records.filter(row => row.seq > (previous?.coveredSeq ?? 0) && row.at > invalidatedAt && row.at >= now() - retention()).slice(0, 200), controller.signal))
+      if (rows.length < minMessages()) {
+        finishPhase('cancelled', { code: 'summary_insufficient_sources' })
+        return
+      }
+      enterPhase('request_authorization')
       await ensureCurrent()
       const frozenTarget = Object.freeze({ ...target, account: Object.freeze({ ...target.account }) })
-      const context: PersonProfileExtractionContext = Object.freeze({ target: frozenTarget, binding: Object.freeze({ ...binding, target: frozenTarget }), signal: controller.signal,
+      const context: ConversationSummaryContext = Object.freeze({ target: frozenTarget, binding: Object.freeze({ ...binding, target: frozenTarget }), signal: controller.signal,
         isCurrent, ensureCurrent,
+        observePhase(name: ConversationSummaryModelPhase, httpStatus?: number) {
+          if (activeTurn && !controller.signal.aborted) enterPhase(name, httpStatus)
+        },
         recordUsage(model: string, usage: unknown) {
           if (!activeTurn || usageRecorded) return
           usageRecorded = true
@@ -263,24 +317,55 @@ export function createConversationMemory(ports: {
         },
       })
       const input = Object.freeze({ previous: previous?.text ?? '', maxChars: maxChars(), messages: Object.freeze(rows.map(row => Object.freeze({ at: row.at, authorId: row.authorId, name: row.name, text: row.text }))) })
+      enterPhase('model')
       const text = await bounded(Promise.resolve().then(() => { if (!isCurrent()) throw new Error('主线摘要已取消'); return ports.summarize!(input, context) }))
       if (typeof text !== 'string' || !text.trim() || Array.from(text).length > maxChars() || !ports.allowsText(text)) throw new Error('主线摘要格式无效')
+      enterPhase('save_authorization')
       await ensureCurrent()
       const coveredSeq = rows.at(-1)!.seq
-      await store.update(state.id, saved => {
-        if (!saved || saved.token !== state.token || !sameScheduleGeneration(saved, invalidatedAt, cleanupToken)) return saved
+      enterPhase('save')
+      let writeCurrent = false
+      const saved = await bounded(store.update(state.id, saved => {
+        writeCurrent = !!saved && saved.token === state.token && sameScheduleGeneration(saved, invalidatedAt, cleanupToken)
+        if (!saved || !writeCurrent) return saved
         const remaining = saved.records.filter(row => row.seq > coveredSeq && row.at > invalidatedAt)
         return { ...saved, summary: { text: text.trim(), updatedAt: now(), coveredSeq, invalidatedAt, ...(cleanupToken ? { cleanupToken } : {}) },
           dueAt: remaining.length >= minMessages() ? now() + debounce() : 0, dueInvalidatedAt: invalidatedAt, attempts: 0, retryAt: 0 }
-      }, isCurrent)
+      }, isCurrent))
+      if (!saved || !writeCurrent) finishPhase('cancelled', { code: 'summary_source_changed' })
+      else finishPhase('succeeded', { code: 'summary_saved' })
     } catch (error) {
-      const canRecordFailure = () => isCurrent() || timedOut && scopeCurrent()
-      if (canRecordFailure() && await store.cleanupToken(binding) === cleanupToken) {
-        await store.update(state.id, saved => saved && saved.token === state.token && sameScheduleGeneration(saved, invalidatedAt, cleanupToken) ? { ...saved, attempts: saved.attempts + 1,
-          retryAt: now() + Math.min(300_000, 15_000 * 2 ** saved.attempts) } : saved, canRecordFailure).catch(() => {})
-        reportFailure(timedOut ? 'summary_timeout' : 'summary_failed', '[Agent] 主线摘要未完成，保留来源等待有限重试', error, now() - startedAt)
+      if (!isCurrent() && !(timedOut && scopeCurrent())) return
+      const provider = error instanceof AgentConversationSummaryError ? error : undefined
+      const code = timedOut || (provider?.code === 'provider_timeout' && phase && summaryStages[phase.name] === 'memory')
+        ? 'summary_timeout' : provider?.code ?? 'summary_failed'
+      finishPhase(timedOut && phase?.name === 'save' ? 'unknown' : 'failed', {
+        code, error, ...(provider?.httpStatus === undefined ? {} : { httpStatus: provider.httpStatus }),
+      })
+      if (!ports.diagnostics) reportFailure(code, '[Agent] 主线摘要未完成，保留来源等待有限重试', error, now() - startedAt)
+      controller.abort()
+      enterPhase('retry')
+      try {
+        if (await store.cleanupToken(binding) !== cleanupToken) {
+          finishPhase('cancelled', { code: 'summary_source_changed' })
+          return
+        }
+        let attempts: number | undefined
+        const saved = await store.update(state.id, saved => {
+          attempts = undefined
+          if (!saved || saved.token !== state.token || !sameScheduleGeneration(saved, invalidatedAt, cleanupToken) ||
+              saved.summary?.coveredSeq !== state.summary?.coveredSeq) return saved
+          attempts = saved.attempts + 1
+          return { ...saved, attempts, retryAt: now() + Math.min(300_000, 15_000 * 2 ** saved.attempts) }
+        }, scopeCurrent)
+        if (!saved || attempts === undefined) finishPhase('cancelled', { code: 'summary_source_changed' })
+        else finishPhase('succeeded', { code: attempts >= MAX_SUMMARY_ATTEMPTS ? 'summary_retry_exhausted' : 'summary_retry_scheduled' })
+      } catch (retryError) {
+        finishPhase('failed', { code: 'summary_retry_failed', error: retryError })
+        if (!ports.diagnostics) reportFailure('summary_retry_failed', '[Agent] 主线摘要重试状态未保存', retryError)
       }
     } finally {
+      finishPhase('cancelled', { code: 'summary_cancelled' })
       activeTurn = false; clearTimeout(timer); clearInterval(poll)
       turn?.signal.removeEventListener('abort', abortPrivacy); turn?.release()
       controller.signal.removeEventListener('abort', abort); controller.abort()
@@ -312,7 +397,7 @@ export function createConversationMemory(ports: {
           }, () => current(state.binding))
           continue
         }
-        if (state.attempts >= 3 || state.retryAt > now()) continue
+        if (state.attempts >= MAX_SUMMARY_ATTEMPTS || state.retryAt > now()) continue
         const previous = state.summary && state.summary.cleanupToken === cleanupToken && state.summary.invalidatedAt === invalidatedAt && state.summary.updatedAt >= now() - retention() ? state.summary : undefined
         const fresh = state.records.filter(row => row.seq > (previous?.coveredSeq ?? 0) && row.at > invalidatedAt && row.at >= now() - retention())
         if (fresh.length < minMessages()) continue
@@ -320,8 +405,13 @@ export function createConversationMemory(ports: {
           await store.update(state.id, saved => saved && sameScheduleGeneration(saved, invalidatedAt, cleanupToken) ? { ...saved, dueAt: now() + debounce() } : saved, () => current(state.binding)); continue
         }
         if (state.dueAt > now()) continue
+        // Another attempt may have backed off or finished while the sweep was reading its snapshot.
+        const latest = await store.load(state.id)
+        if (!latest || latest.token !== state.token || !sameScheduleGeneration(latest, invalidatedAt, cleanupToken) ||
+            !latest.dueAt || latest.dueAt > now() || latest.attempts >= MAX_SUMMARY_ATTEMPTS || latest.retryAt > now()) continue
         const controller = new AbortController()
-        const promise = summarize(state, controller).catch(error => reportFailure('summary_store_unavailable', '[Agent] 主线摘要存储暂时不可用', error))
+        const run = () => summarize(latest, controller).catch(error => reportFailure('summary_store_unavailable', '[Agent] 主线摘要存储暂时不可用', error))
+        const promise = (ports.diagnostics?.withScope ? ports.diagnostics.withScope({ kind: 'conversation', binding: latest.binding }, 'conversation_summary', run) : run())
           .finally(() => { active.delete(state.id) })
         active.set(state.id, { ...state.scope, controller, promise })
       }

@@ -11,7 +11,8 @@ import { isPersonMemoryRedacted } from '../domain/personMemory.js'
 import { sanitizeUntrustedText } from '../../simulation/domain/safety.js'
 import { describeMemoryTime } from './engine/temporalContext.js'
 import { canReadUnattributedMemory, personMemoryAddress } from './personMemoryContext.js'
-import { agentSemanticMemoryId, createAgentSemanticMemoryStore, type AgentSemanticMemoryRedis, type AgentSemanticMemoryRow } from './agentSemanticMemoryStore.js'
+import { agentSemanticMemoryId, createAgentSemanticMemoryStore, sameSemanticMemorySource,
+  type AgentSemanticMemoryRedis, type AgentSemanticMemoryRow } from './agentSemanticMemoryStore.js'
 import { ensureSemanticCleanup, semanticCleanupCurrent, semanticCleanupMatchesScope, semanticCleanupSelector } from './agentSemanticMemoryCleanup.js'
 import { AgentSemanticMemoryTimeoutError, prepareAgentSemanticRanking, type AgentSemanticRetrievalOptions, type AgentSemanticRetrievalTrace } from './agentSemanticRetrieval.js'
 
@@ -24,6 +25,7 @@ export function semanticMemoryFailureCode(error: unknown, use: 'capture' | 'inde
   if (error instanceof SemanticProviderError) return `semantic_${use}_provider_failed`
 }
 const DAY = 86_400_000
+const captureIdleMs = 15_000
 function bounded(value: number | undefined, fallback: number, minimum: number, maximum: number) {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(minimum, Math.min(maximum, value)) : fallback
 }
@@ -91,13 +93,14 @@ export function createAgentSemanticMemory(ports: {
         agentBindingToken(selected.binding) === agentBindingToken(binding)
     } catch { return false }
   }
-  async function permitted(binding: AgentBindingSnapshot, rows: readonly AgentSemanticMemoryRow[], signal: AbortSignal, observed = false): Promise<AgentSemanticMemoryRow[]> {
+  async function permitted(binding: AgentBindingSnapshot, rows: readonly AgentSemanticMemoryRow[], signal: AbortSignal, observed = false,
+    intake = false): Promise<AgentSemanticMemoryRow[]> {
     signal.throwIfAborted()
     if (!rows.length) return []
     const cutoff = now() - retention(), latest = now() + 60_000
     const peer = binding.target.kind === 'private' ? ports.privatePeer(binding.target) : undefined
     // Observed rows already passed the cleanup fence in the same snapshot.
-    const candidates = (observed ? rows : await store.filterRows(binding, rows)).filter(row => row.at >= cutoff && row.at <= latest &&
+    const candidates = (observed ? rows : await store.filterRows(binding, rows, intake)).filter(row => row.at >= cutoff && row.at <= latest &&
       (binding.target.kind !== 'private' || peer === row.authorId) && ports.allowsText(row.text))
     signal.throwIfAborted()
     const recalled = ports.recalledMessageIds && candidates.length
@@ -123,7 +126,7 @@ export function createAgentSemanticMemory(ports: {
       if (!isPersonMemoryRedacted(source(binding, row), row.text, snapshot)) result.push(row)
     }
     signal.throwIfAborted()
-    return store.filterRows(binding, result)
+    return store.filterRows(binding, result, intake)
   }
   async function present(binding: AgentBindingSnapshot, rows: readonly AgentSemanticMemoryRow[], signal: AbortSignal): Promise<boolean> {
     if (!rows.length) return true
@@ -133,10 +136,11 @@ export function createAgentSemanticMemory(ports: {
     const byId = new Map(current.state?.rows.map(row => [row.messageId, row]))
     return rows.every(row => {
       const stored = byId.get(row.messageId)
-      return stored && stored.authorId === row.authorId && stored.text === row.text && stored.at === row.at && stored.name === row.name && stored.peerId === row.peerId
+      return stored && sameSemanticMemorySource(stored, row)
     })
   }
-  async function withContext<T>(binding: AgentBindingSnapshot, guard: () => boolean, timeout: number, work: (context: PersonProfileExtractionContext) => Promise<T>,
+  async function withContext<T>(binding: AgentBindingSnapshot, guard: () => boolean, budget: number | { idleMs: number },
+    work: (context: PersonProfileExtractionContext, progress: () => void) => Promise<T>,
     related: readonly AgentBindingSnapshot[] = [], callerSignal?: AbortSignal, phase?: () => AgentSemanticMemoryTimeoutError['phase'], readRecords = false): Promise<T> {
     const records = readRecords && binding.target.kind === 'group' && !!ports.beginRecordsRead
     const turn = await (records ? ports.beginRecordsRead!(binding) : ports.begin(binding))
@@ -147,13 +151,21 @@ export function createAgentSemanticMemory(ports: {
     const authorized = () => !signal.aborted && turn.isCurrent() && guard() && current(binding, records) && related.every(item => current(item))
     const isCurrent = () => !signal.aborted && (ports.observeCurrent ? ports.observeCurrent(authorized) : authorized())
     const poll = setInterval(() => { if (!isCurrent()) controller.abort() }, 25)
-    const deadline = setTimeout(() => controller.abort(new AgentSemanticMemoryTimeoutError(phase?.())), timeout)
-    poll.unref?.(); deadline.unref?.()
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    const armDeadline = () => {
+      clearTimeout(deadline)
+      deadline = setTimeout(() => controller.abort(new AgentSemanticMemoryTimeoutError(phase?.())),
+        typeof budget === 'number' ? budget : budget.idleMs)
+      deadline.unref?.()
+    }
+    const progress = () => { if (typeof budget !== 'number' && !signal.aborted) armDeadline() }
+    armDeadline()
+    poll.unref?.()
     try {
       if (!isCurrent()) throw new SemanticSourceChangedError('语义记忆来源已失效')
       return await abortable(work({ target: binding.target, binding, signal, isCurrent,
         async ensureCurrent() { if (!isCurrent()) throw new SemanticSourceChangedError('语义记忆来源已失效') },
-      }), signal)
+      }, progress), signal)
     } finally {
       clearInterval(poll); clearTimeout(deadline)
       controller.abort()
@@ -173,16 +185,19 @@ export function createAgentSemanticMemory(ports: {
       ...(binding.target.kind === 'private' ? { peerId: incoming.sender.id } : {}),
     }
     let phase: 'authorization' | 'save' = 'authorization'
-    await withContext(binding, guard, 5000, async context => {
-      if (!(await permitted(binding, [row], context.signal)).length || !context.isCurrent()) return
+    await withContext(binding, guard, { idleMs: captureIdleMs }, async (context, progress) => {
+      if (!(await permitted(binding, [row], context.signal, false, true)).length || !context.isCurrent()) return
+      progress()
       if (!await ports.memory.registerSource({ identity: identity(binding), subjectId: row.authorId, source: source(binding, row) }, context.isCurrent)) return
       phase = 'save'
-      const saved = await store.update(agentSemanticMemoryId(binding), saved => {
+      progress()
+      const id = agentSemanticMemoryId(binding)
+      const saved = await store.updateSources(id, saved => {
         if (saved?.rows.some(item => item.messageId === row.messageId)) return saved
-        return { version: 1, id: agentSemanticMemoryId(binding), scope: { agentId: binding.agentId, target: structuredClone(binding.target) },
+        return { version: 1, id, scope: { agentId: binding.agentId, target: structuredClone(binding.target) },
           rows: [...(saved?.rows ?? []).filter(item => item.at >= now() - retention()), row].slice(-limit()) }
-      }, context.isCurrent)
-      if (saved) dirty.add(agentSemanticMemoryId(binding))
+      }, context.isCurrent, progress)
+      if (saved) dirty.add(id)
     }, [], undefined, () => phase)
   }
 
@@ -198,7 +213,8 @@ export function createAgentSemanticMemory(ports: {
         const allowedIds = new Set(allowed.map(row => row.messageId))
         const savedIds = new Set(saved.rows.map(row => row.messageId))
         step('save')
-        await store.update(id, state => state && ({ ...state, rows: state.rows.filter(row => allowedIds.has(row.messageId) || !savedIds.has(row.messageId)).slice(-limit()) }), context.isCurrent)
+        await store.updateSources(id, state => state && ({ ...state,
+          rows: state.rows.filter(row => allowedIds.has(row.messageId) || !savedIds.has(row.messageId)).slice(-limit()) }), context.isCurrent)
       }
       const batch = allowed.filter(row => !row.vector || row.providerId !== ports.backend!.id).slice(0, 8)
       if (!batch.length || !context.isCurrent()) return
@@ -226,8 +242,11 @@ export function createAgentSemanticMemory(ports: {
         throw new Error('语义索引收到无效向量')
       }
       step('save')
-      await store.update(id, state => state && ({ ...state, rows: state.rows.map(row => vectors.has(row.messageId)
-        ? { ...row, vector: vectors.get(row.messageId)!, providerId: ports.backend!.id } : row) }), context.isCurrent)
+      const sources = new Map(batch.map(row => [row.messageId, row]))
+      await store.updateSources(id, state => state && ({ ...state, rows: state.rows.map(row => {
+        const original = sources.get(row.messageId), indexed = vectors.get(row.messageId)
+        return original && indexed && sameSemanticMemorySource(original, row) ? { ...row, vector: indexed, providerId: ports.backend!.id } : row
+      }) }), context.isCurrent)
       retryAt.delete(id)
       if (allowed.some(row => !vectors.has(row.messageId) && (!row.vector || row.providerId !== ports.backend!.id))) dirty.add(id)
     })
@@ -480,9 +499,9 @@ export function createAgentSemanticMemory(ports: {
     // Retire expired source data even while its old Agent is no longer bound.
     let observed = await store.observe(id)
     const cutoff = now() - retention()
-    if (observed.hiddenRows || observed.state && (!observed.state.rows.length || observed.state.rows.length > limit() ||
+    if (observed.hasInlineVectors || observed.hiddenRows || observed.state && (!observed.state.rows.length || observed.state.rows.length > limit() ||
         observed.state.rows.some(row => row.at < cutoff))) {
-      await store.update(id, saved => {
+      await store.updateSources(id, saved => {
         if (!saved) return saved
         const rows = saved.rows.filter(row => row.at >= cutoff).slice(-limit())
         return rows.length ? { ...saved, rows } : undefined

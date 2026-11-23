@@ -140,6 +140,37 @@ async function fixture(t, options = {}) {
   return f
 }
 
+test('semantic intake can exceed the inactivity window in total when its storage steps keep making progress', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const reading = Promise.withResolvers(), writing = Promise.withResolvers()
+  const snapshot = Promise.withResolvers(), commit = Promise.withResolvers()
+  const binding = { source: 'configured', id: conversationAddressKey(room), revision: 'v1', agentId: 'writer',
+    personaId: 'same-persona', connectionId: 'fixture', target: room }
+  const composer = createAgentSemanticMemory({
+    redis: {
+      async get() { return null },
+      getSnapshot() { reading.resolve(); return snapshot.promise },
+      eval() { writing.resolve(); return commit.promise },
+    },
+    memory: { async getRedactions() { return { disabled: false, forgottenBefore: 0, scenes: [], revokedSources: [], tombstones: [] } },
+      async registerSource() { return true } },
+    backend: { id: providerA, async embed() { return [] } }, config: () => ({ enabled: true }),
+    resolve: () => ({ binding }), available: () => true, privatePeer: () => undefined, async isRecalled() { return false },
+    async begin() { return { signal: new AbortController().signal, isCurrent: () => true, release() {} } },
+    isRunning: () => true, allowsText: () => true, logger: { warn() {} },
+  })
+  t.after(() => composer.stop())
+  const result = composer.capture({ version: 1, conversation: room, sender: actor, messageId: 'slow-source', occurredAt: Date.now(),
+    text: 'slow capture', parts: [{ kind: 'text', text: 'slow capture' }], mentions: [], directedToAccount: false }, binding, () => true)
+  await reading.promise
+  t.mock.timers.tick(10_000)
+  snapshot.resolve([null, null, null, null])
+  await writing.promise
+  t.mock.timers.tick(10_000)
+  commit.resolve(1)
+  await result
+})
+
 test('batched source and privacy reads preserve missing, wrong-type, and changed-source behavior', redisTest, async t => {
   const f = await fixture(t)
   assert.deepEqual(await f.storage.getMany(['absent-a', 'absent-b']), [null, null])

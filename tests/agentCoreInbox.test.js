@@ -199,7 +199,7 @@ test('Core ingests independent accounts while a quoted message stalls another ac
   }
 })
 
-test('a semantic storage timeout identifies the failed inbox step and keeps the source for retry', { ...redisTest, timeout: 15_000 }, async t => {
+test('only sustained semantic storage inactivity triggers a retry and the original stays queued', { ...redisTest, timeout: 25_000 }, async t => {
   const { reader, storage, prefix, isCurrent } = await createAgentRedisFixture(t, 'agent-inbox-semantic-timeout')
   const directory = createAgentBindingDirectory({ version: 1, agents: [{ id: 'fixture', personaId: 'default' }],
     connections: [{ id: 'fixture', platform: first.account.platform, namespace: first.account.namespace, accountId: first.account.id }],
@@ -207,9 +207,10 @@ test('a semantic storage timeout identifies the failed inbox step and keeps the 
   }, 'inbox-semantic-timeout')
   const binding = directory.resolve(first)
   const stalled = deferred(), release = deferred(), failed = Promise.withResolvers()
+  const failures = []
   const logger = { info() {}, warn() {}, error() {} }
   const diagnostics = createAgentDiagnostics({ logger, onFailure(event) {
-    if (event.operation === 'consume_simulation') failed.resolve(event)
+    if (event.operation === 'consume_simulation') { failures.push(event); failed.resolve(event) }
   } })
   let accept, held = false
   const host = createAgentRuntime({
@@ -243,10 +244,12 @@ test('a semantic storage timeout identifies the failed inbox step and keeps the 
     await host.start()
     await accept({ kind: 'message', message: item })
     await stalled.promise
+    await delay(5250)
+    assert.deepEqual(failures, [], 'the old five-second total deadline must not abort a pending save')
     const failure = await failed.promise
     assert.equal(failure.code, 'semantic_capture_save_timeout')
     assert.deepEqual(failure.scope, { kind: 'conversation', binding, messageId: item.messageId })
-    assert.ok(failure.durationMs >= 4900)
+    assert.ok(failure.durationMs >= 14_900)
     const key = prefix + simulationKey(first)
     assert.equal(await reader.lLen(key), 1)
     release.resolve()

@@ -131,6 +131,9 @@ export function createAgentDiagnostics(options: {
     emit, logger,
     traceId: () => contexts.getStore()?.traceId ?? hostTrace,
     scope: (): AgentDiagnosticScope => contexts.getStore()?.scope ?? { kind: 'host' },
+    withScope<T>(scope: AgentDiagnosticScope, operation: string, fn: () => T): T {
+      return contexts.run({ scope, operation: token(operation), traceId: randomUUID() }, fn)
+    },
     async run<T>(scope: AgentDiagnosticScope, operation: string, fn: () => Promise<T>, stage: AgentDiagnosticEvent['stage'] = 'runtime'): Promise<T> {
       const parent = contexts.getStore()
       const sameTurn = !!parent && sameScope(parent.scope, scope)

@@ -37,7 +37,7 @@ async function listen(t, handler) {
 }
 
 test('conversation summary uses real HTTP, bounded conversational records and two prompt roles without host context', async t => {
-  const received = [], usage = []
+  const received = [], usage = [], phases = []
   const baseUrl = await listen(t, async (request, response) => {
     const chunks = []
     for await (const chunk of request) chunks.push(chunk)
@@ -53,7 +53,9 @@ test('conversation summary uses real HTTP, bounded conversational records and tw
   }))
   assert.equal(await provider({ baseUrl: `${baseUrl}/v1` })({
     previous: '🐕'.repeat(4010), messages, maxChars: 500, binding: 'private-input-binding',
-  }, context({ recordUsage: (...args) => usage.push(args) })), summary)
+  }, context({ recordUsage: (...args) => usage.push(args), observePhase: (...args) => phases.push(args) })), summary)
+  assert.deepEqual(phases, [['request_prepare'], ['request_authorization'], ['provider_http'], ['provider_body', 200],
+    ['response_authorization'], ['response_validation'], ['response_authorization']])
   assert.equal(received.length, 1)
   const request = received[0]
   assert.equal(request.path, '/v1/chat/completions')
