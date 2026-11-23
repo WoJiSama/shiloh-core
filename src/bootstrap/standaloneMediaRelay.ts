@@ -17,7 +17,7 @@ import { createAgentXiaohongshuRelayProvider } from '../modules/media/infrastruc
 import { createAgentYoutubeRelayProvider } from '../modules/media/infrastructure/agentYoutubeRelayProvider.js'
 import { createAgentPixivRelayProvider } from '../modules/media/infrastructure/agentPixivRelayProvider.js'
 import { normalizePixivCookie } from '../modules/media/infrastructure/agentPixivRelayHttp.js'
-import { validateYoutubeProxyUrl } from '../modules/media/infrastructure/agentYoutubeRelayHttp.js'
+import { validateYoutubeProxyUrl, youtubeCookieSecrets } from '../modules/media/infrastructure/agentYoutubeRelayHttp.js'
 import { validateAgentMediaShare } from '../modules/media/infrastructure/agentMediaRelayReference.js'
 import type { StandalonePixivToolsConfig } from './standalonePixiv.js'
 import type { AgentMediaRelayPrepareContext, AgentMediaRelayProvider, AgentMediaShare } from '../contracts/agentMediaRelayWorkflow.js'
@@ -108,14 +108,7 @@ export function readStandaloneMediaRelayConfig(input: unknown, connections: read
       const secret = env[reference]?.trim() ?? ''
       if (!secret) { if (requireCredentials) throw new Error(`环境变量 ${reference} 缺少 YouTube ${label}`); continue }
       if (resolved === 'authCookie') {
-        if (secret.length > 32768 || /[^\x20-\x7e]/u.test(secret)) throw failure()
-        const names = new Set<string>()
-        for (const part of secret.split(';').filter(part => part.trim())) {
-          const at = part.indexOf('='), key = part.slice(0, at).trim(), content = part.slice(at + 1).trim()
-          if (at < 1 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}$/u.test(key) || !content || /\s/u.test(content) || names.has(key)) throw failure()
-          names.add(key)
-        }
-        if (!names.size) throw failure()
+        youtubeCookieSecrets(secret)
       } else if (resolved === 'poToken') {
         if (secret.length > 8192 || !/^[A-Za-z0-9_+./=-]+$/u.test(secret)) throw failure()
       } else {
@@ -182,10 +175,11 @@ export function readStandaloneMediaRelayConfig(input: unknown, connections: read
   }
 }
 export function standaloneMediaRelaySecrets(config: StandaloneMediaRelayConfig): readonly string[] {
-  const secrets = [config.bilibili.authCookie, config.xiaohongshu?.authCookie, config.youtube?.authCookie, config.pixiv?.authCookie].flatMap(cookie => cookie ? [cookie, ...cookie.split(';').flatMap(part => {
+  const secrets = [config.bilibili.authCookie, config.xiaohongshu?.authCookie, config.pixiv?.authCookie].flatMap(cookie => cookie ? [cookie, ...cookie.split(';').flatMap(part => {
     const at = part.indexOf('='), content = part.slice(at + 1).trim()
     return at > 0 && content ? [content] : []
   })] : [])
+  if (config.youtube?.authCookie) secrets.push(...youtubeCookieSecrets(config.youtube.authCookie))
   if (config.youtube?.poToken) secrets.push(config.youtube.poToken)
   for (const value of [config.youtube?.proxyUrl, config.pixiv?.proxyUrl]) if (value) {
     secrets.push(value)

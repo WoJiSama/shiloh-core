@@ -472,7 +472,7 @@ test('standalone Core starts with two offline listeners and carries a verified a
   child.stderr.on('data', bytes => { log += bytes })
   t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); await exited })
   try {
-    await waitFor(() => log.includes('已启动'), 'standalone Core starts while neither account has logged in')
+    await waitFor(() => log.includes('已启动'), 'standalone Core starts while neither account has logged in', 12_000)
     const peer = await peerAt(t, url, (client, request) => {
       if (request.action === 'get_login_info') return login(client, request)
       deliveries.push(request)

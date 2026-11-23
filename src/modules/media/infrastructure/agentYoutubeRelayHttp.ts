@@ -7,6 +7,22 @@ import { isPublicAddress } from '../../shared/infrastructure/publicAddress.js'
 
 export type AgentYoutubeFailureCode = 'youtube_downloader_unavailable'|'youtube_access_required'|'youtube_region_restricted'|'youtube_metadata_timeout'|'youtube_metadata_failed'
 export const youtubeFailure = (code:AgentYoutubeFailureCode='youtube_metadata_failed') => Object.assign(new Error('YouTube 媒体获取失败：来源、权限、网络或内容不符合要求'),{code})
+
+export function youtubeCookieSecrets(cookie: string): string[] {
+  if (!cookie) return []
+  if (cookie.length > 32768 || /[^\x20-\x7e]/u.test(cookie)) throw youtubeFailure()
+  const names = new Set<string>(), secrets = [cookie]
+  for (const part of cookie.split(';')) {
+    if (!part.trim()) continue
+    const at = part.indexOf('='), name = part.slice(0, at).trim(), value = part.slice(at + 1).trim()
+    if (at < 1 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}$/u.test(name) || !value || /\s/u.test(value) || names.has(name)) throw youtubeFailure()
+    names.add(name)
+    // The binary GPS preference is public data. Guard the cookie pair and full header.
+    secrets.push(name === 'GPS' && /^[01]$/u.test(value) ? `${name}=${value}` : value)
+  }
+  if (!names.size) throw youtubeFailure()
+  return secrets
+}
 export type YoutubeRequestKind = 'video' | 'image'
 export interface AgentYoutubeRequestPolicy { readonly maxBytes: number; readonly headers: Readonly<Record<string, string>> }
 export interface AgentYoutubeResponse {
