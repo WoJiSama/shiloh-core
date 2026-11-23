@@ -675,7 +675,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   }
 
   /** 工具执行统一包装：事件含 reply 绑定（文本段/段数组归一 + message_id 回执） */
-  async function runSimTool(tool: AbstractTool, args: Record<string, unknown>, event: AgentBindingTurn, observed?: SimulationToolObservation): Promise<string> {
+  async function runSimTool(tool: AbstractTool, args: Record<string, unknown>,
+    event: AgentBindingTurn & { simulationReportOutcome?: ((status: 'succeeded' | 'failed') => void) | undefined },
+    observed?: SimulationToolObservation): Promise<string> {
     const started = Date.now(), operation = toolOperation(tool.name)
     if (event._isAgentBindingCurrent?.() === false) {
       const text = 'error: 工具所属回合已失效，未执行'
@@ -686,10 +688,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (!tool.agentDiagnosesExecution) diagnose({ stage: 'tool', operation, outcome: 'started' })
     try {
       let invalid: ToolParameterIssue | undefined, error: unknown
-      const result = await tool.execute(args, event, { invalid: issue => { invalid = issue }, failed: failure => { error = failure } })
+      let reported: 'succeeded' | 'failed' | undefined
+      const reporter = event.simulationReportOutcome
+      const toolEvent = reporter ? { ...event, simulationReportOutcome(status: 'succeeded' | 'failed') { reported = status; reporter(status) } } : event
+      const result = await tool.execute(args, toolEvent, { invalid: issue => { invalid = issue }, failed: failure => { error = failure } })
       const text = typeof result === 'string' ? result : JSON.stringify(result) ?? 'null'
       const classified = classifyCharacterResult(text)
-      const status = classified === 'unknown' && confirmedReadResult(tool.name, text) ? 'succeeded' : classified
+      const status = classified === 'unknown' && typeof result === 'string' && error === undefined
+        ? reported ?? (confirmedReadResult(tool.name, text) ? 'succeeded' : 'unknown') : classified
       if (!tool.agentDiagnosesExecution) {
         let code: string | undefined
         if (status !== 'succeeded' && ['simGetMessageImages', 'simGetForward', 'simSendPoke'].includes(tool.name)) {

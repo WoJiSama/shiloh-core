@@ -84,6 +84,13 @@ async function withFixture(t, options, run) {
       return event
     },
     async tick(ms = 0) { clock.at += ms; await current.host.resumePendingWork() },
+    async simulatedTurnSettled(target) {
+      const runtime = current.host.runtime
+      return waitFor(async () => {
+        const state = await runtime.describeGroup(runtime.conversationKey(target))
+        return state.lastWakeAtAgo !== null && !state.running
+      }, 'simulation turn settled')
+    },
     async acknowledged(target, id, mode = 'teaching', agentId = fixture.binding(target).agentId) {
       return waitFor(async () => {
         const owner = await fixture.owner(target, agentId)
@@ -718,9 +725,11 @@ test('simulation exposes the same guarded workflow tool only to a genuine user w
     f.roles.set('speaker-a', 'admin')
     await f.send(group, 'sim-teach-workflow', teaching, { mentions: [targetActor(group), actor(group, 'target-b')] })
     await f.acknowledged(group, 'sim-teach-workflow')
+    await f.simulatedTurnSettled(group)
     workflowId = (await f.state(group)).entries.find(entry => entry.kind === 'workflow')?.id
     assert.ok(workflowId)
     await f.send(group, 'sim-execute-workflow', requestText)
+    await f.tick(1_000)
     await waitFor(() => f.requests.some(request => textOf(request).includes(requestText)), 'simulation workflow prompt')
     await waitFor(() => f.attempts.some(action => action.parts.some(part => part.kind === 'mention')), 'simulation workflow notification')
     const notifications = f.attempts.filter(action => action.parts.some(part => part.kind === 'mention'))

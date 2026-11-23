@@ -119,6 +119,7 @@ const operationNames = new Map(Object.entries({
   simGetMessageImages: '读取消息图片',
   simGetForward: '读取合并转发',
   simSendPoke: '发送戳一戳',
+  groupKnowledgeTool: '执行群资料工具',
   simSendMessage: '发送群聊消息',
   send_send: '发送消息',
   'onebot.send_private_msg': '发送 QQ 私聊消息',

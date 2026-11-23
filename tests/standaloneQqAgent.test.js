@@ -2051,7 +2051,7 @@ test('standalone QQ sends verified group images only to the configured vision mo
   assert.deepEqual(lookups, [90101, 90102, 90102])
   const directResults = modelRequests.filter(item => item.visible.includes('直接看图验收')).flatMap(item => item.body.messages.filter(row => row.role === 'tool'))
   assert.ok(directResults.some(row => row.tool_call_id === 'simGetMessageImages-hidden' && String(row.content).includes('本轮可见')))
-  assert.ok(directResults.some(row => row.tool_call_id === 'simGetMessageImages-extra' && String(row.content).includes('正整数序号')))
+  assert.ok(directResults.some(row => row.tool_call_id === 'simGetMessageImages-extra' && String(row.content).includes('不符合声明的 JSON Schema')))
   assert.ok(directResults.some(row => String(row.content).includes('本轮看图次数上限')))
 
   // A pre-cutover source has no inbox receipt, so the quote is verified against OneBot.
@@ -2072,7 +2072,7 @@ test('standalone QQ sends verified group images only to the configured vision mo
     nextVisionResponse = scenario.status
     publish(scenario.group, scenario.id, [mention, talk(scenario.command), image])
     await waitUntil(() => visionRequests.length === before + 1, 'diagnostic failure reaches the configured vision provider')
-    await waitUntil(() => modelRequests.some(item => item.visible.includes(scenario.command) && String(item.result).startsWith('error:')),
+    await waitUntil(() => modelRequests.some(item => item.visible.includes(scenario.command) && String(item.result).includes('"code":"image_description_unavailable"')),
       'failed vision returns a tool error to the current turn')
     await settled(scenario.group)
     assert.equal(visionRequests.length, before + 1, 'HTTP or empty-content failure does not retry vision')
@@ -2136,6 +2136,8 @@ test('standalone QQ sends verified group images only to the configured vision mo
   const journalText = (await Promise.all((await fs.readdir(operations)).filter(name => name.endsWith('.ndjson'))
     .map(name => fs.readFile(path.join(operations, name), 'utf8')))).join('')
   const events = journalText.trim().split('\n').map(line => JSON.parse(line))
+  assert.ok(events.some(event => event.operation === 'simGetMessageImages' && event.code === 'tool_schema_invalid' &&
+    event.details?.rule === 'additionalProperties' && event.details.result === 'not_dispatched'))
   const visionEvents = events.filter(event => ['simulation_image_description', 'vision_provider_http'].includes(event.operation))
   for (const [group, status] of [[groups.unauthorized, 401], [groups.empty, 200]]) {
     const scoped = visionEvents.filter(event => event.scope.kind === 'conversation' && event.scope.binding.target.id === String(group))
