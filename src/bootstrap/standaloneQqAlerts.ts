@@ -1,5 +1,5 @@
 import type { PlatformConnection, PlatformUserRef } from '../contracts/agentBinding.js'
-import { QQ_OWNER_ALERT_MAX_LENGTH } from '../contracts/agentDiagnostics.js'
+import { QQ_OWNER_ALERT_MAX_LENGTH, type AgentDiagnosticEvent, type AgentDiagnosticResult } from '../contracts/agentDiagnostics.js'
 import type { AlertBatch } from '../modules/runtime/infrastructure/agentFailureAlerts.js'
 import { qqId } from '../adapters/qqIdentity.js'
 
@@ -29,6 +29,15 @@ const operationNames = new Map(Object.entries({
   onebot_recovery: 'QQ 重连',
   onebot_admission: '接收 QQ 消息',
   consume_simulation: '处理群消息队列',
+  consume_group: '处理群聊队列',
+  consume_private: '处理私聊队列',
+  consume_privacy: '处理隐私请求队列',
+  'consume_group-log': '处理群记录队列',
+  torrent_tick: '检查种子任务',
+  media_tick: '检查媒体投递队列',
+  media_outbox_tick: '检查媒体投递队列',
+  vision_provider_http: '请求视觉模型',
+  'diagnostic.redacted': '运行日志脱敏',
   simulation_ingest: '处理群消息',
   simulation_poke: '处理群戳一戳',
   simulation_sweep: '检查群聊调度',
@@ -49,9 +58,12 @@ const operationNames = new Map(Object.entries({
   provider_http: '请求模型服务',
   provider_request: '请求模型服务',
   provider_recovery: '模型服务重试',
+  provider_response_body: '读取模型响应体',
+  provider_fallback: '切换模型后端',
   model_request: '请求模型',
   simulation_main: '主对话模型',
   simulation_turn: '群聊回合',
+  simulation_turn_model: '群聊回合模型',
   simulation_wake_gate: '唤醒预判',
   wake_gate_provider_http: '唤醒预判请求',
   simulation_meme_extract: '群梗提取',
@@ -92,6 +104,8 @@ const operationNames = new Map(Object.entries({
   commitment_renewal: '处理托付续约',
   commitment_failure_log: '读取托付失败记录',
   simulation_image_description: '识别消息图片',
+  simulation_image_read: '取得消息附图',
+  simulation_forward_read: '取得合并转发内容',
   media_prepare: '准备搬运内容',
   media_provider_prepare: '获取搬运内容',
   media_deliver: '搬运内容投递',
@@ -104,10 +118,14 @@ const operationNames = new Map(Object.entries({
   simGetUnreadMessages: '读取未读消息',
   simGetMessageImages: '读取消息图片',
   simGetForward: '读取合并转发',
+  simSendPoke: '发送戳一戳',
   simSendMessage: '发送群聊消息',
   send_send: '发送消息',
   'onebot.send_private_msg': '发送 QQ 私聊消息',
   'onebot.send_group_msg': '发送 QQ 群消息',
+  'onebot.get_login_info': '核验 QQ 登录',
+  'onebot.get_group_member_list': '读取 QQ 群成员列表',
+  'onebot.get_group_member_info': '读取 QQ 群成员资料',
 }))
 
 const failureReasons = new Map(Object.entries({
@@ -117,6 +135,12 @@ const failureReasons = new Map(Object.entries({
   onebot_rejected: 'QQ 接口拒绝了本次请求。',
   onebot_response_unconfirmed: 'QQ 接口未返回可确认的结果。',
   onebot_transport_unconfirmed: '与 QQ 通信时未收到确认回执。',
+  onebot_timeout: '等待 QQ 接口回执超时。',
+  onebot_busy: '等待 QQ 回执的请求已满。',
+  onebot_disconnected: '调用 QQ 接口前连接已断开。',
+  onebot_identity_mismatch: '连接返回的 QQ 账号和配置不一致。',
+  onebot_admission_queue_full: '接收 QQ 事件的队列已满，本条事件未入队。',
+  onebot_admission_unconfirmed: '接收 QQ 事件时发生异常，入队状态待核对。',
   inbox_retry_pending: '消息处理未完成，系统会重试。',
   inbox_retry_read: '读取待处理的群消息失败，系统会重试。',
   inbox_retry_dispatch: '群消息在识别或分派时出错，系统会重试。',
@@ -127,6 +151,10 @@ const failureReasons = new Map(Object.entries({
   inbox_retry_capture_group: '保存群消息到群记忆时出错，系统会重试。',
   inbox_retry_ingest: '将群消息交给会话引擎处理时出错，系统会重试。',
   inbox_retry_acknowledge: '确认群消息出队时出错，系统会重试。',
+  inbox_retry_forward_queue: '将消息移交另一处理队列时失败。',
+  inbox_retry_authorization: '启动消息处理时未能确认权限。',
+  inbox_retry_privacy_command: '处理隐私请求时遇到异常。',
+  inbox_retry_group_log: '处理群记录队列中的消息时遇到异常。',
   semantic_capture_authorization_timeout: '语义记忆来源授权检查长时间未完成，系统会重试。',
   semantic_capture_save_timeout: '保存群消息的语义原文长时间无进展，系统会重试。',
   semantic_capture_source_changed: '保存语义记忆期间来源权限发生变化，系统会在重试时重新核验。',
@@ -175,6 +203,8 @@ const failureReasons = new Map(Object.entries({
   commitment_failure_log_invalid: '托付失败记录格式损坏，本次按空处理。',
   delegated_memory_decode_failed: '已保存的委托记忆无法解析，本次按空处理。',
   history_source_write_failed: '本次历史消息来源未能保存。',
+  history_source_check_failed: '保存历史原文前未能核验来源权限。',
+  history_source_registration_failed: '人物记忆的原文引用登记失败。',
   history_cleanup_failed: '历史消息来源的清理任务未能完成。',
   semantic_index_unavailable: '语义记忆索引更新失败，稍后重试。',
   semantic_index_store_failed: '语义索引未能读取或整理存量来源。',
@@ -193,6 +223,7 @@ const failureReasons = new Map(Object.entries({
   semantic_recall_embedding_timeout: '语义召回等待查询向量超时。',
   semantic_recall_rerank_timeout: '语义召回重排候选资料超时。',
   semantic_recall_provider_failed: '语义召回没有收到有效的向量服务结果。',
+  semantic_recall_unavailable: '语义召回无法提供可用资料。',
   semantic_recall_local_fallback: '向量召回未完成，本轮降级为本地关键词查找。',
   semantic_recall_local_fallback_source_check: '语义召回复核历史来源超时，本轮使用已核验的关键词结果。',
   semantic_recall_local_fallback_authorization: '语义召回核验查询授权超时，本轮使用已核验的关键词结果。',
@@ -226,12 +257,28 @@ const failureReasons = new Map(Object.entries({
   provider_warning: '模型服务在请求或重试时报告了异常。',
   model_response_error: '模型返回了错误。',
   model_response_invalid: '模型返回的内容或格式无效。',
+  model_configuration_invalid: '模型端点、凭据、名称或请求消息缺少有效配置。',
+  provider_transport_unavailable: '当前运行环境没有可用的 HTTP 传输。',
+  model_request_failed: '准备或处理模型请求时发生异常。',
+  model_generation_options_rejected: '模型服务拒绝了本次请求的可选生成参数。',
+  model_response_body_read_failed: '收到模型服务响应头后未能读完响应体。',
+  model_response_refused: '模型服务明确拒绝返回正文。',
+  model_response_empty: '模型响应有效，但正文为空。',
+  model_proposal_invalid: '模型提取的条目未通过结构或来源校验。',
+  model_proposal_json_invalid: '模型提取结果无法解析为 JSON。',
+  provider_redirected: '模型接口返回了未经允许的重定向。',
+  provider_error_envelope: '模型接口在成功状态中返回了错误对象。',
   redis_command_queue_timeout: 'Redis 命令等待发送超时。',
   redis_command_queue_full: '语义记忆 Redis 命令积压，等待队列已满。',
   redis_socket_idle_timeout: '语义记忆 Redis 连接长时间没有数据传输，本次命令结果待确认。',
   redis_connection_unavailable: 'Redis 连接暂不可用。',
   redis_command_rejected: 'Redis 拒绝执行命令，请核对数据类型或服务状态。',
   redis_command_failed: 'Redis 命令执行失败。',
+  redis_reply_invalid: 'Redis 返回的记录不符合此命令的预期结构。',
+  redis_lease_lost: 'Redis 中的独占运行授权已失效。',
+  redis_connect_failed: '未能建立到 Redis 的连接。',
+  redis_address_invalid: 'Redis 连接地址未通过配置校验。',
+  redis_lease_acquire_failed: '未能取得 Redis 的独占运行授权。',
   model_source_check_failed: '调用模型时未能复核资料来源。',
   model_response_body_invalid: '模型接口的响应体未通过 JSON 校验。',
   model_response_envelope_invalid: '模型接口返回了异常结构或缺少正文。',
@@ -242,6 +289,29 @@ const failureReasons = new Map(Object.entries({
   meme_output_schema_recovered: '首次群梗输出未通过字段校验，重试已取得合规结果。',
   model_response_truncated: '模型响应达到输出上限，返回内容被截断。',
   image_model_response_error: '图片识别服务未给出有效结果。',
+  image_sequence_invalid: '附图序号必须是本轮可见消息的正整数序号。',
+  image_source_not_visible: '指定的附图消息不在本轮可见范围内。',
+  image_source_has_no_image: '指定的消息及其引用没有可取的附图。',
+  image_source_unverified: '平台没有返回可核验的原始图片。',
+  image_source_changed: '读取图片期间来源或角色授权发生变化。',
+  image_turn_limit: '本轮看图次数已用完。',
+  image_read_failed: '未能从平台取回图片。',
+  image_read_unavailable: '当前连接无法读取附图。',
+  image_description_unavailable: '本次看图没有取得可用的文字描述。',
+  image_description_contains_image_data: '视觉模型返回内容含图片编码，已丢弃。',
+  image_description_forbidden_content: '视觉模型描述被内容规则拦截。',
+  forward_unavailable: '当前连接无法读取合并转发。',
+  forward_source_not_visible: '指定的转发不在本轮可读取的消息内。',
+  forward_privacy_restricted: '当前群的记忆隐私规则限制读取此转发。',
+  forward_source_changed: '读取合并转发期间来源或角色授权发生变化。',
+  forward_source_unverified: '平台没有返回可核验的原始转发内容。',
+  forward_read_failed: '向平台读取合并转发时出现异常。',
+  poke_unavailable: '当前连接的戳一戳功能不可用。',
+  poke_member_invalid: '戳一戳的目标标识格式无效。',
+  poke_rate_limit: '当前群在本小时内已达到戳人次数上限。',
+  poke_blocked_by_prior_delivery: '已有待确认的发送，本轮暂停后续发送。',
+  poke_rejected: '戳一戳未获得成功回执。',
+  poke_unconfirmed: '已尝试戳一戳，实际效果待核实。',
   model_threw: '调用模型时发生异常。',
   summary_timeout: '本阶段未能在摘要任务的时间预算内完成。',
   summary_failed: '会话摘要未能生成或保存。',
@@ -260,6 +330,7 @@ const failureReasons = new Map(Object.entries({
   card_browser_failed: 'B 站卡片的浏览器未能启动，已回退为原有介绍。',
   card_render_timeout: 'B 站卡片在渲染预算内未完成，已回退为原有介绍。',
   card_render_failed: 'B 站卡片未能生成截图，已回退为原有介绍。',
+  card_unavailable: 'B 站卡片准备失败，已使用原有介绍。',
   explanation_failed: '未能生成或发送失败说明。',
   returned_error: '操作返回了错误结果。',
   returned_failed: '操作返回了失败结果。',
@@ -276,6 +347,7 @@ const failureReasons = new Map(Object.entries({
   self_profile_response_invalid: '自我档案模型未返回有效的 JSON 决策。',
   self_profile_proposal_invalid: '自我档案修订字段未通过校验。',
   self_profile_save_failed: '自我档案修订结果未能保存。',
+  revision_conflict: '操作期间档案已被其他任务更新。',
   tool_reply_failed: '工具报告本次执行失败。',
   tool_turn_closed: '本轮已经收尾，这次工具调用被拦截。',
   tool_closing_only: '本轮已进入收尾阶段，只能执行收尾工具。',
@@ -303,18 +375,49 @@ const failureReasons = new Map(Object.entries({
   effect_unknown: '暂时无法确认内容是否已送达。',
   delivery_failed: '投递过程遇到异常，暂时无法确认是否送达。',
   operation_exception: '执行操作时发生异常。',
+  simulation_turn_failed: '本轮群聊提前停止。',
+  tick_failed: '本次后台巡检提前停止。',
+  maintenance_task_failed: '定时任务执行未完成。',
+  failure_reason_unavailable: '此操作未提供可确认的失败原因。',
+  result_unconfirmed: '操作回执不足，无法确认结果。',
+  diagnostic_metadata_redacted: '记录中的受保护字段已脱敏。',
+  DIAGNOSTIC_REDACTED: '记录含受保护字段，已脱敏。',
+  connection_refused: '目标服务拒绝连接。',
+  connection_reset: '网络连接被对端重置。',
+  connection_closed: '传输在完成前断开。',
+  dns_lookup_failed: '服务域名解析失败。',
+  network_timeout: '网络传输超时。',
+  connection_timeout: '建立连接超时。',
+  response_headers_timeout: '等待服务响应头超时。',
+  response_body_timeout: '读取服务响应体超时。',
+  file_missing: '需要的文件或目录不存在。',
+  permission_denied: '系统拒绝了文件或进程操作。',
+  disk_full: '存储空间不足。',
   runtime_error: '运行过程中发生异常。',
   tool_budget_exhausted: '本轮工具调用已达到上限。',
 }))
 
 const httpReasons = new Map([
-  [400, '服务拒绝了请求参数。'],
+  [400, '服务拒绝了本次请求。'],
   [401, '请求未通过服务的身份验证。'],
   [403, '服务拒绝了访问请求。'],
   [404, '服务找不到请求的资源。'],
   [408, '服务等待请求超时。'],
   [429, '服务限制了请求频率或额度。'],
   [504, '网关等待上游服务响应超时。'],
+])
+
+const glmBadRequestReasons = new Map([
+  ['glm_1210', '智谱接口判定请求参数有误。'],
+  ['glm_1211', '智谱接口找不到请求的模型。'],
+  ['glm_1212', '智谱模型不支持本次调用方式。'],
+  ['glm_1213', '智谱接口未收到必填参数。'],
+  ['glm_1214', '智谱接口判定某个参数的值无效。'],
+  ['glm_1215', '智谱接口发现互斥的参数同时出现。'],
+  ['glm_1221', '智谱接口已下线。'],
+  ['glm_1222', '智谱找不到请求的接口。'],
+  ['glm_1261', '智谱接口判定摘要输入超出长度限制。'],
+  ['glm_1301', '智谱接口因内容审核拒绝了输入或生成结果。'],
 ])
 
 const exceptionReasons = new Map<Alert['errorKind'], string>([
@@ -327,6 +430,72 @@ const exceptionReasons = new Map<Alert['errorKind'], string>([
 
 const warningCodes = new Set(['runtime_warning', 'provider_warning', 'daily_turn_limit', 'daily_cost_limit',
   'forbidden_regex_invalid', 'style_summary_stale'])
+const genericCodes = new Set(['operation_exception', 'runtime_error', 'returned_failed', 'returned_unknown',
+  'failure_reason_unavailable', 'result_unconfirmed', 'tool_threw', 'model_threw'])
+
+const resultNames: Record<AgentDiagnosticResult, string> = {
+  not_dispatched: '未执行', not_saved: '未写入', discarded: '结果未采用', fallback_used: '已使用降级结果',
+  retry_scheduled: '已安排重试', retry_exhausted: '已达到重试上限', recovered: '已恢复', confirmation_pending: '结果待确认',
+}
+const ruleNames = new Map(Object.entries({
+  required: '缺少必填项', type: '类型错误', enum: '值超出允许选项', const: '与要求的固定值不符',
+  additionalProperties: '包含未声明字段', minLength: '字符数不足', maxLength: '字符数超限',
+  minItems: '条目数不足', maxItems: '条目数超限', minimum: '低于最小值', maximum: '高于最大值',
+  format: '格式不符', pattern: '格式不符', oneOf: '与允许的结构不符', anyOf: '与允许的结构不符',
+  uniqueItems: '条目重复', incompatible: '字段组合不允许', normalization: '参数规范化失败',
+  input_size: '参数总长度超限', business_rule: '未通过工具业务规则', schema_unavailable: '工具声明无法校验',
+  read_through: '超出本轮已读范围', visible_sequence: '不在本轮可引用的序号内',
+  single_line: '需使用单段文字', profile_changes_required: '缺少可修改的档案字段', source_match: '引用内容与原文不一致',
+  integer: '必须是整数', blank: '内容为空', message_list: '需提供 1 至 5 条非空消息，每条最多 500 字符',
+  member_list: '需提供有效的成员标识',
+  item_type: '条目类型错误',
+}))
+const stepNames = new Map(Object.entries({
+  read: '读取队列', dispatch: '分派事件', check_recall: '核对撤回状态', capture_conversation: '保存会话记忆',
+  capture_semantic: '保存语义原文', capture_history: '保存历史原文', capture_group: '保存群记忆', ingest: '交给会话引擎',
+  acknowledge: '确认出队', sources: '读取来源', authorization: '核验来源权限', register_source: '登记原文来源',
+  save: '写入存储', embedding: '生成向量', rerank: '重排候选', scan: '扫描目录', get: '读取键',
+  set: '写入键', del: '删除键', eval: '执行原子操作', get_many: '批量读键', snapshot: '读取快照', digest: '核对快照',
+  reserve: '领取任务', reconcile: '核对任务状态', list: '读取任务列表', dispatch_work: '派发后台任务',
+  enqueue: '加入队列', forward_queue: '移交队列', privacy_command: '处理隐私请求', group_log: '处理群记录',
+  provider_request: '请求服务', request_prepare: '准备请求', response_body: '读取响应体', response_validation: '校验响应',
+  source_check: '核验来源', schedule: '安排下一次执行', model: '执行模型请求', store: '读取和整理存量数据',
+  configuration: '校验配置', connect: '建立连接', acquire: '取得运行授权', connect_redis: '初始化 Redis',
+  open_journal: '打开操作日志', initialize_services: '初始化依赖服务', start_console: '启动控制台', start_core: '启动 Core',
+}))
+
+type DiagnosticDescriptionSource = Pick<AgentDiagnosticEvent, 'stage' | 'operation' | 'outcome' | 'code' | 'details' | 'httpStatus' | 'errorKind' | 'sourceTag'>
+
+export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
+  const details = event.details
+  const code = event.code === 'redacted' ? undefined : event.code
+  const operation = operationNames.get(event.operation) ?? (event.operation.startsWith('onebot.') ? '调用 QQ 接口' :
+    event.operation.startsWith('mcp.') ? '连接 MCP 工具服务' : stageNames[event.stage])
+  const status = event.httpStatus
+  const httpReason = status === undefined ? undefined : httpReasons.get(status) ??
+    (status >= 500 ? '外部服务暂时不可用。' : undefined)
+  const glmReason = event.operation === 'summary_provider_http' && status === 400 && code && glmBadRequestReasons.get(code)
+  const cause = details?.cause && failureReasons.get(details.cause)
+  const rule = details?.rule && (ruleNames.get(details.rule) ?? details.rule)
+  const location = details?.step && (stepNames.get(details.step) ?? details.step)
+  const limitUnit = code === 'model_response_truncated' || details?.cause === 'model_response_truncated' ? ' token' :
+    code?.includes('timeout') ? ' ms' : ''
+  const evidence = [location && `环节 ${location}`, details?.field && `字段 ${details.field}`, rule,
+    details?.limit !== undefined && `界限 ${details.limit}${limitUnit}`, details?.nativeCode !== undefined && `平台返回码 ${details.nativeCode}`,
+    details?.dispatched === undefined ? undefined : details.dispatched ? '已发起请求' : '未发起请求',
+    event.sourceTag && `来源 ${event.sourceTag}`, details?.cause && details.cause !== code && `关联原因 ${cause ?? details.cause}`].filter(Boolean).join(' · ')
+  const result = details?.result && resultNames[details.result]
+  const disposition = [result, details?.retryInMs !== undefined && `${(details.retryInMs / 1000).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} 秒后`,
+    details?.attempt !== undefined && `第 ${details.attempt}${details.maxAttempts === undefined ? '' : `/${details.maxAttempts}`} 次`].filter(Boolean).join(' · ')
+  if (event.outcome === 'succeeded' || event.outcome === 'started') return { operation, evidence, result: disposition }
+  const knownReason = code && !genericCodes.has(code) && failureReasons.get(code)
+  const reason = glmReason || (rule ? `${details?.field ? `${details.field} ` : ''}${rule}。` : undefined) ||
+    (code === 'http_error' ? httpReason : undefined) || (cause === failureReasons.get('diagnostic_metadata_redacted') ? undefined : cause) ||
+    (knownReason && code !== 'http_error' ? knownReason : undefined) || httpReason || exceptionReasons.get(event.errorKind) || knownReason ||
+    (event.outcome === 'unknown' ? '暂时无法确认操作是否完成。' : code && warningCodes.has(code)
+      ? '这条兼容日志缺少可确认的原因。' : '此操作未提供可确认的失败原因。')
+  return { operation, reason, evidence, result: disposition }
+}
 
 export function resolveStandaloneQqAlertOwner(connectionId: string, connections: readonly PlatformConnection[], masters: readonly PlatformUserRef[]): PlatformUserRef {
   const connection = connections.find(candidate => candidate.id === connectionId)
@@ -340,27 +509,33 @@ export function resolveStandaloneQqAlertOwner(connectionId: string, connections:
 }
 
 export function formatQqOwnerAlerts(batch: AlertBatch): string {
-  function format(includeOperation: boolean) {
+  const time = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+  function format(includeOperation: boolean, includeContext: boolean, rowLimit = Infinity) {
     const lines = batch.alerts.map(alert => {
       const warning = alert.code !== undefined && warningCodes.has(alert.code)
       const outcome = alert.outcome === 'unknown' ? '结果待确认' : warning ? '出现警告' : '失败'
-      const operation = operationNames.get(alert.operation) ?? (alert.operation.startsWith('onebot.') ? '调用 QQ 接口' :
-        alert.operation.startsWith('mcp.') ? '连接 MCP 工具服务' : stageNames[alert.stage])
+      const description = describeAgentDiagnostic(alert)
       const code = alert.code === 'redacted' ? undefined : alert.code
       const status = alert.httpStatus
-      const httpReason = status === undefined ? undefined : httpReasons.get(status) ??
-        (status >= 500 && status <= 599 ? '外部服务暂时不可用。' : undefined)
-      const knownReason = code && failureReasons.get(code)
-      const reason = httpReason || knownReason || exceptionReasons.get(alert.errorKind) ||
-        (alert.outcome === 'unknown' ? '暂时无法确认操作是否完成。' : warning ? '这条兼容日志缺少可确认的原因。' : '系统未记录更具体的原因，详情见运行日志。')
       const details = [code && `错误码 ${code}`, status !== undefined && `HTTP 状态 ${status}`,
         includeOperation && alert.operation !== 'redacted' && `操作标识 ${alert.operation}`].filter(Boolean).join(' · ')
-      return [`${operation}${outcome}，共 ${alert.count} 次`, reason, details,
-        alert.traceId && `追踪编号 ${alert.traceId}`].filter(Boolean).join('\n')
+      const timing = includeContext && alert.lastAt > 0 && alert.lastAt <= 8_640_000_000_000_000 ?
+        `${time.format(alert.lastAt)}${alert.durationMs === undefined ? '' : ` · 耗时 ${alert.durationMs} ms`}` : ''
+      const heading = `${description.operation}${outcome}，共 ${alert.count} 次`
+      const trace = alert.traceId && `追踪编号 ${alert.traceId}`
+      const reasonLimit = Math.max(0, rowLimit - heading.length - details.length - (trace?.length ?? 0) - 3)
+      const reason = description.reason && (description.reason.length <= reasonLimit ? description.reason :
+        reasonLimit ? description.reason.slice(0, reasonLimit - 1) + '…' : '')
+      return [heading, reason, details, trace, includeContext && description.evidence, includeContext && description.result, timing].filter(Boolean).join('\n')
     })
     return ['【助手运行告警】', ...lines].join('\n\n')
   }
-  const text = format(true)
-  // A full QQ batch may be too long when every entry has a long diagnostic label.
-  return text.length <= QQ_OWNER_ALERT_MAX_LENGTH ? text : format(false)
+  const text = format(true, true)
+  if (text.length <= QQ_OWNER_ALERT_MAX_LENGTH) return text
+  const compact = format(false, true)
+  if (compact.length <= QQ_OWNER_ALERT_MAX_LENGTH) return compact
+  const basic = format(false, false)
+  if (basic.length <= QQ_OWNER_ALERT_MAX_LENGTH) return basic
+  return format(false, false, Math.floor((QQ_OWNER_ALERT_MAX_LENGTH - '【助手运行告警】'.length) / batch.alerts.length) - 2)
 }

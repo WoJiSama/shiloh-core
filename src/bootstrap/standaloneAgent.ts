@@ -299,6 +299,7 @@ export async function main(argv: string[]): Promise<void> {
     return saved
   } }, logger,
     ...(alerts ? { onFailure: alerts.report } : {}),
+    allowsLabel: label => allowsAlertLabel?.(label) !== false,
     configurationRevision: config.sourceSnapshot.revision })
   const safeLogger = diagnostics.logger
   const stop = () => termination.abort()
@@ -333,6 +334,7 @@ export async function main(argv: string[]): Promise<void> {
   const words = createForbiddenWordGuard({
     warn() { diagnostics.emit({ stage: 'host', operation: 'forbidden_word_config', outcome: 'failed', code: 'forbidden_regex_invalid' }) },
   })
+  let startupStep = 'connect_redis'
   try {
     storage = await openAgentRedis({ url: config.redisUrl, instance: config.instance,
       onLost: () => fail('[Agent] Redis 执行租约丢失，停止处理'),
@@ -395,7 +397,8 @@ export async function main(argv: string[]): Promise<void> {
       }),
       summarizeToolResultForAgent, removeToolPromptsFromMessages,
       // Model responses and provider error bodies can carry chat content or keys.
-      logger: { info() {}, warn() { diagnostics.emit({ stage: 'model', operation: 'provider_recovery', outcome: 'failed', code: 'provider_warning' }) }, error() { diagnostics.emit({ stage: 'model', operation: 'provider_request', outcome: 'failed', code: 'provider_error' }) } },
+      logger: { info() {}, warn() {}, error() {} },
+      observe: event => diagnostics.emit({ stage: 'model', ...event }),
       fetch: (url, init) => providerFetch(url, { ...init, redirect: 'error' }),
     })
     async function runModel(request: ChatRequestData, options: ExecutionOptions = {}) {
@@ -412,9 +415,11 @@ export async function main(argv: string[]): Promise<void> {
     }
     const reviewBackend = config.characterConsistency
     const hostSecrets = standaloneAgentSecrets(config, process.env)
-    if (alerts) allowsAlertLabel = label => createAgentSecretTextCheck(hostSecrets)(label)
+    allowsAlertLabel = label => createAgentSecretTextCheck(hostSecrets)(label)
+    startupStep = 'open_journal'
     journal = await openAgentOperationJournal({ dataDir: config.dataDir, ...config.operationLogging, allowsText: text => createAgentSecretTextCheck(hostSecrets)(text) })
     diagnostics.emit({ stage: 'host', operation: 'host_start', outcome: 'started' })
+    startupStep = 'initialize_services'
     let musicProvider: ReturnType<typeof createAgentMusicProvider> | undefined
     const registerHostSecrets = (values: readonly string[]) => { for (const value of values) if (value && !hostSecrets.includes(value)) hostSecrets.push(value) }
     const musicContext = {
@@ -468,8 +473,8 @@ export async function main(argv: string[]): Promise<void> {
           diagnostics.emit({ stage: 'host', operation: 'onebot_recovery', outcome: 'succeeded' })
           void host?.resumePendingWork().catch(error => diagnostics.emit({ stage: 'host', operation: 'onebot_recovery', outcome: 'failed', error }))
         },
-        onEventError: () => diagnostics.emit({ stage: 'inbox', operation: 'onebot_admission', outcome: 'failed', code: 'event_not_queued' }),
-        onApiFailure: (action, outcome, code) => diagnostics.emit({ stage: 'host', operation: `onebot.${action}`, outcome, code }),
+        onEventError: event => diagnostics.emit({ stage: 'inbox', operation: 'onebot_admission', ...event }),
+        onApiFailure: (action, outcome, code, details) => diagnostics.emit({ stage: 'host', operation: `onebot.${action}`, outcome, code, details }),
       })
       if (alertOwner) qqAlertAdapter = adapter
       return adapter
@@ -545,7 +550,7 @@ export async function main(argv: string[]): Promise<void> {
       diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: 'started' })
       const result = await sideLLMCall({
         url: vision.apiUrl, apikey: vision.apiKey, model: vision.model,
-        signal: signal ? AbortSignal.any([executionSignal, signal]) : executionSignal, timeoutMs: 15_000, maxTokens: 250,
+        signal: signal ? AbortSignal.any([executionSignal, signal]) : executionSignal, ...(isCurrent ? { isCurrent } : {}), timeoutMs: 15_000, maxTokens: 250,
         fetchImpl: (url, init) => visionFetch(url, { ...init, redirect: 'error' }),
         messages: [{
           role: 'user', content: [
@@ -555,17 +560,23 @@ export async function main(argv: string[]): Promise<void> {
         }],
       })
       if (!result.ok) {
-        diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: 'failed',
-          code: result.status === undefined ? 'image_model_unavailable' : 'image_model_response_error',
+        const cancelled = result.code === 'provider_cancelled' || result.code === 'model_source_changed'
+        diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: cancelled ? 'cancelled' : 'failed',
+          code: result.code, details: { step: result.status === undefined || result.code === 'http_error' ? 'provider_request' :
+            result.code.startsWith('model_response_body') || result.code === 'provider_timeout' ? 'response_body' : 'response_validation',
+            result: 'discarded', ...(result.limit === undefined ? {} : { limit: result.limit }) },
           ...(result.status === undefined ? {} : { httpStatus: result.status }), durationMs: performance.now() - began })
         return null
       }
       ledger.record({ scope: groupId, stage: 'sim-vision', model: vision.model, usage: result.usage, ms: Math.round(performance.now() - began) })
-      const rejected = isCurrent?.() === false || /(?:data:image\/|base64:\/\/)/iu.test(result.content) ||
-        images.some(({base64}) => result.content.includes(base64)) || words.findForbiddenWord(result.content, config.forbiddenWords)
-      diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: rejected ? 'failed' : 'succeeded',
-        code: rejected ? 'image_description_rejected' : 'image_description_completed', durationMs: performance.now() - began })
-      return rejected ? null : result.content
+      const current = isCurrent?.() !== false
+      const containsImage = /(?:data:image\/|base64:\/\/)/iu.test(result.content) || images.some(({base64}) => result.content.includes(base64))
+      const code = !current ? 'model_source_changed' : containsImage ? 'image_description_contains_image_data' :
+        words.findForbiddenWord(result.content, config.forbiddenWords) ? 'image_description_forbidden_content' : undefined
+      diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: !current ? 'cancelled' : code ? 'failed' : 'succeeded',
+        code: code ?? 'image_description_completed', ...(code ? { details: { step: 'response_validation', result: 'discarded' } } : {}),
+        durationMs: performance.now() - began })
+      return code ? null : result.content
     })
     const extractionBackend = config.personMemoryExtraction
     const personProfileExtract = extractionBackend && createAgentPersonExtractor({
@@ -940,7 +951,8 @@ export async function main(argv: string[]): Promise<void> {
       services.push(createStandaloneAgentPipeline({ bindings: loadedBindings, auth: consoleAuth, storage: storage.storage,
         inboxBindingToken: host.inboxBindingToken, configState: persistence.state }))
       services.push(createStandaloneAgentObserve({ bindings: loadedBindings, auth: consoleAuth,
-        read: guard => readAgentOperationJournal({ dataDir: config.dataDir, maxFiles: config.operationLogging.maxFiles, guard, allowsText: allowsSecretText }),
+        read: (guard, traceId) => readAgentOperationJournal({ dataDir: config.dataDir, maxFiles: config.operationLogging.maxFiles, guard, allowsText: allowsSecretText,
+          ...(traceId ? { traceId } : {}) }),
         health: () => journal!.health(), configState: persistence.state }))
       services.push(createStandaloneAgentWorkspace({ bindings: loadedBindings, auth: consoleAuth,
         conversationName: directory.conversationName,
@@ -963,10 +975,12 @@ export async function main(argv: string[]): Promise<void> {
         allowsResponse: body => allowsSecretText(typeof body === 'string' ? body : Buffer.from(body).toString('utf8')),
         onRequestFailure: (httpStatus, code) => diagnostics.emit({ stage: 'host', operation: 'console_request',
           outcome: code === 'commit_outcome_unknown' ? 'unknown' : 'failed', httpStatus, code }) })
+      startupStep = 'start_console'
       await consoleHost.listen()
       diagnostics.emit({ stage: 'host', operation: 'console_start', outcome: 'succeeded' })
     }
     if (!executionSignal.aborted) {
+      startupStep = 'start_core'
       try { await host.start() }
       catch (error) {
         // A save may retire execution while OneBot is still connecting. Keep the console and lease available for restart.
@@ -984,7 +998,8 @@ export async function main(argv: string[]): Promise<void> {
     if (!executionSignal.aborted) { diagnostics.emit({ stage: 'host', operation: 'host_start', outcome: 'succeeded' }); logger.info('[Agent] 已启动') }
     if (!termination.signal.aborted) await new Promise<void>(resolve => termination.signal.addEventListener('abort', () => resolve(), { once: true }))
   } catch (error) {
-    diagnostics.emit({ stage: 'host', operation: 'host_run', outcome: 'failed', code: 'host_exception', error })
+    diagnostics.emit({ stage: 'host', operation: 'host_run', outcome: 'failed', code: 'host_exception', error,
+      details: { step: startupStep } })
     if (!termination.signal.aborted) throw error
   } finally {
     stop()

@@ -19,6 +19,7 @@ export interface AgentJournalReadOptions {
   readonly maxEvents?: number
   readonly maxReadBytes?: number
   readonly maxFiles?: number
+  readonly traceId?: string
 }
 
 const filePattern = /^\d{4}-\d{2}-\d{2}\.\d{6}\.ndjson$/u
@@ -32,7 +33,10 @@ function integer(value: number | undefined, fallback: number, minimum: number, m
 
 /** Read a fixed, bounded tail without mutating or repairing the writer's files. */
 export async function readAgentOperationJournal(options: AgentJournalReadOptions): Promise<AgentJournalReadResult> {
-  const limit = integer(options.maxEvents, 2000, 1, 10000), budget = integer(options.maxReadBytes, 4 * MiB, maxLine, 16 * MiB)
+  const traceId = options.traceId
+  if (traceId !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(traceId)) throw failure()
+  const traceMarker = traceId ? Buffer.from(JSON.stringify(traceId)) : undefined
+  const limit = integer(options.maxEvents, 2000, 1, 10000), budget = integer(options.maxReadBytes, (traceId ? 16 : 4) * MiB, maxLine, 16 * MiB)
   const maximumFiles = integer(options.maxFiles, 14, 1, 128), dataDir = path.resolve(options.dataDir), directory = path.join(dataDir, 'operations')
   const guard = options.guard, captured = captureSynchronousGuardCheck(guard, () => { throw failure() })
   const current = captured ?? (() => ensureSynchronousGuard(guard, () => { throw failure() }))
@@ -78,14 +82,18 @@ export async function readAgentOperationJournal(options: AgentJournalReadOptions
         if (end && buffer[end - 1] !== 10) { end = buffer.lastIndexOf(10) + 1; truncated = true }
         let lineEnd = end - 1, attempts = 0
         while (lineEnd >= first) {
-          if (events.length >= limit || attempts++ >= 10000) { truncated = true; break }
+          if (events.length >= limit || attempts++ >= (traceMarker ? 100_000 : 10_000)) { truncated = true; break }
           const previous = lineEnd > 0 ? buffer.lastIndexOf(10, lineEnd - 1) : -1, lineStart = Math.max(first, previous + 1)
           try {
             if (lineEnd > lineStart) {
               if (lineEnd - lineStart > maxLine) throw failure()
-              const line = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(lineStart, lineEnd))
-              if (options.allowsText?.(line) === false) throw failure()
-              events.push(parseAgentDiagnosticEvent(JSON.parse(line)))
+              const bytes = buffer.subarray(lineStart, lineEnd)
+              if (!traceMarker || bytes.includes(traceMarker)) {
+                const line = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+                if (options.allowsText?.(line) === false) throw failure()
+                const event = parseAgentDiagnosticEvent(JSON.parse(line))
+                if (!traceId || event.traceId === traceId) events.push(event)
+              }
             }
           } catch { invalidRecords++ }
           lineEnd = previous

@@ -180,7 +180,7 @@ test('session read failures, invalid stored state and health findings produce di
   await diagnostics.flush()
   await alerts.close()
 
-  const read = rows.find(row => row.code === 'session_read_failed')
+  const read = rows.findLast(row => row.code === 'session_read_failed')
   const decode = rows.find(row => row.code === 'session_decode_failed')
   assert.equal(read.operation, 'simulation_session_load')
   assert.equal(read.errorKind, 'TypeError')
@@ -374,14 +374,16 @@ test('finish preflight reports fixed rejection reasons to QQ and allows a correc
   invalidJson.function.arguments = '{"reason":'
   const cases = [
     { code: 'tool_arguments_invalid', cause: /有效 JSON 对象/u, message: tools(invalidJson) },
-    { code: 'tool_schema_invalid', cause: /不符合工具声明/u, message: tools(toolCall('simFinishTurn', { ...params, reason: '' })) },
+    { code: 'tool_schema_invalid', cause: /reason 字符数不足/u, field: 'reason', rule: 'minLength', message: tools(toolCall('simFinishTurn', { ...params, reason: '' })) },
     { code: 'tool_content_blocked', cause: /触发了宿主出站内容检查/u, message: tools(toolCall('simFinishTurn', { ...params, reason: 'fixture-private-value' })) },
-    { code: 'finish_read_range_invalid', cause: /throughSeq 超出本轮已读范围/u, message: tools(toolCall('simFinishTurn', { ...params, throughSeq: 999 })) },
-    { code: 'finish_reply_reference_invalid', cause: /replyToSeq 没有指向有效的近期消息/u, message: tools(toolCall('simFinishTurn', { ...params, replyToSeq: 999 })) },
+    { code: 'finish_read_range_invalid', cause: /throughSeq 超出本轮已读范围/u, field: 'throughSeq', rule: 'read_through',
+      message: tools(toolCall('simFinishTurn', { ...params, throughSeq: 999 })) },
+    { code: 'finish_reply_reference_invalid', cause: /replyToSeq 不在本轮可引用的序号内/u, field: 'replyToSeq', rule: 'visible_sequence',
+      message: tools(toolCall('simFinishTurn', { ...params, replyToSeq: 999 })) },
     { code: 'finish_messages_missing', cause: /需要把正文放进 messages/u,
       message: { ...tools(toolCall('simFinishTurn', { choice: 'chat', reason: '群聊收尾' })), content: '这一段正文在工具参数外。' } },
   ]
-  for (const { code, cause, message } of cases) {
+  for (const { code, cause, field, rule, message } of cases) {
     await t.test(code, async t => {
       const rows = [], batches = []
       const alerts = createAgentFailureAlerts({ channel: 'qq', logger: { error() {} },
@@ -403,6 +405,7 @@ test('finish preflight reports fixed rejection reasons to QQ and allows a correc
       assert.ok(JSON.stringify(h.sent[0]).includes(params.messages[0]))
       const finishRows = rows.filter(row => row.operation === 'simFinishTurn')
       assert.deepEqual(finishRows.map(row => [row.outcome, row.code]), [['failed', code], ['started', undefined], ['succeeded', 'completed']])
+      if (field) assert.deepEqual([finishRows[0].details.field, finishRows[0].details.rule, finishRows[0].details.result], [field, rule, 'not_dispatched'])
       const text = batches.map(formatQqOwnerAlerts).join('\n')
       assert.match(text, cause)
       assert.ok(text.includes(`错误码 ${code}`))

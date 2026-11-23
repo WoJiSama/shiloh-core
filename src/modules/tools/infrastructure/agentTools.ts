@@ -28,7 +28,7 @@ import { validateMessageBundle } from '../../messaging/infrastructure/messageBun
 import { validateAgentToolMessage } from '../../messaging/infrastructure/agentToolMessage.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { abortableAgentWeb } from './agentPublicWeb.js'
-import { agentToolInputValidator, isAgentToolInput } from './agentToolSchema.js'
+import { agentToolInputValidator, isAgentToolInput, type ToolParameterIssue } from './agentToolSchema.js'
 import { authorizeAgentToolContext, isAgentToolEffect } from './agentToolAuthorization.js'
 
 const maxChars = 16_000
@@ -142,9 +142,12 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
             const started = Date.now()
             diagnose({ stage: 'tool', operation: this.name, outcome: 'started' })
             try {
-              const result = await super.execute(input, event), status = classify(result)
+              let invalid: ToolParameterIssue | undefined, error: unknown
+              const result = await super.execute(input, event, { invalid: issue => { invalid = issue }, failed: failure => { error = failure } })
+              const status = classify(result)
               const specific = status === 'failed' && origin === 'builtin' && this.name === 'memberInfoTool' ? memberFailureCode(result) : undefined
-              diagnose({ stage: 'tool', operation: this.name, outcome: status, code: status === 'succeeded' ? 'completed' : specific ?? `returned_${status}`, durationMs: Date.now() - started })
+              diagnose({ stage: 'tool', operation: this.name, outcome: status, code: invalid ? 'tool_schema_invalid' : status === 'succeeded' ? 'completed' : specific ?? `returned_${status}`,
+                durationMs: Date.now() - started, ...(invalid ? { details: { ...invalid, result: 'not_dispatched' } } : {}), ...(error === undefined ? {} : { error }) })
               return result
             } catch (error) {
               diagnose({ stage: 'tool', operation: this.name, outcome: 'unknown', code: 'tool_threw', error, durationMs: Date.now() - started })
@@ -155,8 +158,8 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
             if (!isAgentToolInput(input)) throw new Error('工具参数必须是对象')
             return super.normalizeParameters(input)
           }
-          override validateParameters(input: Record<string, unknown>) {
-            return validateInput(input) || '工具参数不符合声明的 Schema'
+          override validateParameters(input: Record<string, unknown>, onInvalid?: (issue: ToolParameterIssue) => void) {
+            return validateInput(input, onInvalid) || '工具参数不符合声明的 Schema'
           }
           private resolveScope(input: Record<string, unknown>, event: unknown) {
             const originalScope = ports.context(event, this.name, origin)
@@ -173,8 +176,8 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
               ? '发送音乐需要当前群的真人请求和音乐投递权限，未执行'
               : '当前执行主体或会话缺少工具所需权限，未执行')
           }
-          override agentPreflight(input: Record<string, unknown>, event: unknown): string | undefined {
-            const validation = this.validateParameters(input)
+          override agentPreflight(input: Record<string, unknown>, event: unknown, onInvalid?: (issue: ToolParameterIssue) => void): string | undefined {
+            const validation = this.validateParameters(input, onInvalid)
             if (validation !== true) return validation
             const scope = this.resolveScope(input, event)
             return typeof scope === 'string' ? scope : undefined

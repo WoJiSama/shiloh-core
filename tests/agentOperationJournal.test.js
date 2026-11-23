@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import { constants } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -73,6 +74,23 @@ test('secret-bearing records become fresh safe host events across common encodin
   }
   const stored = await rows(f.directory); assert.equal(stored.length, 4)
   for (const item of stored) { assert.deepEqual(item.scope, { kind: 'host' }); assert.equal(item.code, 'DIAGNOSTIC_REDACTED'); assert.equal(item.operation, 'diagnostic.redacted'); assert.ok(!item.id.startsWith('event-')); assert.equal(allowsText(JSON.stringify(item)), true); assert.equal(JSON.stringify(item).includes('310001'), false) }
+})
+
+test('redaction keeps an internal trace and safe failure metadata when only the scope contains protected data', async t => {
+  const f = await fixture(t), secret = 'JOURNAL_PRIVATE_FIXTURE_123456'
+  const journal = await f.open({ allowsText: createAgentSecretTextCheck([secret]) })
+  const traceId = randomUUID(), id = randomUUID()
+  const item = event(1, { id, traceId, outcome: 'failed', operation: 'simFinishTurn', code: 'tool_schema_invalid',
+    details: { field: 'reason', rule: 'minLength', limit: 1, result: 'not_dispatched' } })
+  item.scope.binding.personaId = secret
+  assert.equal(await journal.append(item), true)
+  const [row] = await rows(f.directory)
+  assert.deepEqual(row.scope, { kind: 'host' })
+  assert.equal(row.traceId, traceId)
+  assert.equal(row.operation, item.operation)
+  assert.equal(row.code, item.code)
+  assert.equal(row.details.field, 'reason')
+  assert.doesNotMatch(JSON.stringify(row), /JOURNAL_PRIVATE_FIXTURE|310001/u)
 })
 
 test('closed descriptor validation never evaluates getters or persists free-form errors, unsafe tokens or arbitrary fields', async t => {

@@ -182,10 +182,13 @@ export function createAgentHistory(ports: {
     const row: AgentHistoryRow = { messageId: incoming.messageId, authorId: incoming.sender.id, name: (incoming.senderName ?? '').slice(0, 24), text, at: incoming.occurredAt,
       ...(binding.target.kind === 'private' ? { peerId: incoming.sender.id } : {}),
     }
+    let step: string = 'authorization'
     try {
       await withContext(binding, guard, undefined, async context => {
         if (!await permitted(binding, row) || !context.isCurrent()) return
+        step = 'register_source'
         if (!await ports.memory.registerSource({ identity: identity(binding), subjectId: row.authorId, source: sourceOf(binding, row) }, context.isCurrent)) return
+        step = 'save'
         await store.update(agentHistoryId(binding), saved => {
           if (saved?.rows.some(item => item.messageId === row.messageId)) return saved
           return { version: 1, id: agentHistoryId(binding), scope: { agentId: binding.agentId, target: structuredClone(binding.target) },
@@ -194,7 +197,10 @@ export function createAgentHistory(ports: {
         }, context.isCurrent)
       })
     } catch (error) {
-      reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'history_capture', code: 'history_source_write_failed', error },
+      reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'history_capture',
+        code: step === 'authorization' ? 'history_source_check_failed' : step === 'register_source' ? 'history_source_registration_failed' : 'history_source_write_failed',
+        outcome: step === 'save' ? 'unknown' : 'failed',
+        details: { step, result: step === 'save' ? 'confirmation_pending' : 'not_saved' }, error },
         () => ports.logger.warn('[Agent] 历史原始来源未能保存'))
     }
   }

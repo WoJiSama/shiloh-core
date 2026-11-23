@@ -3,9 +3,10 @@ import type { FileHandle } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { stderr } from 'node:process'
 import { isProxy } from 'node:util/types'
 import type { AgentBindingSnapshot, PlatformAccountRef } from '../../../contracts/agentBinding.js'
-import type { AgentDiagnosticEvent, AgentDiagnosticScope, AgentOperationJournal } from '../../../contracts/agentDiagnostics.js'
+import { agentDiagnosticResults, type AgentDiagnosticDetails, type AgentDiagnosticEvent, type AgentDiagnosticScope, type AgentOperationJournal } from '../../../contracts/agentDiagnostics.js'
 
 export type { AgentDiagnosticEvent, AgentDiagnosticScope, AgentDiagnosticSink, AgentOperationJournal } from '../../../contracts/agentDiagnostics.js'
 
@@ -68,9 +69,20 @@ function scope(value: unknown): AgentDiagnosticScope {
   }
   throw failure()
 }
+export function parseAgentDiagnosticDetails(value: unknown): Readonly<AgentDiagnosticDetails> {
+  const row = record(value, ['step', 'cause', 'field', 'rule', 'limit', 'nativeCode', 'dispatched', 'result', 'retryInMs', 'attempt', 'maxAttempts', 'causeEventId'])
+  for (const key of ['step', 'cause', 'field', 'rule', 'causeEventId']) if (row[key] !== undefined) token(row[key])
+  for (const key of ['limit', 'retryInMs', 'attempt', 'maxAttempts']) if (row[key] !== undefined &&
+      (!Number.isSafeInteger(row[key]) || Number(row[key]) < 0)) throw failure()
+  if (row.nativeCode !== undefined && (!Number.isInteger(row.nativeCode) || Math.abs(Number(row.nativeCode)) > 2_147_483_647)) throw failure()
+  if (row.dispatched !== undefined && typeof row.dispatched !== 'boolean') throw failure()
+  if (row.result !== undefined && !agentDiagnosticResults.some(item => item === row.result)) throw failure()
+  return Object.freeze(row) as AgentDiagnosticDetails
+}
+
 /** The writer and read view share the same closed metadata schema, including historical v1 records. */
 export function parseAgentDiagnosticEvent(value: unknown): Readonly<AgentDiagnosticEvent> {
-  const row = record(value, ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code', 'sourceTag', 'durationMs', 'errorKind', 'httpStatus', 'configurationRevision', 'delivery'])
+  const row = record(value, ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code', 'sourceTag', 'durationMs', 'errorKind', 'httpStatus', 'details', 'configurationRevision', 'delivery'])
   if (row.version !== 1 || !Number.isSafeInteger(row.at) || Number(row.at) < 0 || Number(row.at) > 8_640_000_000_000_000 ||
       typeof row.stage !== 'string' || !stages.includes(row.stage) || typeof row.outcome !== 'string' || !outcomes.includes(row.outcome) ||
       row.durationMs !== undefined && (!Number.isSafeInteger(row.durationMs) || Number(row.durationMs) < 0) ||
@@ -89,6 +101,7 @@ export function parseAgentDiagnosticEvent(value: unknown): Readonly<AgentDiagnos
     ...(row.code === undefined ? {} : { code: token(row.code) }), ...(row.sourceTag === undefined ? {} : { sourceTag: row.sourceTag as string }),
     ...(row.durationMs === undefined ? {} : { durationMs: row.durationMs as number }),
     ...(row.errorKind === undefined ? {} : { errorKind: row.errorKind as NonNullable<AgentDiagnosticEvent['errorKind']> }), ...(row.httpStatus === undefined ? {} : { httpStatus: row.httpStatus as number }),
+    ...(row.details === undefined ? {} : { details: parseAgentDiagnosticDetails(row.details) }),
     ...(row.configurationRevision === undefined ? {} : { configurationRevision: text(row.configurationRevision, 512) }), ...(delivery === undefined ? {} : { delivery }) })
 }
 
@@ -133,7 +146,7 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
       try { emergency?.(safe, code) } catch { /* Never feed emergency failures back into this journal. */ }
       finally { reporting = false }
     }
-    try { process.stderr.write(`[AgentDiagnostics] ${code}${safe ? ' ' + JSON.stringify(safe) : ''}\n`) } catch { /* No recursive logging. */ }
+    try { stderr.write(`[AgentDiagnostics] ${code}${safe ? ' ' + JSON.stringify(safe) : ''}\n`) } catch { /* No recursive logging. */ }
   }
   async function directories(initial = false): Promise<void> {
     if (initial) await fs.mkdir(dataDir, { recursive: true, mode: 0o700 })
@@ -275,10 +288,24 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
       let safe: AgentDiagnosticEvent, line: string
       try {
         safe = parseAgentDiagnosticEvent(input); line = JSON.stringify(safe) + '\n'
-        let permitted = true; try { permitted = allows?.(line) !== false } catch { permitted = false }
-        if (!permitted) {
-          safe = Object.freeze({ version: 1, id: randomUUID(), traceId: randomUUID(), at: Date.now(), scope: Object.freeze({ kind: 'host' }), stage: 'runtime', operation: 'diagnostic.redacted', outcome: 'failed', code: 'DIAGNOSTIC_REDACTED' })
-          line = JSON.stringify(safe) + '\n'
+        if (allows) {
+          const permitted = (value: string) => { try { return allows(value) } catch { return false } }
+          if (!permitted(line)) {
+            const generatedId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(id) && permitted(id)
+            const keepTrace = generatedId(safe.id) && generatedId(safe.traceId)
+            const minimal = { version: 1 as const, id: keepTrace ? safe.id : randomUUID(), traceId: keepTrace ? safe.traceId : randomUUID(),
+              at: safe.at, scope: { kind: 'host' as const },
+              stage: safe.stage, operation: 'diagnostic.redacted', outcome: safe.outcome, code: 'DIAGNOSTIC_REDACTED' }
+            const metadata = Object.fromEntries(Object.entries(safe.details ?? {}).filter(([, value]) => permitted(String(value))))
+            const sanitized = { ...minimal, operation: safe.operation, code: safe.code ?? 'DIAGNOSTIC_REDACTED',
+              ...(safe.durationMs === undefined ? {} : { durationMs: safe.durationMs }),
+              ...(safe.httpStatus === undefined ? {} : { httpStatus: safe.httpStatus }),
+              details: { cause: 'diagnostic_metadata_redacted', ...metadata } }
+            const reduced = JSON.stringify(sanitized) + '\n'
+            line = keepTrace && permitted(reduced) ? reduced : JSON.stringify(minimal) + '\n'
+            if (!permitted(line)) line = JSON.stringify({ ...minimal, id: randomUUID(), traceId: randomUUID() }) + '\n'
+            safe = parseAgentDiagnosticEvent(JSON.parse(line))
+          }
         }
         if (Buffer.byteLength(line) > MAX_LINE_BYTES) throw failure()
       } catch { report(undefined, 'JOURNAL_INVALID_EVENT'); return Promise.resolve(false) }

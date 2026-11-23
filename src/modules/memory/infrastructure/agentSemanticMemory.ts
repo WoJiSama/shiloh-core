@@ -450,7 +450,8 @@ export function createAgentSemanticMemory(ports: {
             !viewerCurrent() || !current(binding)) throw error
         reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'semantic_memory_recall',
           code: error instanceof AgentSemanticMemoryTimeoutError && error.phase
-            ? `semantic_recall_local_fallback_${error.phase}` : 'semantic_recall_local_fallback', outcome: 'unknown', error },
+            ? `semantic_recall_local_fallback_${error.phase}` : 'semantic_recall_local_fallback', outcome: 'unknown', error,
+          details: { result: 'fallback_used', ...(error instanceof AgentSemanticMemoryTimeoutError && error.phase ? { step: error.phase } : {}) } },
         () => ports.logger.warn('[Agent] 语义检索未完成，使用本地关键词结果'))
         return fallback
       })
@@ -469,7 +470,12 @@ export function createAgentSemanticMemory(ports: {
         dirty.delete(state.id); nextCheck.set(state.id, now() + 60_000)
         let step: IndexStep = 'store'
         const started = now()
-        const work = maintain(state.scope, value => { step = value }).catch(error => {
+        const work = maintain(state.scope, value => { step = value }).then(() => {
+          if (!retryAt.delete(state.id)) return
+          try { ports.diagnostics?.emit({ stage: 'memory', operation: 'semantic_memory_index', outcome: 'succeeded',
+            code: 'semantic_index_check_recovered', details: { result: 'recovered' }, durationMs: now() - started }) }
+          catch { /* Preserve the completed check. */ }
+        }).catch(error => {
           if (error instanceof SemanticSourceChangedError) {
             if (enabled()) {
               dirty.add(state.id)
@@ -479,10 +485,12 @@ export function createAgentSemanticMemory(ports: {
               code: 'semantic_index_source_changed', durationMs: now() - started })
             return
           }
-          retryAt.set(state.id, now() + 60_000)
+          const retryInMs = 60_000
+          retryAt.set(state.id, now() + retryInMs)
           const code = error instanceof AgentSemanticMemoryTimeoutError ? `semantic_index_${step}_timeout`
             : semanticMemoryFailureCode(error, 'index') ?? `semantic_index_${step}_failed`
-          reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'semantic_memory_index', code, durationMs: now() - started, error },
+          reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'semantic_memory_index', code, durationMs: now() - started,
+            details: { step, ...(enabled() ? { result: 'retry_scheduled', retryInMs } : {}) }, error },
             () => ports.logger.warn('[Agent] 语义记忆索引暂时不可用'))
         })
           .finally(() => { indexing.delete(state.id) })

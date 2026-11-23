@@ -1,11 +1,30 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
-const { createAgentDiagnostics } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
+const { createAgentDiagnostics, annotateAgentError } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
 
 const account = { platform: 'qq', namespace: 'global', id: '10001' }
 const binding = { source: 'configured', id: 'scope', revision: 'rev1', agentId: 'daily', personaId: 'default', connectionId: 'main', target: { account, kind: 'group', id: '20001' } }
 const quiet = { info() {}, warn() {}, error() {} }
+
+test('diagnostics link nested failures without hiding unrelated failures from the same trace', async () => {
+  const rows = [], alerts = []
+  const d = createAgentDiagnostics({ sink: { async append(event) { rows.push(event); return true } },
+    logger: quiet, onFailure: event => alerts.push(event) })
+  const scope = { kind: 'host' }
+  const failure = annotateAgentError(new Error('private redis key'), { step: 'list', cause: 'redis_command_queue_timeout' })
+  await d.withScope(scope, 'periodic_check', async () => {
+    d.emit({ stage: 'host', operation: 'redis_command', outcome: 'failed', error: failure, code: 'redis_command_queue_timeout' })
+    d.emitFailure({ stage: 'runtime', operation: 'torrent_tick', outcome: 'failed', error: failure, code: 'tick_failed' })
+    await assert.rejects(d.run(scope, 'separate_failure', async () => { throw new Error('different private exception') }))
+  })
+  await d.flush()
+  const report = rows.find(event => event.operation === 'torrent_tick')
+  assert.equal(report.details.causeEventId, rows[0].id)
+  assert.equal(report.details.step, 'list')
+  assert.deepEqual(alerts.map(event => event.operation), ['redis_command', 'separate_failure'])
+  assert.doesNotMatch(JSON.stringify(rows), /private/)
+})
 
 test('diagnostics correlate nested model and delivery operations while isolating concurrent turns', async () => {
   const rows = [], d = createAgentDiagnostics({ sink: { async append(event) { rows.push(event); return true } }, logger: quiet })

@@ -29,6 +29,8 @@ export interface DiagnosticEvent {
   durationMs?: number
   errorKind?: string
   httpStatus?: number
+  diagnosis?: { operation: string; reason?: string; evidence: string; result: string }
+  causeEventId?: string
   scopeKey?: string
   bindingToken?: string
   currentBinding?: boolean
@@ -157,6 +159,19 @@ function event(value: unknown): DiagnosticEvent {
   if (row.httpStatus !== undefined) {
     result.httpStatus = integer(row.httpStatus, 599)
     if (result.httpStatus < 100) return fail()
+  }
+  if (row.diagnosis !== undefined) {
+    const diagnosis = object(row.diagnosis)
+    result.diagnosis = {
+      operation: text(diagnosis.operation, 128),
+      ...(diagnosis.reason === undefined ? {} : { reason: text(diagnosis.reason, 512) }),
+      evidence: text(diagnosis.evidence, 1024, true),
+      result: text(diagnosis.result, 256, true)
+    }
+  }
+  if (row.details !== undefined) {
+    const related = object(row.details).causeEventId
+    if (related !== undefined) result.causeEventId = text(related, 128)
   }
   if (row.errorKind !== undefined)
     result.errorKind = choice(row.errorKind, [

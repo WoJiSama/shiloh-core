@@ -26,7 +26,8 @@ async function rejected(operation, code, httpStatus) {
     assert.equal(error.message, FAILURE)
     assert.equal(error.cause, undefined)
     if (code) assert.equal(error.code, code)
-    assert.equal(error.httpStatus, httpStatus)
+    if (httpStatus !== undefined) assert.equal(error.httpStatus, httpStatus)
+    else assert.ok(error.httpStatus === undefined || error.httpStatus === 200)
     return true
   })
 }

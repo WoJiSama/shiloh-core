@@ -48,7 +48,7 @@ const same = (message: IncomingMessage | undefined, target: ConversationAddress,
 
 /** Complete Core-owned workflow, outside model deadlines and without model-selected receivers. */
 export function createAgentTorrentWorkflow(options: {
-  readonly diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'>
+  readonly diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'> & Partial<Pick<AgentDiagnostics, 'emitFailure'>>
   withDiagnosticScope?<T>(scope: AgentDiagnosticScope, operation: string, run: () => Promise<T>): Promise<T>
   explainFailure?(input: { detail: string; isCurrent: () => Promise<boolean> | boolean; signal?: AbortSignal }): Promise<string | undefined>
   readonly config?: AgentTorrentConfig
@@ -321,18 +321,23 @@ export function createAgentTorrentWorkflow(options: {
   async function tick(): Promise<void> {
     if (!started || !live() || scanning) return
     scanning = true
+    let step = 'reconcile'
+    const startedAt = performance.now()
     try {
       await ledger.recover()
       if (running) return
       const first = entries.values().next().value as Entry | undefined
       if (first) { running = true; track(run(first)); return }
+      step = 'list'
       for (const record of await ledger.listActive()) {
         if (!live()) return
         if (record.state !== 'queued' || entries.has(record.id)) continue
         const cancel = new AbortController()
+        step = 'authorization'
         const probe = await options.openContext(record, cancel.signal)
         if (probe === 'wait') continue
         if (probe) { try { probe.release() } catch (error) { diagnose({ stage: 'runtime', operation: 'torrent_cleanup', outcome: 'failed', code: 'probe_release_failed', error }) } }
+        step = 'reserve'
         const reservation = record.trigger.messageId === record.source.messageId ? undefined : await ledger.reserveSelection(record.binding, record.trigger)
         const session = reservation?.session ?? await ledger.claim(record.binding, record.trigger, record.source)
         if (!session) continue
@@ -340,7 +345,13 @@ export function createAgentTorrentWorkflow(options: {
         const entry: Entry = { session, cancel, ...(reservation ? { reservation, magnet: reservation.selection.magnet } : {}) }
         entries.set(record.id, entry); running = true; track(run(entry)); break
       }
-    } catch (error) { diagnose({ stage: 'runtime', operation: 'torrent_tick', outcome: 'failed', code: 'tick_failed', error }); throw error }
+    } catch (error) {
+      const event = { stage: 'runtime', operation: 'torrent_tick', outcome: 'failed', code: 'tick_failed', error,
+        details: { step }, durationMs: performance.now() - startedAt } as const
+      try { if (options.diagnostics?.emitFailure) options.diagnostics.emitFailure(event, true); else diagnose(event) }
+      catch { /* Preserve the inspection result. */ }
+      throw error
+    }
     finally { scanning = false }
   }
   return {

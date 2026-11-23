@@ -79,6 +79,17 @@ function clockFixture(t, statuses = []) {
   return { requests, logs, tick, report: diagnostics.emit, close: webhook.close }
 }
 
+test('validation alerts aggregate only matching declared fields and retain the most recent trace', async t => {
+  const f = clockFixture(t)
+  for (const field of ['reason', 'throughSeq', 'reason']) f.report({ stage: 'tool', operation: 'simFinishTurn',
+    outcome: 'failed', code: 'tool_schema_invalid', details: { field, rule: 'type', result: 'not_dispatched' } })
+  await f.tick(1)
+  const alerts = f.requests[0].payload.alerts
+  assert.deepEqual(alerts.map(alert => [alert.details.field, alert.count]), [['reason', 2], ['throughSeq', 1]])
+  assert.notEqual(alerts[0].traceId, alerts[1].traceId)
+  assert.match(formatQqOwnerAlerts({ alerts }), /字段 reason · 类型错误/u)
+})
+
 test('a new error pushes immediately and repeats flush after the cooldown even when no new error arrives', async t => {
   const f = clockFixture(t)
   f.report(toolFailure)
@@ -194,6 +205,15 @@ test('QQ alerts explain known failures and handle unknown or redacted diagnostic
   assert.match(text, /复核摘要模型输出的来源权限失败，共 1 次\n本阶段未能在摘要任务的时间预算内完成。\n错误码 summary_timeout/u)
   assert.match(text, /工具执行失败，共 1 次\n等待操作完成超时。\n错误码 constructor · 操作标识 toString/u)
   assert.doesNotMatch(text, /TimeoutError|redacted/u)
+})
+
+test('QQ summary alerts prefer the documented provider reason and keep unknown HTTP 400 generic', () => {
+  const common = { firstAt: 1000, lastAt: 1000, count: 1, stage: 'model', operation: 'summary_provider_http', outcome: 'failed', httpStatus: 400 }
+  const text = formatQqOwnerAlerts({ version: 1, id: 'batch', alerts: [
+    { ...common, code: 'glm_1301' }, { ...common, code: 'http_error' },
+  ] })
+  assert.match(text, /等待摘要模型响应失败，共 1 次\n智谱接口因内容审核拒绝了输入或生成结果。\n错误码 glm_1301 · HTTP 状态 400/u)
+  assert.match(text, /等待摘要模型响应失败，共 1 次\n服务拒绝了本次请求。\n错误码 http_error · HTTP 状态 400/u)
 })
 
 test('a full QQ batch keeps explanations and trace identifiers within the transport limit', async () => {

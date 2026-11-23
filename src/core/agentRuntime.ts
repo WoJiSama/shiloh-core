@@ -2217,7 +2217,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       ...(options.personalFollowFeed ? { followFeed: (url: string, isCurrent: () => boolean, signal: AbortSignal) =>
         actionExecutor.run({ signal, isCurrent }, guard => options.personalFollowFeed!(url, guard.isCurrent, signal)) } : {}),
       recordUsage: (agentId, stage, reply) => options.recordTokens?.({ scope: 'agent:' + agentId, stage, model: String(reply.model ?? ''), usage: reply.usage }),
-      failed: (operation, error, code) => diagnostics.emit({ stage: 'runtime', operation, outcome: 'failed', ...(code ? { code } : {}), error }),
+      failed: (operation, error, code, details) => diagnostics.emit({ stage: 'runtime', operation, outcome: 'failed',
+        ...(code ? { code } : {}), ...(details ? { details } : {}), error }),
     })
   }
 
@@ -3654,9 +3655,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
 
   type InboxAttempt = {
     step: 'read' | 'dispatch' | 'check_recall' | 'capture_conversation' | 'capture_semantic' |
-      'capture_history' | 'capture_group' | 'ingest' | 'acknowledge'
+      'capture_history' | 'capture_group' | 'ingest' | 'acknowledge' | 'forward_queue' | 'authorization' | 'privacy_command' | 'group_log'
     scope: AgentDiagnosticScope
     startedAt: number
+    recovered(): void
   }
   async function consumeInbox(queue: AgentInboxQueue, attempt: InboxAttempt): Promise<void> {
     const accountKey = platformAccountKey(queue.account)
@@ -3678,6 +3680,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
             else setConversationAI(reservation.target, true)
           }
         }
+        attempt.recovered()
         return
       }
       if (!isRunning()) return
@@ -3695,13 +3698,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         if (options.unifiedGroupChat && queue.kind === 'group' && target.kind === 'group' && event.kind === 'message' && !request) {
           const binding = bindingFor(target)?.binding
           if (binding && bindingToken === textBindingToken(binding) && options.migratedGroupToolNames?.(target) !== undefined) {
+            attempt.step = 'forward_queue'
             const destination = { account: queue.account, kind: 'simulation' as const }
             await inbox.forward(item.raw, queue, destination, { ...item.entry, event, bindingToken: agentBindingToken(binding) })
+            attempt.recovered()
             kickInbox(destination)
             continue
           }
         }
         if (queue.kind === 'privacy') {
+          attempt.step = 'privacy_command'
           if (event.kind === 'message' && request?.standalone && 'privacyCommand' in item.entry && request.command === item.entry.privacyCommand &&
               !await applyPrivacyCommand(event.message, request.command, bindingToken, item.raw, adapter,
                 'privacyOwner' in item.entry ? item.entry.privacyOwner : undefined)) return
@@ -3718,6 +3724,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
               bindingToken === agentBindingToken(selected.binding)) {
             if (!adapter.isReady()) return
             const incoming = event.message
+            attempt.step = 'group_log'
+            attempt.scope = { kind: 'conversation', binding: selected.binding, messageId: event.message.messageId }
             const outcome = groupLogEnabled ? await diagnostics.run({ kind: 'conversation', binding: selected.binding, messageId: incoming.messageId! }, 'group_log',
               () => groupLogWorkflow.handle(incoming, selected.binding, capture), 'runtime') : { consumed: false, aiAllowed: allowsConversationAI(target) }
             const gameHandled = !outcome.consumed && await handleGames(incoming, selected.binding)
@@ -3733,15 +3741,18 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
             if (!outcome.consumed && !diceHandled && !qualityHandled && !magnetHandled && outcome.aiAllowed && conversationEnabled(target)) {
               const message = groupLogForwardMessage(event.message, adapter)
               if (message) {
+                attempt.step = 'forward_queue'
                 const destination: AgentInboxQueue = { account: queue.account, kind: textInboxFor(target)?.kind ?? 'simulation' }
                 await inbox.forward(item.raw, queue, destination, { ...item.entry, event: { kind: 'message', message },
                   bindingToken: destination.kind === 'simulation' ? agentBindingToken(selected.binding) : textBindingToken(selected.binding) })
+                attempt.recovered()
                 kickInbox(destination)
                 continue
               }
             }
           }
         } else if (event.kind === 'recall') {
+          attempt.step = 'check_recall'
           if (queue.kind === 'simulation' && target.kind !== 'private' && await inbox.isRecalled(target, event.messageId)) {
             await runtime.handleRecall({ message_id: event.messageId }, target)
           }
@@ -3753,10 +3764,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           const persona = selectedPersona && (allowsConversationAI(target) || gameCandidate) ? selectedPersona : undefined
           if (persona && (queue.kind === 'simulation' ? agentBindingToken(persona.binding) : textBindingToken(persona.binding)) === bindingToken &&
               (event.kind !== 'message' || !event.message.binding || isSameBinding(event.message.binding, persona.binding))) {
-            if (queue.kind === 'simulation') {
-              const messageId = event.kind === 'message' ? event.message.messageId : undefined
-              attempt.scope = { kind: 'conversation', binding: persona.binding, ...(messageId ? { messageId } : {}) }
-            }
+            const messageId = event.kind === 'message' ? event.message.messageId : undefined
+            attempt.scope = { kind: 'conversation', binding: persona.binding, ...(messageId ? { messageId } : {}) }
             if (event.kind === 'message' && target.kind === 'group') moderation?.observe(event.message, persona.binding)
             if (event.kind === 'message' && (extraction.isCandidate(event.message) || isMediaRelayCandidate(event.message) || torrent.isCandidate(event.message) || magnetSearchCurrent() && parseAgentMagnetSearchCommand(event.message.text)) && !adapter.isReady()) return
             const contactHandled = event.kind === 'message' && await contactPreference(event.message, persona.binding)
@@ -3772,17 +3781,23 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
               if (!adapter.isReady()) return
               const expected = agentBindingToken(persona.binding)
               const incoming = event.message
+              attempt.step = 'authorization'
               const memoryTurn = await beginMemoryTurn(persona.binding)
               const isCurrent = () => observeCurrent(() => isRunning() && conversationEnabled(target) && textInboxFor(target)?.kind === queue.kind &&
                 memoryTurn.isCurrent() && bindingIsCurrent(target, expected))
               let handedToTrigger = false
               try {
                 if (options.allowsText?.(incoming.text, 'incoming') !== false) {
+                  attempt.step = 'capture_conversation'
                   await conversationMemory.capture(incoming, persona.binding, isCurrent)
+                  attempt.step = 'capture_semantic'
                   await semanticMemory.capture(incoming, persona.binding, isCurrent)
                   await captureCognition(incoming, persona.binding, isCurrent).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
+                  attempt.step = 'capture_history'
                   await history.capture(incoming, persona.binding, isCurrent)
+                  attempt.step = 'capture_group'
                   await groupMemory.capture(incoming, persona.binding, isCurrent)
+                  attempt.step = 'ingest'
                   if (target.kind === 'group' && incoming.messageId && options.textTrigger !== undefined) {
                     const recallVersion = await inbox.textRecallVersion(target)
                     const current = () => observeCurrent(() => isCurrent() && options.isTextTriggerCurrent?.() !== false && adapterFor(target) === adapter && adapter.isReady())
@@ -3839,6 +3854,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (!isRunning()) return
       attempt.step = 'acknowledge'
       await inbox.acknowledge(item.raw, queue, setPrivacyPending)
+      attempt.recovered()
       if (queue.kind === 'private' || queue.kind === 'group') void textPersonMemory.tick()
       void conversationMemory.tick()
       void semanticMemory.tick()
@@ -3847,7 +3863,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     }
   }
 
-  function kickInbox(queue: AgentInboxQueue): Promise<void> | undefined {
+  function kickInbox(queue: AgentInboxQueue, retry = false): Promise<void> | undefined {
     const accountKey = platformAccountKey(queue.account)
     const key = JSON.stringify([queue.kind, accountKey])
     if (!isRunning() || retryTimers.has(key)) return undefined
@@ -3855,17 +3871,24 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     if (queue.kind !== 'privacy' && queue.kind !== 'group-log' && !activityRecovered(queue.account)) return undefined
     const current = consumers.get(key)
     if (current) return current
-    const attempt: InboxAttempt = { step: 'read', scope: { kind: 'account', account: queue.account }, startedAt: performance.now() }
-    const consumer = consumeInbox(queue, attempt).catch(error => {
-      const operation = `consume_${queue.kind}`
+    const operation = `consume_${queue.kind}`
+    const attempt: InboxAttempt = { step: 'read', scope: { kind: 'account', account: queue.account }, startedAt: performance.now(),
+      recovered() {
+        if (!retry) return
+        retry = false
+        diagnostics.withScope(attempt.scope, operation, () => diagnostics.emit({ stage: 'inbox', operation, outcome: 'succeeded',
+          code: 'inbox_retry_recovered', details: { step: attempt.step, result: 'recovered' } }), true)
+      } }
+    const consumer = diagnostics.withScope(attempt.scope, operation, () => consumeInbox(queue, attempt).catch(error => {
       const semanticCode = attempt.step === 'capture_semantic' ? semanticMemoryFailureCode(error, 'capture') : undefined
-      const code = queue.kind === 'simulation' ? semanticCode ?? `inbox_retry_${attempt.step}` : 'inbox_retry_pending'
+      const code = semanticCode ?? `inbox_retry_${attempt.step}`
       const durationMs = performance.now() - attempt.startedAt
-      void diagnostics.run(attempt.scope, operation, async () => {
-        diagnostics.emit({ stage: 'inbox', operation, outcome: 'failed', code, error, durationMs })
-      }, 'inbox')
-      if (isRunning()) retryTimers.set(key, setTimeout(() => { retryTimers.delete(key); kickInbox(queue) }, 1_000))
-    }).finally(() => { consumers.delete(key) })
+      const retryInMs = 1_000
+      const scheduled = isRunning()
+      if (scheduled) retryTimers.set(key, setTimeout(() => { retryTimers.delete(key); kickInbox(queue, true) }, retryInMs))
+      diagnostics.withScope(attempt.scope, operation, () => diagnostics.emitFailure({ stage: 'inbox', operation, outcome: 'failed', code, error, durationMs,
+        details: { step: attempt.step, ...(scheduled ? { result: 'retry_scheduled', retryInMs } : {}) } }, true), true)
+    }), retry).finally(() => { consumers.delete(key) })
     consumers.set(key, consumer)
     return consumer
   }
@@ -3930,8 +3953,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
 
   async function runMaintenance(operation: string, task: () => Promise<unknown>): Promise<void> {
-    try { await task() }
-    catch (error) { diagnostics.emit({ stage: 'runtime', operation, outcome: 'failed', error }) }
+    await diagnostics.withScope({ kind: 'host' }, operation, async () => {
+      const started = performance.now()
+      try { await task() }
+      catch (error) { diagnostics.emitFailure({ stage: 'runtime', operation, outcome: 'failed', code: 'maintenance_task_failed',
+        durationMs: performance.now() - started, error }) }
+    })
   }
 
   async function start(): Promise<void> {

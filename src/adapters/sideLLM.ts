@@ -13,9 +13,14 @@ export interface SideLLMOptions {
   isCurrent?: () => boolean
   fetchImpl?: typeof fetch | null
 }
-export type SideLLMResult = { ok: true; content: string; usage?: unknown } | { ok: false; error: string; status?: number }
+type SideLLMFailureCode = 'model_configuration_invalid' | 'provider_transport_unavailable' | 'provider_cancelled' |
+  'model_source_changed' | 'http_error' | 'provider_timeout' | 'provider_transport_error' | 'model_response_body_read_failed' |
+  'model_response_body_invalid' | 'model_response_envelope_invalid' | 'model_response_truncated' |
+  'model_response_refused' | 'model_response_empty'
+export type SideLLMResult = { ok: true; content: string; usage?: unknown } |
+  { ok: false; code: SideLLMFailureCode; error: string; status?: number; limit?: number }
 function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {}
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 /** Transport errors are values so each caller retains its own fallback policy. */
 export async function sideLLMCall({ url, apikey, model, messages, temperature = 0.2, maxTokens,
@@ -24,18 +29,20 @@ export async function sideLLMCall({ url, apikey, model, messages, temperature = 
   // 已经是完整地址的保持不变。曾因裸 POST 到 /v4 导致梗提取/表达学习全线 404。
   const endpoint = resolveChatCompletionUrl(url)
   if (!endpoint || !apikey || !model || !Array.isArray(messages) || !messages.length) {
-    return { ok: false, error: 'sideLLMCall 缺少 url/apikey/model/messages' }
+    return { ok: false, code: 'model_configuration_invalid', error: 'sideLLMCall 缺少 url/apikey/model/messages' }
   }
   const doFetch = fetchImpl || globalThis.fetch
-  if (!doFetch) return { ok: false, error: 'fetch 不可用' }
+  if (!doFetch) return { ok: false, code: 'provider_transport_unavailable', error: 'fetch 不可用' }
   const body: { model: string; messages: SideLLMOptions['messages']; temperature: number; max_tokens?: number } = { model, messages, temperature }
   if (Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0) body.max_tokens = Number(maxTokens)
   const controller = new AbortController()
   let timedOut = false
+  let status: number | undefined
   const onAbort = () => controller.abort(signal?.reason)
-  const timer = setTimeout(() => { timedOut = true; controller.abort() }, Math.max(1000, Number(timeoutMs) || 30000))
+  const deadline = Math.max(1000, Number(timeoutMs) || 30000)
+  const timer = setTimeout(() => { timedOut = true; controller.abort(new DOMException('模型请求超时', 'TimeoutError')) }, deadline)
   signal?.addEventListener('abort', onAbort, { once: true })
-  const revoked = { ok: false, error: '角色绑定已改变，模型请求已停止' } as const
+  const revoked = { ok: false, code: 'model_source_changed', error: '角色绑定已改变，模型请求已停止' } as const
   try {
     signal?.throwIfAborted()
     const payload = JSON.stringify(body)
@@ -45,22 +52,42 @@ export async function sideLLMCall({ url, apikey, model, messages, temperature = 
       body: payload, signal: controller.signal
     })
     signal?.throwIfAborted()
+    controller.signal.throwIfAborted()
+    status = response.status
     if (!response.ok) {
-      const text = await response.text().catch(() => '')
+      await response.text().catch(() => '')
+      signal?.throwIfAborted()
       if (!isModelRequestCurrent(isCurrent)) return revoked
-      return { ok: false, error: `模型请求失败: ${response.status} ${String(text).slice(0, 160)}`, status: response.status }
+      return { ok: false, code: 'http_error', error: `模型请求失败（HTTP ${status}）`, status }
     }
     const data = record(await response.json())
+    signal?.throwIfAborted()
+    controller.signal.throwIfAborted()
     if (!isModelRequestCurrent(isCurrent)) return revoked
     const first = Array.isArray(data.choices) ? record(data.choices[0]) : {}
-    const content = String(record(first.message).content || '').trim()
-    if (!content) return { ok: false, error: '模型返回空', status: response.status }
+    const message = record(first.message)
+    const content = typeof message.content === 'string' ? message.content.trim() : ''
+    if (first.finish_reason === 'content_filter' || typeof message.refusal === 'string' && message.refusal.trim()) {
+      return { ok: false, code: 'model_response_refused', error: '模型拒绝返回正文', status }
+    }
+    if (!content) {
+      if (first.finish_reason === 'length') return { ok: false, code: 'model_response_truncated', error: '模型在输出上限内未返回正文', status,
+        ...(body.max_tokens === undefined ? {} : { limit: body.max_tokens }) }
+      if (!Object.hasOwn(message, 'content') || (message.content !== null && typeof message.content !== 'string')) {
+        return { ok: false, code: 'model_response_envelope_invalid', error: '模型响应结构无效', status }
+      }
+      return { ok: false, code: 'model_response_empty', error: '模型返回空', status }
+    }
     return { ok: true, content, ...(data.usage !== undefined ? { usage: data.usage } : {}) }
   } catch (error) {
-    if (signal?.aborted) return { ok: false, error: '模型请求已取消' }
+    if (signal?.aborted) return { ok: false, code: 'provider_cancelled', error: '模型请求已取消' }
     if (!isModelRequestCurrent(isCurrent)) return revoked
-    const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, error: timedOut || /abort|timeout/i.test(message) ? `模型请求超时(${timeoutMs}ms)` : `模型请求异常: ${message}` }
+    if (timedOut) return { ok: false, code: 'provider_timeout', error: `模型请求超时（${deadline}ms）`,
+      ...(status === undefined ? {} : { status }), limit: deadline }
+    if (status !== undefined) return error instanceof SyntaxError
+      ? { ok: false, code: 'model_response_body_invalid', error: '模型响应不是有效的 JSON', status }
+      : { ok: false, code: 'model_response_body_read_failed', error: '模型响应体读取失败', status }
+    return { ok: false, code: 'provider_transport_error', error: '模型请求发生传输错误' }
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener('abort', onAbort)

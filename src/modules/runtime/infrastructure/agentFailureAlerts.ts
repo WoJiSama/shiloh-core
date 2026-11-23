@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentDiagnosticEvent } from '../../../contracts/agentDiagnostics.js'
+import { parseAgentDiagnosticDetails } from './agentOperationJournal.js'
 
 const cooldownMs = 60_000
 const maximumGroups = 256
@@ -11,7 +12,10 @@ interface Alert {
   outcome: 'failed' | 'unknown'
   code?: string
   httpStatus?: number
-  errorKind?: AgentDiagnosticEvent['errorKind']
+  errorKind?: NonNullable<AgentDiagnosticEvent['errorKind']>
+  sourceTag?: string
+  durationMs?: number
+  details?: NonNullable<AgentDiagnosticEvent['details']>
   traceId?: string
   firstAt: number
   lastAt: number
@@ -58,12 +62,8 @@ export function createAgentFailureAlerts(options: {
     try { logger[level]?.(`[AgentAlerts] ${message}`) } catch { /* No writable terminal. */ }
   }
 
-  function label(value: string): string {
-    try {
-      if (/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value) && options.allowsLabel?.(value) !== false) return value
-    } catch { /* Fail closed when checking a dynamic label. */ }
-    return 'redacted'
-  }
+  function allowed(value: string): boolean { try { return options.allowsLabel?.(value) !== false } catch { return false } }
+  const label = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value) && allowed(value) ? value : 'redacted'
 
   function collect(force: boolean): Batch | undefined {
     const rows: Batch['rows'] = [], now = Date.now()
@@ -129,10 +129,19 @@ export function createAgentFailureAlerts(options: {
     const operation = label(event.operation), rawCode = event.code ?? event.delivery?.code
     const code = rawCode === undefined ? undefined : label(rawCode)
     const traceId = label(event.traceId)
-    let key = JSON.stringify([event.stage, operation, event.outcome, code, event.httpStatus])
+    let details: AgentDiagnosticEvent['details']
+    if (event.details) try {
+      details = Object.fromEntries(Object.entries(parseAgentDiagnosticDetails(event.details))
+        .filter(([, value]) => allowed(String(value))))
+    } catch { /* The failure remains reportable without optional metadata. */ }
+    const sourceTag = event.sourceTag && /^[\p{L}\p{N} _-]{1,24}$/u.test(event.sourceTag) && allowed(event.sourceTag) ? event.sourceTag : undefined
+    let key = JSON.stringify([event.stage, operation, event.outcome, code, event.httpStatus, event.errorKind, sourceTag,
+      details?.step, details?.cause, details?.field, details?.rule, details?.limit, details?.nativeCode, details?.dispatched, details?.result])
     let alert: Alert = { stage: event.stage, operation, outcome: event.outcome,
       ...(code === undefined ? {} : { code }), ...(event.httpStatus === undefined ? {} : { httpStatus: event.httpStatus }),
       ...(event.errorKind === undefined ? {} : { errorKind: event.errorKind }), ...(traceId === 'redacted' ? {} : { traceId }),
+      ...(sourceTag ? { sourceTag } : {}), ...(Number.isFinite(event.durationMs) ? { durationMs: event.durationMs! } : {}),
+      ...(details && Object.keys(details).length ? { details } : {}),
       firstAt: event.at, lastAt: event.at, count: 1 }
     if (!groups.has(key) && groups.size >= maximumGroups) {
       prune(Date.now())
@@ -148,6 +157,7 @@ export function createAgentFailureAlerts(options: {
     const previous = group.pending
     if (previous) {
       alert.firstAt = Math.min(previous.firstAt, alert.firstAt)
+      if (previous.lastAt > alert.lastAt) alert = { ...previous, firstAt: alert.firstAt, count: alert.count }
       alert.lastAt = Math.max(previous.lastAt, alert.lastAt)
       alert.count += previous.count
     }

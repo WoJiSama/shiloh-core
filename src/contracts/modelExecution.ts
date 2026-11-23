@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatRequestData, ChatResponse } from './modelGateway.js'
+import type { AgentDiagnosticEvent } from './agentDiagnostics.js'
 export interface Backend {
  apiUrl?: string | undefined; model?: string | undefined; apiKey?: string | string[] | undefined; label?: string | undefined
  reasoningEffort?: string | undefined; maxTokensField?: string | undefined; maxOutputTokens?: number | undefined
@@ -45,6 +46,7 @@ export function awaitModelRequestAuthority(check: () => Promise<void>, signal?: 
 export interface ModelExecutionPorts {
  fetch: typeof fetch
  logger: { info(...values: unknown[]): void; warn(...values: unknown[]): void; error(...values: unknown[]): void }
+ observe?(event: Pick<AgentDiagnosticEvent, 'operation' | 'outcome' | 'code' | 'httpStatus' | 'details'> & { error?: unknown }): void
  removeToolPromptsFromMessages(messages: ChatMessage[]): ChatMessage[]
  resolveChatCompletionUrl(url?: string): string
  resolveAgentBackend(config: ExecutionConfig, request: ChatRequestData): Backend

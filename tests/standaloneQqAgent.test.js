@@ -2145,7 +2145,9 @@ test('standalone QQ sends verified group images only to the configured vision mo
       'vision HTTP outcome preserves only its status')
     assert.ok(scoped.some(event => event.operation === 'simulation_image_description' && event.outcome === 'started'), 'image description start is durable')
     assert.ok(scoped.some(event => event.operation === 'simulation_image_description' && event.outcome === 'failed' &&
-      event.code === 'image_model_response_error' && event.httpStatus === status), 'HTTP and empty-content failures retain their safe distinction')
+      event.code === (status === 401 ? 'http_error' : 'model_response_empty') &&
+      event.details?.step === (status === 401 ? 'provider_request' : 'response_validation') && event.httpStatus === status),
+    'HTTP and empty-content failures retain their safe distinction')
   }
   assert.ok(visionEvents.some(event => event.operation === 'simulation_image_description' && event.outcome === 'succeeded' &&
     event.code === 'image_description_completed'), 'normal vision 200 records its confirmed description')
@@ -2154,7 +2156,7 @@ test('standalone QQ sends verified group images only to the configured vision mo
   for (const event of visionEvents.filter(event => event.outcome !== 'started')) {
     assert.ok(Number.isFinite(event.durationMs) && event.durationMs >= 0, 'terminal vision diagnostics retain safe duration')
     assert.ok(Object.keys(event).every(key => ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code',
-      'durationMs', 'errorKind', 'httpStatus', 'configurationRevision'].includes(key)), 'vision diagnostics expose metadata only')
+      'durationMs', 'errorKind', 'httpStatus', 'configurationRevision', 'details'].includes(key)), 'vision diagnostics expose metadata only')
   }
   for (const secret of [privateVisionBody, fixturePng, text, forbidden, 'vision-fixture', 'chat-fixture', 'https://private.invalid',
     `http://127.0.0.1:${port}`, '/vision/v1/chat/completions', 'base64://', 'data:image/', 'image_url', '图源发送者']) {

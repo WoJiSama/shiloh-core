@@ -46,7 +46,7 @@ const sameSource = (record: AgentMediaOutboxRecord, value: Awaited<ReturnType<Ag
 
 /** Durable scheduling is independent of platform objects and of any model turn. */
 export function createAgentMediaOutbox(options: {
-  readonly diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'>
+  readonly diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'> & Partial<Pick<AgentDiagnostics, 'emitFailure'>>
   withDiagnosticScope?<T>(scope: AgentDiagnosticScope, operation: string, run: () => Promise<T>): Promise<T>
   readonly storage: AgentInboxRedis
   readonly actions: MessageActionPort
@@ -145,6 +145,7 @@ export function createAgentMediaOutbox(options: {
   async function prepare(record: AgentMediaOutboxRecord, entry: Entry) {
     return inScope(entry, 'media_prepare', async () => {
       let providerReported = false
+      let step = 'authorization'
       try {
         const context = await wait(options.openContext(record, entry.cancel.signal), entry.cancel.signal, async late => { if (late && late !== 'wait') late.release() })
         if (context === 'wait') return
@@ -154,28 +155,37 @@ export function createAgentMediaOutbox(options: {
         entry.abortContext = abort
         if (context.signal.aborted) abort(); else context.signal.addEventListener('abort', abort, { once: true })
         await current(entry, true)
+        step = 'reserve'
         await entry.session.preparing()
         await current(entry)
+        step = 'provider_request'
         diagnose({ stage: 'runtime', operation: 'media_provider_prepare', outcome: 'started' })
         const result = await wait(Promise.resolve().then(() => options.provider!.prepare(record.source.share, prepareContext(entry))).catch(error => {
           if (!entry.cancel.signal.aborted) {
             providerReported = true
-            diagnose({ stage: 'runtime', operation: 'media_provider_prepare', outcome: 'failed', code: 'provider_threw', error })
+            diagnose({ stage: 'runtime', operation: 'media_provider_prepare', outcome: 'failed', code: 'provider_threw', error,
+              details: { step, attempt: entry.session.record.prepareAttempts, maxAttempts: 3 } })
           }
           throw error
         }), entry.cancel.signal, releasePrepared)
         diagnose({ stage: 'runtime', operation: 'media_provider_prepare', outcome: 'succeeded', code: 'provider_returned' })
+        step = 'response_validation'
         try { entry.prepared = prepared(result, record.source.share) } catch { await releasePrepared(result); throw failure() }
         await current(entry, true)
         entry.readyAt = now()
       } catch (error) {
         if (!providerReported && !entry.cancel.signal.aborted) {
-          diagnose({ stage: 'runtime', operation: 'media_prepare', outcome: 'failed', code: 'prepare_failed', error })
+          diagnose({ stage: 'runtime', operation: 'media_prepare', outcome: 'failed', code: 'prepare_failed', error, details: { step } })
         }
         try {
           if (stopped) return
           if (!entry.context?.isCurrent() || entry.cancel.signal.aborted) await entry.session.close('cancelled')
-          else if (entry.session.record.prepareFailures < 2) await entry.session.retry(now() + 1000 * 3 ** entry.session.record.prepareFailures)
+          else if (entry.session.record.prepareFailures < 2) {
+            const retryInMs = 1_000 * 3 ** entry.session.record.prepareFailures
+            await entry.session.retry(now() + retryInMs)
+            diagnose({ stage: 'runtime', operation: 'media_prepare', outcome: 'succeeded', code: 'prepare_retry_scheduled',
+              details: { result: 'retry_scheduled', retryInMs, attempt: entry.session.record.prepareAttempts, maxAttempts: 3 } })
+          }
           else {
             // Even a final preparation failure waits for its FIFO/connection lane.
             const share = validateAgentMediaShare(record.source.share), pageUrl = agentMediaSharePageUrl(share)
@@ -187,8 +197,11 @@ export function createAgentMediaOutbox(options: {
             entry.prepared = { pageUrl, infoText, linkOnly: true,
               plan: { version: 1, items: [{ parts: [{ kind: 'text', text: infoText }] }] }, async release() {} }
             entry.readyAt = now()
+            diagnose({ stage: 'runtime', operation: 'media_prepare', outcome: 'succeeded', code: 'prepare_fallback_ready',
+              details: { result: 'fallback_used', attempt: entry.session.record.prepareAttempts, maxAttempts: 3 } })
           }
-        } catch (error) { diagnose({ stage: 'runtime', operation: 'media_prepare', outcome: 'unknown', code: 'prepare_ledger_failed', error }) }
+        } catch (error) { diagnose({ stage: 'runtime', operation: 'media_prepare', outcome: 'unknown', code: 'prepare_ledger_failed', error,
+          details: { step: 'reconcile', result: 'confirmation_pending' } }) }
       } finally {
         preparing--; entry.preparing = false
         if (entry.readyAt === undefined) await cleanup(record.id, entry)
@@ -281,9 +294,13 @@ export function createAgentMediaOutbox(options: {
   async function tick(): Promise<void> {
     if (stopped || scanning || !started) return
     scanning = true
+    let step = 'reconcile'
+    const startedAt = performance.now()
     try {
       await ledger.recover()
+      step = 'list'
       const records = await ledger.listActive(), heads = new Map<string, string>(), active = new Set(records.map(record => record.id))
+      step = 'reconcile'
       for (const entry of entries.values()) if (entry.session.record.expiresAt <= now()) entry.cancel.abort()
       for (const [id, entry] of entries) if (!entry.preparing && !entry.sending && (!active.has(id) || entry.cancel.signal.aborted)) {
         if (active.has(id)) await entry.session.close(entry.session.record.effects.length ? 'unknown' : 'cancelled').catch(error => diagnose({ stage: 'runtime', operation: 'media_cleanup', outcome: 'unknown', code: 'stale_close_failed', error }))
@@ -304,13 +321,20 @@ export function createAgentMediaOutbox(options: {
           continue
         }
         if (existing || preparing >= 2 || record.nextAttemptAt > now()) continue
+        step = 'reserve'
         const session = await ledger.claim(record.id)
         if (!session) continue
         if (stopped) { session.abandon(); return }
         const entry: Entry = { session, cancel: new AbortController(), preparing: true, sending: false }
         entries.set(record.id, entry); preparing++; track(prepare(record, entry))
       }
-    } catch (error) { diagnose({ stage: 'runtime', operation: 'media_tick', outcome: 'failed', code: 'tick_failed', error }); throw error }
+    } catch (error) {
+      const event = { stage: 'runtime', operation: 'media_tick', outcome: 'failed', code: 'tick_failed', error,
+        details: { step }, durationMs: performance.now() - startedAt } as const
+      try { if (options.diagnostics?.emitFailure) options.diagnostics.emitFailure(event, true); else diagnose(event) }
+      catch { /* Preserve the inspection result. */ }
+      throw error
+    }
     finally { scanning = false }
   }
   return {

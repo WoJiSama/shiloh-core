@@ -111,8 +111,8 @@ test('OneBot reports native rejection and unknown timeout without leaking API pa
     assert.equal(await pending, undefined)
   }
   assert.deepEqual(events, [
-    ['read', 'get_group_member_info', 'failed', 'onebot_rejected'],
-    ['list', 'get_group_member_list', 'unknown', 'onebot_timeout'],
+    ['read', 'get_group_member_info', 'failed', 'onebot_rejected', { dispatched: true, nativeCode: 123 }],
+    ['list', 'get_group_member_list', 'unknown', 'onebot_timeout', { dispatched: true, result: 'confirmation_pending' }],
   ])
 })
 

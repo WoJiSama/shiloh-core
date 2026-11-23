@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { types } from 'node:util'
 import WebSocket from 'ws'
 import type { ConversationAddress, PlatformConnection, PlatformUserRef } from '../contracts/agentBinding.js'
-import { QQ_OWNER_ALERT_MAX_LENGTH } from '../contracts/agentDiagnostics.js'
+import { QQ_OWNER_ALERT_MAX_LENGTH, type AgentDiagnosticDetails } from '../contracts/agentDiagnostics.js'
 import type { DeliveryReceipt } from '../contracts/delivery.js'
 import type { ConversationMember, ConversationMemberProfile, ConversationMemberReadOptions, ForwardContent, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
 import type { MessageActionOptions } from '../contracts/platformMessage.js'
@@ -332,8 +332,9 @@ interface OneBotConnectionOptions extends OneBotEndpoint {
   onDisconnect(): void
   onReconnect(): void
   onError(): void
-  onEventError(): void
-  onApiFailure?(action: string, outcome: 'failed' | 'unknown', code: string): void
+  onEventError(event: { code: 'onebot_admission_queue_full' | 'onebot_admission_unconfirmed'; outcome: 'failed' | 'unknown';
+    details: AgentDiagnosticDetails; error?: unknown }): void
+  onApiFailure?(action: string, outcome: 'failed' | 'unknown', code: string, details: AgentDiagnosticDetails): void
   readonly alertOwner?: PlatformUserRef
   readonly conversationNameTargets?: readonly ConversationAddress[]
 }
@@ -421,8 +422,8 @@ function createOneBotSession(options: OneBotConnectionOptions) {
   }
 
   async function call(client: WebSocket, action: string, params: Record<string, unknown>, guard?: () => boolean, timeoutMs = 10_000, signal?: AbortSignal, onDispatch?: () => void, observeFailures = true): Promise<unknown> {
-    const report = (outcome: 'failed' | 'unknown', code: string) => {
-      try { if (observeFailures) options.onApiFailure?.(action, outcome, code) } catch { /* Observers do not affect API results. */ }
+    const report = (outcome: 'failed' | 'unknown', code: string, details: AgentDiagnosticDetails = { dispatched: false, result: 'not_dispatched' }) => {
+      try { if (observeFailures) options.onApiFailure?.(action, outcome, code, details) } catch { /* Observers do not affect API results. */ }
     }
     if (/^(?:set_group_kick|set_group_kick_members)(?:_async)?$/iu.test(action) ||
         /^set_group_leave(?:_async)?$/iu.test(action) && params.is_dismiss === true) {
@@ -436,12 +437,13 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     if (signal?.aborted) return { state: 'unknown' }
     if (guard?.() === false) return { state: 'failed', code: 'binding_changed' }
     if (pending.size >= 128) {
-      report('failed', 'onebot_busy')
+      report('failed', 'onebot_busy', { dispatched: false, limit: 128, result: 'not_dispatched' })
       return { state: 'failed', code: 'onebot_busy' }
     }
     const echo = randomUUID()
     type DispatchFailure = 'onebot_timeout' | 'onebot_transport_unconfirmed'
-    const { value, failure, observeResult } = await new Promise<{ value: unknown; failure: DispatchFailure | undefined; observeResult: boolean }>(resolve => {
+    const { value, failure, dispatched, observeResult } = await new Promise<{ value: unknown; failure: DispatchFailure | undefined;
+      dispatched: boolean; observeResult: boolean }>(resolve => {
       let finished = false, dispatched = false
       const finish = (value?: unknown, failure?: DispatchFailure) => {
         if (finished) return
@@ -449,7 +451,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         clearTimeout(timer)
         signal?.removeEventListener('abort', abort)
         pending.delete(echo)
-        resolve({ value, failure, observeResult: dispatched && !stopped && !signal?.aborted })
+        resolve({ value, failure, dispatched, observeResult: dispatched && !stopped && !signal?.aborted })
       }
       const abort = () => finish(undefined, signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError' ? 'onebot_timeout' : undefined)
       const timer = setTimeout(() => finish(undefined, 'onebot_timeout'), timeoutMs)
@@ -465,12 +467,17 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       catch { finish(undefined, 'onebot_transport_unconfirmed') }
     })
     // Continue in the caller's trace context after settling the WebSocket callback.
-    if (failure) report('unknown', failure)
+    if (failure) report(dispatched ? 'unknown' : 'failed', failure, { dispatched, result: dispatched ? 'confirmation_pending' : 'not_dispatched',
+      ...(failure === 'onebot_timeout' && !signal?.aborted ? { limit: timeoutMs } : {}) })
     else if (observeResult) {
       const response = record(value)
-      if (response.status === 'async') report('unknown', 'onebot_response_unconfirmed')
-      else if (response.status === 'failed' || Number.isInteger(response.retcode) && response.retcode !== 0) report('failed', 'onebot_rejected')
-      else if (response.status !== 'ok' || response.retcode !== 0) report('unknown', value === undefined ? 'onebot_transport_unconfirmed' : 'onebot_response_unconfirmed')
+      const nativeCode = typeof response.retcode === 'number' && Number.isInteger(response.retcode) &&
+        Math.abs(response.retcode) <= 2_147_483_647 ? response.retcode : undefined
+      const details: AgentDiagnosticDetails = { dispatched, ...(nativeCode === undefined ? {} : { nativeCode }) }
+      if (response.status === 'async') report('unknown', 'onebot_response_unconfirmed', { ...details, result: 'confirmation_pending' })
+      else if (response.status === 'failed' || Number.isInteger(response.retcode) && response.retcode !== 0) report('failed', 'onebot_rejected', details)
+      else if (response.status !== 'ok' || response.retcode !== 0) report('unknown',
+        value === undefined ? 'onebot_transport_unconfirmed' : 'onebot_response_unconfirmed', { ...details, result: 'confirmation_pending' })
     }
     return value ?? { state: 'unknown' }
   }
@@ -562,7 +569,10 @@ function createOneBotSession(options: OneBotConnectionOptions) {
             if (recalledWalletSources.size > 4096) recalledWalletSources.delete(recalledWalletSources.values().next().value!)
           }
         }
-        if (queued >= 256) { options.onEventError(); return }
+        if (queued >= 256) {
+          options.onEventError({ code: 'onebot_admission_queue_full', outcome: 'failed', details: { step: 'dispatch', limit: 256, result: 'not_dispatched' } })
+          return
+        }
         const handle = accept
         queued++
         const packetPort = redPacketPort
@@ -580,7 +590,8 @@ function createOneBotSession(options: OneBotConnectionOptions) {
             return
           }
           await handle(event)
-        }).catch(options.onEventError).finally(() => { queued-- })
+        }).catch(error => options.onEventError({ code: 'onebot_admission_unconfirmed', outcome: 'unknown',
+          details: { step: 'enqueue', result: 'confirmation_pending' }, error })).finally(() => { queued-- })
       })
       const authenticate = () => {
         void (async () => {
@@ -588,7 +599,11 @@ function createOneBotSession(options: OneBotConnectionOptions) {
           const identity = record(response.data)
           if (stopped || socket !== client) { client.terminate(); return }
           if (response.status !== 'ok' || response.retcode !== 0 || qqId(identity.user_id) !== connection.account.id) {
-            if (!initial && !options.startOffline && response.status === 'ok' && response.retcode === 0) { stopped = true; options.onError() }
+            if (response.status === 'ok' && response.retcode === 0) {
+              try { options.onApiFailure?.('get_login_info', 'failed', 'onebot_identity_mismatch',
+                { step: 'authorization', dispatched: true, nativeCode: 0, result: 'discarded' }) } catch { /* Preserve the verified identity check. */ }
+              if (!initial && !options.startOffline) { stopped = true; options.onError() }
+            }
             client.terminate()
             return
           }

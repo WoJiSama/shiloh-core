@@ -7,11 +7,12 @@ import { agentBindingToken, agentConversationKey, conversationAddressKey, platfo
 import { parseAgentDiagnosticEvent } from '../modules/runtime/infrastructure/agentOperationJournal.js'
 import type { AgentJournalReadResult } from '../modules/runtime/infrastructure/agentOperationJournalReader.js'
 import { captureSynchronousGuardCheck, createSynchronousGuard, ensureSynchronousGuard } from '../modules/runtime/domain/synchronousGuard.js'
+import { describeAgentDiagnostic } from './standaloneQqAlerts.js'
 
 export interface StandaloneAgentObserveOptions {
   readonly bindings: { list(): readonly AgentBindingSnapshot[]; resolve(target: ConversationAddress): AgentBindingSnapshot | undefined }
   readonly auth: Pick<AgentConsoleAuthPort, 'authorize' | 'isCurrent'>
-  readonly read: (guard: AgentConsoleGuard) => Promise<AgentJournalReadResult>
+  readonly read: (guard: AgentConsoleGuard, traceId?: string) => Promise<AgentJournalReadResult>
   readonly health: AgentOperationJournal['health']
   readonly configState: (context: AgentConsoleContext) => Record<string, AgentConsoleJson>
   readonly now?: () => number
@@ -115,7 +116,7 @@ export function createStandaloneAgentObserve(options: StandaloneAgentObserveOpti
       const hostVisible = await authorize('observe.host') === 'allowed', accountsVisible = await authorize('connections.read') === 'allowed'
       ensureCurrent()
       let read: AgentJournalReadResult
-      try { read = await options.read(guard) } catch { ensureCurrent(); return fail('unavailable') }
+      try { read = await options.read(guard, selected.traceId) } catch { ensureCurrent(); return fail('unavailable') }
       ensureCurrent()
       if (!Array.isArray(read.events) || read.events.length > 10000 || typeof read.truncated !== 'boolean') return fail('unavailable')
       const visible: (AgentDiagnosticEvent & { scopeKey?: string; bindingToken?: string; currentBinding?: boolean })[] = []
@@ -152,7 +153,8 @@ export function createStandaloneAgentObserve(options: StandaloneAgentObserveOpti
         degraded: typeof health.degraded === 'boolean' ? health.degraded : fail('unavailable'), written: count(health.written), failed: count(health.failed),
         ...(health.lastWrittenAt === undefined ? {} : { lastWrittenAt: count(health.lastWrittenAt) }) }) : Object.freeze({ available: false as const })
       const filtered = visible.filter(event => (!selected.traceId || event.traceId === selected.traceId) && (!selected.outcome || event.outcome === selected.outcome))
-      const events = Object.freeze(filtered.slice(0, selected.limit)), observedAt = count((options.now ?? Date.now)())
+      const events = Object.freeze(filtered.slice(0, selected.limit).map(event => ({ ...event, diagnosis: describeAgentDiagnostic(event) })))
+      const observedAt = count((options.now ?? Date.now)())
       ensureCurrent()
       return { kind: 'json' as const, value: Object.freeze({ version: 1, mode: 'standalone', processEpoch, observedAt,
         configuration: Object.freeze({ loadedRevision, storedRevision, phase, requiresRestart: configuration.requiresRestart }), journal,

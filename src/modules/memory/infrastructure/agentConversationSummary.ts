@@ -16,9 +16,12 @@ export interface AgentConversationSummaryOptions {
 }
 
 const MAX_RESPONSE_BYTES = 512 * 1024
+const GLM_BAD_REQUEST_CODES = [1210, 1211, 1212, 1213, 1214, 1215, 1221, 1222, 1261, 1301] as const
+type SummaryHttpError = 'http_error' | `glm_${(typeof GLM_BAD_REQUEST_CODES)[number]}`
+type SummaryFailureCode = 'provider_timeout' | 'provider_transport_error' | 'model_response_invalid' | SummaryHttpError
 const FAILURE = '会话主线摘要失败：请求已取消、授权失效或模型服务不可用。'
 export class AgentConversationSummaryError extends Error {
-  constructor(readonly code: 'provider_timeout' | 'provider_transport_error' | 'http_error' | 'model_response_invalid', readonly httpStatus?: number) {
+  constructor(readonly code: SummaryFailureCode, readonly httpStatus?: number) {
     super(FAILURE)
   }
 }
@@ -103,6 +106,13 @@ async function readResponse(response: Response, signal: AbortSignal): Promise<{ 
   }
 }
 
+function glmBadRequestCode(data: Record<string, unknown>): SummaryHttpError {
+  const received = object(data.error).code
+  // https://docs.bigmodel.cn/cn/api/api-code
+  const code = GLM_BAD_REQUEST_CODES.find(known => received === known || received === String(known))
+  return code === undefined ? 'http_error' : `glm_${code}`
+}
+
 function isStructuredText(content: string): boolean {
   if (content.startsWith('```')) return true
   try {
@@ -117,6 +127,7 @@ export function createAgentConversationSummary(options: AgentConversationSummary
   return async (input, context) => {
     let response: Response | undefined
     let signal: AbortSignal | undefined
+    let httpCode: SummaryHttpError = 'http_error'
     let waitingForHeaders = false
     const lifecycle = new AbortController()
     try {
@@ -154,21 +165,23 @@ export function createAgentConversationSummary(options: AgentConversationSummary
         ], stream: false, temperature: 0.2, max_tokens: Math.min(8000, maxChars * 2), ...glmFlashJsonOptions(endpoint, options.name) }),
       }), signal)
       waitingForHeaders = false
-      context.observePhase?.('provider_body', response.status)
       assertCurrent(context, signal)
       if (response.redirected) throw new Error(FAILURE)
+      if (response.ok) context.observePhase?.('provider_body', response.status)
       const result = await readResponse(response, signal)
+      if (response.status === 400 && endpoint.origin === 'https://open.bigmodel.cn') httpCode = glmBadRequestCode(result.data)
       const usage = object(result.data.usage)
       const counts = Object.fromEntries(['prompt_tokens', 'completion_tokens', 'total_tokens']
         .filter(key => typeof usage[key] === 'number' && Number.isSafeInteger(usage[key]) && Number(usage[key]) >= 0)
         .map(key => [key, usage[key]]))
       if (Object.keys(counts).length) context.recordUsage?.(options.name, counts)
+      if (!response.ok) throw new Error(FAILURE)
       context.observePhase?.('response_authorization')
       await ensureCurrent(context, signal)
       context.observePhase?.('response_validation')
       const message = object(object(Array.isArray(result.data.choices) ? result.data.choices[0] : undefined).message)
       const content = message.content
-      if (!response.ok || result.data.error || 'tool_calls' in message || 'function_call' in message ||
+      if (result.data.error || 'tool_calls' in message || 'function_call' in message ||
           hasSecret(result.raw, secrets) || containsSecret(result.data, secrets) ||
           typeof content !== 'string' || !content.trim() || isStructuredText(content.trim())) throw new Error(FAILURE)
       const summary = safeTruncateUnicode(content.trim(), maxChars)
@@ -176,7 +189,7 @@ export function createAgentConversationSummary(options: AgentConversationSummary
       await ensureCurrent(context, signal)
       return summary
     } catch {
-      if (response && !response.ok) throw new AgentConversationSummaryError('http_error', response.status)
+      if (response && !response.ok) throw new AgentConversationSummaryError(httpCode, response.status)
       if (signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError') throw new AgentConversationSummaryError('provider_timeout')
       throw new AgentConversationSummaryError(waitingForHeaders ? 'provider_transport_error' : 'model_response_invalid')
     }

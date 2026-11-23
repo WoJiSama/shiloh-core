@@ -247,7 +247,7 @@ export function createConversationMemory(ports: {
     function emit(input: AgentDiagnosticInput) {
       try { ports.diagnostics?.emit(input) } catch { /* Diagnostics must not interrupt the attempt. */ }
     }
-    function finishPhase(outcome: AgentDiagnosticInput['outcome'], evidence: Pick<AgentDiagnosticInput, 'code' | 'error' | 'httpStatus'> = {}) {
+    function finishPhase(outcome: AgentDiagnosticInput['outcome'], evidence: Pick<AgentDiagnosticInput, 'code' | 'error' | 'httpStatus' | 'details'> = {}) {
       if (!phase) return
       const { name, started } = phase
       phase = undefined
@@ -339,8 +339,11 @@ export function createConversationMemory(ports: {
       const provider = error instanceof AgentConversationSummaryError ? error : undefined
       const code = timedOut || (provider?.code === 'provider_timeout' && phase && summaryStages[phase.name] === 'memory')
         ? 'summary_timeout' : provider?.code ?? 'summary_failed'
-      finishPhase(timedOut && phase?.name === 'save' ? 'unknown' : 'failed', {
+      const writing = phase?.name === 'save'
+      finishPhase(writing ? 'unknown' : 'failed', {
         code, error, ...(provider?.httpStatus === undefined ? {} : { httpStatus: provider.httpStatus }),
+        details: { result: writing ? 'confirmation_pending' : 'not_saved', attempt: state.attempts + 1, maxAttempts: MAX_SUMMARY_ATTEMPTS,
+          ...(timedOut ? { limit: 40_000 } : {}) },
       })
       if (!ports.diagnostics) reportFailure(code, '[Agent] 主线摘要未完成，保留来源等待有限重试', error, now() - startedAt)
       controller.abort()
@@ -350,18 +353,24 @@ export function createConversationMemory(ports: {
           finishPhase('cancelled', { code: 'summary_source_changed' })
           return
         }
-        let attempts: number | undefined
+        let attempts: number | undefined, retryAt = 0
         const saved = await store.update(state.id, saved => {
           attempts = undefined
           if (!saved || saved.token !== state.token || !sameScheduleGeneration(saved, invalidatedAt, cleanupToken) ||
               saved.summary?.coveredSeq !== state.summary?.coveredSeq) return saved
           attempts = saved.attempts + 1
-          return { ...saved, attempts, retryAt: now() + Math.min(300_000, 15_000 * 2 ** saved.attempts) }
+          retryAt = now() + Math.min(300_000, 15_000 * 2 ** saved.attempts)
+          return { ...saved, attempts, retryAt }
         }, scopeCurrent)
         if (!saved || attempts === undefined) finishPhase('cancelled', { code: 'summary_source_changed' })
-        else finishPhase('succeeded', { code: attempts >= MAX_SUMMARY_ATTEMPTS ? 'summary_retry_exhausted' : 'summary_retry_scheduled' })
+        else {
+          const exhausted = attempts >= MAX_SUMMARY_ATTEMPTS
+          finishPhase('succeeded', { code: exhausted ? 'summary_retry_exhausted' : 'summary_retry_scheduled',
+            details: { result: exhausted ? 'retry_exhausted' : 'retry_scheduled', attempt: attempts, maxAttempts: MAX_SUMMARY_ATTEMPTS,
+              ...(exhausted ? {} : { retryInMs: Math.max(0, retryAt - now()) }) } })
+        }
       } catch (retryError) {
-        finishPhase('failed', { code: 'summary_retry_failed', error: retryError })
+        finishPhase('unknown', { code: 'summary_retry_failed', error: retryError, details: { result: 'confirmation_pending' } })
         if (!ports.diagnostics) reportFailure('summary_retry_failed', '[Agent] 主线摘要重试状态未保存', retryError)
       }
     } finally {

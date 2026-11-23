@@ -2,6 +2,24 @@ import type { AgentBindingSnapshot, PlatformAccountRef } from './agentBinding.js
 
 export const QQ_OWNER_ALERT_MAX_LENGTH = 3_000
 
+export const agentDiagnosticResults = ['not_dispatched', 'not_saved', 'discarded', 'fallback_used', 'retry_scheduled', 'retry_exhausted', 'recovered', 'confirmation_pending'] as const
+export type AgentDiagnosticResult = typeof agentDiagnosticResults[number]
+export interface AgentDiagnosticDetails {
+  /** Fixed names from the operation or its declared schema. */
+  readonly step?: string
+  readonly cause?: string
+  readonly field?: string
+  readonly rule?: string
+  readonly limit?: number
+  readonly nativeCode?: number
+  readonly dispatched?: boolean
+  readonly result?: AgentDiagnosticResult
+  readonly retryInMs?: number
+  readonly attempt?: number
+  readonly maxAttempts?: number
+  readonly causeEventId?: string
+}
+
 export type AgentDiagnosticScope =
   | { readonly kind: 'host' }
   | { readonly kind: 'conversation'; readonly binding: AgentBindingSnapshot; readonly messageId?: string }
@@ -23,6 +41,7 @@ export interface AgentDiagnosticEvent {
   readonly durationMs?: number
   readonly errorKind?: 'Error' | 'TypeError' | 'RangeError' | 'SyntaxError' | 'AbortError' | 'TimeoutError' | 'Unknown'
   readonly httpStatus?: number
+  readonly details?: AgentDiagnosticDetails
   /** The immutable configuration loaded by the process that produced this event. */
   readonly configurationRevision?: string
   /** Native action metadata only. An unknown result never becomes a confirmed delivery. */
