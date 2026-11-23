@@ -38,7 +38,7 @@ export interface AgentSemanticRankedHit {
 
 export class AgentSemanticMemoryTimeoutError extends Error {
   readonly code = 'semantic_memory_timeout'
-  constructor(readonly phase?: 'authorization' | 'embedding' | 'rerank' | 'source_check') {
+  constructor(readonly phase?: 'authorization' | 'embedding' | 'rerank' | 'source_check' | 'save') {
     super('语义记忆操作超时')
     this.name = 'AgentSemanticMemoryTimeoutError'
   }

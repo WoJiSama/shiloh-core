@@ -18,8 +18,8 @@ import { AgentSemanticMemoryTimeoutError, prepareAgentSemanticRanking, type Agen
 type MemoryTurn = { isCurrent(): boolean; signal: AbortSignal; release(): void }
 class SemanticSourceChangedError extends Error {}
 class SemanticProviderError extends Error {}
-export function semanticMemoryFailureCode(error: unknown, use: 'index' | 'recall'): string | undefined {
-  if (error instanceof AgentSemanticMemoryTimeoutError) return use === 'recall' && error.phase ? `semantic_recall_${error.phase}_timeout` : `semantic_${use}_timeout`
+export function semanticMemoryFailureCode(error: unknown, use: 'capture' | 'index' | 'recall'): string | undefined {
+  if (error instanceof AgentSemanticMemoryTimeoutError) return `semantic_${use}${error.phase ? '_' + error.phase : ''}_timeout`
   if (error instanceof SemanticSourceChangedError) return `semantic_${use}_source_changed`
   if (error instanceof SemanticProviderError) return `semantic_${use}_provider_failed`
 }
@@ -172,16 +172,18 @@ export function createAgentSemanticMemory(ports: {
       name: (incoming.senderName ?? '').slice(0, 24), text, at: incoming.occurredAt,
       ...(binding.target.kind === 'private' ? { peerId: incoming.sender.id } : {}),
     }
+    let phase: 'authorization' | 'save' = 'authorization'
     await withContext(binding, guard, 5000, async context => {
       if (!(await permitted(binding, [row], context.signal)).length || !context.isCurrent()) return
       if (!await ports.memory.registerSource({ identity: identity(binding), subjectId: row.authorId, source: source(binding, row) }, context.isCurrent)) return
+      phase = 'save'
       const saved = await store.update(agentSemanticMemoryId(binding), saved => {
         if (saved?.rows.some(item => item.messageId === row.messageId)) return saved
         return { version: 1, id: agentSemanticMemoryId(binding), scope: { agentId: binding.agentId, target: structuredClone(binding.target) },
           rows: [...(saved?.rows ?? []).filter(item => item.at >= now() - retention()), row].slice(-limit()) }
       }, context.isCurrent)
       if (saved) dirty.add(agentSemanticMemoryId(binding))
-    })
+    }, [], undefined, () => phase)
   }
 
   type IndexStep = 'store' | 'source_check' | 'embedding' | 'save'
@@ -459,8 +461,9 @@ export function createAgentSemanticMemory(ports: {
             return
           }
           retryAt.set(state.id, now() + 60_000)
-          reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'semantic_memory_index',
-            code: semanticMemoryFailureCode(error, 'index') ?? `semantic_index_${step}_failed`, durationMs: now() - started, error },
+          const code = error instanceof AgentSemanticMemoryTimeoutError ? `semantic_index_${step}_timeout`
+            : semanticMemoryFailureCode(error, 'index') ?? `semantic_index_${step}_failed`
+          reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'semantic_memory_index', code, durationMs: now() - started, error },
             () => ports.logger.warn('[Agent] 语义记忆索引暂时不可用'))
         })
           .finally(() => { indexing.delete(state.id) })

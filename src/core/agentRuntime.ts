@@ -94,7 +94,7 @@ import { createPersonMemoryStore } from '../modules/memory/infrastructure/person
 import { createTextPersonMemory } from '../modules/memory/infrastructure/textPersonMemory.js'
 import { createConversationMemory } from '../modules/memory/infrastructure/conversationMemory.js'
 import { conversationCleanupSelector } from '../modules/memory/infrastructure/conversationMemoryCleanup.js'
-import { createAgentSemanticMemory } from '../modules/memory/infrastructure/agentSemanticMemory.js'
+import { createAgentSemanticMemory, semanticMemoryFailureCode } from '../modules/memory/infrastructure/agentSemanticMemory.js'
 import { createAgentCognition, cognitionCharacterReference } from '../modules/memory/infrastructure/agentCognition.js'
 import { createCharacterStore } from '../modules/simulation/infrastructure/characterStore.js'
 import { activeCharacterMemories } from '../modules/simulation/domain/characterState.js'
@@ -118,6 +118,7 @@ import {
 } from '../modules/runtime/domain/agentBindings.js'
 import { createAgentInbox, inboxEventTarget, textConversationSeconds, type AgentInboxQueue, type AgentInboxRedis, type TextInbox } from '../modules/runtime/infrastructure/agentInbox.js'
 import { createAgentDiagnostics, type AgentDiagnostics } from '../modules/runtime/infrastructure/agentDiagnostics.js'
+import type { AgentDiagnosticScope } from '../contracts/agentDiagnostics.js'
 import { generateAgentFailureNotice } from '../modules/conversation/infrastructure/agentFailureNotice.js'
 import type { AgentGroupLogConfig } from '../contracts/agentGroupLog.js'
 import type { AgentDiceConfig } from '../contracts/agentDice.js'
@@ -3651,11 +3652,20 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     if (reservation && !reservation.messages.size) silenceReservations.delete(key)
   }
 
-  async function consumeInbox(queue: AgentInboxQueue): Promise<void> {
+  type InboxAttempt = {
+    step: 'read' | 'dispatch' | 'check_recall' | 'capture_conversation' | 'capture_semantic' |
+      'capture_history' | 'capture_group' | 'ingest' | 'acknowledge'
+    scope: AgentDiagnosticScope
+    startedAt: number
+  }
+  async function consumeInbox(queue: AgentInboxQueue, attempt: InboxAttempt): Promise<void> {
     const accountKey = platformAccountKey(queue.account)
     const setPrivacyPending = queue.kind === 'privacy' ? (pending: boolean) => setPrivacyBacklog(accountKey, pending) : undefined
     while (isRunning() && adapters.get(accountKey)?.isReady()) {
       if (queue.kind === 'group-log' && privacyBlocked(accountKey)) return
+      attempt.step = 'read'
+      attempt.scope = { kind: 'account', account: queue.account }
+      attempt.startedAt = performance.now()
       const item = await inbox.next(queue, setPrivacyPending)
       if (!item) {
         if (queue.kind === 'group-log') {
@@ -3671,6 +3681,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         return
       }
       if (!isRunning()) return
+      attempt.step = 'dispatch'
       const { event: originalEvent, bindingToken } = item.entry ?? {}
       // Older inboxes retain their exact ACK bytes, but access queries cannot flow
       // from a recovered entry into a new model/history record.
@@ -3742,6 +3753,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           const persona = selectedPersona && (allowsConversationAI(target) || gameCandidate) ? selectedPersona : undefined
           if (persona && (queue.kind === 'simulation' ? agentBindingToken(persona.binding) : textBindingToken(persona.binding)) === bindingToken &&
               (event.kind !== 'message' || !event.message.binding || isSameBinding(event.message.binding, persona.binding))) {
+            if (queue.kind === 'simulation') {
+              const messageId = event.kind === 'message' ? event.message.messageId : undefined
+              attempt.scope = { kind: 'conversation', binding: persona.binding, ...(messageId ? { messageId } : {}) }
+            }
             if (event.kind === 'message' && target.kind === 'group') moderation?.observe(event.message, persona.binding)
             if (event.kind === 'message' && (extraction.isCandidate(event.message) || isMediaRelayCandidate(event.message) || torrent.isCandidate(event.message) || magnetSearchCurrent() && parseAgentMagnetSearchCommand(event.message.text)) && !adapter.isReady()) return
             const contactHandled = event.kind === 'message' && await contactPreference(event.message, persona.binding)
@@ -3797,22 +3812,32 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
               }
             } else if (queue.kind === 'simulation' && event.kind === 'nudge' &&
                 'ingressId' in item.entry && isMessageId(item.entry.ingressId)) {
+              attempt.step = 'ingest'
               await runtime.ingestNudge(event, { isCurrent: isRunning, binding: persona.binding, ingressId: item.entry.ingressId })
-            } else if (event.kind === 'message' && event.message.messageId && options.allowsText?.(event.message.text, 'incoming') !== false &&
-                !await inbox.isRecalled(target, event.message.messageId) && isRunning()) {
-              const { quote, ...incoming } = event.message
-              await conversationMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
-              await semanticMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
-              await captureCognition(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding))).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
-              await history.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
-              await groupMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
-              await diagnostics.run({ kind: 'conversation', binding: persona.binding, ...(incoming.messageId ? { messageId: incoming.messageId } : {}) }, 'simulation_ingest',
-                () => runtime.ingest({ ...incoming, ...quoteReference(quote), binding: persona.binding }, { isCurrent: isRunning }), 'inbox')
+            } else if (event.kind === 'message' && event.message.messageId && options.allowsText?.(event.message.text, 'incoming') !== false) {
+              attempt.step = 'check_recall'
+              if (!await inbox.isRecalled(target, event.message.messageId) && isRunning()) {
+                const { quote, ...incoming } = event.message
+                const isCurrent = () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding))
+                attempt.step = 'capture_conversation'
+                await conversationMemory.capture(incoming, persona.binding, isCurrent)
+                attempt.step = 'capture_semantic'
+                await semanticMemory.capture(incoming, persona.binding, isCurrent)
+                await captureCognition(incoming, persona.binding, isCurrent).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
+                attempt.step = 'capture_history'
+                await history.capture(incoming, persona.binding, isCurrent)
+                attempt.step = 'capture_group'
+                await groupMemory.capture(incoming, persona.binding, isCurrent)
+                attempt.step = 'ingest'
+                await diagnostics.run(attempt.scope, 'simulation_ingest',
+                  () => runtime.ingest({ ...incoming, ...quoteReference(quote), binding: persona.binding }, { isCurrent: isRunning }), 'inbox')
+              }
             }
           }
         }
       }
       if (!isRunning()) return
+      attempt.step = 'acknowledge'
       await inbox.acknowledge(item.raw, queue, setPrivacyPending)
       if (queue.kind === 'private' || queue.kind === 'group') void textPersonMemory.tick()
       void conversationMemory.tick()
@@ -3830,9 +3855,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     if (queue.kind !== 'privacy' && queue.kind !== 'group-log' && !activityRecovered(queue.account)) return undefined
     const current = consumers.get(key)
     if (current) return current
-    const consumer = consumeInbox(queue).catch(error => {
-      void diagnostics.run({ kind: 'account', account: queue.account }, `consume_${queue.kind}`, async () => {
-        diagnostics.emit({ stage: 'inbox', operation: `consume_${queue.kind}`, outcome: 'failed', code: 'inbox_retry_pending', error })
+    const attempt: InboxAttempt = { step: 'read', scope: { kind: 'account', account: queue.account }, startedAt: performance.now() }
+    const consumer = consumeInbox(queue, attempt).catch(error => {
+      const operation = `consume_${queue.kind}`
+      const semanticCode = attempt.step === 'capture_semantic' ? semanticMemoryFailureCode(error, 'capture') : undefined
+      const code = queue.kind === 'simulation' ? semanticCode ?? `inbox_retry_${attempt.step}` : 'inbox_retry_pending'
+      const durationMs = performance.now() - attempt.startedAt
+      void diagnostics.run(attempt.scope, operation, async () => {
+        diagnostics.emit({ stage: 'inbox', operation, outcome: 'failed', code, error, durationMs })
       }, 'inbox')
       if (isRunning()) retryTimers.set(key, setTimeout(() => { retryTimers.delete(key); kickInbox(queue) }, 1_000))
     }).finally(() => { consumers.delete(key) })
