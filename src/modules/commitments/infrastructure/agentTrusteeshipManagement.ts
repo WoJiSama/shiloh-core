@@ -108,7 +108,6 @@ export function createAgentTrusteeshipManagement(ports:{
         for(const binding of allowed.values())await permission(operation,binding)
         check()
       }
-      await ensure()
       return {allowed,ensure}
     }
     return {check,isCurrent,permission,resolve,listing}
@@ -156,7 +155,7 @@ export function createAgentTrusteeshipManagement(ports:{
         }
         for(const binding of allowed.values()){
           if(binding.target.kind!=='group')continue
-          const entries=await memory.loadForManagement(binding,async()=>{await req.permission('trusteeship.read',binding)})
+          const entries=await memory.loadForManagement(binding,check)
           if(entries.length)delegated.push({...scopeRow(binding),entries:entries.map(({id,owner,ownerName,content,dueAt,status,createdAt,updatedAt})=>
             ({id,owner,ownerName,content,dueAt,status,createdAt,updatedAt}))})
         }

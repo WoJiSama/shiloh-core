@@ -19,7 +19,7 @@ const targets = [group, otherGroup, otherAgentGroup, otherAccountGroup, privateR
 const clone = value => structuredClone(value)
 const base = identity => `shiloh:person-memory:v1:${encodeURIComponent(identity.botId)}:${encodeURIComponent(identity.personaId)}`
 
-async function fixture(t) {
+async function fixture(t, { batched = false } = {}) {
   assert.equal(redisAvailable, true, 'management requires a real isolated Redis')
   const f = await createAgentRedisFixture(t, 'profile-management'), hooks = {}, accesses = [], authorizations = [], decisions = new Map()
   let clock = Date.now(), serial = 0, revision = 'management-r1', directory
@@ -34,6 +34,7 @@ async function fixture(t) {
   rebuild()
   const bindings = { list: () => directory.listBindings(), resolve: target => directory.resolve(target) }
   const redis = { async get(key) { accesses.push(['get', key]); await hooks.beforeGet?.(key); const value = await f.storage.get(key); await hooks.afterGet?.(key, value); return value },
+    ...(batched ? { async getMany(keys) { accesses.push(['getMany', keys]); const result = await f.storage.getMany(keys); await hooks.afterBatch?.(); return result } } : {}),
     async eval(script, options) { accesses.push(['eval', clone(options)]); await hooks.beforeEval?.(options); return f.storage.eval(script, options) } }
   const store = createPersonMemoryStore({ redis: f.storage, now: () => clock })
   const management = createAgentProfileManagement({ redis, bindings, now: () => clock })
@@ -145,6 +146,18 @@ test('global listing omits denied rows, scoped listing rejects them and unavaila
   await assert.rejects(f.management.list(f.context(otherAccountGroup).context), { code: 'forbidden' })
   f.decisions.set('profiles.read:' + denied, 'unavailable')
   await assert.rejects(f.management.list(f.context().context), { code: 'unavailable' })
+})
+
+test('batched profile reads reuse shared person snapshots and reject a scene revoked before response', settings, async t => {
+  const f = await fixture(t, { batched: true })
+  await f.remember(group, 'first group')
+  await f.remember(otherGroup, 'second group')
+  assert.equal((await f.management.list(f.context().context)).length, 2)
+  const batches = f.accesses.filter(([method]) => method === 'getMany')
+  assert.equal(batches.length, 1)
+  assert.equal(batches[0][1].length, 1)
+  f.hooks.afterBatch = () => f.decisions.set('profiles.read:' + conversationAddressKey(group), 'denied')
+  await assert.rejects(f.management.list(f.context(group).context), { code: 'forbidden' })
 })
 
 test('entry and category deletion write real Store tombstones and prevent old extraction across restart', settings, async t => {
