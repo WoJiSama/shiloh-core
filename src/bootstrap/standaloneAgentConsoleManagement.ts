@@ -11,7 +11,9 @@ export type AgentConsoleManagementModules = AgentManagementModules
 export function createStandaloneAgentConsoleManagement(options: {
   readonly management: AgentConsoleManagementModules
   readonly auth: Pick<AgentConsoleAuthPort, 'authorize' | 'isCurrent'>
+  readonly observeCurrent?: (check: () => boolean) => boolean
 }): Pick<StandaloneAgentConsoleServicesPorts, 'profiles' | 'trusteeship'> {
+  const observe = options.observeCurrent ?? ((check: () => boolean) => check())
   function authority(context: AgentConsoleContext): AgentManagementContext {
     const fail = (): never => { throw new AgentConsoleError('conflict') }
     const captured = captureSynchronousGuardCheck(context, fail)
@@ -31,7 +33,12 @@ export function createStandaloneAgentConsoleManagement(options: {
       async authorize(operation, binding, guard) {
         const checkParent = captureSynchronousGuardCheck(parent, fail), checkChild = captureSynchronousGuardCheck(guard, fail)
         const scoped = checkParent && checkChild ? createSynchronousGuard(context.signal, () => {
-          checkParent(); checkChild()
+          const accepted = observe(() => {
+            checkParent()
+            checkChild()
+            return true
+          })
+          if (!accepted) fail()
         }, fail) : { signal: context.signal, isCurrent: () => parent.isCurrent() && guard.isCurrent(),
           ensureCurrent() { parent.ensureCurrent(); guard.ensureCurrent() } }
         scoped.ensureCurrent()

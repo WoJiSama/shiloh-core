@@ -2312,10 +2312,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const parentCheck = captureSynchronousGuardCheck(context, invalid)
       const current = () => { try { return !signal.aborted && isRunning() && context.isCurrent() } catch { return false } }
       const authority = parentCheck ? createSynchronousGuard(signal, () => {
-        parentCheck()
-        // Runtime hooks may synchronously revoke the parent request without aborting it.
-        // Keep its fresh observation after that callback as well as the preflight above.
-        try { if (!isRunning()) invalid(); parentCheck() } catch { invalid() }
+        const accepted = observeCurrent(() => {
+          parentCheck()
+          // Runtime hooks may synchronously revoke the parent request without aborting it.
+          try { if (!isRunning()) return false; parentCheck() } catch { return false }
+          return true
+        })
+        if (!accepted) invalid()
       }, invalid) : { signal, isCurrent: current,
         ensureCurrent() { context.ensureCurrent(); if (!current()) invalid() } }
       const { ensureCurrent } = authority
@@ -2324,7 +2327,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         async authorize(operation, binding, guard) {
           const ownerCheck = captureSynchronousGuardCheck(authority, invalid), selectedCheck = captureSynchronousGuardCheck(guard, invalid)
           const selected = ownerCheck && selectedCheck ? createSynchronousGuard(signal, () => {
-            ownerCheck(); selectedCheck()
+            const accepted = observeCurrent(() => {
+              ownerCheck()
+              selectedCheck()
+              return true
+            })
+            if (!accepted) invalid()
           }, invalid) : { signal, isCurrent: () => authority.isCurrent() && guard.isCurrent(),
             ensureCurrent() { ensureCurrent(); guard.ensureCurrent() } }
           selected.ensureCurrent()

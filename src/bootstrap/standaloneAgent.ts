@@ -808,8 +808,10 @@ export async function main(argv: string[]): Promise<void> {
             (operation === 'semantic.records' || operation === 'semantic.recall') && config.semanticMemory.groupOnly === true)
             ? 'denied' : 'allowed' },
       })
-      const runtime = createStandaloneAgentConsoleRuntime({ runtime: host.runtime, bindings, auth: consoleAuth })
-      const management = host.management && createStandaloneAgentConsoleManagement({ management: host.management, auth: consoleAuth })
+      const runtime = createStandaloneAgentConsoleRuntime({ runtime: host.runtime, bindings, auth: consoleAuth,
+        observeCurrent: persistence.execution.observeCurrent })
+      const management = host.management && createStandaloneAgentConsoleManagement({ management: host.management, auth: consoleAuth,
+        observeCurrent: persistence.execution.observeCurrent })
       const profilePort = management?.profiles
       const forgetting = profilePort?.list && profilePort.remove && profilePort.removeField
         ? createStandaloneAgentForgetOperations({ store: forgetOperationsStore, bindings,
