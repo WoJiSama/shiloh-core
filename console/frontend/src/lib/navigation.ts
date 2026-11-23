@@ -77,7 +77,7 @@ export const workspaceNavigation = [
     icon: Bot,
     hint: '本人、会话、自我与行动'
   },
-  { path: '/connections', label: '连接', icon: Workflow, hint: '平台账号与会话接入' },
+  { path: '/connections', label: '连接', icon: Workflow, hint: 'QQ 登录与会话接入' },
   { path: '/features', label: '功能', icon: Gamepad2, hint: '跑团骰娘与群游戏' },
   {
     path: '/resources',

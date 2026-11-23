@@ -23,6 +23,7 @@ export function standaloneAgentSecrets(config: ReturnType<typeof readStandaloneA
     config.semanticMemory.embedding?.apiKey, config.semanticMemory.rerank?.apiKey, config.tools.voice?.accessToken, config.tools.voice?.authorization,
     ...musicSecrets, config.tools.videoAnalysis?.apiKey, config.textTriggerModel?.apiKey,
     config.console.tokenEnv ? env[config.console.tokenEnv] : undefined,
+    ...config.console.qqLogin.map(login => env[login.tokenEnv]),
     ...standaloneMediaRelaySecrets(config.mediaRelay),
     ...(config.tools.pixiv ? standalonePixivToolsSecrets(config.tools.pixiv) : []),
     ...proxySecrets,

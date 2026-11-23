@@ -647,6 +647,10 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     }
     return { ...endpoint, accessToken }
   })
+  if (consoleConfig.qqLogin.some(row => !connections.some(({ connection }) =>
+    connection.id === row.connectionId && connection.account.id === row.accountId))) {
+    throw new Error('console.qqLogin 的连接和 QQ 账号须与当前宿主绑定一致')
+  }
   const mediaRelay = readStandaloneMediaRelayConfig(raw.mediaRelay, connections.map(({ connection }) => connection), env, requireCredentials)
   const bilibiliQuality = readStandaloneBilibiliQualityConfig(raw.bilibiliQuality, connections.map(({ connection }) => connection))
   if (tools.pixiv?.enabled && (mediaRelay.bridges.length !== connections.length || connections.some(({ connection }) => !mediaRelay.bridges.some(bridge => bridge.connectionId === connection.id)))) {

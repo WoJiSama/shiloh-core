@@ -864,34 +864,6 @@ small {
 .workspace-error {
   margin-bottom: 20px;
 }
-.workspace-hero {
-  display: flex;
-  gap: 30px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 34px;
-  background: linear-gradient(120deg, var(--c-panel), var(--c-selected));
-}
-.workspace-hero h2 {
-  font-size: 25px;
-  line-height: 1.4;
-  margin: 5px 0 12px;
-}
-.workspace-hero p {
-  max-width: 62ch;
-  color: var(--c-muted);
-}
-.hero-mark {
-  color: var(--c-accent);
-  width: 100px;
-  height: 100px;
-  display: grid;
-  place-items: center;
-  border-radius: 30px;
-  border: 1px solid var(--c-border);
-  background: var(--c-panel);
-  flex-shrink: 0;
-}
 .text-link {
   display: inline-flex;
   gap: 6px;
@@ -1033,14 +1005,6 @@ small {
 .notice-line {
   color: var(--c-accent);
 }
-.cognition-note {
-  display: flex;
-  gap: 16px;
-  align-items: flex-start;
-}
-.cognition-note h3 {
-  margin-bottom: 7px;
-}
 .resource-card {
   color: var(--c-text);
   display: flex;
@@ -1167,15 +1131,6 @@ small {
   .resource-grid,
   .scene-selector {
     grid-template-columns: 1fr;
-  }
-  .workspace-hero {
-    padding: 23px;
-  }
-  .workspace-hero h2 {
-    font-size: 21px;
-  }
-  .hero-mark {
-    display: none;
   }
   .robot-tabs > a {
     padding: 10px 9px;

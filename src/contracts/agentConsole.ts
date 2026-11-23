@@ -123,6 +123,8 @@ export const AGENT_CONSOLE_SERVICES: readonly AgentConsoleService[] = Object.fre
   ['GET', '/api/apps', 'apps.read'],
   ['POST', '/api/accounts/action', 'accounts.action'],
   ['POST', '/api/accounts/add', 'accounts.add'],
+  ['GET', '/api/connections/:connectionId/qq-login/:accountId', 'qq-login.read'],
+  ['POST', '/api/connections/:connectionId/qq-login/:accountId', 'qq-login.refresh'],
   ['GET', '/api/bot/stats', 'bot-stats.read'],
   ['GET', '/api/groups', 'groups.read'],
   ['GET', '/api/identities', 'identities.read'],

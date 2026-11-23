@@ -76,6 +76,7 @@ import { createStandaloneAgentConsoleStyle } from './standaloneAgentConsoleStyle
 import { createStandaloneAgentConsoleSemantic } from './standaloneAgentConsoleSemantic.js'
 import { createStandaloneAgentConsoleDirectory } from './standaloneAgentConsoleDirectory.js'
 import { createStandaloneAgentConsoleQzone } from './standaloneAgentConsoleQzone.js'
+import { createStandaloneAgentConsoleQqLogin } from './standaloneAgentConsoleQqLogin.js'
 import { runStandaloneLegacyGroupArchiveMigration } from './standaloneAgentLegacyGroupArchive.js'
 import { createStandaloneAgentConsoleRuntime } from './standaloneAgentConsoleRuntime.js'
 import { createStandaloneAgentConsolePersistence } from './standaloneAgentConsolePersistence.js'
@@ -811,6 +812,7 @@ export async function main(argv: string[]): Promise<void> {
       const directory = createStandaloneAgentConsoleDirectory({ bindings, adapters, auth: consoleAuth,
         dataDir: config.dataDir, allowsText: allowsSecretText })
       const accountsService = AGENT_CONSOLE_SERVICES.find(service => service.operation === 'accounts.read')!
+      const qqLogin = createStandaloneAgentConsoleQqLogin({ configs: config.console.qqLogin, adapters, env: process.env })
       const installed = createStandaloneAgentConsoleServices({ bindings, auth: consoleAuth, runtime, ledger, ...management, ...(forgetting ? { forgetting } : {}),
         config: persistence.config, persona: { ...persistence.persona, accounts: directory.accounts },
         providers: persistence.providers, identities: directory,
@@ -823,6 +825,7 @@ export async function main(argv: string[]): Promise<void> {
             recordUsage: (model, usage) => ledger.record({ scope: 'global', stage: 'api', model, usage }) }),
           ...createStandaloneAgentConsoleGames(gamePorts),
           ...createStandaloneAgentConsoleQzone({ adapters, bindings, auth: consoleAuth, ledger: qzoneLedger, allowsText: allowsMediaText }),
+          ...qqLogin.services,
           ...createStandaloneAgentConsoleStyle({ dataDir: config.dataDir, bindings, auth: consoleAuth, allowsText: allowsSecretText }),
           ...createStandaloneAgentConsoleSemantic({ dataDir: config.dataDir, enabled: config.semanticMemory.enabled,
             admin: host.semanticMemoryAdmin, allowsText: allowsSecretText }),
@@ -867,7 +870,7 @@ export async function main(argv: string[]): Promise<void> {
           const name = directory.accountName(adapter)
           return { id: adapter.id, account: adapter.account, ...(name ? { name } : {}),
             state: adapter.isReady() ? 'connected' as const : 'disconnected' as const,
-            capabilities: ['message.send', ...(adapter.readMessage ? ['message.read'] : []),
+            capabilities: ['message.send', ...(qqLogin.supports(adapter.id) ? ['qq.login'] : []), ...(adapter.readMessage ? ['message.read'] : []),
               ...(adapter.readConversationMember ? ['member.read'] : []), ...(adapter.listConversationMembers ? ['members.read'] : []),
               ...(adapter.gift ? ['qq.gift'] : []), ...(adapter.qzone ? ['qq.qzone'] : []), ...(adapter.redPackets ? ['qq.red-packet'] : [])],
           }

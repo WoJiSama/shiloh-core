@@ -5,6 +5,7 @@ import { NButton, NInput, NPagination, NTag } from 'naive-ui'
 import PageHeader from '../components/PageHeader.vue'
 import WorkspaceOnboarding from '../components/WorkspaceOnboarding.vue'
 import QzoneComposer from '../components/QzoneComposer.vue'
+import WorkspaceQqLogin from '../components/WorkspaceQqLogin.vue'
 import { workspace, capability } from '../lib/workspace'
 import { connectionStateLabel, robotLabel, robotLocation } from '../lib/workspaceModel'
 import { accountLabel, accountReference, conversationLabel, namedId } from '../lib/workspaceNames'
@@ -47,7 +48,7 @@ watch([query, () => route.params.id], () => (page.value = 1))
   <div class="page-stack">
     <PageHeader
       :title="title"
-      description="连接是机器人的平台接入方式。连接状态来自当前适配器，不代表本人正在交流或思考。"
+      description="查看平台账号、QQ 登录和已接入的会话。"
       ><template #actions
         ><NButton
           type="primary"
@@ -76,16 +77,20 @@ watch([query, () => route.params.id], () => (page.value = 1))
             <template v-if="connection.name">{{ connection.id }} · </template>{{ accountReference(connection.account) }}
           </p>
         </div>
-        <NTag :type="connection.state === 'connected' ? 'success' : 'default'">{{
+        <NTag :type="connection.state === 'connected' ? 'success' : connection.state === 'disconnected' ? 'warning' : 'default'">{{
           connectionStateLabel(connection.state)
         }}</NTag>
       </div>
       <p class="field-help">{{ connection.conversationCount }} 个接入会话</p>
+      <WorkspaceQqLogin :connection="connection" :primary="connection.state === 'disconnected'" />
+      <p v-if="connection.account.platform === 'qq' && connection.state === 'disconnected' && !connection.capabilities.includes('qq.login')" class="field-help">
+        此连接未配置控制台扫码，请在对应的 QQ 登录服务中重新登录。
+      </p>
       <NButton v-if="connection.capabilities.includes('qq.qzone') && capability('qzone.publish').status === 'available'"
         size="small" :disabled="connection.state !== 'connected'"
         @click="qzoneAccount = connection.account.id; qzoneOpen = true">发布 QQ 空间说说</NButton>
       <div class="tag-list">
-        <NTag v-for="item in connection.capabilities" :key="item" size="small">{{ item }}</NTag
+        <NTag v-for="item in connection.capabilities.filter((name) => name !== 'qq.login')" :key="item" size="small">{{ item }}</NTag
         ><span v-if="!connection.capabilities.length" class="muted">未报告连接能力</span>
       </div>
       <div

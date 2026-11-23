@@ -122,6 +122,48 @@ function page(component: any, props = {}, plugins: any[] = []) {
   wrappers.push(wrapper)
   return wrapper
 }
+
+it('makes an offline QQ sign-in visible on the overview and updates when OneBot connects', async () => {
+  const snapshot = data()
+  const selected = snapshot.connections[0]
+  selected.state = 'disconnected'
+  selected.capabilities.push('qq.login')
+  for (const operation of ['qq-login.read', 'qq-login.refresh']) {
+    snapshot.capabilities.push({ operation, scope: 'global', effect: operation.endsWith('read') ? 'read' : 'write',
+      status: 'available', reason: '' })
+  }
+  workspace.data.value = snapshot
+  const path = `/api/connections/${selected.id}/qq-login/${selected.account.id}`
+  let state = 'login-required'
+  vi.mocked(api).mockImplementation(async (route, options) => {
+    if (route === '/api/workspace') return { ...snapshot, connections: snapshot.connections.map(
+      connection => connection === selected ? { ...connection, state: 'connected' } : connection) }
+    expect(route).toBe(path)
+    if (options?.method === 'POST') state = 'awaiting-scan'
+    return { accountId: selected.account.id, state, ...(state === 'awaiting-scan'
+      ? { qrImage: 'data:image/png;base64,aGVsbG8=', remainingMs: 100_000 } : {}) }
+  })
+  const wrapper = mount(WorkspaceOverview, { attachTo: document.body, global: { stubs: {
+    RouterLink: { template: '<a><slot /></a>' }, teleport: true,
+  } } })
+  wrappers.push(wrapper)
+  expect(wrapper.text()).toContain('QQ 连接已断开')
+  const scan = wrapper.findAll('button').find(button => button.text() === '扫码登录')
+  expect(scan).toBeDefined()
+  vi.useFakeTimers()
+  try {
+    await scan!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('img[alt="QQ 登录二维码"]').attributes('src')).toMatch(/^data:image\/png;base64,/)
+    expect(vi.mocked(api).mock.calls.filter(([route, options]) => route === path && options?.method === 'POST')).toHaveLength(1)
+    state = 'connected'
+    await vi.advanceTimersByTimeAsync(3000)
+    await flushPromises()
+    expect(workspace.data.value?.connections[0]?.state).toBe('connected')
+    expect(wrapper.text()).not.toContain('QQ 连接已断开')
+  } finally { vi.useRealTimers() }
+})
+
 beforeEach(() => {
   workspace.reset()
   workspace.mode.value = 'standalone'
