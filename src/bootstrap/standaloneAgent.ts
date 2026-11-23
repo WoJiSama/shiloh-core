@@ -550,7 +550,7 @@ export async function main(argv: string[]): Promise<void> {
       diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: 'started' })
       const result = await sideLLMCall({
         url: vision.apiUrl, apikey: vision.apiKey, model: vision.model,
-        signal: signal ? AbortSignal.any([executionSignal, signal]) : executionSignal, ...(isCurrent ? { isCurrent } : {}), timeoutMs: 15_000, maxTokens: 250,
+        signal: signal ? AbortSignal.any([executionSignal, signal]) : executionSignal, timeoutMs: 15_000, maxTokens: 250,
         fetchImpl: (url, init) => visionFetch(url, { ...init, redirect: 'error' }),
         messages: [{
           role: 'user', content: [

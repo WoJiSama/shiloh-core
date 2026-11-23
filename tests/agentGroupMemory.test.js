@@ -8,6 +8,7 @@ import { createPersonMemoryStore } from '../dist/backend/modules/memory/infrastr
 import { personMemoryAddress } from '../dist/backend/modules/memory/infrastructure/personMemoryContext.js'
 import { personMemoryCommandText as commands } from '../dist/backend/modules/memory/domain/personMemoryCommands.js'
 import { agentBindingToken, conversationAddressKey, platformAccountKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
+import { simulationAddressKey } from '../dist/backend/modules/simulation/infrastructure/simulationAddress.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
 
 const redisTest = { skip: !redisAvailable, timeout: 25_000 }
@@ -87,7 +88,7 @@ async function withFixture(t, options, run) {
     async simulatedTurnSettled(target) {
       const runtime = current.host.runtime
       return waitFor(async () => {
-        const state = await runtime.describeGroup(runtime.conversationKey(target))
+        const state = await runtime.describeGroup(simulationAddressKey(target))
         return state.lastWakeAtAgo !== null && !state.running
       }, 'simulation turn settled')
     },
@@ -725,6 +726,7 @@ test('simulation exposes the same guarded workflow tool only to a genuine user w
     f.roles.set('speaker-a', 'admin')
     await f.send(group, 'sim-teach-workflow', teaching, { mentions: [targetActor(group), actor(group, 'target-b')] })
     await f.acknowledged(group, 'sim-teach-workflow')
+    await f.tick(1_000)
     await f.simulatedTurnSettled(group)
     workflowId = (await f.state(group)).entries.find(entry => entry.kind === 'workflow')?.id
     assert.ok(workflowId)

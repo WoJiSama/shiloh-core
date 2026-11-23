@@ -79,14 +79,21 @@ function clockFixture(t, statuses = []) {
   return { requests, logs, tick, report: diagnostics.emit, close: webhook.close }
 }
 
-test('validation alerts aggregate only matching declared fields and retain the most recent trace', async t => {
-  const f = clockFixture(t)
-  for (const field of ['reason', 'throughSeq', 'reason']) f.report({ stage: 'tool', operation: 'simFinishTurn',
-    outcome: 'failed', code: 'tool_schema_invalid', details: { field, rule: 'type', result: 'not_dispatched' } })
-  await f.tick(1)
-  const alerts = f.requests[0].payload.alerts
+test('validation alerts aggregate only matching declared fields and retain the most recent trace', async () => {
+  const batches = []
+  const queue = createAgentFailureAlerts({ channel: 'qq', logger: quiet,
+    async deliver(batch) { batches.push(batch); return { state: 'confirmed' } } })
+  let at = 1000
+  const diagnostics = createAgentDiagnostics({ logger: quiet, onFailure: queue.report, now: () => at++ })
+  const traces = ['reason', 'throughSeq', 'reason'].map(field => diagnostics.withScope({ kind: 'host' }, 'simFinishTurn', () => {
+    diagnostics.emit({ stage: 'tool', operation: 'simFinishTurn', outcome: 'failed', code: 'tool_schema_invalid',
+      details: { field, rule: 'type', result: 'not_dispatched' } })
+    return diagnostics.traceId()
+  }))
+  await queue.close()
+  const alerts = batches[0].alerts
   assert.deepEqual(alerts.map(alert => [alert.details.field, alert.count]), [['reason', 2], ['throughSeq', 1]])
-  assert.notEqual(alerts[0].traceId, alerts[1].traceId)
+  assert.deepEqual(alerts.map(alert => alert.traceId), [traces[2], traces[1]])
   assert.match(formatQqOwnerAlerts({ alerts }), /字段 reason · 类型错误/u)
 })
 
