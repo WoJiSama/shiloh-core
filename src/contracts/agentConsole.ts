@@ -123,6 +123,7 @@ export const AGENT_CONSOLE_SERVICES: readonly AgentConsoleService[] = Object.fre
   ['GET', '/api/apps', 'apps.read'],
   ['POST', '/api/accounts/action', 'accounts.action'],
   ['POST', '/api/accounts/add', 'accounts.add'],
+  ['GET', '/api/accounts/managed', 'accounts.managed'],
   ['GET', '/api/connections/:connectionId/qq-login/:accountId', 'qq-login.read'],
   ['POST', '/api/connections/:connectionId/qq-login/:accountId', 'qq-login.refresh'],
   ['GET', '/api/bot/stats', 'bot-stats.read'],
@@ -132,6 +133,8 @@ export const AGENT_CONSOLE_SERVICES: readonly AgentConsoleService[] = Object.fre
   ['GET', '/api/config/:kind', 'config.read'],
   ['PUT', '/api/config/:kind', 'config.write'],
   ['GET', '/api/config-state', 'config-state.read'],
+  ['GET', '/api/host/readiness', 'host.readiness'],
+  ['POST', '/api/host/restart', 'host.restart'],
   ['GET', '/api/configuration/catalog', 'configuration.read'],
   ['POST', '/api/configuration/preview', 'configuration.preview'],
   ['POST', '/api/configuration/commit', 'configuration.commit'],
@@ -208,6 +211,8 @@ export interface AgentConsolePorts {
   readonly authority: { readonly signal: AbortSignal; isCurrent(): boolean }
   /** Execution configuration retirement must not terminate authentication or its own committed response. */
   readonly execution?: { readonly signal: AbortSignal; isCurrent(): boolean }
+  /** A managed supervisor starts the next process after an accepted restart response. */
+  requestRestart?(): void
   readonly commits?: AgentConsoleCommitPort
   /** Reuse the host's credential filter. Returning false suppresses the entire response. */
   allowsResponse(body: string | Uint8Array, contentType: string): boolean

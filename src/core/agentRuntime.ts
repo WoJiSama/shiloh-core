@@ -107,6 +107,7 @@ import { createGroupKnowledgeTool } from '../modules/memory/infrastructure/group
 import { createPersonaSnapshot } from '../modules/conversation/infrastructure/personaSnapshot.js'
 import { createAgentPersonalRuntime, type AgentPersonalSeed, type PersonalPorts } from '../modules/simulation/infrastructure/agentPersonalRuntime.js'
 import { createAgentGroupModeration } from '../modules/groupAdmin/infrastructure/agentGroupModeration.js'
+import type { AgentGroupPolicy } from '../modules/groupAdmin/domain/agentGroupPolicy.js'
 import { sanitizeFinalReplyText } from '../modules/conversation/domain/replySanitizer.js'
 import { createSimulationRuntime, type SimulationRuntimePorts } from '../modules/simulation/infrastructure/simulationRuntime.js'
 import { dayKey } from '../modules/simulation/domain/simConfig.js'
@@ -170,6 +171,7 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   privateTextTools?: readonly string[]
   useTextGroup?(target: ConversationAddress): boolean
   unifiedGroupChat?: boolean
+  groupPolicy?(binding: AgentBindingSnapshot): AgentGroupPolicy
   personalSeeds?: readonly AgentPersonalSeed[]
   codingWorker?: PersonalPorts['coding']
   personalToolAuthor?: NonNullable<PersonalPorts['publishTool']>
@@ -380,7 +382,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   const activity = createAgentConversationActivity()
   const groupLogs = createAgentGroupLogStore(storage)
   const groupLogEnabled = options.groupLog?.enabled === true
-  let activityHydrated = !groupLogEnabled
+  const recoveredAccounts = new Set<string>()
+  const recoveringAccounts = new Map<string, Promise<void>>()
   const activityStates = new Map<string, { target: ConversationAddress; allowed: boolean }>()
   const silenceReservations = new Map<string, { target: ConversationAddress; messages: Set<string>; admitting: Set<string> }>()
   const admissions = new Map<string, Promise<void>>()
@@ -463,7 +466,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
   function allowsConversationAI(target: ConversationAddress): boolean {
     const binding = bindingFor(target)?.binding
-    return activityHydrated && activity.allows(target) && (!binding || !gameHandlers.some(handler => handler.isActive?.(binding)))
+    return activityRecovered(target.account) && activity.allows(target) && (!binding || !gameHandlers.some(handler => handler.isActive?.(binding)))
+  }
+  function activityRecovered(account: ConversationAddress['account']): boolean {
+    return !groupLogEnabled || recoveredAccounts.has(platformAccountKey(account))
   }
   function setConversationAI(target: ConversationAddress, allowed: boolean): void {
     const key = conversationAddressKey(target)
@@ -2232,6 +2238,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
 
   const moderation = options.unifiedGroupChat && options.adapters.some(adapter => adapter.moderateMessage) ? createAgentGroupModeration({
     redis: storage, ...(options.now ? { now: options.now } : {}),
+    ...(options.groupPolicy ? { policy: options.groupPolicy } : {}),
     isCurrent(binding) {
       const { target } = binding
       return isRunning() && adapterFor(target)?.isReady() === true && bindingIsCurrent(target, agentBindingToken(binding)) &&
@@ -2270,9 +2277,19 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         return { state: result.state === 'sent' ? 'confirmed' : result.state === 'unknown' ? 'unknown' : 'failed' }
       }
       if (!adapter?.moderateMessage) return { state: 'failed', code: 'moderation_unavailable' }
-      const result = await adapter.moderateMessage(source, action, { ...guard, ensureCurrent })
-      if (result.state === 'confirmed' && action === 'recall' && source.messageId && guard.isCurrent()) {
-        await acceptEvent(adapter, { kind: 'recall', target, messageId: source.messageId })
+      const result = await adapter.moderateMessage(source, action === 'fold' ? 'recall' : action, { ...guard, ensureCurrent })
+      if (result.state === 'confirmed' && (action === 'recall' || action === 'fold') && source.messageId && guard.isCurrent()) {
+        try {
+          if (action === 'fold' && options.groupPolicy?.(binding).forwardFolded) {
+            const points = Array.from(source.text)
+            const items: MessageBundleItem[] = [{ parts: [{ kind: 'text', text: '已折叠本群一条超长消息，原文如下。' }] }]
+            for (let index = 0; index < points.length; index += 2000) {
+              const text = points.slice(index, index + 2000).join('')
+              if (text.trim()) items.push({ parts: [{ kind: 'text', text }] })
+            }
+            await controlMessageActions.sendBundle?.({ version: 1, kind: 'message.bundle.send', target, binding, items }, guard)
+          }
+        } finally { await acceptEvent(adapter, { kind: 'recall', target, messageId: source.messageId }) }
       }
       return result
     },
@@ -2519,7 +2536,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     ...(options.semanticMemoryBackend ? { backend: options.semanticMemoryBackend } : {}),
     resolve: target => isRunning() && conversationEnabled(target) ? bindingFor(target) : undefined,
     available: target => allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
-    privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, recalledMessageIds: inbox.recalledMessageIds, begin: beginMemoryTurn, isRunning,
+    privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, recalledMessageIds: inbox.recalledMessageIds, begin: beginMemoryTurn,
+    async beginRecordsRead(binding) {
+      if (await inbox.next({ account: binding.target.account, kind: 'privacy' })) throw new Error('隐私清理正在恢复')
+      return captureMemoryTurn(binding, false)
+    }, isRunning,
     ...(options.observeExecutionCurrent ? { observeCurrent } : {}),
     authorizePrivateSource,
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
@@ -3016,6 +3037,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     if (!isRunning()) throw new Error('独立宿主正在停止')
     const target = inboxEventTarget(event)
     if (!isConversationAddress(target) || adapterFor(target) !== adapter || !adapter.isReady() || !hasValidInboundEvent(event, adapter)) return
+    if (event.kind === 'message' && options.managementBindings) {
+      const binding = bindingFor(target)?.binding
+      if (binding) void diagnostics.run({ kind: 'conversation', binding, ...(event.message.messageId ? { messageId: event.message.messageId } : {}) },
+        'platform_ingress', async () => diagnostics.emit({ stage: 'inbox', operation: 'inbound_message', outcome: 'succeeded' }), 'inbox')
+    }
     const privateChat = target.kind === 'private'
     if (event.kind === 'red-packet') {
       const binding = bindingFor(target)?.binding
@@ -3333,7 +3359,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     if (!torrentCurrent() || target.kind !== 'group' || !conversationEnabled(target) || !bindingIsCurrent(target, token)) return undefined
     const adapter = adapterFor(target)
     if (!adapter?.readMessage || !adapter.actions.sendRequesterArchive) return undefined
-    if (!adapter.isReady()) return 'wait'
+    if (!adapter.isReady() || !activityRecovered(target.account) || privacyBlocked(platformAccountKey(target.account))) return 'wait'
     const memoryTurn = await beginMemoryTurn(binding), cancel = new AbortController()
     let signal: AbortSignal
     try { signal = AbortSignal.any([cancel.signal, memoryTurn.signal, toolCancellation.signal, externalSignal,
@@ -3417,7 +3443,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         !bindingIsCurrent(target, agentBindingToken(binding))) return undefined
     const adapter = adapterFor(target)
     if (!adapter?.readMediaShare || !adapter.actions.sendMediaRelay) return undefined
-    if (!adapter.isReady()) return 'wait'
+    if (!adapter.isReady() || !activityRecovered(target.account) || privacyBlocked(platformAccountKey(target.account))) return 'wait'
     const memoryTurn = await beginMemoryTurn(binding), cancel = new AbortController()
     let signal: AbortSignal
     try { signal = AbortSignal.any([cancel.signal, memoryTurn.signal, toolCancellation.signal, externalSignal,
@@ -3620,7 +3646,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   async function consumeInbox(queue: AgentInboxQueue): Promise<void> {
     const accountKey = platformAccountKey(queue.account)
     const setPrivacyPending = queue.kind === 'privacy' ? (pending: boolean) => setPrivacyBacklog(accountKey, pending) : undefined
-    while (isRunning()) {
+    while (isRunning() && adapters.get(accountKey)?.isReady()) {
       if (queue.kind === 'group-log' && privacyBlocked(accountKey)) return
       const item = await inbox.next(queue, setPrivacyPending)
       if (!item) {
@@ -3652,7 +3678,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           if (binding && bindingToken === textBindingToken(binding) && options.migratedGroupToolNames?.(target) !== undefined) {
             const destination = { account: queue.account, kind: 'simulation' as const }
             await inbox.forward(item.raw, queue, destination, { ...item.entry, event, bindingToken: agentBindingToken(binding) })
-            if (activityHydrated) kickInbox(destination)
+            kickInbox(destination)
             continue
           }
         }
@@ -3691,7 +3717,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
                 const destination: AgentInboxQueue = { account: queue.account, kind: textInboxFor(target)?.kind ?? 'simulation' }
                 await inbox.forward(item.raw, queue, destination, { ...item.entry, event: { kind: 'message', message },
                   bindingToken: destination.kind === 'simulation' ? agentBindingToken(selected.binding) : textBindingToken(selected.binding) })
-                if (activityHydrated) kickInbox(destination)
+                kickInbox(destination)
                 continue
               }
             }
@@ -3789,8 +3815,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
 
   function kickInbox(queue: AgentInboxQueue): Promise<void> | undefined {
-    const key = JSON.stringify([queue.kind, platformAccountKey(queue.account)])
+    const accountKey = platformAccountKey(queue.account)
+    const key = JSON.stringify([queue.kind, accountKey])
     if (!isRunning() || retryTimers.has(key)) return undefined
+    if (!adapters.get(accountKey)?.isReady()) return undefined
+    if (queue.kind !== 'privacy' && queue.kind !== 'group-log' && !activityRecovered(queue.account)) return undefined
     const current = consumers.get(key)
     if (current) return current
     const consumer = consumeInbox(queue).catch(error => {
@@ -3803,9 +3832,33 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     return consumer
   }
 
+  async function restoreAccount(adapter: PlatformConnectionAdapter): Promise<void> {
+    const { account } = adapter, key = platformAccountKey(account)
+    await kickInbox({ account, kind: 'privacy' })
+    if (!isRunning() || !adapter.isReady() || privacyBlocked(key)) return
+    await kickInbox({ account, kind: 'group-log' })
+    if (await inbox.next({ account, kind: 'group-log' })) return
+    for (const owner of await groupLogs.listOwners([account])) {
+      const current = bindingFor(owner.target)?.binding
+      if (current?.agentId === owner.agentId) await groupLogWorkflow.restore(owner.target, current)
+    }
+    if (isRunning() && adapter.isReady() && !privacyBlocked(key)) recoveredAccounts.add(key)
+  }
+
   function kickInboxes(): Promise<void>[] {
     const recovery: Promise<void>[] = []
-    for (const {account} of adapters.values()) {
+    for (const [key, adapter] of adapters) {
+      if (!adapter.isReady()) continue
+      const { account } = adapter
+      if (!activityRecovered(account)) {
+        let work = recoveringAccounts.get(key)
+        if (!work) {
+          work = runMaintenance('account_inbox_recovery', () => restoreAccount(adapter)).finally(() => { recoveringAccounts.delete(key) })
+          recoveringAccounts.set(key, work)
+        }
+        recovery.push(work)
+        continue
+      }
       const privacy = kickInbox({ account, kind: 'privacy' })
       kickInbox({ account, kind: 'group-log' })
       const simulation = kickInbox({ account, kind: 'simulation' })
@@ -3825,7 +3878,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     if (personal) yield* personal.dueEngineeringWork()
     if (personal) yield* personal.dueFollowWork()
     for (const adapter of adapters.values()) {
-      if (!adapter.isReady()) continue
+      if (!adapter.isReady() || !activityRecovered(adapter.account)) continue
       const scope = platformAccountKey(adapter.account)
       yield { kind: 'group_reminder_receipt_tick', scope, run: () => commitments.groupReminderReceiptTick(adapter.account) }
       yield {
@@ -3868,18 +3921,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       await Promise.all([...adapters.values()].map(adapter => adapter.start(event => accept(adapter, event))))
       options.signal?.throwIfAborted()
       if (!isRunning()) return
-      if (groupLogEnabled) {
-        // Restore pending controls before enabling AI or resuming automatic outboxes.
-        await Promise.all(options.adapters.map(adapter => kickInbox({ account: adapter.account, kind: 'privacy' })))
-        for (const adapter of options.adapters) if (privacyBlocked(platformAccountKey(adapter.account))) throw new Error('隐私删除恢复尚未完成，AI保持静默')
-        await Promise.all(options.adapters.map(adapter => kickInbox({ account: adapter.account, kind: 'group-log' })))
-        for (const adapter of options.adapters) if (await inbox.next({ account: adapter.account, kind: 'group-log' })) throw new Error('团录恢复尚未完成，AI保持静默')
-        for (const owner of await groupLogs.listOwners(options.adapters.map(adapter => adapter.account))) {
-          const current = bindingFor(owner.target)?.binding
-          if (current?.agentId === owner.agentId) await groupLogWorkflow.restore(owner.target, current)
-        }
-      }
-      activityHydrated = true
       if (mediaRelayConfig.enabled) await mediaOutbox.start()
       if (torrentConfig.enabled) await torrent.start()
       const recovered = kickInboxes()
@@ -3897,6 +3938,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       }, 1_000)
       maintenance.unref()
       await Promise.all(recovered)
+      await Promise.all(kickInboxes())
       if (!isRunning()) return
       await runtime.sweepOnce()
       await textPersonMemory.tick()
@@ -3927,7 +3969,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     privacyWaiters.clear()
     for (const adapter of adapters.values()) adapter.stop()
     runtime.stop()
-    shuttingDown = Promise.allSettled([textDrained, deferredDrained, personalDrained, moderationDrained, localEmojiIngress?.stop(), taskScheduler.drain(), ...pendingAdmissions, ...automaticQqWork.values(), ...gameHandlers.map(handler => Promise.resolve().then(() => handler.stop())), ...consumers.values(), ...(bilibiliQuality ? [bilibiliQuality.stop()] : []), torrent.stop(), mediaOutbox.stop(), commitments.drainCommitmentTicks(), runtime.drain(), textPersonMemory.stop(), conversationMemory.stop(), semanticMemory.stop(), history.stop(), groupMemory.stop()]).then(async results => {
+    shuttingDown = Promise.allSettled([textDrained, deferredDrained, personalDrained, moderationDrained, localEmojiIngress?.stop(), taskScheduler.drain(), ...pendingAdmissions, ...automaticQqWork.values(), ...recoveringAccounts.values(), ...gameHandlers.map(handler => Promise.resolve().then(() => handler.stop())), ...consumers.values(), ...(bilibiliQuality ? [bilibiliQuality.stop()] : []), torrent.stop(), mediaOutbox.stop(), commitments.drainCommitmentTicks(), runtime.drain(), textPersonMemory.stop(), conversationMemory.stop(), semanticMemory.stop(), history.stop(), groupMemory.stop()]).then(async results => {
       for (const result of results) if (result.status === 'rejected') diagnostics.emit({ stage: 'runtime', operation: 'shutdown', outcome: 'failed', error: result.reason })
       await diagnostics.flush()
     })
@@ -3954,8 +3996,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
     start,
     stop,
+    readiness: () => ({ ready: !!maintenance && isRunning(), accounts: [...adapters.values()].map(adapter => ({
+      connectionId: adapter.id, state: !adapter.isReady() ? 'disconnected' : !activityRecovered(adapter.account) ||
+        privacyBlocked(platformAccountKey(adapter.account)) ? 'recovering' : 'ready',
+    })) }),
     async resumePendingWork() {
-      if (started && !stopping) {
+      if (maintenance && isRunning()) {
         kickInboxes()
         void taskScheduler.tick(scheduledWork())
         if (torrentConfig.enabled) await torrent.tick()

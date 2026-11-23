@@ -1039,7 +1039,9 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
       if (!state) return { goals: [], actions: [], tools: [], follows: [], followEnabled: !!ports.followFeed }
       const goals = state.goals.filter(goal => !goal.targetKey || canReadTarget(goal.targetKey))
       const accessible = new Set(goals.map(goal => goal.id))
-      return { goals: goals.map(({ id, title, nextAt, state, waitingFor }) => ({ id, title, nextAt, state, ...(waitingFor ? { waitingFor } : {}) })),
+      return { goals: goals.map(({ id, title, nextAt, state, waitingFor, engineering }) => ({ id, title, nextAt, state,
+        ...(waitingFor ? { waitingFor } : {}), ...(engineering ? { engineering: { mode: engineering.mode, status: engineering.status,
+          ...(engineering.result ? { result: engineering.result } : {}) } } : {}) })),
         actions: state.receipts.filter(receipt => (!receipt.targetKey || canReadTarget(receipt.targetKey)) &&
           (!receipt.goalId || accessible.has(receipt.goalId))).map(({ id, kind, operation, state, at, goalId, followId }) =>
           ({ id, kind: followId ? 'follow-share' as const : operation ?? kind, state, at,

@@ -493,13 +493,17 @@ test('Bilibili delivers one forward with the card followed by every video and th
   for (const secret of ['sha256', firstVideo.id, '搬运 source', 'bilivideo.com', 'base64', '/tmp/']) assert.equal(raw.includes(secret), false)
 })
 
-test('Bilibili retries the entire forward once after definite resource rejection before sending the original link', redisTest, async t => {
+test('Bilibili uses a native text and cover card after a definite video rejection', redisTest, async t => {
   const f = await fixture(t), job = await f.enqueue()
   f.setSend(call => call.effect === 'link' ? sent('bilibili-link') : resourceFailure())
   await f.outbox.start(); const record = await f.finished(job)
   assert.equal(record.state, 'completed'); assert.deepEqual(f.calls.map(call => call.effect), ['forward', 'forwardRetry', 'link'])
-  assert.deepEqual(f.calls[1].action, f.calls[0].action)
-  assert.match(f.calls[2].action.parts[0].text, /已改为发送原作品链接/u)
+  const fallback = f.calls[1].action.plan.items
+  assert.equal(fallback.length, 1)
+  assert.deepEqual(fallback[0].parts.map(part => part.kind), ['text', 'image'])
+  assert.match(fallback[0].parts[0].text, /https:\/\/www\.bilibili\.com\/video\//u)
+  assert.deepEqual(fallback[0].parts[1].artifact, cover)
+  assert.match(f.calls[2].action.parts[0].text, /已附原作品链接/u)
   assert.deepEqual(record.effects.map(effect => effect.state), ['failed', 'failed', 'sent'])
 })
 
@@ -512,11 +516,11 @@ for (const stage of ['forward', 'forwardRetry', 'link']) test(`Bilibili ${stage}
   await f.outbox.stop(); const restarted = f.create(); await restarted.start(); await f.idle(); assert.equal(f.calls.length, expected.length)
 })
 
-test('a channel thumbnail rejection uses one plain link while neutral complete videos stay provider-owned until cleanup', redisTest, async t => {
+test('a channel thumbnail rejection can deliver the native card while videos stay provider-owned until cleanup', redisTest, async t => {
   const f = await fixture(t), job = await f.enqueue()
   f.setSend(call => call.effect === 'forward' ? { state: 'failed', code: 'video_thumbnail_missing' } : sent(`receipt-${f.calls.length}`))
   await f.outbox.start(); const record = await f.finished(job)
-  assert.equal(record.state, 'completed'); assert.deepEqual(f.calls.map(call => call.effect), ['forward', 'link']); assert.equal(f.releases.get(job.id), 1)
+  assert.equal(record.state, 'completed'); assert.deepEqual(f.calls.map(call => call.effect), ['forward', 'forwardRetry']); assert.equal(f.releases.get(job.id), 1)
 })
 
 for (const fault of ['begin-not-written', 'begin-ack-lost', 'finish-not-written', 'finish-ack-lost']) test(`${fault} obeys durable pending evidence and never advances an uncertain effect`, redisTest, async t => {
@@ -602,7 +606,7 @@ for (const stage of ['preparing', 'prepared', 'sending']) test(`a sibling accoun
   for (const job of [victim, unaffected]) { assert.equal(f.contextReleases.get(job.id), 1); assert.equal(releaseCalls.get(job.id), 1); assert.equal(f.releases.get(job.id), 1) }
 })
 
-test('three bounded preparation failures preserve FIFO and emit one safe final link without native video attempts', redisTest, async t => {
+test('three bounded preparation failures preserve FIFO and send a native card with the safe link', redisTest, async t => {
   const f = await fixture(t), first = await f.enqueue(), second = await f.enqueue()
   f.setPrepare(async (job, _scope, prepared) => { if (job.id === first.id) throw new Error('/private/provider/url?credential=SECRET'); return prepared() })
   await f.outbox.start()
@@ -611,8 +615,11 @@ test('three bounded preparation failures preserve FIFO and emit one safe final l
   assert.equal(f.calls.length, 0); f.advance(3000); await f.outbox.tick()
   const record = await f.finished(first); await f.finished(second)
   assert.equal(record.prepareAttempts, 3); assert.equal(record.state, 'completed')
-  assert.deepEqual(f.calls.map(call => [call.id, call.effect]), [[first.id, 'link'], [second.id, 'forward']])
-  const message = f.calls[0].action.parts[0].text; assert.match(message, /视频资源准备失败/); assert.equal(message.includes('SECRET'), false)
+  assert.deepEqual(f.calls.map(call => [call.id, call.effect]), [[first.id, 'forward'], [second.id, 'forward']])
+  const parts = f.calls[0].action.plan.items.flatMap(item => item.parts)
+  assert.deepEqual(parts.map(part => part.kind), ['text'])
+  assert.match(parts[0].text, /视频资源准备失败/)
+  assert.equal(parts[0].text.includes('SECRET'), false)
 })
 
 test('stop during preparation cleans late results and restart safely re-prepares only unsent work', redisTest, async t => {

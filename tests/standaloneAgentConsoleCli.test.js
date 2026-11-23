@@ -57,8 +57,10 @@ async function fixture(t, enabled = true) {
         let echo
         try {
           const request = JSON.parse(String(raw)); echo = request.echo; actions.push({ account: accounts[index], action: request.action })
-          assert.equal(request.action, 'get_login_info', 'console administration must never invoke native outgoing actions')
-          peer.send(JSON.stringify({ status: 'ok', retcode: 0, echo, data: { user_id: Number(accounts[index]), nickname: '本地控制台验收机器人' } }))
+          assert.ok(['get_login_info', 'get_group_list', 'get_group_info'].includes(request.action), 'console administration must never invoke native outgoing actions')
+          const data = request.action === 'get_login_info' ? { user_id: Number(accounts[index]), nickname: '本地控制台验收机器人' } :
+            request.action === 'get_group_list' ? [{ group_id: Number(GROUP), group_name: '验收群' }] : { group_id: Number(GROUP), group_name: '验收群' }
+          peer.send(JSON.stringify({ status: 'ok', retcode: 0, echo, data }))
         } catch (error) {
           errors.push(String(error)); if (echo && peer.readyState === peer.OPEN) peer.send(JSON.stringify({ status: 'failed', retcode: 1200, echo, data: null }))
         }
@@ -119,7 +121,7 @@ async function fixture(t, enabled = true) {
       assert.equal(JSON.parse(log.slice(offset)).mode, 'check')
       assert.deepEqual(await reader.keys('*'), [])
       await assert.rejects(stat(dataDir), { code: 'ENOENT' })
-      assert.equal(modelRequests, 0); assert.ok(actions.every(item => item.action === 'get_login_info'))
+      assert.equal(modelRequests, 0); assert.ok(actions.every(item => ['get_login_info', 'get_group_list', 'get_group_info'].includes(item.action)))
     },
     async rebind() { await writeFile(bindingsFile, JSON.stringify(bindings) + '\n') },
     async stop() {
@@ -212,7 +214,7 @@ test('packaged standalone console checks without writes, serves authenticated AP
   assert.equal((await f.request(`/api/forgetting/00000000-0000-4000-8000-000000000000?${new URLSearchParams(select(first))}`)).status, 404)
   const detail = item => f.request('/api/simulation/group?' + new URLSearchParams(select(item)))
   const overview = await f.request('/api/simulation/overview')
-  assert.equal(overview.status, 200); assert.equal(overview.data.enabled, false); assert.equal(overview.data.groups.length, 2)
+  assert.equal(overview.status, 200); assert.equal(overview.data.enabled, true); assert.equal(overview.data.groups.length, 2)
   assert.deepEqual(new Set(overview.data.groups.map(item => item.scopeKey)), new Set(entries.map(item => item.scopeKey)))
   assert.equal((await f.request('/api/tokens/summary')).status, 200)
   const mutate = (body, item = first) => f.request('/api/simulation/group', { method: 'POST', body: { ...select(item), ...body } })
@@ -274,5 +276,37 @@ test('omitted standalone console configuration starts no HTTP listener or consol
   const f = await fixture(t, false); await f.check(); await f.start()
   await assert.rejects(fetch(f.base + '/api/auth/state', { signal: AbortSignal.timeout(1000) }))
   await assert.rejects(stat(path.join(f.dataDir, 'console')), { code: 'ENOENT' })
+  await f.stop()
+})
+
+test('group policy is scoped to its QQ account and survives a new Core process', { timeout: 30_000 }, async t => {
+  const f = await fixture(t)
+  await f.start()
+  const { data: workspace } = await f.request('/api/workspace')
+  const first = workspace.agents.flatMap(agent => agent.conversations).find(row => row.binding.target.account.id === accounts[0])
+  const args = row => ({ scopeKey: row.scopeKey, bindingToken: row.bindingToken })
+  const route = '/api/groups/' + GROUP + '/admin'
+  const read = row => f.request(route + '?' + new URLSearchParams(args(row)))
+  const view = await read(first)
+  assert.equal(view.status, 200)
+  assert.equal(view.data.values.foldLongMessages, false)
+  const stats = await f.request('/api/overview/stats?days=1')
+  assert.equal(stats.status, 200)
+  assert.equal(stats.data.rows.length, 2)
+  assert.ok(stats.data.startedAt > 0)
+  const saved = await f.request(route, { method: 'PUT', body: { ...args(first), revision: view.data.revision,
+    values: { foldLongMessages: true, maxLength: 200 } } })
+  assert.equal(saved.status, 200, saved.text)
+  assert.equal(saved.data.requiresRestart, true)
+  assert.equal(saved.data.view.values.maxLength, 200)
+  assert.equal((await read(first)).status, 409)
+  await f.stop(); await f.start()
+  const { data: current } = await f.request('/api/workspace')
+  assert.notEqual(current.configState.processEpoch, workspace.configState.processEpoch)
+  for (const row of current.agents.flatMap(agent => agent.conversations)) {
+    const result = await read(row)
+    assert.equal(result.status, 200, result.text)
+    assert.equal(result.data.values.foldLongMessages, row.binding.target.account.id === accounts[0])
+  }
   await f.stop()
 })

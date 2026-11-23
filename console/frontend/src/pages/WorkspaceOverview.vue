@@ -6,6 +6,7 @@ import { workspace, configurationLabel, canInspectQqLogin } from '../lib/workspa
 import { connectionStateLabel, robotLabel, robotLocation } from '../lib/workspaceModel'
 import { accountReference, namedId } from '../lib/workspaceNames'
 import PageHeader from '../components/PageHeader.vue'
+import HostReadiness from '../components/HostReadiness.vue'
 import WorkspaceQqLogin from '../components/WorkspaceQqLogin.vue'
 const data = workspace.data
 const total = computed(
@@ -72,6 +73,7 @@ const disconnectedQq = computed(() => data.value?.connections.filter(
           <h2>连接状态</h2>
           <RouterLink to="/connections">查看全部</RouterLink>
         </div>
+        <HostReadiness />
         <RouterLink
           v-for="connection in data.connections.slice(0, 6)"
           :key="connection.id"

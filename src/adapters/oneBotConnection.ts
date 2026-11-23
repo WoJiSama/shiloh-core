@@ -327,6 +327,8 @@ interface OneBotEndpoint {
 interface OneBotConnectionOptions extends OneBotEndpoint {
   /** A running host keeps its reverse listener available until an authenticated peer arrives. */
   keepReverseListenerWaiting?: boolean
+  /** Start the transport without making the rest of the host wait for QQ authentication. */
+  startOffline?: boolean
   onDisconnect(): void
   onReconnect(): void
   onError(): void
@@ -586,7 +588,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
           const identity = record(response.data)
           if (stopped || socket !== client) { client.terminate(); return }
           if (response.status !== 'ok' || response.retcode !== 0 || qqId(identity.user_id) !== connection.account.id) {
-            if (!initial && response.status === 'ok' && response.retcode === 0) { stopped = true; options.onError() }
+            if (!initial && !options.startOffline && response.status === 'ok' && response.retcode === 0) { stopped = true; options.onError() }
             client.terminate()
             return
           }
@@ -628,7 +630,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
   let reverseGeneration = 0
   async function listen(): Promise<void> {
     const generation = ++reverseGeneration
-    const waiting = options.keepReverseListenerWaiting === true
+    const waiting = options.startOffline === true || options.keepReverseListenerWaiting === true
     const live = () => !stopped && generation === reverseGeneration
     let firstPeer = true
     let complete!: () => void
@@ -650,14 +652,14 @@ function createOneBotSession(options: OneBotConnectionOptions) {
             if (!live()) return
             firstPeer = false
             complete()
-            if (waiting && !initial) options.onReconnect()
+            if (waiting && (!initial || options.startOffline)) options.onReconnect()
           }, error => { if (live() && initial && !waiting) fail(error instanceof Error ? error : new Error('OneBot 账号核验失败')) })
         },
         onError: options.onError,
       })
       if (!live()) { listening.close(); throw new Error('OneBot 连接已停止') }
       listener = listening
-      await ready
+      if (!options.startOffline) await ready
     } finally {
       clearTimeout(timer)
       if (cancelFirstPeer === cancel) cancelFirstPeer = undefined
@@ -1037,6 +1039,15 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     if (!stopped) return
     stopped = false
     accept = handler
+    if (options.startOffline && !reverse) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        // Local peers often authenticate immediately. Give them a bounded initial
+        // window without blocking Core startup when NapCat is offline.
+        await Promise.race([connect(false).catch(reconnect), new Promise<void>(resolve => { timer = setTimeout(resolve, 1_000) })])
+      } finally { clearTimeout(timer) }
+      return
+    }
     try { await (reverse ? listen() : connect(true)) } catch (error) { stop(); throw error }
   }
 

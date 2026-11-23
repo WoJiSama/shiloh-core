@@ -5,6 +5,7 @@ import { AGENT_CONSOLE_SERVICES, AgentConsoleError } from '../contracts/agentCon
 import type { AgentConsoleAuthPort, AgentConsoleContext, AgentConsoleGuard, AgentConsoleJson, AgentConsoleRequest, AgentConsoleService } from '../contracts/agentConsole.js'
 import type { AgentManagementBindings } from '../contracts/agentManagement.js'
 import { agentBindingToken, agentConversationKey, conversationAddressKey, platformAccountKey } from '../modules/runtime/domain/agentBindings.js'
+import { captureAgentBindingDirectoryCheck } from '../modules/runtime/infrastructure/agentManagementBindings.js'
 
 export interface StandaloneAgentWorkspaceAgent {
   readonly id: string
@@ -169,6 +170,8 @@ export function createStandaloneAgentWorkspace(options: StandaloneAgentWorkspace
         return rows
       }
       const rows = directory(), expectedDirectory = fingerprint(rows), agentRows = agents(options.agents()), connectionRows = connections(options.connections())
+      const directoryCurrent = captureAgentBindingDirectoryCheck(options.bindings, rows, options) ??
+        (() => fingerprint(directory()) === expectedDirectory)
       const serviceRows = installed(options.services()), configState = state(options.configState(context))
       const expectedMetadata = fingerprint([agentRows, connectionRows, serviceRows.map(row => ({ ...row, handler: !!row.handler })), configState])
       const agentMap = new Map(agentRows.map(row => [row.id, row])), connectionMap = new Map(connectionRows.map(row => [row.id, row]))
@@ -178,7 +181,7 @@ export function createStandaloneAgentWorkspace(options: StandaloneAgentWorkspace
         if (!owner || owner.personaId !== row.personaId || !connection || platformAccountKey(connection.account) !== platformAccountKey(row.target.account)) return fail('conflict')
       }
       function isCurrent(): boolean {
-        try { return baseCurrent() && fingerprint(directory()) === expectedDirectory } catch { return false }
+        try { return baseCurrent() && directoryCurrent() } catch { return false }
       }
       function ensureCurrent(): void { baseEnsure(); if (!isCurrent()) fail('conflict') }
       const guard: AgentConsoleGuard = Object.freeze({ signal: context.signal, isCurrent, ensureCurrent })
@@ -228,7 +231,7 @@ export function createStandaloneAgentWorkspace(options: StandaloneAgentWorkspace
       for (const definition of AGENT_CONSOLE_SERVICES) {
         const base = { operation: definition.operation, scope: definition.scope, effect: definition.method === 'GET' ? 'read' as const : 'write' as const }
         const service = services.get(definition.operation), matching = service?.method === definition.method && service.path === definition.path && service.scope === definition.scope
-        if (configState.requiresRestart && !['workspace.read', 'config-state.read', 'observe.read', 'pipeline.read'].includes(definition.operation) && !definition.operation.startsWith('auth.')) {
+        if (configState.requiresRestart && !['workspace.read', 'config-state.read', 'observe.read', 'pipeline.read', 'host.readiness', 'host.restart'].includes(definition.operation) && !definition.operation.startsWith('auth.')) {
           capabilities.push(Object.freeze({ ...base, status: 'restart-required', reason: 'execution-retired', ...(definition.scope === 'conversation' ? { authorizedScopes: Object.freeze([]) } : {}) }))
         } else if (!matching || !service.handler) {
           capabilities.push(Object.freeze({ ...base, status: 'unavailable', reason: 'handler-unavailable', ...(definition.scope === 'conversation' ? { authorizedScopes: Object.freeze([]) } : {}) }))

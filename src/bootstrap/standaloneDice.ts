@@ -145,7 +145,7 @@ export function readStandaloneDiceEngine(value:unknown,bindings:readonly AgentBi
   const dice=own(value,['enabled','maxDiceCount','maxDiceSides','maxRounds','engine'])
   if(dice.enabled!==undefined&&typeof dice.enabled!=='boolean')throw invalid()
   if(dice.engine===undefined)return undefined
-  const raw=own(dice.engine,['enabled','revision','deliveryTimeoutMs','builtin','rulePackages','grants','playerBindings'])
+  const raw=own(dice.engine,['enabled','revision','deliveryTimeoutMs','builtin','rulePackages','grants','playerBindings','playerScopes'])
   if(typeof raw.enabled!=='boolean')throw invalid()
   const enabled=dice.enabled===true&&raw.enabled
   const revision=raw.revision===undefined?undefined:id(raw.revision)
@@ -172,7 +172,15 @@ export function readStandaloneDiceEngine(value:unknown,bindings:readonly AgentBi
     if(grantKeys.has(key))throw invalid()
     grantKeys.add(key)
   }
-  const playerBindings=(raw.playerBindings===undefined?[]:list(raw.playerBindings)).map(value=>binding(value,true)),playerKeys=new Set<string>()
+  const stableScopes=raw.playerScopes===undefined?[]:list(raw.playerScopes).map(value=>{
+    const row=own(value,['connectionId','accountId','groupId','agentId','personaId'])
+    const current=bindings.find(item=>item.target.kind==='group'&&item.target.account.platform==='qq'&&item.target.account.namespace==='global'&&
+      item.connectionId===id(row.connectionId)&&item.target.account.id===id(row.accountId)&&item.target.id===id(row.groupId)&&
+      item.agentId===id(row.agentId)&&item.personaId===id(row.personaId))
+    if(!current)throw invalid()
+    return binding(current,true)
+  })
+  const playerBindings=[...(raw.playerBindings===undefined?[]:list(raw.playerBindings)).map(value=>binding(value,true)),...stableScopes],playerKeys=new Set<string>()
   for(const item of playerBindings){const key=bindingKey(item);if(!configured.has(key)||playerKeys.has(key))throw invalid();playerKeys.add(key)}
   if(enabled&&!grants.length&&!playerBindings.length)throw invalid()
   const result:StandaloneDiceEngineConfig=freeze({enabled,...(revision===undefined?{}:{revision}),...(deliveryTimeoutMs===undefined?{}:{deliveryTimeoutMs}),builtin,rulePackages:packages.map(pack=>pack.input),grants,playerBindings})

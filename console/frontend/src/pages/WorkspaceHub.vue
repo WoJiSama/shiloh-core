@@ -3,6 +3,9 @@ import { computed } from 'vue'
 import { NTag } from 'naive-ui'
 import { ArrowUpRight } from 'lucide-vue-next'
 import PageHeader from '../components/PageHeader.vue'
+import HostRestartButton from '../components/HostRestartButton.vue'
+import HostReadiness from '../components/HostReadiness.vue'
+import WorkspaceTraffic from '../components/WorkspaceTraffic.vue'
 import { workspace, capability, configurationLabel } from '../lib/workspace'
 import { workspaceFeatureEntries, workspaceFeaturePath } from '../lib/navigation'
 import { statusLabel } from '../lib/workspaceModel'
@@ -27,6 +30,8 @@ const entries = computed(() => workspaceFeatureEntries('/' + props.section))
         }}</NTag>
       </div>
       <p class="field-help">配置保存后需重启服务。结果未知时保留草稿，禁止重复保存。</p>
+      <HostRestartButton v-if="!data.configState.requiresRestart" />
+      <HostReadiness />
       <details class="technical-details">
         <summary>技术详情</summary>
         <dl>
@@ -59,6 +64,7 @@ const entries = computed(() => workspaceFeatureEntries('/' + props.section))
         }}</small></RouterLink
       >
     </div>
+    <WorkspaceTraffic v-if="section === 'runtime'" />
     <section v-if="section === 'system'" class="panel">
       <h2>能力与授权</h2>
       <p class="field-help">

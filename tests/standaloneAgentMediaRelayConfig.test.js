@@ -229,9 +229,10 @@ test('Pixiv supports referenced HTTP, HTTPS and SOCKS host proxies within the sa
   }
 })
 
-test('every hosted account has an explicit independent bridge with bounded literal peers and valid origin', () => {
+test('a new account may connect without a bridge while configured bridges retain literal peer checks', () => {
   const second = { id: 'second', account: { ...connections[0].account, id: '123456002' } }
-  assert.throws(() => readStandaloneMediaRelayConfig(enabled(), [...connections, second], {}))
+  const one = readStandaloneMediaRelayConfig(enabled(), [...connections, second], {})
+  assert.deepEqual(one.bridges.map(row => row.connectionId), ['main'])
   const both = readStandaloneMediaRelayConfig(enabled({ bridges: [bridge, { ...bridge, connectionId: 'second',
     listen: { host: '127.0.0.1', port: 31482 }, advertisedOrigin: 'http://192.168.1.4:31482' }] }), [...connections, second], {})
   assert.equal(both.bridges.length, 2)

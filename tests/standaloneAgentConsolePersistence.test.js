@@ -397,7 +397,7 @@ test('unsupported fields, raw keys, multiple providers, mixed files and dangling
     ['/api/config/dice', { revision: dice.revision, values: { 'diceSystem.customRules': [] } }, 400],
     ['/api/config/dice', { revision: dice.revision, values: { 'dice.maxRounds': 0 } }, 400],
     ['/api/config/dice', { revision: dice.revision, values: {}, secrets: { apiKey: { action: 'replace', value: secret } } }, 400],
-    ['/api/config/memory', { revision: dice.revision, values: {} }, 404],
+    ['/api/config/memory', { revision: dice.revision, values: {} }, 409],
     ['/api/ai/config', { revision: ai.revisions.model, configKey: 'model', providers: [{ ...provider, apiKey: secret }] }, 400],
     ['/api/ai/config', { revision: ai.revisions.model, configKey: 'model', providers: [provider, provider] }, 400],
     ['/api/ai/config', { revision: ai.revisions.model, configKey: 'model', providers: [{ ...provider, priority: 1 }] }, 400],

@@ -92,9 +92,10 @@ export function parseConfigProcessState(value: unknown): ConfigProcessState & {
 }
 const commitPath = '/api/configuration/commit'
 export const isConfigurationWrite = (path: string, method = 'GET') =>
-  (method.toUpperCase() === 'POST' && path === commitPath) ||
+  (method.toUpperCase() === 'POST' && (path === commitPath || path === '/api/accounts/add')) ||
   (method.toUpperCase() === 'PUT' &&
     (/^\/api\/config\/[^/?]+(?:\?|$)/.test(path) ||
+      /^\/api\/groups\/[^/?]+\/admin(?:\?|$)/u.test(path) ||
       ['/api/ai/config', '/api/persona/library', '/api/persona/assignments'].includes(path)))
 const stateRequest = (path: string) => path === '/api/config-state'
 const authRequest = (path: string) => path.startsWith('/api/auth/')
@@ -120,6 +121,7 @@ export function createConsoleRestartGate() {
   )
   function assertAllowed(path: string, method = 'GET') {
     if (!blocked.value || authRequest(path) || stateRequest(path)) return
+    if (method === 'POST' && path === '/api/host/restart' && !state.recoveryRequired && state.phase !== 'saving') return
     if (method.toUpperCase() !== 'GET' || isConfigurationRead(path)) throw stale()
   }
   function invalidate() {

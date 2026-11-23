@@ -6,6 +6,9 @@ import { AgentConsoleError } from '../contracts/agentConsole.js'
 import type { AgentConsoleCommittedResponse, AgentConsoleContext, AgentConsoleJson } from '../contracts/agentConsole.js'
 import type { StandaloneAgentConsoleAssignmentPort, StandaloneAgentConsoleConfigPort, StandaloneAgentConsoleConfigurationPort, StandaloneAgentConsolePersonaPort, StandaloneAgentConsoleProviderPort } from './standaloneAgentConsoleServices.js'
 import { acquireStandaloneAgentConfigLock, inspectStandaloneAgentConfigTransaction, inspectStandaloneAgentSourceSnapshot, isStandaloneAgentSourceSnapshotCurrent, observeStandaloneAgentSourceSnapshot } from './standaloneAgentConfigSources.js'
+import { standalonePolicyView, updateStandalonePolicy } from './standaloneAgentConsolePolicies.js'
+import { standaloneDiceConsoleView, updateStandaloneDiceConsole } from './standaloneAgentConsoleDice.js'
+import { defaultAgentGroupPolicy, readAgentGroupPolicy, readAgentGroupPolicyValues } from '../modules/groupAdmin/domain/agentGroupPolicy.js'
 import type { ConfigSourceName, ConfigSources, SourceSnapshot } from './standaloneAgentConfigSources.js'
 import { createStandaloneAgentConsoleCommitCoordinator } from './standaloneAgentConsoleCommit.js'
 import { agentBindingToken, agentConversationKey, createAgentBindingDirectory } from '../modules/runtime/domain/agentBindings.js'
@@ -18,6 +21,7 @@ import { resolveTurtleSoupConfig } from '../modules/games/infrastructure/turtleS
 import { DEFAULT_CONFIG as UMA_DEFAULTS } from '../modules/games/infrastructure/uma/umaConstants.js'
 import { TURTLE_NUMBERS, UMA_NUMBERS } from './standaloneGamesConfig.js'
 import { createStandaloneAgentConsoleProviderProbe } from './standaloneAgentConsoleProviderProbe.js'
+import type { createStandaloneAgentConsoleAccounts } from './standaloneAgentConsoleAccounts.js'
 
 export type ConsoleModelSlot = 'model' | 'developmentModel' | 'vision' | 'personMemoryExtraction' | 'midtermSummary' | 'groupMemoryExtraction' | 'textTriggerModel'
 export interface ConsoleModelView { readonly baseUrl: string; readonly name: string; readonly apiKeyEnv: string; readonly apiKeyConfigured: boolean }
@@ -194,6 +198,10 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
     capabilities: { requiresRestart: true, atomicMultiFile: true } })
   function schema(snapshot: SourceSnapshot, candidate: ValidatedConsoleCandidate, kind: string): Data {
     let selected: Field[]
+    const hostDocument = document(snapshot.sources.host)
+    const policy = standalonePolicyView(hostDocument, kind) ?? standaloneDiceConsoleView(hostDocument, kind)
+    if (policy) return { ...base(snapshot, 'config:' + kind), key: kind, title: policy.title,
+      groups: [{ label: '当前设置', fields: policy.fields }], ...('packages' in policy ? { packages: policy.packages } : {}) }
     const settings = gameSettingsFor(kind)
     if (settings) {
       const host = document(snapshot.sources.host)
@@ -311,6 +319,8 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
       const view = schema(loaded, loadedCandidate, kind), defined = ((view.groups as Data[])[0]!.fields as Field[])
       if (Object.keys(values).some(key => !defined.some(item => item.field === key))) return fail()
       return save(context, payload, 'config.write', 'config:' + kind, 'host', (state, candidate) => {
+        const policyChanges = updateStandalonePolicy(state.host, kind, values) ?? updateStandaloneDiceConsole(state.host, kind, values)
+        if (policyChanges !== undefined) return { changed: policyChanges, source: String(state.host) }
         let changed = 0
         const current = schema(loaded, candidate, kind), existing = ((current.groups as Data[])[0]!.fields as Field[])
         for (const [key, value] of Object.entries(values)) {
@@ -339,6 +349,47 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
         }
         return { source: changed ? state.host.toString() : loaded.sources.host, changed }
       }, (snapshot, candidate) => schema(snapshot, candidate, kind))
+    },
+  }
+  function groupAdminView(snapshot: SourceSnapshot, context: AgentConsoleContext) {
+    const binding = context.binding!
+    const host = document(snapshot.sources.host)
+    const policy = readAgentGroupPolicy(host.toJS()?.groupAdmin)
+    const row = policy.groups.find(item => item.connectionId === binding.connectionId && item.groupId === binding.target.id)
+    const { connectionId: _connection, groupId: _group, ...overrides } = row ?? {}
+    return { ...base(snapshot, 'group-admin:' + agentConversationKey(binding)), defaults: policy.defaults,
+      values: policy.effective(binding.connectionId, binding.target.id), overrides }
+  }
+  const groupAdmin = {
+    read(context: AgentConsoleContext) {
+      ensure(context)
+      if (context.binding?.target.kind !== 'group') return fail()
+      return groupAdminView(loaded, context)
+    },
+    write(payload: Readonly<Data>, context: AgentConsoleContext) {
+      const binding = context.binding
+      if (binding?.target.kind !== 'group') return fail()
+      fields(payload as Data, ['revision', 'values', 'resets'])
+      let values: ReturnType<typeof readAgentGroupPolicyValues>
+      try { values = readAgentGroupPolicyValues(payload.values ?? {}) } catch { return fail() }
+      const resets = payload.resets ?? []
+      if (!Array.isArray(resets) || resets.some(key => typeof key !== 'string' || !Object.hasOwn(defaultAgentGroupPolicy, key))) return fail()
+      const scope = 'group-admin:' + agentConversationKey(binding)
+      return save(context, payload, 'group-admin.write', scope, 'host', state => {
+        const { groups } = readAgentGroupPolicy(state.host.toJS()?.groupAdmin)
+        const index = groups.findIndex(row => row.connectionId === binding.connectionId && row.groupId === binding.target.id)
+        const previous = index < 0 ? undefined : groups[index]
+        const next = { ...previous, ...values, connectionId: binding.connectionId, groupId: binding.target.id }
+        for (const key of resets) delete next[key as keyof typeof defaultAgentGroupPolicy]
+        if (equal(next, previous) || !previous && Object.keys(next).length === 2) return { changed: 0, source: String(state.host) }
+        const at = ['groupAdmin', 'groups']
+        if (index < 0) {
+          if (!state.host.hasIn(at)) state.host.setIn(at, [])
+          state.host.addIn(at, next)
+        } else if (Object.keys(next).length === 2) state.host.deleteIn([...at, index])
+        else state.host.setIn([...at, index], next)
+        return { changed: 1, source: String(state.host) }
+      }, snapshot => groupAdminView(snapshot, context))
     },
   }
   const persona: StandaloneAgentConsolePersonaPort = {
@@ -485,5 +536,29 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
     return { processEpoch, loadedRevision: loaded.revision, storedRevision, requiresRestart: retired || storedRevision !== loaded.revision,
       phase: storedRevision === '' || transaction.phase !== 'clean' ? 'uncertain' : phase, recoveryRequired: transaction.phase !== 'clean', transaction: json(transaction) }
   }
-  return { execution, commits, config, persona, providers, assignments: assignmentPort, configuration, state }
+  function enrollmentState(context: AgentConsoleContext) {
+    ensure(context)
+    return base(loaded, 'accounts:add')
+  }
+  async function enrollAccount(payload: Data, context: AgentConsoleContext,
+    provision: ReturnType<typeof createStandaloneAgentConsoleAccounts>['provision']) {
+    ensure(context)
+    fields(payload, ['accountId', 'revision'])
+    const accountId = id(payload.accountId)
+    if (!/^[1-9]\d{4,11}$/u.test(accountId)) return fail()
+    if (payload.revision !== version(loaded, 'accounts:add')) return fail('conflict')
+    const state = parsed(loaded.sources, loaded.versions.bindings)
+    const existing = (state.bindings.toJS()?.connections ?? []) as Data[]
+    if (existing.some(row => row.accountId === accountId || row.id === 'qq-' + accountId)) return fail('conflict')
+    const { login, url } = await provision(accountId, context)
+    return saveSources(context, payload, 'accounts.add', 'accounts:add', snapshot => {
+      const next = parsed(snapshot.sources, snapshot.versions.bindings)
+      next.host.addIn(['connections'], { id: login.connectionId, url, transport: 'forward-websocket', accessTokenEnv: login.tokenEnv })
+      if (!next.host.hasIn(['console', 'qqLogin'])) next.host.setIn(['console', 'qqLogin'], [])
+      next.host.addIn(['console', 'qqLogin'], login)
+      next.bindings.addIn(['connections'], { id: login.connectionId, platform: 'qq', namespace: 'global', accountId })
+      return { changed: 3, sources: { host: String(next.host), personas: snapshot.sources.personas, bindings: String(next.bindings) } }
+    }, snapshot => ({ ...base(snapshot, 'accounts:add'), id: login.connectionId, accountId }))
+  }
+  return { execution, commits, config, groupAdmin, persona, providers, assignments: assignmentPort, configuration, state, enrollmentState, enrollAccount }
 }

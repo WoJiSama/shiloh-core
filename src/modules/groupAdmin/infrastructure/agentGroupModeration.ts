@@ -6,8 +6,9 @@ import type { ChatRequestData, ChatResponse } from '../../../contracts/modelGate
 import { agentBindingIdentity, conversationAddressKey } from '../../runtime/domain/agentBindings.js'
 import type { CommitmentRedisLike } from '../../../contracts/commitments.js'
 import { parseAgentToolArguments } from '../../tools/infrastructure/agentToolSchema.js'
+import type { AgentGroupPolicy } from '../domain/agentGroupPolicy.js'
 
-type Disposition = 'warn' | 'recall' | 'mute' | 'unmute'
+type Disposition = 'warn' | 'recall' | 'mute' | 'unmute' | 'fold'
 interface ModerationGuard {
   signal: AbortSignal
   isCurrent(): boolean
@@ -16,6 +17,7 @@ interface ModerationGuard {
 interface Ports {
   redis: Pick<CommitmentRedisLike, 'get' | 'set' | 'del'>
   now?: () => number
+  policy?(binding: AgentBindingSnapshot): AgentGroupPolicy
   isCurrent(binding: AgentBindingSnapshot): boolean
   source(target: ConversationAddress, id: string, guard: ModerationGuard): Promise<IncomingMessage | undefined>
   canModerate(source: IncomingMessage, guard: ModerationGuard): Promise<boolean>
@@ -37,8 +39,12 @@ export function createAgentGroupModeration(ports: Ports) {
   const runs = new Map<string, Promise<void>>()
   const controller = new AbortController()
   const now = ports.now ?? Date.now
+  const shouldFold = (message: IncomingMessage, policy?: AgentGroupPolicy) => !!policy?.foldLongMessages &&
+    message.parts.every(part => part.kind === 'text') && message.text.length <= 22_000 &&
+    (Array.from(message.text.trim()).length >= policy.maxLength ||
+      policy.maxLines > 0 && message.text.split(/\r\n|\n|\r/u).length > policy.maxLines)
 
-  async function assess(binding: AgentBindingSnapshot, incoming: IncomingMessage, history: IncomingMessage[], report: boolean) {
+  async function assess(binding: AgentBindingSnapshot, incoming: IncomingMessage, history: IncomingMessage[], report: boolean, fold: boolean) {
     const group = binding.target
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(55_000)])
     const isCurrent = () => !signal.aborted && ports.isCurrent(binding)
@@ -50,7 +56,7 @@ export function createAgentGroupModeration(ports: Ports) {
     if (!source || !await ports.canModerate(source, guard) || !isCurrent()) return
     const muteKey = 'bl-chat:moderation-mute:v1:' + hash([agentBindingIdentity(binding), source.sender.id])
     const mayUnmute = report && !!await ports.redis.get(muteKey)
-    const model = await ports.model({ messages: [{
+    const model = !fold && await ports.model({ messages: [{
       role: 'system',
       content: [
         '你是有 QQ 管理权限的当前群机器人。判断指定消息是否构成明确广告、刷屏或需要复核的误处置。需要结合前后发言，不把接龙、投票、游戏互动和正常分享当广告。',
@@ -62,9 +68,10 @@ export function createAgentGroupModeration(ports: Ports) {
       history: history.map(message => ({ text: message.text.slice(0, 260), sameAuthor: message.sender.id === source.sender.id })),
       ...(report ? { report: incoming.text.slice(0, 360), mayUnmute } : {}),
     }) }] }, guard)
-    const answer = model.choices?.[0]?.message?.content
-    const action = typeof answer === 'string' ? parseAgentToolArguments(answer, 300)?.action : undefined
-    if (!isCurrent() || action !== 'warn' && action !== 'recall' && action !== 'mute' && action !== 'unmute' ||
+    const answer = model ? model.choices?.[0]?.message?.content : undefined
+    const action = fold && shouldFold(source, ports.policy?.(binding)) ? 'fold' :
+      typeof answer === 'string' ? parseAgentToolArguments(answer, 300)?.action : undefined
+    if (!isCurrent() || action !== 'warn' && action !== 'recall' && action !== 'mute' && action !== 'unmute' && !(fold && action === 'fold') ||
         action === 'unmute' && !mayUnmute) return
     const receiptKey = 'bl-chat:moderation-receipt:v1:' + hash([agentBindingIdentity(binding), sourceId, action])
     const receipt = (state: string) => JSON.stringify({ state, at: now(), action, source: sourceId })
@@ -91,8 +98,10 @@ export function createAgentGroupModeration(ports: Ports) {
     const report = !!incoming.quote?.messageId && reportPattern.test(incoming.text)
     const repeated = items.filter(message => message.sender.id === incoming.sender.id && message.text === incoming.text &&
       incoming.occurredAt - message.occurredAt <= 20_000).length >= 4
-    if (runs.size >= 4 || runs.has(key) || (!report && !repeated && !advertisingPattern.test(incoming.text))) return
-    const task = assess(binding, incoming, items.slice(-12), report)
+    const policy = ports.policy?.(binding)
+    const fold = shouldFold(incoming, policy)
+    if (runs.size >= 4 || runs.has(key) || !fold && (policy?.enabled === false || !report && !repeated && !advertisingPattern.test(incoming.text))) return
+    const task = assess(binding, incoming, items.slice(-12), !fold && report, fold)
       .catch(() => { /* A failed review cannot initiate a platform action. */ })
       .finally(() => { runs.delete(key) })
     runs.set(key, task)

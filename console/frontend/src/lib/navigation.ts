@@ -203,15 +203,15 @@ export const workspaceFeatures = {
   conversation: {
     label: '对话配置',
     group: '/system',
-    operation: 'conversation.config',
-    hint: '当前宿主是否提供对话配置编辑',
+    operation: 'config.read',
+    hint: '私聊、主动接话判断与运行记录',
     keywords: '对话 回复 触发 权限 上下文'
   },
   risk: {
     label: '安全配置',
     group: '/system',
-    operation: 'risk-control.config',
-    hint: '当前宿主是否提供安全配置编辑',
+    operation: 'config.read',
+    hint: '敏感词检查与消息输出边界',
     keywords: '风控 安全 审查 限流 通知'
   },
   groups: {
@@ -225,7 +225,7 @@ export const workspaceFeatures = {
     label: '群管理',
     group: '/connections',
     operation: 'group-admin.read',
-    hint: '入群验证、广告处理与群通知',
+    hint: '默认审核、超长消息折叠与单群覆盖',
     keywords: '群管理 入群验证 广告 刷屏 欢迎 退群'
   }
 } as const

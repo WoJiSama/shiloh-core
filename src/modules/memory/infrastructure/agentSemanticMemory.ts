@@ -49,6 +49,8 @@ export function createAgentSemanticMemory(ports: {
   backend?: AgentSemanticMemoryBackend
   resolve(target: ConversationAddress): { binding: AgentBindingSnapshot } | undefined
   available(target: ConversationAddress): boolean
+  /** Administrative reads of group records use local source and privacy evidence. */
+  beginRecordsRead?(binding: AgentBindingSnapshot): MemoryTurn | Promise<MemoryTurn>
   privatePeer(target: ConversationAddress): string | undefined
   /** Fresh platform access evidence, checked again before use. Omission grants no cross-scene access. */
   authorizePrivateSource?(viewer: AgentBindingSnapshot, source: AgentBindingSnapshot, subjectId: string, context: PersonProfileExtractionContext): Promise<boolean>
@@ -82,10 +84,10 @@ export function createAgentSemanticMemory(ports: {
   const source = (binding: AgentBindingSnapshot, row: AgentSemanticMemoryRow) => ({
     scene: personMemoryAddress(binding.target, row.peerId).scene, authorId: row.authorId, messageId: row.messageId, at: row.at, excerpt: row.text,
   })
-  function current(binding: AgentBindingSnapshot): boolean {
+  function current(binding: AgentBindingSnapshot, records = false): boolean {
     try {
       const selected = ports.resolve(binding.target)
-      return enabled() && scopeAllowed(binding) && ports.isRunning() && ports.available(binding.target) && !!selected &&
+      return enabled() && scopeAllowed(binding) && ports.isRunning() && (records || ports.available(binding.target)) && !!selected &&
         agentBindingToken(selected.binding) === agentBindingToken(binding)
     } catch { return false }
   }
@@ -135,13 +137,14 @@ export function createAgentSemanticMemory(ports: {
     })
   }
   async function withContext<T>(binding: AgentBindingSnapshot, guard: () => boolean, timeout: number, work: (context: PersonProfileExtractionContext) => Promise<T>,
-    related: readonly AgentBindingSnapshot[] = [], callerSignal?: AbortSignal, phase?: () => AgentSemanticMemoryTimeoutError['phase']): Promise<T> {
-    const turn = await ports.begin(binding)
+    related: readonly AgentBindingSnapshot[] = [], callerSignal?: AbortSignal, phase?: () => AgentSemanticMemoryTimeoutError['phase'], readRecords = false): Promise<T> {
+    const records = readRecords && binding.target.kind === 'group' && !!ports.beginRecordsRead
+    const turn = await (records ? ports.beginRecordsRead!(binding) : ports.begin(binding))
     const controller = new AbortController()
     const request = { agentId: binding.agentId, target: binding.target, controller, related }
     requests.add(request)
     const signal = AbortSignal.any([lifecycle.signal, controller.signal, turn.signal, ...(callerSignal ? [callerSignal] : [])])
-    const authorized = () => !signal.aborted && turn.isCurrent() && guard() && current(binding) && related.every(current)
+    const authorized = () => !signal.aborted && turn.isCurrent() && guard() && current(binding, records) && related.every(item => current(item))
     const isCurrent = () => !signal.aborted && (ports.observeCurrent ? ports.observeCurrent(authorized) : authorized())
     const poll = setInterval(() => { if (!isCurrent()) controller.abort() }, 25)
     const deadline = setTimeout(() => controller.abort(new AgentSemanticMemoryTimeoutError(phase?.())), timeout)
@@ -520,7 +523,7 @@ export function createAgentSemanticMemory(ports: {
       if (!isCurrent()) throw new Error('语义资料会话已失效')
       return snapshot.invalidatedAt
     },
-    async records(binding: AgentBindingSnapshot, isCurrent: () => boolean, search: string, offset: number) {
+    async records(binding: AgentBindingSnapshot, isCurrent: () => boolean, search: string, offset: number, signal?: AbortSignal) {
       if (!isCurrent()) throw new Error('语义资料会话已失效')
       if (!enabled() || !scopeAllowed(binding)) return { enabled: false, total: 0, indexed: 0, rows: [] }
       return withContext(binding, isCurrent, 10_000, async context => {
@@ -538,7 +541,7 @@ export function createAgentSemanticMemory(ports: {
         const indexed = (row: AgentSemanticMemoryRow) => Boolean(row.vector && row.providerId === ports.backend?.id)
         return { enabled: true, total: matching.length, indexed: matching.filter(indexed).length,
           rows: page.map(row => ({ id: row.messageId, at: row.at, text: row.text, indexed: indexed(row) })) }
-      })
+      }, [], signal, undefined, true)
     },
     async recall(binding: AgentBindingSnapshot, query: string, isCurrent: () => boolean, signal: AbortSignal) {
       const result = await read(binding, query, isCurrent, signal)

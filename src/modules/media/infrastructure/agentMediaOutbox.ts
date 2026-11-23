@@ -210,7 +210,7 @@ export function createAgentMediaOutbox(options: {
     await current(entry)
     return receipt
   }
-  const linkText = (value: Prepared) => `${value.infoText}\n${value.pageUrl}\n（媒体转发资源暂不可用，已改为发送原作品链接）`
+  const linkText = (value: Prepared) => `${value.infoText}${value.infoText.includes(value.pageUrl) ? '' : '\n' + value.pageUrl}\n（媒体转发资源暂不可用，已附原作品链接）`
   async function text(entry: Entry, name: 'directIntro' | 'link', value: string) {
     if (!safeText(value)) throw failure()
     const binding = entry.session.record.binding
@@ -222,17 +222,20 @@ export function createAgentMediaOutbox(options: {
     return inScope(entry, 'media_deliver', async () => {
       try {
         const value = entry.prepared!
-        if (value.linkOnly) {
-          const sent = await text(entry, 'link', linkText(value))
-          await entry.session.close(sent.state === 'sent' ? 'completed' : 'failed'); return
-        }
         const binding = record.binding
         const relay = (name: 'forward' | 'forwardRetry' | 'directIntro' | 'directVideo', plan: AgentMediaRelayPlan) => effect(entry, name,
           async () => options.actions.sendMediaRelay ? options.actions.sendMediaRelay({ version: 1, kind: 'media-relay.send',
             target: binding.target, binding, mode: name === 'forward' || name === 'forwardRetry' ? 'forward' : 'direct-video', plan },
           { signal: entry.cancel.signal, isCurrent: () => sendCurrent(entry) }) : { state: 'failed', code: 'media_relay_unavailable' })
-        // Bilibili prepares a card node followed by one node per video segment.
         const bilibili = record.source.share.provider === 'bilibili'
+        if (value.linkOnly) {
+          if (bilibili) {
+            const card = await relay('forward', { version: 1, items: [{ parts: [{ kind: 'text', text: linkText(value) }] }] })
+            if (card.state === 'sent') { await entry.session.close('completed'); return }
+          }
+          const sent = await text(entry, 'link', linkText(value))
+          await entry.session.close(sent.state === 'sent' ? 'completed' : 'failed'); return
+        }
         const videos = bilibili ? [] : value.plan.items.flatMap(item => item.parts.flatMap(part => part.kind === 'video' ? [{ parts: [part] }] : []))
         if (videos.length) {
           const introParts = value.plan.items.flatMap(item => item.parts.flatMap(part => part.kind !== 'video' ? [part] : []))
@@ -249,7 +252,19 @@ export function createAgentMediaOutbox(options: {
           await entry.session.close(linked.state === 'sent' ? 'completed' : 'failed'); return
         }
         let result = await relay('forward', value.plan)
-        if (result.state === 'failed' && result.code === 'media_resource_preprocessing_failed') result = await relay('forwardRetry', value.plan)
+        if (result.state === 'failed' && bilibili) {
+          // A confirmed rejection may fall back to the original text and cover in a native forward card.
+          const textPart = { kind: 'text' as const, text: linkText(value) }
+          const covers = value.plan.items[0]?.parts.filter(part => part.kind === 'image') ?? []
+          if (value.plan.items.some(item => item.parts.some(part => part.kind === 'video'))) {
+            const parts = [textPart, ...covers]
+            result = await relay('forwardRetry', { version: 1, items: [{ parts }] })
+          } else if (result.code === 'media_resource_preprocessing_failed') {
+            result = await relay('forwardRetry', { version: 1, items: [{ parts: [textPart] }] })
+          }
+        } else if (result.state === 'failed' && result.code === 'media_resource_preprocessing_failed') {
+          result = await relay('forwardRetry', value.plan)
+        }
         if (result.state === 'sent') { await entry.session.close('completed'); return }
         if (result.state !== 'failed' || !bilibili && result.code !== 'media_resource_preprocessing_failed') { await entry.session.close('failed'); return }
         const linked = await text(entry, 'link', linkText(value))

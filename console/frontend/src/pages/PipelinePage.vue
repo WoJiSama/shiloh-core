@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { NAlert, NButton, NSelect, NTag, NEmpty, NDrawer, NDrawerContent } from 'naive-ui'
 import { RefreshCw, ArrowUpRight } from 'lucide-vue-next'
 import SchemaPage from './SchemaPage.vue'
+import { capability } from '../lib/workspace'
 import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
 import { api } from '../lib/api'
@@ -36,6 +37,9 @@ const kinds = [
   { label: '媒体交付', value: 'delivery' }
 ]
 const statuses = computed(() => pipelineStatusOptions(mode.value))
+const settingsAvailable = computed(() => mode.value === 'legacy' ||
+  mode.value === 'standalone' && capability('config.read').status === 'available')
+const settingsVisited = ref(false)
 const legacyDetail = computed(() =>
   detail.value?.mode === 'legacy'
     ? Object.entries(detail.value).filter(([key]) => key !== 'mode')
@@ -80,6 +84,7 @@ async function load() {
 }
 function select(value: string) {
   detail.value = null
+  if (value === 'settings') settingsVisited.value = true
   tab.value = value
   if (value === 'jobs' && !data.value && !loading.value) load()
 }
@@ -105,12 +110,12 @@ onBeforeUnmount(() => {
         ></template
       ></PageHeader
     >
-    <div v-if="mode === 'legacy'" class="task-tabs" role="tablist" aria-label="消息与搬运">
+    <div v-if="settingsAvailable" class="task-tabs" role="tablist" aria-label="消息与搬运">
       <button role="tab" :aria-selected="tab === 'settings'" @click="select('settings')">
         策略与授权</button
       ><button role="tab" :aria-selected="tab === 'jobs'" @click="select('jobs')">任务记录</button>
     </div>
-    <div v-if="mode === 'legacy'" v-show="tab === 'settings'">
+    <div v-if="settingsAvailable && (mode === 'legacy' || settingsVisited)" v-show="tab === 'settings'">
       <SchemaPage kind="pipeline" embedded />
     </div>
     <section v-if="tab === 'jobs'" class="page-stack">

@@ -27,6 +27,15 @@ test('the owner-local transition has a stable effective-config fingerprint and p
  assert.equal((await run('normal chat')).matched,false)
 })
 
+test('imported decks resolve nested hidden groups with the current player and bounded weights',async()=>{
+ const config={decks:{祝福:['::2::{player}抽到{_符文}'],'_符文':['太阳']}}
+ assert.match(publicText(await run('.draw 祝福',{config})),/Alice抽到太阳/u)
+ assert.match(publicText(await run('.draw',{config})),/可用牌堆：祝福/u)
+ assert.doesNotMatch(publicText(await run('.draw',{config})),/_符文/u)
+ assert.match(publicText(await run('.draw _符文',{config})),/牌堆未找到/u)
+ assert.throws(()=>createAgentDiceBuiltin({decks:{祝福:['::1000000000::太阳']}}),/牌堆配置无效/u)
+})
+
 test('character management preserves aliases, compact fields, delta expressions, hidden fields and per-card lock semantics',async()=>{
  let result=await run('.pcnew hero');assert.equal(result.state.users.alice.activeCard,'hero')
  result=await run('.st 敏捷0力量-1本能0生命6',{state:result.state});assert.equal(card(result.state).attrs.STR,-1);assert.equal(card(result.state).attrs.DEX,0);assert.equal(card(result.state).skills.生命,6)

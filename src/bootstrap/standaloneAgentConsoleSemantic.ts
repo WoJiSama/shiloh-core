@@ -126,7 +126,11 @@ export function createStandaloneAgentConsoleSemantic(options: {
     'semantic.records': async (request, context) => {
       if (request.query.source === 'legacy') return archived(request, context)
       const { query, offset } = queryOptions(request, options.allowsText)
-      return json(await options.admin.records(binding(context), context.isCurrent, query, offset))
+      try { return json(await options.admin.records(binding(context), context.isCurrent, query, offset, context.signal)) }
+      catch {
+        context.ensureCurrent()
+        throw new AgentConsoleError('unavailable')
+      }
     },
     'semantic.recall': async (request, context) => {
       const { query } = queryOptions(request, options.allowsText)

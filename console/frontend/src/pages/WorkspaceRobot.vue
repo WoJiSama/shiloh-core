@@ -39,7 +39,9 @@ interface SelfProfileVersion {
   changedAt: number
 }
 interface PersonalWorkSummary {
-  goals: { id: string; title: string; nextAt: number; state: 'active' | 'completed' | 'abandoned'; waitingFor?: string }[]
+  goals: { id: string; title: string; nextAt: number; state: 'active' | 'completed' | 'abandoned'; waitingFor?: string
+    engineering?: { mode: 'investigate' | 'candidate'; status: 'queued' | 'running' | 'confirmed' | 'failed' | 'unknown'; result?: string }
+  }[]
   actions: { id: string; kind: 'contact' | 'reserve' | 'research' | 'coding' | 'follow-share'; state: 'pending' | 'confirmed' | 'failed' | 'unknown'; at: number; goalId?: string; followId?: string }[]
   tools: { name: string; description: string; activeRevision?: number; versions?: number[] }[]
   followEnabled?: boolean
@@ -80,6 +82,7 @@ watch(() => [tab.value, agent.value?.id, capability('self-profile.read').status]
 const goalStates = { active: '进行中', completed: '已完成', abandoned: '已放下' }
 const actionNames = { contact: '联系', reserve: '预约登记', research: '检索', coding: '编程候选', 'follow-share': '分享兴趣更新' }
 const actionStates = { pending: '待回执', confirmed: '已确认', failed: '失败', unknown: '待核实' }
+const engineeringStates = { queued: '等待开发工作器', running: '开发工作器处理中', confirmed: '结果已记录', failed: '失败', unknown: '结果待核实' }
 const beijingTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Asia/Shanghai' })
 const selection = computed(() => {
   try {
@@ -288,11 +291,15 @@ watch(
             <div v-for="goal in personalWork.goals" :key="goal.id" class="workspace-row">
               <span class="row-main">
                 <strong>{{ goal.title }}</strong>
+                <template v-if="goal.engineering">
+                  <small>{{ goal.engineering.mode === 'investigate' ? '工程调查' : '代码候选' }} · {{ goal.id }}</small>
+                  <p v-if="goal.engineering.result">{{ goal.engineering.result }}</p>
+                </template>
                 <small v-if="goal.state === 'active'">
                   {{ goal.waitingFor || '下次检查' }} · {{ beijingTime.format(goal.nextAt) }}
                 </small>
               </span>
-              <NTag size="small">{{ goalStates[goal.state] }}</NTag>
+              <NTag size="small">{{ goal.engineering ? engineeringStates[goal.engineering.status] : goalStates[goal.state] }}</NTag>
             </div>
             <p v-if="!personalWork.goals.length" class="empty-note">暂无自主目标。</p>
             <details v-if="personalWork.followEnabled || personalWork.follows?.length" open>

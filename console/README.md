@@ -14,6 +14,8 @@
 
 打开总览顶部的 QQ 掉线提示，点对应账号的「扫码登录」。也可以从侧栏进入「连接」，在账号卡片打开同一个弹窗。用该账号的手机 QQ 扫码并确认。弹窗会显示等待扫码、等待确认和连接恢复的状态。二维码过期时点「获取二维码」。
 
+「连接」页可为已有连接选择机器人并绑定群聊或好友。宿主配置了账号容器管理时，账号卡片提供启用、停用和重启，页面也可为新 QQ 开通容器。开通后的账号在应用配置后出现，可扫码并单独接入会话。
+
 独立宿主在 `agent-host.yaml` 的 `console.qqLogin` 中为对应账号配置 NapCat 的本机 WebUI 端口和令牌环境变量名。配置需要与宿主已有连接和 QQ 号匹配。配置加载后，扫码页面在 OneBot 离线时也可用。
 
 ```yaml
@@ -47,7 +49,7 @@ console:
 
 流程依次使用 `GET /api/configuration/catalog`、`POST /api/configuration/preview` 和 `POST /api/configuration/commit`。预览展示字段差异、受影响本人、连接、完整会话及权限变化，完整候选保留在服务端；提交只携带 `previewId`、`revision`、`candidateDigest` 和包含 host/personas/bindings 的完整 `readSet`。候选过期、身份撤销或配置变化后须重新预览，不能用旧预览覆盖新配置。
 
-宿主配置（示例名 `agent-host.yaml`，实际路径由 `--config` 指定）、`persona-library.yaml` 和 `agent-bindings.yaml` 仍是权威配置源。事务按完整候选一致提交三份配置，保存版本与本进程已加载版本分别记录。旧执行实例退休后，工作区、配置状态和运行观测仍可认证读取，其他业务操作须等待真实新进程；当前启动器没有 supervisor，保存不会自动在线重启。
+宿主配置（示例名 `agent-host.yaml`，实际路径由 `--config` 指定）、`persona-library.yaml` 和 `agent-bindings.yaml` 是权威配置源。事务按完整候选一致提交三份配置，分别记录保存版本和本进程已加载版本。使用附带的 systemd 重启配置时，管理员可点「重启并应用配置」，再核对新进程的已加载版本。使用其他启动方式时，由该进程的管理器负责重启。
 
 提交结果未知时不能自动补交。残留事务使用显式离线恢复；正常启动不抢残留锁，也不按 PID 自动删除锁。先单独检查安全状态：
 

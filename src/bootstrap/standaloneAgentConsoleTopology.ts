@@ -263,6 +263,20 @@ export function prepareStandaloneAgentTopologyChange(sources:ConfigSources,chang
       }
       Object.assign(affected,{connections:[...affected.connections,{id,account}],conversations:[...affected.conversations,...conversations]})
       addedConversations=conversations;hostChanged=true
+    }else if(input.kind==='binding.add'){
+      fields(input,['kind','agentId','connectionId','conversationId','conversationKind'])
+      const agentId=internalId(input.agentId),connectionId=internalId(input.connectionId)
+      const connection=data.directory.connectionById(connectionId)
+      if(!connection||!data.agents.some(agent=>agent.agentId===agentId)||
+        input.conversationKind!=='group'&&input.conversationKind!=='private')return fail()
+      const conversationId=qq(input.conversationId)
+      const target:ConversationAddress={account:{...connection.account},kind:input.conversationKind,id:conversationId}
+      if(data.directory.resolve(target))return fail()
+      const item={connectionId,kind:target.kind,conversationId,agentId}
+      append(data.bindings,'bindings',item)
+      changes.push({file:'bindings',path:`bindings[${list(data.rawBindings.bindings).length}]`,action:'add',before:null,after:json(item)})
+      addedConversations=[{agentId,connectionId,target}]
+      Object.assign(affected,{conversations:[...affected.conversations,...addedConversations]})
     }else if(input.kind==='agent.create'){
       fields(input,['kind','agentId','personaId','newPersona'])
       const agentId=internalId(input.agentId),selected=personaId(input.personaId)

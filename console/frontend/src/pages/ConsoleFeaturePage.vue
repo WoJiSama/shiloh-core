@@ -9,6 +9,8 @@ import SchemaPage from './SchemaPage.vue'
 import WorkspaceConnections from './WorkspaceConnections.vue'
 const props = defineProps<{ feature: WorkspaceFeature }>()
 const StandaloneSemanticPage = defineAsyncComponent(() => import('./StandaloneSemanticPage.vue'))
+const StandaloneGroupAdminPage = defineAsyncComponent(() => import('./StandaloneGroupAdminPage.vue'))
+const StandaloneCommandsPage = defineAsyncComponent(() => import('./StandaloneCommandsPage.vue'))
 const mode = workspace.mode
 const route = useRoute()
 const components = {
@@ -87,7 +89,8 @@ const backLabel = computed(() =>
     <WorkspaceConnections v-if="props.feature === 'groups'" /><CapabilityGate
       v-else
       :operation="feature.operation"
-      ><SchemaPage v-if="props.feature === 'commands'" kind="dice" />
+      ><StandaloneCommandsPage v-if="props.feature === 'commands'" />
+      <StandaloneGroupAdminPage v-else-if="props.feature === 'group-admin'" />
       <StandaloneSemanticPage v-else-if="props.feature === 'semantic'" /><component
         v-else
         :is="components[props.feature]"

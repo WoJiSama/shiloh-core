@@ -84,10 +84,11 @@ import { inspectStandaloneAgentConfigTransaction, isStandaloneAgentSourceSnapsho
 import { createStandaloneAgentConsoleManagement } from './standaloneAgentConsoleManagement.js'
 import { createStandaloneAgentForgetOperations } from './standaloneAgentForgetOperations.js'
 import { createStandaloneAgentWorkspace } from './standaloneAgentWorkspace.js'
-import { AGENT_CONSOLE_SERVICES, type AgentConsoleService } from '../contracts/agentConsole.js'
+import { AGENT_CONSOLE_SERVICES, AgentConsoleError, type AgentConsoleService } from '../contracts/agentConsole.js'
+import { createAgentTraffic } from '../modules/runtime/infrastructure/agentTraffic.js'
+import { createStandaloneAgentOperations } from './standaloneAgentOperations.js'
+import { createStandaloneAgentConsoleAccounts } from './standaloneAgentConsoleAccounts.js'
 import { createAgentManagementBindings } from '../modules/runtime/infrastructure/agentManagementBindings.js'
-import type { AgentManagementBindings } from '../contracts/agentManagement.js'
-import { conversationAddressKey } from '../modules/runtime/domain/agentBindings.js'
 import { createForgetOperationStore } from '../modules/runtime/infrastructure/forgetOperationStore.js'
 import { createStandaloneAgentCodingWorker, resolveStandaloneAgentCodingSnapshot } from './standaloneAgentCodingWorker.js'
 import { createStandaloneAgentToolAuthor } from './standaloneAgentToolAuthor.js'
@@ -290,7 +291,13 @@ export async function main(argv: string[]): Promise<void> {
     logger.info('[AgentAlerts] qq_owner_enabled')
   }
   let journal: Awaited<ReturnType<typeof openAgentOperationJournal>> | undefined
-  const diagnostics = createAgentDiagnostics({ sink: { append: event => journal ? journal.append(event) : Promise.resolve(false) }, logger,
+  let traffic: ReturnType<typeof createAgentTraffic> | undefined
+  const diagnostics = createAgentDiagnostics({ sink: { async append(event) {
+    const counters = traffic?.record(event).catch(() => {})
+    const saved = await journal?.append(event) ?? false
+    await counters
+    return saved
+  } }, logger,
     ...(alerts ? { onFailure: alerts.report } : {}),
     configurationRevision: config.sourceSnapshot.revision })
   const safeLogger = diagnostics.logger
@@ -331,6 +338,10 @@ export async function main(argv: string[]): Promise<void> {
       onLost: () => fail('[Agent] Redis 执行租约丢失，停止处理'),
       onCommandFailure: event => diagnostics.emit({ stage: 'host', ...event }),
     })
+    if (config.console.enabled) {
+      traffic = createAgentTraffic(storage.storage)
+      await traffic.start().catch(error => diagnostics.emit({ stage: 'host', operation: 'traffic_start', outcome: 'failed', error }))
+    }
     const forgetOperationsStore = createForgetOperationStore({ redis: storage.storage })
     // Console authentication outlives execution retirement, while the process keeps its Redis lease.
     const consoleAuthority = { signal: termination.signal,
@@ -443,7 +454,7 @@ export async function main(argv: string[]): Promise<void> {
       const groupLogBridge = groupLogHost?.bridgeFor(options.connection.id)
       const alertOwner = options.connection.id === qqAlertConnection ? qqAlertOwner : undefined
       const adapter = createOneBotConnection({ ...options, ...(bridge ? { mediaRelay: { bridge, allowsText: allowsMediaText } } : {}),
-        keepReverseListenerWaiting: true,
+        startOffline: true,
         ...(config.console.enabled ? { conversationNameTargets: config.loadedBindings.filter(binding => binding.connectionId === options.connection.id).map(binding => binding.target) } : {}),
         ...(alertOwner ? { alertOwner } : {}),
         dicePrivate: { allowsText: allowsMediaText },
@@ -638,7 +649,8 @@ export async function main(argv: string[]): Promise<void> {
     const diceRuntime = await createStandaloneDiceRuntime(config.diceEngineConfig,
       () => !executionSignal.aborted && storage?.isCurrent() === true && config.isConfigCurrent(),
       diceScriptRunner ? { scriptRunner: diceScriptRunner } : {})
-    const managementBindings = createAgentManagementBindings(() => config.listBindings())
+    // Console execution retires on any change to the loaded configuration and binding read set.
+    const managementBindings = createAgentManagementBindings(config.console.enabled ? config.loadedBindings : config.listBindings)
     const sourceRoot = process.env.BL_AGENT_CODING_SOURCES
     const legacySource = process.env.BL_AGENT_CODING_SOURCE
     const codingSnapshot = sourceRoot
@@ -747,6 +759,7 @@ export async function main(argv: string[]): Promise<void> {
       privateChatEnabled: config.privateChatEnabled,
       privateTextTools: config.privateTextTools,
       unifiedGroupChat: true,
+      groupPolicy: binding => config.groupPolicy.effective(binding.connectionId, binding.target.id),
       personalSeeds: config.personalSeeds,
       personalToolAuthor,
       ...(config.personalFollow.enabled ? { personalFollowFeed: (url: string, current: () => boolean, signal: AbortSignal) =>
@@ -791,7 +804,7 @@ export async function main(argv: string[]): Promise<void> {
         allowSetup: config.console.allowSetup,
         secureCookies: config.console.secureCookies,
         policy: { operations, authorize: async (_principal, operation, binding) =>
-          binding?.target.kind !== 'group' && (operation.startsWith('turtle-soup.') ||
+          binding?.target.kind !== 'group' && (operation.startsWith('turtle-soup.') || operation.startsWith('group-admin.') ||
             (operation === 'semantic.records' || operation === 'semantic.recall') && config.semanticMemory.groupOnly === true)
             ? 'denied' : 'allowed' },
       })
@@ -813,8 +826,12 @@ export async function main(argv: string[]): Promise<void> {
         dataDir: config.dataDir, allowsText: allowsSecretText })
       const accountsService = AGENT_CONSOLE_SERVICES.find(service => service.operation === 'accounts.read')!
       const qqLogin = createStandaloneAgentConsoleQqLogin({ configs: config.console.qqLogin, adapters, env: process.env })
+      const accounts = createStandaloneAgentConsoleAccounts({ configs: config.console.qqLogin, dataDir: config.dataDir,
+        enabled: process.env.BL_AGENT_DOCKER_ACCOUNTS === '1',
+        ...(process.env.BL_AGENT_NAPCAT_IMAGE ? { image: process.env.BL_AGENT_NAPCAT_IMAGE } : {}),
+        ...(process.env.BL_AGENT_MANAGED_QQ_TOKEN ? { token: process.env.BL_AGENT_MANAGED_QQ_TOKEN } : {}) })
       const installed = createStandaloneAgentConsoleServices({ bindings, auth: consoleAuth, runtime, ledger, ...management, ...(forgetting ? { forgetting } : {}),
-        config: persistence.config, persona: { ...persistence.persona, accounts: directory.accounts },
+        config: persistence.config, groupAdmin: persistence.groupAdmin, persona: { ...persistence.persona, accounts: directory.accounts },
         providers: persistence.providers, identities: directory,
         assignments: persistence.assignments, configuration: persistence.configuration, configState: persistence.state, commits: persistence.commits,
         extra: [
@@ -826,15 +843,78 @@ export async function main(argv: string[]): Promise<void> {
           ...createStandaloneAgentConsoleGames(gamePorts),
           ...createStandaloneAgentConsoleQzone({ adapters, bindings, auth: consoleAuth, ledger: qzoneLedger, allowsText: allowsMediaText }),
           ...qqLogin.services,
+          ...createStandaloneAgentOperations({ directory, traffic: traffic!, dataDir: config.dataDir,
+            readiness: host.readiness, journal: () => journal!.health(), apps: {
+              '会话仿真': true, '好友私聊': config.privateChatEnabled, '历史记录': config.history.enabled === true,
+              '语义记忆': config.semanticMemory.enabled, '统一认知': config.cognition.enabled, '兴趣跟进': config.personalFollow.enabled,
+              '自动搬运': config.mediaRelay.enabled, 'B 站': config.mediaRelay.enabled,
+              '抖音': config.mediaRelay.douyin?.enabled === true, '小红书': config.mediaRelay.xiaohongshu?.enabled === true,
+              'YouTube': config.mediaRelay.youtube?.enabled === true, 'Pixiv': config.mediaRelay.pixiv?.enabled === true,
+              '磁链': config.torrentDownload.enabled, '骰子': config.dice.enabled, '团录': config.groupLog.enabled,
+              '海龟汤': config.games.turtleSoup?.enabled === true, '赛马娘': config.games.umaRace?.enabled === true,
+            } }),
           ...createStandaloneAgentConsoleStyle({ dataDir: config.dataDir, bindings, auth: consoleAuth, allowsText: allowsSecretText }),
           ...createStandaloneAgentConsoleSemantic({ dataDir: config.dataDir, enabled: config.semanticMemory.enabled,
             admin: host.semanticMemoryAdmin, allowsText: allowsSecretText }),
         ] })
       // The workspace describes this process's loaded configuration, including after execution retires.
-      const loadedByAddress = new Map(config.loadedBindings.map(binding => [conversationAddressKey(binding.target), binding]))
-      const loadedBindings: AgentManagementBindings = { list: () => config.loadedBindings,
-        resolve: target => loadedByAddress.get(conversationAddressKey(target)) }
+      const loadedBindings = managementBindings
       const services: AgentConsoleService[] = [...installed]
+      if (accounts.available) {
+        const operation = (name: string) => AGENT_CONSOLE_SERVICES.find(item => item.operation === name)!
+        services.push({ ...operation('accounts.managed'), async handle(request, context) {
+          if (Object.keys(request.query).length) throw new AgentConsoleError('invalid_request')
+          const visible = new Set((await directory.accounts(context)).map(row => row.connectionId))
+          const rows = await accounts.list(context, visible)
+          return { kind: 'json', value: { ...persistence.enrollmentState(context), accounts: rows, canProvision: accounts.provisionAvailable } }
+        } }, { ...operation('accounts.action'), maxBodyBytes: 512, async handle(request, context) {
+          const input = request.body as Record<string, unknown>
+          if (Object.keys(request.query).length || Object.keys(input).length !== 3 ||
+              typeof input.connectionId !== 'string' || typeof input.accountId !== 'string' ||
+              input.action !== 'start' && input.action !== 'stop' && input.action !== 'restart') throw new AgentConsoleError('invalid_request')
+          const visible = await directory.accounts(context)
+          if (!visible.some(row => row.connectionId === input.connectionId && row.id === input.accountId)) throw new AgentConsoleError('not_found')
+          return { kind: 'json', value: await accounts.action(input.connectionId, input.accountId, input.action, context) }
+        } })
+        if (accounts.provisionAvailable) services.push({ ...operation('accounts.add'), maxBodyBytes: 512, async handle(request, context) {
+          if (Object.keys(request.query).length) throw new AgentConsoleError('invalid_request')
+          const result = await persistence.enrollAccount(request.body as Record<string, unknown>, context, accounts.provision)
+          if (persistence.commits.isCommitted(result)) return result
+          return { kind: 'json', value: result as import('../contracts/agentConsole.js').AgentConsoleJson }
+        } })
+      }
+      const managedRestart = process.env.BL_AGENT_MANAGED_RESTART === '1' && !!process.env.INVOCATION_ID
+      let restartRequested = false
+      function requestRestart() {
+        if (restartRequested || termination.signal.aborted) return
+        restartRequested = true
+        setImmediate(() => {
+          process.exitCode = 75
+          diagnostics.emit({ stage: 'host', operation: 'operator_restart', outcome: 'succeeded' })
+          gracefulStop()
+        })
+      }
+      services.push({ ...AGENT_CONSOLE_SERVICES.find(item => item.operation === 'host.readiness')!,
+        async handle(request, context) {
+          if (Object.keys(request.query).length) throw new AgentConsoleError('invalid_request')
+          const state = persistence.state(context)
+          const visible = new Set((await directory.accounts(context)).map(row => row.connectionId))
+          const readiness = host!.readiness()
+          return { kind: 'json', value: { ready: readiness.ready, accounts: readiness.accounts.filter(row => visible.has(row.connectionId)),
+            configuration: state, managedRestart } }
+        } })
+      if (managedRestart) services.push({ ...AGENT_CONSOLE_SERVICES.find(item => item.operation === 'host.restart')!, maxBodyBytes: 512,
+        async handle(request, context) {
+          const input = request.body as Record<string, unknown>
+          const state = persistence.state(context)
+          if (Object.keys(request.query).length || Object.keys(input).length !== 2 ||
+              typeof input.processEpoch !== 'string' || typeof input.storedRevision !== 'string') throw new AgentConsoleError('invalid_request')
+          if (state.recoveryRequired) throw new AgentConsoleError('configuration_recovery_required')
+          if (restartRequested || !state.storedRevision || state.processEpoch !== input.processEpoch ||
+              state.storedRevision !== input.storedRevision) throw new AgentConsoleError('conflict')
+          context.ensureCurrent()
+          return { kind: 'json', status: 202, value: { accepted: true } }
+        } })
       services.push({
         method: 'GET', path: '/api/self-profile/:agentId', operation: 'self-profile.read', scope: 'global',
         async handle(request, context) {
@@ -877,6 +957,7 @@ export async function main(argv: string[]): Promise<void> {
         }), services: () => services, configState: persistence.state }))
       consoleHost = createStandaloneAgentConsole({ frontendDir: config.console.frontendDir, host: config.console.host, port: config.console.port,
         authority, bindings, auth: consoleAuth, services, execution: persistence.execution, commits: persistence.commits,
+        ...(managedRestart ? { requestRestart } : {}),
         allowsResponse: body => allowsSecretText(typeof body === 'string' ? body : Buffer.from(body).toString('utf8')),
         onRequestFailure: (httpStatus, code) => diagnostics.emit({ stage: 'host', operation: 'console_request',
           outcome: code === 'commit_outcome_unknown' ? 'unknown' : 'failed', httpStatus, code }) })

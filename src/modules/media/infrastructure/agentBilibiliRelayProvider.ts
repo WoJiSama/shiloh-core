@@ -1,11 +1,9 @@
 import { types } from 'node:util'
-import sharp from 'sharp'
 import type { AgentMediaArtifact, AgentMediaArtifactLease, AgentMediaRelayItem, AgentMediaResourceContext } from '../../../contracts/agentMediaRelay.js'
 import type { AgentMediaRelayProvider, AgentMediaShare, AgentPreparedMediaRelay } from '../../../contracts/agentMediaRelayWorkflow.js'
 import type { AgentPreparedBilibiliQuality } from '../../../contracts/agentBilibiliQuality.js'
 import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agentSecretText.js'
-import { buildTextImageChatSvg } from '../../rendering/infrastructure/textImageTemplates.js'
 import { validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
 import { bilibiliFailure, bilibiliGuard, bilibiliOfficialUrl, createBilibiliHttp, nativeAgentBilibiliRequest } from './agentBilibiliRelayHttp.js'
@@ -27,8 +25,8 @@ export interface AgentBilibiliRelayProviderOptions {
   readonly lookup?: AgentBilibiliLookup
   readonly request?: AgentBilibiliRequest
   readonly thumbnail?: AgentBilibiliThumbnail
-  /** Supplies an image for the first automatic relay node. 'summary' renders it without Chromium. */
-  readonly cardRenderer?: 'summary' | { render(view: Readonly<import('./agentBilibiliCardRenderer.js').AgentBilibiliCardView>, context: AgentMediaResourceContext): Promise<{ mime: string; base64: string }> }
+  /** Optional custom first node. A failed render keeps the native title and cover. */
+  readonly cardRenderer?: { render(view: Readonly<import('./agentBilibiliCardRenderer.js').AgentBilibiliCardView>, context: AgentMediaResourceContext): Promise<{ mime: string; base64: string }> }
   /** Metadata only: upstream errors, URLs, credentials and local paths are never emitted. */
   readonly diagnostics?: Pick<AgentDiagnostics, 'emit'>
   /** May shorten each API stage's 10s and download candidate's 10min deadlines. */
@@ -343,7 +341,7 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       const outputReferences = meta.cover ? [meta.cover] : []
       const mediaItems: AgentMediaRelayItem[] = []
       let cover: AgentMediaArtifact | undefined
-      if (meta.cover && cardRenderer !== 'summary') { try { const lease = await download([meta.cover], 'image', guard.context); leases.push(lease); cover = lease.artifact } catch { diagnose('bilibili_provider_cover', 'cover_unavailable', context); await guard.ensure(); lines.push('封面暂时获取失败') } }
+      if (meta.cover) { try { const lease = await download([meta.cover], 'image', guard.context); leases.push(lease); cover = lease.artifact } catch { diagnose('bilibili_provider_cover', 'cover_unavailable', context); await guard.ensure(); lines.push('封面暂时获取失败') } }
       const duration = strict ? Math.max(meta.duration, meta.parts.reduce((total, part) => total + part.duration, 0)) : meta.duration
       if (duration > MAX_SECONDS) lines.push('视频超过30分钟，未附带视频本体')
       else if (meta.partCount > MAX_PARTS) lines.push(`视频共有${meta.partCount}个分P，超过20个分P上限，未附带视频本体`)
@@ -391,9 +389,7 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       if (!outputAllowed(infoText) || !outputAllowed(pageUrl) || actualQualities.some(value => !outputAllowed(value.label))) throw bilibiliFailure()
       let introParts: readonly ({ kind: 'text', text: string } | { kind: 'image', artifact: AgentMediaArtifact })[] | undefined
       if (cardRenderer) {
-        let card: { bytes: Buffer; mime: string } | undefined
-        if (cardRenderer !== 'summary') {
-          try {
+        try {
             let coverData: { readonly mime: string; readonly bytes: Buffer } | undefined
             if (cover) {
               const reader = await options.artifacts.open(cover, guard.context)
@@ -403,22 +399,15 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
               partText: meta.partCount > 1 ? `${meta.partCount}个分P` : '', publishedText: meta.published ? new Date(meta.published * 1000).toISOString().slice(0, 10) : '',
               pageUrl: meta.pageUrl, stats: Object.fromEntries(Object.entries(statLabels).filter(([key]) => meta.stats[key] !== undefined).map(([key, label]) => [label, meta.stats[key]!.toLocaleString('zh-CN')])),
               description: meta.description.slice(0, 300), episode: meta.episode, ...(coverData ? { cover: coverData } : {}) }, guard.context)
-            card = { bytes: Buffer.from(image.base64, 'base64'), mime: image.mime }
-          } catch (error) {
-            diagnose('bilibili_provider_card', error instanceof AgentBilibiliCardError ? error.code : 'card_unavailable', context)
-            await guard.ensure()
-          }
+          const bytes = Buffer.from(image.base64, 'base64')
+          const lease = await guard.wait(options.artifacts.stage({ kind: 'image', mime: image.mime,
+            chunks: (async function* () { yield bytes })() }, guard.context), late => releaseLeases([late]))
+          leases.push(lease)
+          introParts = [{ kind: 'image', artifact: lease.artifact }]
+        } catch (error) {
+          diagnose('bilibili_provider_card', error instanceof AgentBilibiliCardError ? error.code : 'card_unavailable', context)
+          await guard.ensure()
         }
-        if (!card) {
-          const { svg, visibleText } = buildTextImageChatSvg({ text: infoText, nickname: '哔哩哔哩' })
-          if (!outputAllowed(visibleText)) throw bilibiliFailure()
-          const bytes = await guard.wait(sharp(Buffer.from(svg), { limitInputPixels: 8_000_000 }).timeout({ seconds: 5 }).png().toBuffer())
-          card = { bytes, mime: 'image/png' }
-        }
-        const { bytes, mime } = card
-        const lease = await guard.wait(options.artifacts.stage({ kind: 'image', mime, chunks: (async function* () { yield bytes })() }, guard.context), late => releaseLeases([late]))
-        leases.push(lease)
-        introParts = [{ kind: 'image', artifact: lease.artifact }]
       }
       const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: introParts ?? [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover } as const] : [])] }, ...mediaItems] }, { allowsText: outputAllowed })
       await guard.ensure()

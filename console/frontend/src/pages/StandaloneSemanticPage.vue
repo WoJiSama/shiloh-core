@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NPagination, NSelect, NTag } from 'naive-ui'
 import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
+import SchemaPage from './SchemaPage.vue'
 import { api } from '../lib/api'
 import { capability, workspace } from '../lib/workspace'
 import { robotLabel } from '../lib/workspaceModel'
@@ -144,6 +145,10 @@ const percent = (value: number | null) => value === null ? '—' : (value * 100)
 <template>
   <div class="page-stack">
     <PageHeader title="记忆检索" subtitle="查看当前会话的语义来源和旧版归档。" />
+    <details v-if="capability('config.read').status === 'available'" class="panel">
+      <summary>记忆与学习策略</summary>
+      <SchemaPage kind="memory" embedded />
+    </details>
     <NAlert v-if="source === 'legacy' && status?.legacyImported" type="info">
       旧版语义资料按原群查看。Core 召回使用当前会话已核验的来源。
     </NAlert>

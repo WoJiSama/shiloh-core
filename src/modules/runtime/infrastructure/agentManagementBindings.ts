@@ -3,7 +3,7 @@ import type { AgentBindingSnapshot, ConversationAddress } from '../../../contrac
 import type { AgentManagementBindings } from '../../../contracts/agentManagement.js'
 import { agentBindingToken, agentConversationKey, conversationAddressKey, isConversationAddress, isPlatformIdentifier } from '../domain/agentBindings.js'
 
-const observations = new WeakMap<AgentManagementBindings, () => readonly AgentBindingSnapshot[]>()
+const observations = new WeakMap<AgentManagementBindings, () => string>()
 const fail = (): never => { throw new Error('管理绑定观察无效') }
 
 function field(value: unknown, key: string): unknown {
@@ -50,13 +50,17 @@ function copyDirectory(value: unknown): readonly AgentBindingSnapshot[] {
 const signature = (bindings: readonly AgentBindingSnapshot[]) => JSON.stringify(bindings.map(binding =>
   JSON.stringify([agentConversationKey(binding), agentBindingToken(binding)])).sort())
 
-/** A host supplies one complete synchronous read. Every public method performs a new read. */
-export function createAgentManagementBindings(readComplete: () => readonly AgentBindingSnapshot[]): AgentManagementBindings {
-  const observe = () => copyDirectory(readComplete())
-  const bindings = Object.freeze({ list: observe, resolve(target: ConversationAddress) {
-    return observe().find(binding => conversationAddressKey(binding.target) === conversationAddressKey(target))
+/** A dynamic source is checked on every read. A loaded process snapshot is copied once. */
+export function createAgentManagementBindings(source: (() => readonly AgentBindingSnapshot[]) | readonly AgentBindingSnapshot[]): AgentManagementBindings {
+  const loaded = typeof source === 'function' ? undefined : copyDirectory(source)
+  const loadedByTarget = loaded && new Map(loaded.map(binding => [conversationAddressKey(binding.target), binding]))
+  const loadedSignature = loaded && signature(loaded)
+  const list = typeof source === 'function' ? () => copyDirectory(source()) : () => loaded!
+  const bindings = Object.freeze({ list, resolve(target: ConversationAddress) {
+    const address = conversationAddressKey(target)
+    return loadedByTarget ? loadedByTarget.get(address) : list().find(binding => conversationAddressKey(binding.target) === address)
   } })
-  observations.set(bindings, observe)
+  observations.set(bindings, () => loadedSignature ?? signature(list()))
   return bindings
 }
 
@@ -78,7 +82,7 @@ export function captureAgentBindingDirectoryCheck(bindings: AgentManagementBindi
   const captured = signature(copyDirectory(expected))
   return () => {
     if (!owns()) return false
-    const current = signature(observe())
+    const current = observe()
     return owns() && current === captured
   }
 }

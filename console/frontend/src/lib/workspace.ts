@@ -56,7 +56,7 @@ export const workspace = createWorkspaceStore(
 )
 export function capability(operation: string, scopeKey?: string): WorkspaceCapability {
   const item = workspace.data.value?.capabilities.find((item) => item.operation === operation)
-  if (consoleRestart.blocked.value && !['observe.read', 'pipeline.read'].includes(operation))
+  if (consoleRestart.blocked.value && !['observe.read', 'pipeline.read', 'host.readiness', 'host.restart'].includes(operation))
     return {
       operation,
       scope: item?.scope ?? 'global',

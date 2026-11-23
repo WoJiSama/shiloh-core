@@ -43,6 +43,8 @@ const props = defineProps<{
     | 'reasoning'
     | 'conversation'
     | 'groupAdmin'
+    | 'diceAssets'
+    | 'commands'
     | 'turtleSoup'
     | 'umaRace'
     | 'deltaForce'
@@ -71,6 +73,8 @@ const titles = {
   tracking: '对话追踪',
   memory: '记忆策略',
   groupAdmin: '群管理默认策略',
+  diceAssets: '骰子回复与资产',
+  commands: '命令目录',
   conversation: '对话设置',
   reasoning: '思考程度',
   pipeline: '消息管道',
@@ -85,6 +89,8 @@ const descriptions = {
   tracking: '控制严格模式追踪与智能模式的群聊参与、续话和防刷屏策略。',
   memory: '配置记忆提取、召回、巩固、纠错和中期摘要。',
   groupAdmin: '设置群管理总开关与默认参数，单群可按需覆盖。',
+  diceAssets: '管理牌堆、YAML 规则包和回复文案。',
+  commands: '维护可供群成员查阅的命令说明。',
   conversation: '设置对话触发、访问权限、上下文与回复方式。',
   reasoning: '按用途设置思考程度，保存后用于后续请求。',
   pipeline: '可靠接收、媒体搬运与健康报告，在一个地方配置。',
@@ -453,7 +459,7 @@ defineExpose({ dirty, reload, saving, loading })
           }}</NTab></NTabs
         >
         <NAlert v-if="sectionHelp" type="info" :show-icon="false">{{ sectionHelp }}</NAlert>
-        <template v-if="kind === 'groupAdmin' && current">
+        <template v-if="kind === 'groupAdmin' && current && view?.mode !== 'standalone'">
           <section class="panel module-header-panel" :data-module="current.id">
             <div class="module-header-top">
               <div>

@@ -39,14 +39,21 @@ test('standalone coding and tool author use the development slot with a main-mod
         for await (const chunk of request) body += chunk
         const modelRequest = JSON.parse(body), instructions = modelRequest.messages[0].content
         let stage, payload
-        if (instructions.includes('你自己的工作回合')) {
+        if (instructions.includes('你自己的工作回合') && modelRequest.messages.length > 2) {
+          stage = 'receipt'
+          assert.match(modelRequest.messages.at(-1).content, /Core 能力执行回执.*queued/su)
+          payload = { action: 'rest' }
+        } else if (instructions.includes('你自己的工作回合')) {
           stage = 'work'
           const { goals } = JSON.parse(modelRequest.messages[1].content)
-          payload = goals[0].id === 'coder' ? { action: 'coding', goalId: 'coder', task: '检查测试源码' }
+          payload = goals[0].id === 'coder' ? { action: 'capability', name: 'engineering.submit',
+            input: { title: '检查测试源码', task: '读取测试源码 fixture.ts 的 enabled 常量', mode: 'investigate' } }
             : { action: 'make-tool', name: '计数', task: '统计行数' }
-        } else if (instructions.includes('写代码')) {
+        } else if (instructions.includes('这是只读调查')) {
           stage = 'code'
-          payload = { op: 'done', summary: '已检查' }
+          if (modelRequest.messages.length > 2) assert.match(modelRequest.messages.at(-1).content, /enabled = true/u)
+          payload = modelRequest.messages.length === 2 ? { op: 'read', path: 'src/fixture.ts', start: 1, count: 1 }
+            : { op: 'done', summary: 'src/fixture.ts:1 的 enabled 为 true' }
         } else if (instructions.includes('编写一个纯文字分析工具')) {
           stage = 'author'
           payload = { definition: { name: '计数', description: '统计行数', steps: [{ kind: 'count' }] },
@@ -103,11 +110,18 @@ test('standalone coding and tool author use the development slot with a main-mod
     for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { log += chunk })
     try {
       const deadline = Date.now() + 12_000
-      while (cases.length < 4 && child.exitCode === null && Date.now() < deadline) await delay(25)
+      let saved
+      while (child.exitCode === null && Date.now() < deadline) {
+        const state = JSON.parse(await reader.get(prefix + 'bl-chat:agent-personal:v1:coder'))
+        saved = state.goals.find(goal => goal.engineering?.status === 'confirmed')
+        if (cases.length >= 6 && saved) break
+        await delay(25)
+      }
+      assert.ok(saved?.engineering.result?.includes('src/fixture.ts:1'), log)
       assert.equal(cases.filter(call => call.stage === 'work').length, 2, log)
-      assert.deepEqual(cases.filter(call => call.stage !== 'work').map(call => call.stage).sort(), ['author', 'code'], log)
+      assert.deepEqual(cases.filter(call => call.stage !== 'work').map(call => call.stage).sort(), ['author', 'code', 'code', 'receipt'], log)
       for (const call of cases) {
-        const developmentRoute = configured && call.stage !== 'work'
+        const developmentRoute = configured && ['author', 'code'].includes(call.stage)
         const expected = developmentRoute ? development : main
         assert.equal(call.model, expected.name)
         assert.equal(call.path, (developmentRoute ? '/development' : '/main') + '/v1/chat/completions')

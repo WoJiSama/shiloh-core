@@ -169,7 +169,7 @@ export function readStandaloneMediaRelayConfig(input: unknown, connections: read
       return Object.freeze({ connectionId: bridge.connectionId, listen: Object.freeze({ host, port }),
         advertisedOrigin: origin(bridge.advertisedOrigin), allowedPeers: Object.freeze(peers) })
     })
-    if (value.enabled && (bridges.length !== connections.length || connections.some(connection => !seen.has(connection.id)))) throw failure()
+    if (value.enabled && !bridges.length) throw failure()
     return Object.freeze({ enabled: value.enabled, bridges: Object.freeze(bridges),
       ...(douyin ? { douyin: Object.freeze({ enabled: douyin.enabled as boolean }) } : {}),
       ...(xhs ? { xiaohongshu: Object.freeze({ enabled: xhs.enabled as boolean, ...(xhsCookie ? { authCookie: xhsCookie } : {}) }) } : {}),
@@ -276,7 +276,6 @@ export async function openStandaloneMediaRelay(options: {
     const bilibili = options.config.enabled ? createAgentBilibiliRelayProvider({ directory: providerDirectory, artifacts,
       ...(options.config.bilibili.authCookie ? { authCookie: options.config.bilibili.authCookie } : {}),
       autoAuthorizedRetry: options.config.bilibili.autoAuthorizedRetry, secrets: options.secrets, allowsText: options.allowsText,
-      cardRenderer: 'summary',
       ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}) }) : undefined
     let douyin: AgentMediaRelayProvider | undefined
     if (options.config.enabled && options.config.douyin?.enabled) {
@@ -336,7 +335,7 @@ export async function openStandaloneMediaRelay(options: {
       await mkdir(qualityDirectory, { mode: 0o700 })
     }
     const qualityProviderFor = (binding: AgentBindingSnapshot): AgentBilibiliQualityProvider | undefined => {
-      if (!qualityDirectory || !options.bilibiliQuality?.enabled) return undefined
+      if (!qualityDirectory || !options.bilibiliQuality?.enabled || !bridges.has(binding.connectionId)) return undefined
       current()
       if (closing) throw failure()
       const owned = ownBilibiliQualityData(binding)

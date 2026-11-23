@@ -72,6 +72,7 @@ export function createStandaloneAgentConsoleDirectory(options: {
 
   return {
     conversationName,
+    visibleBindings,
     accountName,
     groups: readGroups,
     accounts: readAccounts,

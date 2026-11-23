@@ -268,7 +268,8 @@ export function createStandaloneAgentConsole(options: AgentConsolePorts & {
     }
     // These host-owned read views describe the loaded/stored versions after execution retirement.
     // They retain the real request/session/host guard and never execute Core management commands.
-    const stateRequest = req.method === 'GET' && ['/api/config-state', '/api/workspace', '/api/observe/summary', '/api/pipeline/jobs'].includes(url.pathname)
+    const stateRequest = req.method === 'GET' && ['/api/config-state', '/api/host/readiness', '/api/workspace', '/api/observe/summary', '/api/pipeline/jobs'].includes(url.pathname) ||
+      req.method === 'POST' && url.pathname === '/api/host/restart' && !!options.requestRestart
     const executionCurrent = () => { try { return !options.execution || !options.execution.signal.aborted && options.execution.isCurrent() === true } catch { return false } }
     const actorCurrent = () => baseActorCurrent() && (stateRequest || executionCurrent())
     const responseAuthority: AgentConsoleGuard = currentGuard(guard.signal, baseActorCurrent)
@@ -362,7 +363,12 @@ export function createStandaloneAgentConsole(options: AgentConsolePorts & {
       context.ensureCurrent()
       const status = result.status ?? 200
       if (!Number.isInteger(status) || status < 200 || status > 599 || [204, 205, 304].includes(status)) return fail('request_failed')
-      if (result.kind === 'json') return json(res, result.value, status, credentials, context, bodySecrets(body))
+      if (result.kind === 'json') {
+        if (service.operation === 'host.restart' && status === 202 && options.requestRestart) {
+          res.once('finish', () => { if (res.statusCode === 202) options.requestRestart!() })
+        }
+        return json(res, result.value, status, credentials, context, bodySecrets(body))
+      }
       if (result.kind !== 'bytes' || !(result.value instanceof Uint8Array) || result.value.byteLength > maximumBody ||
           !/^[a-z0-9.+-]+\/[a-z0-9.+-]+(?:;[a-z0-9= ._-]+)?$/iu.test(result.contentType) ||
           exposesCredential(result.value, credentials, undefined, bodySecrets(body)) || !options.allowsResponse(result.value, result.contentType)) return fail('request_failed')

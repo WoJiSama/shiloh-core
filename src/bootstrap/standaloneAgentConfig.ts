@@ -7,6 +7,7 @@ import type { SimulationSection } from '../contracts/simulation.js'
 import type { TextPersonMemoryConfig } from '../contracts/textPersonMemory.js'
 import type { MidtermMemoryConfig, EpisodicMemoryConfig } from '../contracts/conversationMemory.js'
 import type { GroupMemoryConfig } from '../contracts/groupMemory.js'
+import { readAgentGroupPolicy } from '../modules/groupAdmin/domain/agentGroupPolicy.js'
 import type { AgentSemanticMemoryConfig } from '../contracts/semanticMemory.js'
 import type { AgentHistoryConfig } from '../contracts/agentHistory.js'
 import type { AgentDiceConfig } from '../contracts/agentDice.js'
@@ -526,6 +527,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   const instance = raw.instance
   const dataDir = path.resolve(directory, typeof raw.dataDir === 'string' && raw.dataDir ? raw.dataDir : `data/${instance}`)
   const games = readStandaloneGamesConfig(raw.games, { dataDir })
+  const groupPolicy = readAgentGroupPolicy(raw.groupAdmin)
   const logging = raw.logging === undefined ? {} : object(raw.logging)
   if (Object.keys(logging).some(key => !['maxFileBytes', 'maxFiles', 'retentionDays'].includes(key)) ||
       (['maxFileBytes', 'maxFiles', 'retentionDays'] as const).some((key, index) => logging[key] !== undefined &&
@@ -653,15 +655,15 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   }
   const mediaRelay = readStandaloneMediaRelayConfig(raw.mediaRelay, connections.map(({ connection }) => connection), env, requireCredentials)
   const bilibiliQuality = readStandaloneBilibiliQualityConfig(raw.bilibiliQuality, connections.map(({ connection }) => connection))
-  if (tools.pixiv?.enabled && (mediaRelay.bridges.length !== connections.length || connections.some(({ connection }) => !mediaRelay.bridges.some(bridge => bridge.connectionId === connection.id)))) {
-    throw new Error('启用 tools.pixiv 需要为所有连接配置 mediaRelay.bridges')
+  if (tools.pixiv?.enabled && !mediaRelay.bridges.length) {
+    throw new Error('启用 tools.pixiv 需要配置 mediaRelay.bridges')
   }
-  if (bilibiliQuality.enabled && (mediaRelay.bridges.length !== connections.length || connections.some(({ connection }) => !mediaRelay.bridges.some(bridge => bridge.connectionId === connection.id)))) {
-    throw new Error('启用 bilibiliQuality 需要为所有连接配置 mediaRelay.bridges')
+  if (bilibiliQuality.enabled && !mediaRelay.bridges.length) {
+    throw new Error('启用 bilibiliQuality 需要配置 mediaRelay.bridges')
   }
   const videoSearchAttachments = tools.videoSearch?.enabled && tools.videoSearch.attachments === true
-  if (videoSearchAttachments && (mediaRelay.bridges.length !== connections.length || connections.some(({ connection }) => !mediaRelay.bridges.some(bridge => bridge.connectionId === connection.id)))) {
-    throw new Error('启用 tools.videoSearch.attachments 需要为所有连接配置 mediaRelay.bridges')
+  if (videoSearchAttachments && !mediaRelay.bridges.length) {
+    throw new Error('启用 tools.videoSearch.attachments 需要配置 mediaRelay.bridges')
   }
   const torrentDownload = readStandaloneTorrentConfig(raw.torrentDownload, connections.map(({ connection }) => connection))
   if ((mediaRelay.enabled || tools.pixiv?.enabled || bilibiliQuality.enabled || videoSearchAttachments) && torrentDownload.enabled && mediaRelay.bridges.some(media => torrentDownload.bridges.some(torrent =>
@@ -734,7 +736,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     identity: String(library.detailById(personaId)!.persona.identity ?? '').replace(/\s+/gu, ' ').trim().slice(0, 1000),
   }))
   return { candidate, config: {
-    instance, dataDir, games, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, cognition: { enabled: cognition.enabled }, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords,
+    instance, dataDir, games, groupPolicy, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, cognition: { enabled: cognition.enabled }, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords,
     workspaceAgents,
     personalSeeds,
     personalFollow: { enabled: personalFollow.enabled },

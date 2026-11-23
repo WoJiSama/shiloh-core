@@ -6,6 +6,7 @@ import { PERSON_MEMORY_CATEGORIES, normalizePersonMemoryText } from '../domain/p
 import { personMemoryAddress } from './personMemoryContext.js'
 import { createPersonMemoryStore } from './personMemoryStore.js'
 import { captureSynchronousGuardCheck, createSynchronousGuard } from '../../runtime/domain/synchronousGuard.js'
+import { captureAgentBindingDirectoryCheck } from '../../runtime/infrastructure/agentManagementBindings.js'
 
 interface ManagementRedis {
   get(key: string): Promise<unknown>
@@ -57,7 +58,9 @@ export function createAgentProfileManagement({ redis, bindings, now = Date.now }
     const signature = JSON.stringify(directory.map(ownerKey).sort()), selected = context.binding && copyBinding(context.binding)
     if (scoped && !selected) return fail('invalid_request')
     const parentCheck = captureSynchronousGuardCheck(context, () => fail('conflict'))
-    const directoryCurrent = () => JSON.stringify(bindings.list().map(copyBinding).map(ownerKey).sort()) === signature &&
+    const sameDirectory = captureAgentBindingDirectoryCheck(bindings, directory) ??
+      (() => JSON.stringify(bindings.list().map(copyBinding).map(ownerKey).sort()) === signature)
+    const directoryCurrent = () => sameDirectory() &&
       (selected ? !!context.binding && ownerKey(copyBinding(context.binding)) === ownerKey(selected) : context.binding === undefined) &&
       (!selected || ownerKey(bindings.resolve(selected.target)!) === ownerKey(selected))
     const current = () => {
@@ -84,12 +87,16 @@ export function createAgentProfileManagement({ redis, bindings, now = Date.now }
     const store = (binding: AgentBindingSnapshot) => {
       const { botId, scene } = personMemoryAddress(binding.target), identity = { botId, personaId: agentPersonaScopeId(binding.agentId) }, base = memoryBase(identity)
       const allowedKey = (key: string) => key === DIRECTORY || key === DIRECTORY + ':lock' || key === base + ':lock' || key === base + ':scope' || key.startsWith(base + ':person:')
+      const checkRead = operation === 'profiles.read' ? () => {
+        ensureCurrent()
+        if (!authorized.has(JSON.stringify([operation, ownerKey(binding)]))) fail('forbidden')
+      } : () => authorize(binding)
       const get = async (key: string) => {
         if (!allowedKey(key)) return fail('unavailable')
-        await authorize(binding)
+        await checkRead()
         if (!captured.has(key)) {
           const value = await redis.get(key)
-          await authorize(binding)
+          await checkRead()
           if (value !== null && value !== undefined && typeof value !== 'string') return fail('unavailable')
           if (captured.has(key) && captured.get(key) !== (value ?? null)) return fail('conflict')
           captured.set(key, value == null ? null : value)

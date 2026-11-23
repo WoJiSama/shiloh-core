@@ -58,6 +58,7 @@ function createNapCatLogin(config: StandaloneQqLoginConfig, token: string,
     const signal = AbortSignal.any([context.signal, AbortSignal.timeout(route === 'QQLogin/RefreshQRcode' ? 12_000 : 4_000)])
     const response = await fetchImpl(endpoint + route, { method: 'POST', redirect: 'error', signal, body: JSON.stringify(body),
       headers: { 'content-type': 'application/json', ...(bearer ? { authorization: 'Bearer ' + bearer } : {}) } })
+    if (bearer && (response.status === 401 || response.status === 403)) credential = undefined
     const payload = await readResponse(response)
     context.ensureCurrent()
     if (payload.code !== 0) {
@@ -147,14 +148,24 @@ export function createStandaloneAgentConsoleQqLogin(options: {
       row.account.namespace === 'global' && row.account.id === config.accountId)
     const token = options.env[config.tokenEnv]
     return adapter && token
-      ? [[config.connectionId, { accountId: config.accountId, login: createNapCatLogin(config, token, adapter, options.fetchImpl ?? fetch, options.now ?? Date.now) }] as const]
+      ? [[config.connectionId, { accountId: config.accountId, container: config.container,
+        login: createNapCatLogin(config, token, adapter, options.fetchImpl ?? fetch, options.now ?? Date.now) }] as const]
       : []
   }))
-  const services = ports.size ? AGENT_CONSOLE_SERVICES.filter(row => row.operation === 'qq-login.read' || row.operation === 'qq-login.refresh').map(
+  const legacyPorts = new Map([...ports.values()].flatMap(port => port.container ? [[port.container, port.login] as const] : []))
+  const services = ports.size ? AGENT_CONSOLE_SERVICES.filter(row => row.operation === 'qq-login.read' || row.operation === 'qq-login.refresh' ||
+    row.operation === 'accounts.qrcode' && legacyPorts.size > 0).map(
     (definition): AgentConsoleService => ({ ...definition, ...(definition.method === 'POST' ? { maxBodyBytes: 512 } : {}),
       async handle(request: AgentConsoleRequest, context: AgentConsoleContext) {
         if (Object.keys(request.query).length || !request.body || typeof request.body !== 'object' ||
             Array.isArray(request.body) || Object.keys(request.body).length) throw new AgentConsoleError('invalid_request')
+        if (definition.operation === 'accounts.qrcode') {
+          const login = legacyPorts.get(request.params.container ?? '')
+          const image = (await login?.status(context))?.qrImage
+          context.ensureCurrent()
+          if (!image) throw new AgentConsoleError('not_found')
+          return { kind: 'bytes', contentType: 'image/png', value: Buffer.from(image.slice('data:image/png;base64,'.length), 'base64') }
+        }
         const port = ports.get(request.params.connectionId ?? '')
         if (!port || request.params.accountId !== port.accountId) throw new AgentConsoleError('not_found')
         try {

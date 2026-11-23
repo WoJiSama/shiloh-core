@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { NAlert, NButton } from 'naive-ui'
 import { api } from '../lib/api'
 import { consoleRestart } from '../lib/consoleRestart'
+import HostRestartButton from './HostRestartButton.vue'
 const restartBlocked = consoleRestart.blocked
 const checking = ref(false),
   error = ref('')
@@ -47,6 +48,7 @@ async function check() {
       >
         检查服务状态
       </NButton>
+      <HostRestartButton />
       <p v-if="error">{{ error }}</p>
     </NAlert>
   </div>
