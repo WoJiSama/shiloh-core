@@ -33,6 +33,8 @@ export interface AgentDiagnosticDetails {
   readonly timeoutOverrunMs?: number
   readonly outputTokens?: number
   readonly reasoningTokens?: number
+  readonly requestedSeq?: number
+  readonly firstUnseenSeq?: number
 }
 
 export type AgentDiagnosticScope =

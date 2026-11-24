@@ -540,6 +540,8 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
     details?.timeoutOverrunMs !== undefined && `超时回调延后 ${details.timeoutOverrunMs} ms`,
     details?.outputTokens !== undefined && `输出 ${details.outputTokens} token`,
     details?.reasoningTokens !== undefined && `推理占用 ${details.reasoningTokens} token`,
+    details?.requestedSeq !== undefined && `提交的已读序号 ${details.requestedSeq}`,
+    details?.firstUnseenSeq !== undefined && `最早未展示序号 ${details.firstUnseenSeq}`,
     details?.queueMs !== undefined && `排队 ${details.queueMs} ms`,
     details?.stepMs !== undefined && details.step !== 'journal_queue' && `当前环节 ${details.stepMs} ms`,
     slowest && details?.slowestCompletedStepMs !== undefined && `前面最慢的环节 ${slowest} ${details.slowestCompletedStepMs} ms`,

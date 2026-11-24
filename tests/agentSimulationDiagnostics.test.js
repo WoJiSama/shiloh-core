@@ -357,7 +357,7 @@ test('failed host tools remain one execution and return to the main model before
 test('routine closing can omit its reason and confirmed read payloads succeed', async t => {
   const diagnostics = spy()
   const h = fixture({ diagnostics, script: (_request, index) => index === 0 ? tools(toolCall('simGetUnreadMessages', {}))
-    : tools(toolCall('simFinishTurn', { choice: 'chat', messages: ['正常收尾'] })) })
+    : tools(toolCall('simFinishTurn', { choice: 'chat', messages: ['正常收尾'], markRead: false })) })
   t.after(() => h.runtime.stop())
   await h.ingest()
   await settled(h, 2)
@@ -365,7 +365,10 @@ test('routine closing can omit its reason and confirmed read payloads succeed', 
   for (const operation of ['simGetUnreadMessages', 'simFinishTurn']) {
     assert.deepEqual(diagnostics.events.filter(row => row.operation === operation).map(row => row.outcome), ['started', 'succeeded'])
   }
-  assert.match(h.calls[1].messages.at(-1).content, /throughSeq 可省略.*readThroughSeq 是 \d+/u)
+  const finish = h.calls[1].tools.find(tool => tool.function.name === 'simFinishTurn').function.parameters
+  assert.equal(finish.properties.markRead.type, 'boolean')
+  assert.equal(Object.hasOwn(finish.properties, 'throughSeq'), false)
+  assert.equal(JSON.parse(h.kv.get(sessionKey(GROUP))).lastReadThroughSeq, 0)
 })
 
 test('finish preflight reports fixed rejection reasons to QQ and allows a corrected call', async t => {
@@ -396,6 +399,7 @@ test('finish preflight reports fixed rejection reasons to QQ and allows a correc
       const h = fixture({ diagnostics, logger: diagnostics.logger, allowsToolInput: value => !value.includes('fixture-private-value'),
         script: (_request, index) => index === 0 ? message : tools(toolCall('simFinishTurn', params)) })
       t.after(async () => { h.runtime.stop(); await diagnostics.flush(); await alerts.close() })
+      if (code === 'finish_read_range_invalid') await h.ingest('更早一条未展示的背景消息', '50000', { at: false })
       await h.ingest()
       await settled(h, 2)
       await diagnostics.flush()
@@ -408,11 +412,43 @@ test('finish preflight reports fixed rejection reasons to QQ and allows a correc
       if (field) assert.deepEqual([finishRows[0].details.field, finishRows[0].details.rule, finishRows[0].details.result], [field, rule, 'not_dispatched'])
       const text = batches.map(formatQqOwnerAlerts).join('\n')
       assert.match(text, cause)
+      if (code === 'finish_read_range_invalid') {
+        assert.equal(finishRows[0].details.limit, 0)
+        assert.match(text, /提交的已读序号 999.*最早未展示序号 1/u)
+      }
       assert.ok(text.includes(`错误码 ${code}`))
       assert.ok(text.includes(`追踪编号 ${finishRows[0].traceId}`))
       assert.doesNotMatch(JSON.stringify({ rows, batches, text }), /fixture-private-value|这一段正文在工具参数外|修改后成功发送/u)
     })
   }
+})
+
+test('markRead can finish a directed reply with an earlier unread gap', async t => {
+  for (const readInSameBatch of [false, true]) await t.test(readInSameBatch ? 'with a read in the same batch' : 'with only the directed message shown', async t => {
+    const diagnostics = spy(), h = fixture({ diagnostics, script(request) {
+      const wake = request.messages.find(message => message.role === 'user' && typeof message.content === 'string' && message.content.includes('本轮可引用的消息证据'))
+      assert.match(wake.content, /本轮可引用的消息证据：message:2866$/u)
+      const finish = toolCall('simFinishTurn', { choice: 'chat', messages: ['接着点名的话题'], markRead: true })
+      return readInSameBatch ? tools(toolCall('simGetUnreadMessages', {}), finish) : tools(finish)
+    } })
+    t.after(() => h.runtime.stop())
+    const stored = JSON.parse(h.kv.get(sessionKey(GROUP)))
+    h.kv.set(sessionKey(GROUP), JSON.stringify({ ...stored, seq: 2861, lastReadThroughSeq: 2861 }))
+    for (let n = 0; n < 4; n++) await h.ingest('背景消息', '50000', { at: false })
+    await h.ingest('被点名的话题')
+    await settled(h, 1)
+    assert.equal(h.calls.length, 1); assert.equal(h.sent.length, 1)
+    const state = JSON.parse(h.kv.get(sessionKey(GROUP)))
+    assert.equal(state.lastReadThroughSeq, 2861)
+    assert.deepEqual(state.unread.map(message => message.seq), [2862, 2863, 2864, 2865, 2866])
+    const result = JSON.parse(state.agentHistory.find(message => message.role === 'tool' && message.name === 'simFinishTurn').content)
+    assert.equal(result.readStatus, 'succeeded'); assert.equal(result.readThroughSeq, 2861)
+    if (readInSameBatch) {
+      const read = JSON.parse(state.agentHistory.find(message => message.role === 'tool' && message.name === 'simGetUnreadMessages').content)
+      assert.equal(read.readThroughSeq, 2866)
+    }
+    assert.deepEqual(diagnostics.events.filter(row => row.operation === 'simFinishTurn').map(row => row.outcome), ['started', 'succeeded'])
+  })
 })
 
 test('failed closing validation or review cannot be bypassed by a later failure explanation', async t => {

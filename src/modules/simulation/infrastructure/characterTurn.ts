@@ -18,6 +18,7 @@ export interface CharacterTurnFinishResult {
   messages?: string[]
   replyToSeq?: number
   atUserIds?: string[]
+  markRead?: boolean
   throughSeq?: number
 }
 
@@ -30,7 +31,7 @@ export interface CharacterTurnToolContext extends Pick<CharacterToolContext, 'no
 
 const GOAL_ACTIONS = { schedule: 'create', wait: 'wait', complete: 'complete', abandon: 'abandon' } as const
 const DECISION_CHOICES = new Set(['silent', 'cannot', 'unauthorized', 'unwilling', 'deferred'])
-const TOP_FIELDS = ['choice', 'reason', 'memories', 'goal', 'messages', 'replyToSeq', 'atUserIds', 'throughSeq']
+const TOP_FIELDS = ['choice', 'reason', 'memories', 'goal', 'messages', 'replyToSeq', 'atUserIds', 'markRead', 'throughSeq']
 const ROUTINE_REASONS = new Map([['chat', '普通聊天收尾'], ['interest_only', '表达兴趣后收尾'], ['silent', '安静收尾']])
 
 class FinishParameterError extends Error {
@@ -92,6 +93,9 @@ function parse(input: Record<string, unknown>, memoryFields: string[], goalField
   }
   const replyToSeq = optionalInteger(input, 'replyToSeq', 1)
   const throughSeq = optionalInteger(input, 'throughSeq', 0)
+  const markRead = input.markRead
+  if (Object.hasOwn(input, 'markRead') && typeof markRead !== 'boolean') throw new FinishParameterError('markRead 必须为布尔值', { field: 'markRead', rule: 'type' })
+  if (markRead !== undefined && throughSeq !== undefined) throw new FinishParameterError('markRead 和 throughSeq 只能提交一个', { field: 'markRead', rule: 'incompatible' })
   let atUserIds: string[] | undefined
   if (Object.hasOwn(input, 'atUserIds')) {
     const values = input.atUserIds
@@ -105,6 +109,7 @@ function parse(input: Record<string, unknown>, memoryFields: string[], goalField
     choice, reason: input.reason.trim(), memories: checkedMemories,
     ...(goal === undefined ? {} : { goal }), ...(messages === undefined ? {} : { messages }),
     ...(replyToSeq === undefined ? {} : { replyToSeq }), ...(atUserIds === undefined ? {} : { atUserIds }),
+    ...(typeof markRead === 'boolean' ? { markRead } : {}),
     ...(throughSeq === undefined ? {} : { throughSeq }),
   }
 }
@@ -124,7 +129,7 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
     constructor() {
       super()
       this.name = 'simFinishTurn'
-      this.description = '显式选择本轮如何结束。chat普通聊天、interest_only仅有兴趣不承诺后续、silent旁听、cannot做不到、unauthorized未授权、unwilling不愿意、deferred暂缓；这些选择不自动建目标。schedule创建新自主目标，wait调整已有目标，complete完成有本目标成功回执的目标，abandon放弃目标。可显式保存至多两条有来源记忆；所有变更先完整校验再一次保存，成功后才交运行时发送可选消息、标读并结束本轮。reason只写简短选择理由。goal与memories都不传action，schedule也不传id；不支持focus。不推测聊天文字、不补来源、不自动发消息或重试。保存失败不表示安排或完成已生效，拒绝仍然自由。silent/deferred禁止messages；其余选择可发1至5条消息。throughSeq仅能提交实际看过的范围，由运行时再核对。'
+      this.description = '显式选择本轮如何结束。chat普通聊天、interest_only仅有兴趣不承诺后续、silent旁听、cannot做不到、unauthorized未授权、unwilling不愿意、deferred暂缓；这些选择不自动建目标。schedule创建新自主目标，wait调整已有目标，complete完成有本目标成功回执的目标，abandon放弃目标。可显式保存至多两条有来源记忆；所有变更先完整校验再一次保存，成功后才交运行时发送可选消息、标读并结束本轮。reason只写简短选择理由。goal与memories都不传action，schedule也不传id；不支持focus。不推测聊天文字、不补来源、不自动发消息或重试。保存失败不表示安排或完成已生效，拒绝仍然自由。silent/deferred禁止messages；其余选择可发1至5条消息。需要标读时用 markRead=true，由系统计算连续已展示的位置。'
       this.parameters = {
         type: 'object', additionalProperties: false, required: ['choice'], properties: {
           choice: { type: 'string', enum: [...CHARACTER_TURN_CHOICES] },
@@ -134,9 +139,16 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
           messages: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', minLength: 1, maxLength: 500 }, description: '可选的最终群消息；兼容单个字符串。silent/deferred 禁止。' },
           replyToSeq: { type: 'number', minimum: 1, description: '可选：引用已展示的消息序号，须为整数。' },
           atUserIds: { type: 'array', maxItems: 3, items: { type: 'string', ...(ctx.platformUserId ? { minLength: 1, maxLength: 128 } : { pattern: '^\\d{1,12}$' }) } },
-          throughSeq: { type: 'number', minimum: 0, description: '仅在主动标读时填写。使用本轮显示的 readThroughSeq 或更小的非负整数，不确定就省略。' },
+          markRead: { type: 'boolean', description: '传 true 标读已经连续展示的消息，遇到未展示的消息时停下。省略或传 false 保留已读位置。' },
+          throughSeq: { type: 'number', minimum: 0 },
         },
       }
+    }
+    override getToolInfo() {
+      const info = super.getToolInfo()
+      // Accept recorded calls that used the old numeric cursor.
+      const { throughSeq: _legacyCursor, ...properties } = info.parameters.properties
+      return { ...info, parameters: { ...info.parameters, properties } }
     }
     override normalizeParameters(params: unknown) {
       if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('收尾参数必须是对象')
@@ -213,6 +225,7 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
           ...(input.messages === undefined ? {} : { messages: input.messages }),
           ...(input.replyToSeq === undefined ? {} : { replyToSeq: input.replyToSeq }),
           ...(input.atUserIds === undefined ? {} : { atUserIds: input.atUserIds }),
+          ...(input.markRead === undefined ? {} : { markRead: input.markRead }),
           ...(input.throughSeq === undefined ? {} : { throughSeq: input.throughSeq }),
         })
       } catch (error) {

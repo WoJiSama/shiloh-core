@@ -109,7 +109,8 @@ test('资料和人格示例不能改写固定执行协议，注入内容保留�
 
 test('结构化收尾要求保存成功才发送，完成回执失败不能提前宣告', () => {
   const protocol = buildSimulationProtocol('希洛')
-  assert.match(protocol, /先原子验证并保存角色记忆、选择与目标，成功后才可发送 messages，再按显式 throughSeq 标读并封住回合/)
+  assert.match(protocol, /先原子验证并保存角色记忆、选择与目标，成功后才可发送 messages，再按 markRead 标读并结束回合/)
+  assert.match(protocol, /markRead=true.*遇到未展示的消息就停下/u)
   assert.match(protocol, /拒绝、后续安排、完成状态、记忆保存成功的说明都与实际状态放在同一次 simFinishTurn 提交/)
   assert.match(protocol, /complete 必须引用本目标、本轮可见的真实成功行动回执/)
   assert.match(protocol, /原子保存失败不会发送提交消息/)

@@ -73,10 +73,10 @@ function scope(value: unknown): AgentDiagnosticScope {
 export function parseAgentDiagnosticDetails(value: unknown): Readonly<AgentDiagnosticDetails> {
   const row = record(value, ['step', 'cause', 'field', 'rule', 'limit', 'nativeCode', 'dispatched', 'result',
     'retryInMs', 'attempt', 'maxAttempts', 'causeEventId', 'queueMs', 'stepMs', 'blockingStep', 'slowestCompletedStep', 'slowestCompletedStepMs',
-    'dispatchTurnPending', 'dispatchTurnMs', 'timeoutOverrunMs', 'outputTokens', 'reasoningTokens'])
+    'dispatchTurnPending', 'dispatchTurnMs', 'timeoutOverrunMs', 'outputTokens', 'reasoningTokens', 'requestedSeq', 'firstUnseenSeq'])
   for (const key of ['step', 'cause', 'field', 'rule', 'causeEventId']) if (row[key] !== undefined) token(row[key])
   for (const key of ['limit', 'retryInMs', 'attempt', 'maxAttempts', 'queueMs', 'stepMs', 'slowestCompletedStepMs',
-    'dispatchTurnMs', 'timeoutOverrunMs', 'outputTokens', 'reasoningTokens']) if (row[key] !== undefined &&
+    'dispatchTurnMs', 'timeoutOverrunMs', 'outputTokens', 'reasoningTokens', 'requestedSeq', 'firstUnseenSeq']) if (row[key] !== undefined &&
       (!Number.isSafeInteger(row[key]) || Number(row[key]) < 0)) throw failure()
   for (const key of ['blockingStep', 'slowestCompletedStep']) if (row[key] !== undefined &&
       !agentJournalWriteSteps.some(step => step === row[key])) throw failure()

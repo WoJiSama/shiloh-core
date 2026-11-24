@@ -1173,9 +1173,7 @@ test('finish 参数或存储失败后锁定收尾，连续普通最终文本和�
       const session = JSON.parse(h.kv.get(sessionKey(GROUP)))
       assert.equal(session.lastReadThroughSeq, 0); assert.equal(session.unread.length, 1)
       assert.equal(session.agentHistory.some(message => message.content?.includes('【系统提醒】你刚才写的这段话群友看不到')), false)
-      const character = JSON.parse(h.kv.get(characterKey(h.scope())))
-      assert.equal(character.memories.length, 0); assert.equal(character.goals.length, 0); assert.equal(character.decision, undefined)
-      assert.equal(character.receipts.some(receipt => receipt.toolName === 'simSendMessage'), false)
+      assert.equal(h.kv.has(characterKey(h.scope())), false, `${failure}/${fallback}`)
       if (failure === 'storage') assert.equal(failedWrites, 1)
     } finally { h.runtime.stop() }
   }
@@ -1295,26 +1293,29 @@ test('超长合法记忆和目标的 finish 回执压缩为可核对哈希，仍
   } finally { h.runtime.stop() }
 })
 
-test('finish 提交合法 throughSeq 时只标读已展示消息，模型请求期间的新入站继续保持未读', async () => {
-  let arrived = false, h
-  const finish = toolCall('simFinishTurn', { choice: 'chat', reason: '回应本轮实际展示的消息', messages: ['刚才的消息我看到了'], throughSeq: 1 })
-  h = fixture({ script: async request => {
-    assert.deepEqual(turnContext(request).visibleEvidenceRefs, ['message:1'])
-    await h.ingest('这是一条后到的背景消息', '50000', { at: false })
-    arrived = true
-    return tools(finish)
-  } })
-  try {
-    await h.ingest(); await idle(h, 1)
-    assert.equal(arrived, true); assert.equal(h.calls.length, 1); assert.equal(h.sent.length, 1)
-    const session = JSON.parse(h.kv.get(sessionKey(GROUP)))
-    assert.equal(session.lastReadThroughSeq, 1)
-    assert.deepEqual(session.unread.map(message => ({ seq: message.seq, text: message.text })), [{ seq: 2, text: '这是一条后到的背景消息' }])
-    assert.deepEqual(session.modelSeenSeqs, [])
-    const result = JSON.parse(storedToolReply(h, finish).content)
-    assert.equal(result.ok, true); assert.equal(result.saved, true)
-    assert.equal(result.sendStatus, 'succeeded'); assert.equal(result.sent, 1); assert.equal(result.readStatus, 'succeeded')
-  } finally { h.runtime.stop() }
+test('finish 只标读已展示消息，模型请求期间的新入站继续保持未读', async t => {
+  for (const read of [{ throughSeq: 1 }, { markRead: true }]) await t.test(Object.keys(read)[0], async () => {
+    let arrived = false, h
+    const finish = toolCall('simFinishTurn', { choice: 'chat', reason: '回应本轮实际展示的消息', messages: ['刚才的消息我看到了'], ...read })
+    h = fixture({ script: async request => {
+      assert.deepEqual(turnContext(request).visibleEvidenceRefs, ['message:1'])
+      await h.ingest('这是一条后到的背景消息', '50000', { at: false })
+      arrived = true
+      return tools(finish)
+    } })
+    try {
+      await h.ingest(); await idle(h, 1)
+      assert.equal(arrived, true); assert.equal(h.calls.length, 1); assert.equal(h.sent.length, 1)
+      const session = JSON.parse(h.kv.get(sessionKey(GROUP)))
+      assert.equal(session.lastReadThroughSeq, 1)
+      assert.deepEqual(session.unread.map(message => ({ seq: message.seq, text: message.text })), [{ seq: 2, text: '这是一条后到的背景消息' }])
+      assert.deepEqual(session.modelSeenSeqs, [])
+      const result = JSON.parse(storedToolReply(h, finish).content)
+      assert.equal(result.ok, true); assert.equal(result.saved, true)
+      assert.equal(result.sendStatus, 'succeeded'); assert.equal(result.sent, 1); assert.equal(result.readStatus, 'succeeded')
+      if (read.markRead) assert.equal(result.readThroughSeq, 1)
+    } finally { h.runtime.stop() }
+  })
 })
 
 test('最后两轮只暴露 finish 并强制 required，provider 忽视工具限制也不能执行其他动作或兜底发送', async () => {

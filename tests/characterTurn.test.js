@@ -221,6 +221,7 @@ test('顶层、嵌套字段和收尾发送参数严格验证，不忽略 action�
     { ...chat, messages: [] }, { ...chat, messages: ['x', 1] }, { ...chat, messages: [' '] }, { ...chat, messages: ['x'.repeat(501)] }, { ...chat, messages: Array(6).fill('x') },
     { ...chat, replyToSeq: 0 }, { ...chat, replyToSeq: 1.5 }, { ...chat, replyToSeq: '1' },
     { ...chat, throughSeq: -1 }, { ...chat, throughSeq: 0.5 }, { ...chat, throughSeq: '1' },
+    { ...chat, markRead: 'true' }, { ...chat, markRead: true, throughSeq: 0 },
     { ...chat, atUserIds: ['not-a-qq'] }, { ...chat, atUserIds: [40000] }, { ...chat, atUserIds: ['1', '2', '3', '4'] },
     { choice: 'silent', reason: '旁听', messages: ['不应发送'] }, { choice: 'deferred', reason: '暂缓', messages: '不应发送' },
   ]

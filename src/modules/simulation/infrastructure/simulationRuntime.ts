@@ -2652,6 +2652,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           memoryInvalidatedAt: () => memorySceneState.invalidatedAt, ensureActive: () => ensureExecution(), finish: result => finishTurn(result),
           review: ({ candidate, state }) => reviewCandidate('simFinishTurn', candidate, state),
         })
+        const finishToolInfo = finishTool.getToolInfo()
         const binding = resolvedPersona.binding
         const coreDefinition = binding && ports.coreCapabilityTool?.(binding,
           triggerMessage?.messageId && !triggerMessage.textTruncated && triggerMessage.userId ?
@@ -3185,6 +3186,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           if (memoryTurn?.isCurrent() === false) throw new Error('人物记忆权限已改变，本回合停止行动')
           if (!allowsConversationAI(target) || activityTurn?.isCurrent() === false) throw new Error('本会话 AI 活动已暂停')
         }
+        let modelReadThroughSeq = 0
         const finishTurn = async (result: CharacterTurnFinishResult) => {
           turnClosed = true
           if (result.decision) decision = result.decision
@@ -3195,6 +3197,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           }
           let sendStatus: 'not_requested' | 'succeeded' | 'failed' = 'not_requested'
           let readStatus: 'not_requested' | 'succeeded' | 'failed' = 'not_requested'
+          let markedReadThroughSeq: number | undefined
           let error: string | undefined
           let duplicatesSkipped = 0
           const sentBefore = sends
@@ -3256,16 +3259,21 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           }
           if (sendStatus === 'failed') executionError = error || '最终消息未确认'
           if (memoryBox.deliveryUnknown) uncertainAction = true
-          if (result.throughSeq !== undefined) {
+          if (result.markRead === true || result.throughSeq !== undefined) {
             readStatus = 'failed'
             if (sendStatus !== 'failed') {
               let step = 'finish_read_guard'
               try {
                 await ensureExecution(permit)
                 step = 'finish_read_validate'
-                if (!acknowledgeMessages(state!, result.throughSeq)) throw new Error('标读范围已改变，保留未读')
-                step = 'finish_read_save'
-                await store.save(groupId, state!)
+                // Reads performed earlier in the same tool batch are not yet in the model's context.
+                const throughSeq = result.throughSeq ?? Math.min(modelReadThroughSeq, readThroughSeq(state!))
+                if (result.throughSeq !== undefined || throughSeq > state!.lastReadThroughSeq) {
+                  if (!acknowledgeMessages(state!, throughSeq)) throw new Error('标读范围已改变，保留未读')
+                  step = 'finish_read_save'
+                  await store.save(groupId, state!)
+                }
+                if (result.markRead === true) markedReadThroughSeq = state!.lastReadThroughSeq
                 readStatus = 'succeeded'
               } catch (failure) {
                 error ??= finishErrorText(failure)
@@ -3280,7 +3288,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             ok: true, choice: result.choice, saved: true,
             ...(result.goal ? { goal: result.goal } : {}), memories: result.memories || [],
             ...(result.decision ? { decision: result.decision } : {}),
-            sendStatus, sent: sends - sentBefore, duplicatesSkipped, ...(memoryBox.deliveryUnknown ? { deliveryUnknown: true } : {}), readStatus, ...(error ? { error: error.slice(0, 500) } : {}),
+            sendStatus, sent: sends - sentBefore, duplicatesSkipped, ...(memoryBox.deliveryUnknown ? { deliveryUnknown: true } : {}), readStatus,
+            ...(markedReadThroughSeq === undefined ? {} : { readThroughSeq: markedReadThroughSeq }), ...(error ? { error: error.slice(0, 500) } : {}),
           }
           if (JSON.stringify(outcome).length <= 3500) return outcome
           // Preserve a whole acknowledgement within the tool-history budget.
@@ -3388,11 +3397,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           if ((decision === 'silent' || decision === 'deferred') && ['simSendMessage', 'simShareVideoCard', 'simSendPoke', 'simQzoneInteract', 'sendLocalEmojiTool'].includes(tool.name)) {
             return reject('tool_decision_blocks_action', 'error: 本轮已选择沉默或暂缓')
           }
-          if (tool === finishTool && Object.hasOwn(args, 'throughSeq') &&
-              (typeof args.throughSeq !== 'number' || !Number.isSafeInteger(args.throughSeq) || args.throughSeq < 0 || args.throughSeq > readThroughSeq(state!))) {
+          if (tool === finishTool && typeof args.throughSeq === 'number') {
             const limit = readThroughSeq(state!)
-            return reject('finish_read_range_invalid', `error: throughSeq 只能是 0 到 ${limit} 的整数。若不需要显式标读，省略 throughSeq 后重新提交。本次未保存或发送。`,
-              undefined, { field: 'throughSeq', rule: 'read_through', limit })
+            if (args.throughSeq > limit) {
+              const firstUnseenSeq = state!.unread.find(message => message.seq > limit)?.seq
+              return reject('finish_read_range_invalid', `error: throughSeq 超过连续已展示的位置 ${limit}。请改用 markRead=true 后重新提交。本次未保存或发送。`,
+                undefined, { field: 'throughSeq', rule: 'read_through', limit, requestedSeq: args.throughSeq,
+                  ...(firstUnseenSeq === undefined ? {} : { firstUnseenSeq }) })
+            }
           }
           if (tool === finishTool && Object.hasOwn(args, 'replyToSeq') &&
               (typeof args.replyToSeq !== 'number' || !Number.isSafeInteger(args.replyToSeq) || args.replyToSeq < 1 || ![...state!.unread, ...state!.recent].some(message => message.seq === args.replyToSeq))) {
@@ -3513,14 +3525,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           rounds += 1
           const closing = requiresClosing || rounds > cfg.turn.maxToolRounds - 2
           const roundTools = closing ? [finishTool] : tools.filter(tool => allowedTool(tool.name))
-          const maxReadSeq = readThroughSeq(durableWake && rounds === 1 ? projectedWatermark : state)
+          modelReadThroughSeq = readThroughSeq(durableWake && rounds === 1 ? projectedWatermark : state)
           const context = buildCharacterTurnContext({ phase: closing ? 'closing' : 'acting', remainingToolRounds: cfg.turn.maxToolRounds - rounds + 1, ...(focusedGoalId ? { focusedGoalId } : {}), visibleEvidenceRefs: visibleEvidenceRefs() }) +
-            `\nsimFinishTurn 的 throughSeq 可省略。要标读时，当前上限 readThroughSeq 是 ${maxReadSeq}。` +
             (anchor ? `\n当前只回应 #${anchor.seq} 的话题；同一人的前文也仅在有关时用。` : '') +
             (reviewer ? `\n本轮剩余提交检查次数：${Math.max(0, 3 - reviewer.stats().checks)}。将需要保存的观点、目标和最终消息合并进 simFinishTurn；检查退回后自行修正或安静放弃，检查提示不发到群里。` : '')
           const requestHistory = history.map(({ conversationUserId: _user, ...message }) => message)
           const currentContext = personRecall ? `${personRecall}\n\n${context}` : context
-          const requestData = buildChatRequestData(providerConfig, [{ role: 'system', content: systemPrompt }, ...requestHistory, { role: 'user', content: currentContext }], simToolsAsFunctions(roundTools), closing ? 'required' : 'auto')
+          const roundFunctions = simToolsAsFunctions(roundTools.map(tool => tool === finishTool ? finishToolInfo : tool))
+          const requestData = buildChatRequestData(providerConfig, [{ role: 'system', content: systemPrompt }, ...requestHistory, { role: 'user', content: currentContext }], roundFunctions, closing ? 'required' : 'auto')
           if (closing && (!requestData.tools?.length || !requestData.tool_choice)) {
             diagnose({ stage: 'model', operation: 'simulation_turn', outcome: 'failed', code: 'closing_tools_unavailable' },
               () => logger.warn(`[仿真] 群 ${groupId} 模型配置未提供收尾工具，停止本轮`))
