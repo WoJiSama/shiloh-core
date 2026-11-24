@@ -8,6 +8,7 @@ import test from 'node:test'
 import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 
 const { openAgentOperationJournal } = await load('modules/runtime/infrastructure/agentOperationJournal.js')
+const { createAgentDiagnostics } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
 const { createAgentSecretTextCheck } = await load('modules/messaging/infrastructure/agentSecretText.js')
 const account = { platform: 'qq', namespace: 'global', id: '19000001' }
 const binding = () => ({ id: 'binding', revision: 'revision', source: 'configured', agentId: 'daily', personaId: 'default', connectionId: 'main', target: { account: { ...account }, kind: 'group', id: '310001' } })
@@ -40,6 +41,51 @@ test('successful append waits for file fsync and a newly created directory entry
   })
   const pending = journal.append(event()).then(value => { settled = true; return value }); await entered.promise; assert.equal(settled, false); released.resolve()
   assert.equal(await pending, true); assert.equal(fileSyncs, 1); assert.ok(directorySyncs >= 1)
+})
+
+test('a blocked file sync identifies both the syncing event and the queued event, then records both late receipts', async t => {
+  const f = await fixture(t), journal = await f.open(), original = fs.open
+  const entered = gate(), released = gate(), alerts = [], late = []
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.method(console, 'error', () => {})
+  t.mock.method(console, 'info', line => { late.push(line) })
+  t.mock.method(fs, 'open', async (...args) => {
+    const handle = await original(...args), sync = handle.sync.bind(handle)
+    if (String(args[0]).endsWith('.ndjson')) handle.sync = async () => {
+      entered.resolve()
+      await released.promise
+      await sync()
+    }
+    return handle
+  })
+  const diagnostics = createAgentDiagnostics({ sink: journal, onFailure: event => alerts.push(event),
+    logger: { info() {}, warn() {}, error() {} } })
+  try {
+    diagnostics.emit({ stage: 'inbox', operation: 'first_ingest', outcome: 'succeeded' })
+    await entered.promise
+    diagnostics.emit({ stage: 'inbox', operation: 'queued_ingest', outcome: 'succeeded' })
+    await new Promise(resolve => setImmediate(resolve))
+    t.mock.timers.tick(5_000)
+    await diagnostics.flush()
+    assert.equal(late.length, 0)
+    assert.deepEqual(alerts.map(row => [row.code, row.outcome, row.details.step, row.details.blockingStep]), [
+      ['diagnostic_journal_timeout', 'unknown', 'journal_sync', undefined],
+      ['diagnostic_journal_timeout', 'unknown', 'journal_queue', 'journal_sync'],
+    ])
+    assert.ok(alerts.every(row => row.details.limit === 5_000 && row.details.queueMs >= 0 && row.details.stepMs >= 0))
+  } finally {
+    released.resolve()
+    await journal.flush()
+  }
+  await new Promise(resolve => setImmediate(resolve))
+  const stored = await rows(f.directory)
+  assert.deepEqual(stored.map(row => row.operation), ['first_ingest', 'queued_ingest'])
+  assert.deepEqual(alerts.map(row => row.details.causeEventId), stored.map(row => row.id))
+  assert.equal(late.length, 2)
+  for (const [index, line] of late.entries()) {
+    assert.match(line, /diagnostic_journal_late_confirmed/u)
+    assert.ok(line.includes(`causeEventId=${stored[index].id}`))
+  }
 })
 
 test('concurrent events share a durable file sync and keep their order', async t => {

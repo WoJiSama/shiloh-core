@@ -6,7 +6,8 @@ import { randomUUID } from 'node:crypto'
 import { stderr } from 'node:process'
 import { isProxy } from 'node:util/types'
 import type { AgentBindingSnapshot, PlatformAccountRef } from '../../../contracts/agentBinding.js'
-import { agentDiagnosticResults, type AgentDiagnosticDetails, type AgentDiagnosticEvent, type AgentDiagnosticScope, type AgentOperationJournal } from '../../../contracts/agentDiagnostics.js'
+import { agentDiagnosticResults, agentJournalWriteSteps, type AgentDiagnosticDetails, type AgentDiagnosticEvent, type AgentDiagnosticScope,
+  type AgentJournalWriteObserver, type AgentJournalWriteStep, type AgentOperationJournal } from '../../../contracts/agentDiagnostics.js'
 
 export type { AgentDiagnosticEvent, AgentDiagnosticScope, AgentDiagnosticSink, AgentOperationJournal } from '../../../contracts/agentDiagnostics.js'
 
@@ -70,10 +71,13 @@ function scope(value: unknown): AgentDiagnosticScope {
   throw failure()
 }
 export function parseAgentDiagnosticDetails(value: unknown): Readonly<AgentDiagnosticDetails> {
-  const row = record(value, ['step', 'cause', 'field', 'rule', 'limit', 'nativeCode', 'dispatched', 'result', 'retryInMs', 'attempt', 'maxAttempts', 'causeEventId'])
+  const row = record(value, ['step', 'cause', 'field', 'rule', 'limit', 'nativeCode', 'dispatched', 'result',
+    'retryInMs', 'attempt', 'maxAttempts', 'causeEventId', 'queueMs', 'stepMs', 'blockingStep', 'slowestCompletedStep', 'slowestCompletedStepMs'])
   for (const key of ['step', 'cause', 'field', 'rule', 'causeEventId']) if (row[key] !== undefined) token(row[key])
-  for (const key of ['limit', 'retryInMs', 'attempt', 'maxAttempts']) if (row[key] !== undefined &&
+  for (const key of ['limit', 'retryInMs', 'attempt', 'maxAttempts', 'queueMs', 'stepMs', 'slowestCompletedStepMs']) if (row[key] !== undefined &&
       (!Number.isSafeInteger(row[key]) || Number(row[key]) < 0)) throw failure()
+  for (const key of ['blockingStep', 'slowestCompletedStep']) if (row[key] !== undefined &&
+      !agentJournalWriteSteps.some(step => step === row[key])) throw failure()
   if (row.nativeCode !== undefined && (!Number.isInteger(row.nativeCode) || Math.abs(Number(row.nativeCode)) > 2_147_483_647)) throw failure()
   if (row.dispatched !== undefined && typeof row.dispatched !== 'boolean') throw failure()
   if (row.result !== undefined && !agentDiagnosticResults.some(item => item === row.result)) throw failure()
@@ -132,8 +136,9 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
   const allows = raw.allowsText as AgentOperationJournalOptions['allowsText'], emergency = raw.onEmergency as AgentOperationJournalOptions['onEmergency']
   const dataDir = path.resolve(raw.dataDir), directory = path.join(dataDir, 'operations')
   let degraded = false, written = 0, failed = 0, lastWrittenAt: number | undefined, closing = false
-  const queue: { safe: AgentDiagnosticEvent; line: string; size: number; resolve(ok: boolean): void }[] = []
+  const queue: { safe: AgentDiagnosticEvent; line: string; size: number; resolve(ok: boolean): void; observe?: AgentJournalWriteObserver }[] = []
   let draining: Promise<void> | undefined, pending = 0, pendingBytes = 0
+  let activeStep: AgentJournalWriteStep | undefined
   let closeResult: Promise<boolean> | undefined, latest: { name: string; size: number } | undefined
   let rootIdentity: { dev: number; ino: number } | undefined, directoryIdentity: { dev: number; ino: number } | undefined
   let reporting = false
@@ -213,7 +218,13 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
     }
     await prune()
   }
-  async function write(line: string): Promise<void> {
+  function progress(observe: AgentJournalWriteObserver | undefined, step: AgentJournalWriteStep,
+    blockingStep?: () => AgentJournalWriteStep | undefined): void {
+    try { observe?.(step, blockingStep) } catch { /* Progress observers cannot obstruct writes. */ }
+  }
+
+  async function write(line: string, advance: (step: AgentJournalWriteStep) => void): Promise<void> {
+    advance('journal_open')
     await directories()
     const bytes = Buffer.from(line, 'utf8'), today = day()
     let file = latest
@@ -230,18 +241,26 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
     try {
       if ((await handle.stat()).size !== file.size) throw failure()
       try {
+        advance('journal_write')
         await handle.writeFile(bytes)
+        advance('journal_sync')
         await handle.sync()
         file.size += bytes.length
       } catch (error) {
         // A failed append can leave a partial line. Only truncate bytes from
         // this writer's failed batch, keeping every acknowledged event.
+        advance('journal_recovery')
         try { await handle.truncate(file.size); await handle.sync() } catch { /* Keep the last confirmed offset for recovery. */ }
         throw error
       }
-    } finally { await handle.close() }
+    } finally {
+      advance('journal_close')
+      await handle.close()
+    }
     if (created) {
+      advance('journal_directory_sync')
       await syncDirectory()
+      advance('journal_retention')
       await prune().catch(() => report(undefined, 'JOURNAL_RETENTION_FAILED'))
     }
   }
@@ -260,7 +279,10 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
         const batch = queue.splice(0, count)
         let committed = false
         try {
-          await write(batch.map(item => item.line).join(''))
+          await write(batch.map(item => item.line).join(''), step => {
+            activeStep = step
+            for (const item of batch) progress(item.observe, step)
+          })
           committed = true
           written += batch.length
           lastWrittenAt = Date.now()
@@ -269,6 +291,7 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
             ? 'JOURNAL_NO_SPACE' : 'JOURNAL_WRITE_FAILED'
           for (const item of batch) report(item.safe, code)
         } finally {
+          activeStep = undefined
           pending -= batch.length
           pendingBytes -= batchBytes
           for (const item of batch) item.resolve(committed)
@@ -284,7 +307,7 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
   catch { await releaseWriter?.().catch(() => {}); report(undefined, 'JOURNAL_OPEN_FAILED'); throw failure() }
 
   return {
-    append(input: AgentDiagnosticEvent): Promise<boolean> {
+    append(input: AgentDiagnosticEvent, observe?: AgentJournalWriteObserver): Promise<boolean> {
       let safe: AgentDiagnosticEvent, line: string
       try {
         safe = parseAgentDiagnosticEvent(input); line = JSON.stringify(safe) + '\n'
@@ -313,7 +336,11 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
       const size = Buffer.byteLength(line)
       if (pending >= MAX_PENDING || pendingBytes + size > MAX_PENDING_BYTES) { report(safe, 'JOURNAL_OVERFLOW'); return Promise.resolve(false) }
       pending++; pendingBytes += size
-      return new Promise(resolve => { queue.push({ safe, line, size, resolve }); drain() })
+      return new Promise(resolve => {
+        queue.push({ safe, line, size, resolve, ...(observe ? { observe } : {}) })
+        progress(observe, 'journal_queue', () => activeStep)
+        drain()
+      })
     },
     flush,
     close(): Promise<boolean> {

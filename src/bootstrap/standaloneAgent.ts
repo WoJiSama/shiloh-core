@@ -292,11 +292,15 @@ export async function main(argv: string[]): Promise<void> {
   }
   let journal: Awaited<ReturnType<typeof openAgentOperationJournal>> | undefined
   let traffic: ReturnType<typeof createAgentTraffic> | undefined
-  const diagnostics = createAgentDiagnostics({ sink: { async append(event) {
+  const diagnostics = createAgentDiagnostics({ sink: { async append(event, observe) {
     const counters = traffic?.record(event).catch(() => {})
-    const saved = await journal?.append(event) ?? false
-    await counters
-    return saved
+    const saved = await journal?.append(event, observe) ?? false
+    if (!saved) return false
+    if (counters) {
+      observe?.('traffic_counter')
+      await counters
+    }
+    return true
   } }, logger,
     ...(alerts ? { onFailure: alerts.report } : {}),
     allowsLabel: label => allowsAlertLabel?.(label) !== false,

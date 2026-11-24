@@ -97,6 +97,23 @@ test('validation alerts aggregate only matching declared fields and retain the m
   assert.match(formatQqOwnerAlerts({ alerts }), /字段 reason · 类型错误/u)
 })
 
+test('QQ journal alerts show the blocking phase without combining different blockers', async () => {
+  const batches = []
+  const queue = createAgentFailureAlerts({ channel: 'qq', logger: quiet,
+    async deliver(batch) { batches.push(batch); return { state: 'confirmed' } } })
+  const diagnostics = createAgentDiagnostics({ logger: quiet, onFailure: queue.report })
+  for (const blockingStep of ['journal_sync', 'journal_write']) {
+    diagnostics.emit({ stage: 'host', operation: 'operation_journal', outcome: 'unknown', code: 'diagnostic_journal_timeout',
+      details: { step: 'journal_queue', blockingStep, queueMs: 5_000, stepMs: 5_000, causeEventId: 'original-event' } })
+  }
+  await queue.close()
+  const message = formatQqOwnerAlerts(batches[0])
+  assert.equal(batches[0].alerts.length, 2)
+  assert.match(message, /前一批正在同步日志文件/u)
+  assert.match(message, /前一批正在写入日志文件/u)
+  assert.match(message, /排队 5000 ms.*关联记录 original-event/u)
+})
+
 test('a new error pushes immediately and repeats flush after the cooldown even when no new error arrives', async t => {
   const f = clockFixture(t)
   f.report(toolFailure)

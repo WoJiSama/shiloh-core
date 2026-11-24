@@ -22,6 +22,7 @@ const operationNames = new Map(Object.entries({
   host_log: '后台运行',
   host_run: '宿主运行',
   operation_journal: '操作日志写入',
+  traffic_counter: '收发统计',
   alert_queue: '告警队列',
   forbidden_word_config: '违禁词配置',
   token_ledger_write: '保存令牌用量',
@@ -248,6 +249,7 @@ const failureReasons = new Map(Object.entries({
   group_memory_queue_timeout: '群记忆队列检查未能在时限内完成，系统会再次检查。',
   diagnostic_journal_failed: '操作日志写入失败。',
   diagnostic_journal_timeout: '五秒内未收到操作日志写入确认，记录可能稍后落盘。',
+  diagnostic_traffic_timeout: '操作日志已落盘，收发统计在五秒确认期限内仍未返回。',
   diagnostic_queue_overflow: '等待写入日志的操作过多。',
   alert_group_overflow: '告警种类过多，超出容量的告警已合并计数。',
   wake_gate_timeout: '唤醒预判未在规定时间内完成。',
@@ -469,6 +471,9 @@ const stepNames = new Map(Object.entries({
   source_check: '核验来源', schedule: '安排下一次执行', model: '执行模型请求', store: '读取和整理存量数据',
   configuration: '校验配置', connect: '建立连接', acquire: '取得运行授权', connect_redis: '初始化 Redis',
   open_journal: '打开操作日志', initialize_services: '初始化依赖服务', start_console: '启动控制台', start_core: '启动 Core',
+  journal_queue: '等待日志队列', journal_open: '打开日志文件', journal_write: '写入日志文件', journal_sync: '同步日志文件',
+  journal_close: '关闭日志文件', journal_directory_sync: '同步日志目录', journal_retention: '清理旧日志',
+  journal_recovery: '恢复日志文件', traffic_counter: '等待收发统计',
 }))
 
 type DiagnosticDescriptionSource = Pick<AgentDiagnosticEvent, 'stage' | 'operation' | 'outcome' | 'code' | 'details' | 'httpStatus' | 'errorKind' | 'sourceTag'>
@@ -485,18 +490,28 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
   const cause = details?.cause && failureReasons.get(details.cause)
   const rule = details?.rule && (ruleNames.get(details.rule) ?? details.rule)
   const location = details?.step && (stepNames.get(details.step) ?? details.step)
+  const blocking = details?.blockingStep && stepNames.get(details.blockingStep)
+  const slowest = details?.slowestCompletedStep && stepNames.get(details.slowestCompletedStep)
+  const journal = event.operation === 'operation_journal' || event.operation === 'traffic_counter'
+  const journalReason = code === 'diagnostic_journal_timeout' && location
+    ? `操作日志确认超过五秒，当时环节为${location}${blocking ? `，前一批正在${blocking}` : ''}。`
+    : undefined
   const limitUnit = code === 'model_response_truncated' || details?.cause === 'model_response_truncated' ? ' token' :
     code?.includes('timeout') || code === 'semantic_provider_budget_elapsed' || details?.cause === 'semantic_recall_budget_elapsed' ? ' ms' : ''
-  const evidence = [location && `环节 ${location}`, details?.field && `字段 ${details.field}`, rule,
+  const evidence = [!journalReason && location && `环节 ${location}`, details?.field && `字段 ${details.field}`, rule,
     details?.limit !== undefined && `界限 ${details.limit}${limitUnit}`, details?.nativeCode !== undefined && `平台返回码 ${details.nativeCode}`,
     details?.dispatched === undefined ? undefined : details.dispatched ? '已发起请求' : '未发起请求',
+    details?.queueMs !== undefined && `排队 ${details.queueMs} ms`,
+    details?.stepMs !== undefined && details.step !== 'journal_queue' && `当前环节 ${details.stepMs} ms`,
+    slowest && details?.slowestCompletedStepMs !== undefined && `前面最慢的环节 ${slowest} ${details.slowestCompletedStepMs} ms`,
+    journal && details?.causeEventId && `关联记录 ${details.causeEventId}`,
     event.sourceTag && `来源 ${event.sourceTag}`, details?.cause && details.cause !== code && `关联原因 ${cause ?? details.cause}`].filter(Boolean).join(' · ')
   const result = details?.result && resultNames[details.result]
   const disposition = [result, details?.retryInMs !== undefined && `${(details.retryInMs / 1000).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} 秒后`,
     details?.attempt !== undefined && `第 ${details.attempt}${details.maxAttempts === undefined ? '' : `/${details.maxAttempts}`} 次`].filter(Boolean).join(' · ')
   if (event.outcome === 'succeeded' || event.outcome === 'started') return { operation, evidence, result: disposition }
   const knownReason = code && !genericCodes.has(code) && failureReasons.get(code)
-  const reason = glmReason || (rule ? `${details?.field ? `${details.field} ` : ''}${rule}。` : undefined) ||
+  const reason = journalReason || glmReason || (rule ? `${details?.field ? `${details.field} ` : ''}${rule}。` : undefined) ||
     (code === 'http_error' ? httpReason : undefined) || (details?.result === 'fallback_used' ? knownReason : undefined) ||
     (cause === failureReasons.get('diagnostic_metadata_redacted') ? undefined : cause) ||
     (knownReason && code !== 'http_error' ? knownReason : undefined) || httpReason || exceptionReasons.get(event.errorKind) || knownReason ||

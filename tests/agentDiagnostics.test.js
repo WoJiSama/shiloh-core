@@ -188,3 +188,39 @@ test('stalled sink times out visibly so flush completes without waiting for the 
   assert.equal(lines.length, 1)
   assert.ok(lines[0].includes('diagnostic_journal_timeout'))
 })
+
+test('a timeout after journal acknowledgement reports traffic separately', async t => {
+  const alerts = [], lines = []
+  let at = 0
+  t.mock.method(performance, 'now', () => at)
+  t.mock.method(console, 'error', () => {})
+  t.mock.method(console, 'info', line => { lines.push(line) })
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let release
+  const counter = new Promise(resolve => { release = resolve })
+  const diagnostics = createAgentDiagnostics({ logger: quiet, onFailure: event => alerts.push(event), sink: {
+    async append(_event, observe) {
+      observe('journal_sync')
+      at = 4_900
+      observe('traffic_counter')
+      await counter
+      return true
+    },
+  } })
+  try {
+    diagnostics.emit({ stage: 'inbox', operation: 'inbound_message', outcome: 'succeeded' })
+    await new Promise(resolve => setImmediate(resolve))
+    at = 5_000
+    t.mock.timers.tick(5_000)
+    await diagnostics.flush()
+    assert.deepEqual(alerts.map(event => [event.operation, event.code, event.details.step]), [
+      ['traffic_counter', 'diagnostic_traffic_timeout', 'traffic_counter'],
+    ])
+    assert.equal(alerts[0].details.stepMs, 100)
+    assert.equal(alerts[0].details.slowestCompletedStep, 'journal_sync')
+    assert.equal(alerts[0].details.slowestCompletedStepMs, 4_900)
+  } finally { release() }
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /diagnostic_traffic_late_settled/u)
+})

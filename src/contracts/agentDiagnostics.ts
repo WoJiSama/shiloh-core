@@ -4,6 +4,11 @@ export const QQ_OWNER_ALERT_MAX_LENGTH = 3_000
 
 export const agentDiagnosticResults = ['not_dispatched', 'not_saved', 'discarded', 'fallback_used', 'retry_scheduled', 'retry_exhausted', 'recovered', 'confirmation_pending'] as const
 export type AgentDiagnosticResult = typeof agentDiagnosticResults[number]
+export const agentJournalWriteSteps = ['journal_queue', 'journal_open', 'journal_write', 'journal_sync', 'journal_close',
+  'journal_directory_sync', 'journal_retention', 'journal_recovery', 'traffic_counter'] as const
+export type AgentJournalWriteStep = typeof agentJournalWriteSteps[number]
+export type AgentJournalWriteObserver = (step: AgentJournalWriteStep, blockingStep?: () => AgentJournalWriteStep | undefined) => void
+
 export interface AgentDiagnosticDetails {
   /** Fixed names from the operation or its declared schema. */
   readonly step?: string
@@ -18,6 +23,11 @@ export interface AgentDiagnosticDetails {
   readonly attempt?: number
   readonly maxAttempts?: number
   readonly causeEventId?: string
+  readonly queueMs?: number
+  readonly stepMs?: number
+  readonly blockingStep?: AgentJournalWriteStep
+  readonly slowestCompletedStep?: AgentJournalWriteStep
+  readonly slowestCompletedStepMs?: number
 }
 
 export type AgentDiagnosticScope =
@@ -54,7 +64,7 @@ export interface AgentDiagnosticEvent {
 
 export interface AgentDiagnosticSink {
   /** True confirms that this event, or its safe redacted replacement, was committed. */
-  append(event: AgentDiagnosticEvent): Promise<boolean>
+  append(event: AgentDiagnosticEvent, observe?: AgentJournalWriteObserver): Promise<boolean>
 }
 
 export interface AgentOperationJournal extends AgentDiagnosticSink {

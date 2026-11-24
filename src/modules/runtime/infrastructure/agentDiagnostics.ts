@@ -1,7 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { types } from 'node:util'
-import type { AgentDiagnosticDetails, AgentDiagnosticEvent, AgentDiagnosticScope, AgentDiagnosticSink } from '../../../contracts/agentDiagnostics.js'
+import { agentJournalWriteSteps, type AgentDiagnosticDetails, type AgentDiagnosticEvent, type AgentDiagnosticScope,
+  type AgentDiagnosticSink, type AgentJournalWriteObserver, type AgentJournalWriteStep } from '../../../contracts/agentDiagnostics.js'
 import { agentBindingToken, conversationAddressKey, platformAccountKey } from '../domain/agentBindings.js'
 import { parseAgentDiagnosticDetails } from './agentOperationJournal.js'
 
@@ -10,6 +11,7 @@ export type AgentDiagnosticInput = Pick<AgentDiagnosticEvent, 'stage' | 'operati
   Partial<Pick<AgentDiagnosticEvent, 'code' | 'sourceTag' | 'durationMs' | 'httpStatus' | 'details' | 'delivery'>> & { error?: unknown }
 
 const knownErrors = new WeakMap<object, AgentDiagnosticDetails>()
+const journalConfirmationMs = 5_000
 const systemCauses = new Map([
   ['ECONNREFUSED', 'connection_refused'], ['ECONNRESET', 'connection_reset'], ['EPIPE', 'connection_closed'],
   ['ENOTFOUND', 'dns_lookup_failed'], ['EAI_AGAIN', 'dns_lookup_failed'], ['ETIMEDOUT', 'network_timeout'],
@@ -117,10 +119,77 @@ export function createAgentDiagnostics(options: {
     try { options.onFailure?.(Object.freeze(event)) }
     catch { try { console.error('[Agent] diagnostic_failure_observer_failed') } catch { /* No writable terminal. */ } }
   }
-  function journalFailure(event: AgentDiagnosticEvent, line: string, code: string, outcome: 'failed' | 'unknown' = 'failed'): void {
-    try { console.error(`[Agent] ${code} ${line}`) } catch { /* Terminal unavailable. */ }
+  function journalFailure(event: AgentDiagnosticEvent, line: string, code: string, outcome: 'failed' | 'unknown' = 'failed',
+    durationMs?: number, progress?: AgentDiagnosticDetails): void {
+    const details = { causeEventId: event.id, ...progress }
+    const evidence = Object.entries(details).map(([key, value]) => `${key}=${value}`).join(' ')
+    try { console.error(`[Agent] ${code} ${line} ${evidence}${durationMs === undefined ? '' : ` confirmationMs=${durationMs}`}`) }
+    catch { /* Terminal unavailable. */ }
     if (options.onFailure) notifyFailure({ version: 1, id: randomUUID(), traceId: event.traceId, at: now(), scope: { kind: 'host' },
-      stage: 'host', operation: 'operation_journal', outcome, code })
+      stage: 'host', operation: code === 'diagnostic_traffic_timeout' ? 'traffic_counter' : 'operation_journal', outcome, code, details,
+      ...(durationMs === undefined ? {} : { durationMs }) })
+  }
+
+  function appendJournal(sink: AgentDiagnosticSink, event: AgentDiagnosticEvent, line: string): void {
+    if (pending.size >= 256) {
+      journalFailure(event, line, 'diagnostic_queue_overflow')
+      return
+    }
+    const startedAt = performance.now()
+    const elapsed = (at: number) => Math.round(performance.now() - at)
+    let step: AgentJournalWriteStep | undefined, stepAt = startedAt, queueMs: number | undefined
+    let slowest: { step: AgentJournalWriteStep; ms: number } | undefined
+    let readBlockingStep: (() => AgentJournalWriteStep | undefined) | undefined
+    let timeoutCode: 'diagnostic_journal_timeout' | 'diagnostic_traffic_timeout' | undefined
+    const observe: AgentJournalWriteObserver = (next, blocker) => {
+      if (step === next || !agentJournalWriteSteps.includes(next)) return
+      if (step === 'journal_queue') queueMs = elapsed(stepAt)
+      else if (step) {
+        const ms = elapsed(stepAt)
+        if (!slowest || ms > slowest.ms) slowest = { step, ms }
+      }
+      step = next
+      stepAt = performance.now()
+      readBlockingStep = blocker
+    }
+    function settled(ok: boolean): void {
+      const durationMs = elapsed(startedAt)
+      if (!ok) journalFailure(event, line, 'diagnostic_journal_failed', 'failed', durationMs)
+      else if (timeoutCode) {
+        const code = timeoutCode === 'diagnostic_traffic_timeout' ? 'diagnostic_traffic_late_settled' : 'diagnostic_journal_late_confirmed'
+        try { console.info(`[Agent] ${code} ${line} causeEventId=${event.id} confirmationMs=${durationMs}`) }
+        catch { /* Terminal unavailable. */ }
+      }
+    }
+
+    // Release the caller's pending slot at the deadline and observe any later durable receipt.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<void>(resolve => {
+      timer = setTimeout(() => {
+        timeoutCode = step === 'traffic_counter' ? 'diagnostic_traffic_timeout' : 'diagnostic_journal_timeout'
+        const stepMs = elapsed(stepAt)
+        const queued = step === 'journal_queue' ? stepMs : queueMs
+        let blockingStep: AgentJournalWriteStep | undefined
+        if (step === 'journal_queue') try {
+          const active = readBlockingStep?.()
+          if (active && agentJournalWriteSteps.includes(active)) blockingStep = active
+        } catch { /* The active writer can be unavailable. */ }
+        journalFailure(event, line, timeoutCode, 'unknown', elapsed(startedAt), {
+          limit: journalConfirmationMs, result: 'confirmation_pending',
+          ...(step === undefined ? {} : { step, stepMs }),
+          ...(queued === undefined ? {} : { queueMs: queued }),
+          ...(blockingStep === undefined ? {} : { blockingStep }),
+          ...(slowest && slowest.ms > stepMs ? { slowestCompletedStep: slowest.step, slowestCompletedStepMs: slowest.ms } : {}),
+        })
+        resolve()
+      }, journalConfirmationMs)
+    })
+    const append = Promise.resolve().then(() => sink.append(event, observe)).then(settled, () => settled(false))
+    const waiting = Promise.race([append, deadline]).finally(() => {
+      clearTimeout(timer)
+      pending.delete(waiting)
+    })
+    pending.add(waiting)
   }
   function recordEvent(input: AgentDiagnosticInput, notify = true): AgentDiagnosticEvent {
     const context = contexts.getStore()
@@ -156,21 +225,7 @@ export function createAgentDiagnostics(options: {
       if (notify && input.error && typeof input.error === 'object') errorEvents.set(input.error, event)
       if (notify && options.onFailure) notifyFailure(event)
     }
-    if (options.sink) {
-      if (pending.size >= 256) {
-        journalFailure(event, line, 'diagnostic_queue_overflow')
-        return event
-      }
-      // A failed custom sink cannot retain arbitrary turns forever or hang shutdown.
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const timeout = new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), 5_000) })
-      const write = Promise.race([Promise.resolve().then(() => options.sink!.append(event)), timeout]).then(ok => {
-        if (ok === undefined) journalFailure(event, line, 'diagnostic_journal_timeout', 'unknown')
-        else if (!ok) journalFailure(event, line, 'diagnostic_journal_failed')
-      }, () => journalFailure(event, line, 'diagnostic_journal_failed')).finally(() => { if (timer) clearTimeout(timer) })
-      pending.add(write)
-      void write.finally(() => pending.delete(write))
-    }
+    if (options.sink) appendJournal(options.sink, event, line)
     return event
   }
   const emit = (input: AgentDiagnosticInput) => { recordEvent(input) }
