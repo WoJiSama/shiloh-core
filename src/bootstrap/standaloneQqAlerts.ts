@@ -474,6 +474,8 @@ const stepNames = new Map(Object.entries({
   journal_queue: '等待日志队列', journal_open: '打开日志文件', journal_write: '写入日志文件', journal_sync: '同步日志文件',
   journal_close: '关闭日志文件', journal_directory_sync: '同步日志目录', journal_retention: '清理旧日志',
   journal_recovery: '恢复日志文件', traffic_counter: '等待收发统计',
+  subscription_read: '读取订阅列表', subscription_poll: '检查到期订阅', subscription_receipt: '保存订阅回执',
+  subscription_authorization: '复核订阅来源',
 }))
 
 type DiagnosticDescriptionSource = Pick<AgentDiagnosticEvent, 'stage' | 'operation' | 'outcome' | 'code' | 'details' | 'httpStatus' | 'errorKind' | 'sourceTag'>

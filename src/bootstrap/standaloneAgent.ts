@@ -343,6 +343,8 @@ export async function main(argv: string[]): Promise<void> {
     storage = await openAgentRedis({ url: config.redisUrl, instance: config.instance,
       onLost: () => fail('[Agent] Redis 执行租约丢失，停止处理'),
       onCommandFailure: event => diagnostics.emit({ stage: 'host', ...event }),
+      onReadRecovered: durationMs => diagnostics.emit({ stage: 'host', operation: 'redis_command', outcome: 'succeeded',
+        code: 'redis_read_recovered', durationMs, details: { step: 'get', result: 'recovered', attempt: 2, maxAttempts: 2 } }),
     })
     if (config.console.enabled) {
       traffic = createAgentTraffic(storage.storage)

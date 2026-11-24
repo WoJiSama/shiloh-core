@@ -128,7 +128,7 @@ interface NudgeIngressOptions extends MessageActionOptions {
 
 export interface SimulationRuntimePorts {
   coreCapabilityTool?: CoreCapabilityToolFactory
-  diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'>
+  diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'> & Partial<Pick<AgentDiagnostics, 'withScope' | 'emitFailure'>>
   /** Start a scope after resolving the actual wake owner; timers must not inherit an unrelated ingress. */
   withDiagnosticScope?<T>(scope: AgentDiagnosticScope, operation: string, run: () => Promise<T>): Promise<T>
   /** Optional trusted last-resort text when every explanation model is unavailable. */
@@ -4351,7 +4351,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (hasWake || scheduleChanged || previousBinding !== state.bindingToken) await store.save(groupId, state)
       if (best) await scheduleWake(groupId, best, state.bindingToken, cfg)
       if (!hasWake && isCurrent() && !running.has(groupId) && !background.has(groupId) && !atOnly && !sleepingNow &&
-          ports.isMemoryInputAvailable?.(target.account) !== false) await runCharacterBackground(groupId, state, cfg, binding)
+          ports.isMemoryInputAvailable?.(target.account) !== false) {
+        const run = () => runCharacterBackground(groupId, state, cfg, binding)
+        if (ports.diagnostics?.withScope) await ports.diagnostics.withScope(binding ? { kind: 'conversation', binding } : { kind: 'host' },
+          'simulation_character_background', run)
+        else await run()
+      }
       // 本群专属梗自动提取（独立于唤醒：不产生回合，只沉淀记忆）
       if (!hasWake && isCurrent() && !running.has(groupId)) await maybeExtractMemes(groupId, state, cfg)
       if (!hasWake && isCurrent() && !running.has(groupId)) await maybeExtractPersonProfiles(groupId, state, cfg)
@@ -4392,6 +4397,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     let sources = new Set<string>()
     const controller = new AbortController()
     let phase: 'prepare' | 'subscription' | 'reflection' = 'prepare'
+    let subscriptionStep: 'subscription_read' | 'subscription_poll' | 'subscription_receipt' | 'subscription_authorization' | undefined
     const started = now()
     let activityVersion = ''
     let memoryInvalidatedAt = 0
@@ -4430,26 +4436,34 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (!(await checkGroupWakeBudget(state, runtimeConfig(groupId), groupId)).allowed) return
       phase = 'subscription'
       const subscriptions = subscriptionsFor(scope)
+      subscriptionStep = 'subscription_read'
       const dueSubscriptions = (await subscriptions.list()).some(item => item.status === 'active' && item.nextPollAt <= now())
-      const pollReceiptId = dueSubscriptions ? randomUUID() : undefined
-      if (pollReceiptId) await characters.update(scope, current => recordCharacterReceipt(current, { id: pollReceiptId, toolName: 'simSubscriptionPoll', status: 'pending', summary: '等待公开订阅抓取回执', at: now() }, now()))
-      let update: Awaited<ReturnType<typeof subscriptions.poll>>
-      try {
-        update = await subscriptions.poll(guard)
-        if (pollReceiptId) await characters.update(scope, current => recordCharacterReceipt(current, {
-          id: pollReceiptId, toolName: 'simSubscriptionPoll', status: update.unknowns ? 'unknown' : update.failures && !update.updates.length ? 'failed' : 'succeeded',
-          summary: (update.updates.length ? `取得公开订阅资料（未经事实核实）：${update.updates.slice(0,3).map(item => item.title).join('；')}${update.failures ? `；另有${update.failures}个订阅未取得结果` : ''}` : update.unknowns ? `${update.unknowns}个订阅超时，结果未知，未取得新资料` : update.failures ? `${update.failures}个订阅抓取失败，未取得新资料` : '订阅检查完成，没有新资料').slice(0,500), at: now(),
-        }, now()))
-      } catch (error) {
-        if (pollReceiptId) await characters.update(scope, current => recordCharacterReceipt(current, { id: pollReceiptId, toolName: 'simSubscriptionPoll', status: 'unknown', summary: '订阅检查中断，结果未知', at: now() }, now()))
-        throw error
+      let updates: CharacterFeedItem[] = []
+      if (dueSubscriptions) {
+        const pollReceiptId = randomUUID()
+        subscriptionStep = 'subscription_receipt'
+        await characters.update(scope, current => recordCharacterReceipt(current, { id: pollReceiptId, toolName: 'simSubscriptionPoll', status: 'pending', summary: '等待公开订阅抓取回执', at: now() }, now()))
+        try {
+          subscriptionStep = 'subscription_poll'
+          const update = await subscriptions.poll(guard)
+          updates = update.updates
+          subscriptionStep = 'subscription_receipt'
+          await characters.update(scope, current => recordCharacterReceipt(current, {
+            id: pollReceiptId, toolName: 'simSubscriptionPoll', status: update.unknowns ? 'unknown' : update.failures && !updates.length ? 'failed' : 'succeeded',
+            summary: (updates.length ? `取得公开订阅资料（未经事实核实）：${updates.slice(0,3).map(item => item.title).join('；')}${update.failures ? `；另有${update.failures}个订阅未取得结果` : ''}` : update.unknowns ? `${update.unknowns}个订阅超时，结果未知，未取得新资料` : update.failures ? `${update.failures}个订阅抓取失败，未取得新资料` : '订阅检查完成，没有新资料').slice(0,500), at: now(),
+          }, now()))
+        } catch (error) {
+          await characters.update(scope, current => recordCharacterReceipt(current, { id: pollReceiptId, toolName: 'simSubscriptionPoll', status: 'unknown', summary: '订阅检查中断，结果未知', at: now() }, now()))
+          throw error
+        }
       }
+      subscriptionStep = 'subscription_authorization'
       await guard()
-      if (update.updates.length) {
-        state.pendingWakeReasons = pushPendingReason(state.pendingWakeReasons, { kind: 'interestUpdate', detail: update.updates.slice(0,2).map(item => item.title).join('；').slice(0,200) })
+      if (updates.length) {
+        state.pendingWakeReasons = pushPendingReason(state.pendingWakeReasons, { kind: 'interestUpdate', detail: updates.slice(0,2).map(item => item.title).join('；').slice(0,200) })
         await store.save(groupId, state)
       }
-      if (!update.updates.length && ports.reflectCharacter && ports.getSection().reflection?.enabled !== false) {
+      if (!updates.length && ports.reflectCharacter && ports.getSection().reflection?.enabled !== false) {
         phase = 'reflection'
         const reflection = reflectionFor(scope)
         if (binding && ports.projectCognition) await ports.projectCognition({ agentId: binding.agentId, conversation: target,
@@ -4529,10 +4543,15 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     } catch (error) {
       const timedOut = controller.signal.reason instanceof DOMException && controller.signal.reason.name === 'TimeoutError'
       const revoked = !timedOut && error instanceof CharacterBackgroundRevokedError
-      diagnose({ stage: 'runtime', operation: 'simulation_character_background', outcome: revoked ? 'cancelled' : 'failed',
+      const diagnostic = { stage: 'runtime', operation: 'simulation_character_background', outcome: revoked ? 'cancelled' : 'failed',
         code: revoked ? 'character_background_revoked' : timedOut ? 'character_background_timeout' : `character_background_${phase}_failed`,
-        durationMs: now() - started, ...(revoked ? {} : { error }) },
-        revoked ? undefined : () => logger.warn(`[仿真] 群 ${groupId} 后台活动停止`))
+        durationMs: now() - started, ...(revoked ? {} : { error }),
+        ...(phase === 'subscription' && subscriptionStep ? { details: { step: subscriptionStep } } : {}),
+      } satisfies Parameters<AgentDiagnostics['emit']>[0]
+      try {
+        if (!revoked && ports.diagnostics?.emitFailure) ports.diagnostics.emitFailure(diagnostic)
+        else diagnose(diagnostic, revoked ? undefined : () => logger.warn(`[仿真] 群 ${groupId} 后台活动停止`))
+      } catch { /* Diagnostics never affect execution. */ }
     }
     finally {
       memoryTurn?.release()

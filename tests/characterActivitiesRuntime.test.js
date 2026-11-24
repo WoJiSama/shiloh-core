@@ -197,7 +197,7 @@ test('后台收尾写入等待期间的新消息保持序号与未读，点名�
 
 test('a recalled message cancels the background check while storage failures still alert', async t => {
   const entered = deferred(), resume = deferred(), emitted = []
-  let paused = false, broken = false, pending
+  let paused = false, broken = false, pending, subscriptionReads = 0
   const h = fixture({
     diagnostics: { emit: row => emitted.push(row), traceId: () => 'background-test' },
     async beforeGet(key) {
@@ -206,7 +206,10 @@ test('a recalled message cancels the background check while storage failures sti
         entered.resolve()
         await resume.promise
       }
-      if (broken && key.startsWith('shiloh:character-subscriptions:')) throw new Error('Redis unavailable')
+      if (key.startsWith('shiloh:character-subscriptions:')) {
+        subscriptionReads++
+        if (broken) throw new Error('Redis unavailable')
+      }
     },
   })
   t.after(async () => { resume.resolve(); h.runtime.stop(); await pending })
@@ -224,6 +227,11 @@ test('a recalled message cancels the background check while storage failures sti
     ['cancelled', 'character_background_revoked'],
     ['failed', 'character_background_subscription_failed'],
   ])
+  assert.equal(emitted.filter(row => row.operation === 'simulation_character_background').at(-1).details.step, 'subscription_read')
+  broken = false
+  subscriptionReads = 0
+  await h.runtime.sweepOnce()
+  assert.equal(subscriptionReads, 1)
   assert.equal(h.calls.length, 0)
   assert.equal(h.sent.length, 0)
 })

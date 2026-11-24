@@ -58,12 +58,13 @@ class SemanticRedisQueueFull extends Error {}
 class RedisInvalidReply extends Error {}
 class RedisLeaseLost extends Error {}
 
-export async function openAgentRedis({ url, instance, onLost, onCommandFailure }: {
+export async function openAgentRedis({ url, instance, onLost, onCommandFailure, onReadRecovered }: {
   url: string
   instance: string
   onLost(): void
   onCommandFailure?(event: { operation: RedisCommandOperation; outcome: 'failed' | 'unknown'; code: RedisFailureCode;
     durationMs: number; details: AgentDiagnosticDetails; error: unknown }): void
+  onReadRecovered?(durationMs: number): void
 }) {
   const client = await connectAgentRedis(url)
   const prefix = agentRedisPrefix(instance)
@@ -94,7 +95,7 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure }
   timer.unref()
   client.on('end', loseLease)
 
-  async function observe<T>(operation: RedisCommandOperation, step: RedisCommandStep, run: () => Promise<T>): Promise<T> {
+  async function observe<T>(operation: RedisCommandOperation, step: RedisCommandStep, run: () => Promise<T>, readAttempt?: 1 | 2): Promise<T> {
     const started = performance.now()
     try { return await run() }
     catch (error) {
@@ -108,14 +109,22 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure }
       else if (error instanceof RedisInvalidReply) code = 'redis_reply_invalid'
       else if (error instanceof RedisLeaseLost) code = 'redis_lease_lost'
       const waiting = code === 'redis_command_queue_full' || code === 'redis_command_queue_timeout'
+      const retryRead = readAttempt === 1 && code === 'redis_command_queue_timeout' && isCurrent()
       const uncertain = code === 'redis_socket_idle_timeout' || error instanceof SocketClosedUnexpectedlyError
       const limit = code === 'redis_command_queue_full' ? semanticQueueLimit : code === 'redis_command_queue_timeout' ?
         commandTimeoutMs : code === 'redis_socket_idle_timeout' ? semanticSocketIdleMs : undefined
       const details: AgentDiagnosticDetails = { step, ...(limit === undefined ? {} : { limit }),
-        ...(waiting ? { dispatched: false, result: 'not_dispatched' } : uncertain ? { result: 'confirmation_pending' } : {}) }
+        ...(readAttempt === undefined ? {} : { attempt: readAttempt, maxAttempts: 2 }),
+        ...(waiting ? { dispatched: false, result: retryRead ? 'retry_scheduled' : 'not_dispatched' }
+          : uncertain ? { result: 'confirmation_pending' } : {}) }
       annotateAgentError(error, { cause: code, ...details })
       if (running) try { onCommandFailure?.({ operation, code, outcome: uncertain ? 'unknown' : 'failed',
         details, durationMs: performance.now() - started, error }) } catch { /* Preserve the command error. */ }
+      if (retryRead && isCurrent()) {
+        const recovered = await observe(operation, step, run, 2)
+        if (running) try { onReadRecovered?.(performance.now() - started) } catch { /* Preserve the read result. */ }
+        return recovered
+      }
       throw error
     }
   }
@@ -130,7 +139,8 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure }
 
   const primary = <T>(step: RedisCommandStep, run: () => Promise<T>) => observe('redis_command', step, run)
   const storage = {
-    get: (name: string) => primary('get', () => client.get(key(name))),
+    // TimeoutError removes an unsent command. Retry this read once while the host still owns its lease.
+    get: (name: string) => observe('redis_command', 'get', () => client.get(key(name)), 1),
     async getMany(names: string[]): Promise<(string | null)[]> {
       return primary('get_many', async () => {
         const values: unknown = await client.eval(getMany, { keys: names.map(key), arguments: [] })

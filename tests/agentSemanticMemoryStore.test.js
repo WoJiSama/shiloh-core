@@ -182,6 +182,52 @@ test('standalone semantic snapshot traffic cannot hold up the inbox socket or di
   } finally { socket.resume() }
 })
 
+test('an unsent Redis GET retries once and an unsent write keeps its failure', redisTest, async t => {
+  const f = await fixture(t, 'redis-retry-test-fixture')
+  const events = [], recoveries = []
+  const schedule = globalThis.setImmediate
+  let holdNext = false, releaseWrite
+  const resumeWrite = () => {
+    const release = releaseWrite
+    releaseWrite = undefined
+    release?.()
+  }
+  const redis = await openAgentRedis({ url: f.url, instance: 'redis-before-send-retry', onLost() {},
+    onCommandFailure(event) { events.push(event); resumeWrite() },
+    onReadRecovered(durationMs) { recoveries.push(durationMs) },
+  })
+  t.mock.method(globalThis, 'setImmediate', (callback, ...args) => {
+    const handle = schedule(callback, ...args)
+    if (holdNext) {
+      holdNext = false
+      clearImmediate(handle)
+      releaseWrite = () => schedule(callback, ...args)
+    }
+    return handle
+  })
+  try {
+    await redis.storage.set('probe', 'saved')
+    holdNext = true
+    const read = redis.storage.get('probe')
+    assert.ok(releaseWrite)
+    assert.equal(await read, 'saved')
+    assert.equal(events.length, 1)
+    assert.deepEqual(events[0].details, { step: 'get', limit: 2_000, attempt: 1, maxAttempts: 2, dispatched: false, result: 'retry_scheduled' })
+    assert.equal(recoveries.length, 1)
+
+    holdNext = true
+    const write = redis.storage.set('probe', 'unsent')
+    assert.ok(releaseWrite)
+    await assert.rejects(write)
+    assert.equal(await redis.storage.get('probe'), 'saved')
+    assert.equal(events.length, 2)
+    assert.deepEqual(events[1].details, { step: 'set', limit: 2_000, dispatched: false, result: 'not_dispatched' })
+  } finally {
+    resumeWrite()
+    await redis.close()
+  }
+})
+
 test('source import is read-only until CAS and a concurrent cleanup aborts the parent history commit', redisTest, async t => {
   const f = await fixture(t, 'semantic-store-source-import')
   const selected = scope(), id = agentSemanticMemoryId(selected)
