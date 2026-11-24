@@ -182,7 +182,7 @@ test('standalone semantic snapshot traffic cannot hold up the inbox socket or di
   } finally { socket.resume() }
 })
 
-test('unsent Redis commands report scheduler timing and only the GET retries', redisTest, async t => {
+test('unsent Redis commands report scheduler timing and only reads retry', redisTest, async t => {
   const f = await fixture(t, 'redis-retry-test-fixture')
   const events = [], recoveries = []
   const schedule = globalThis.setImmediate
@@ -191,7 +191,7 @@ test('unsent Redis commands report scheduler timing and only the GET retries', r
   const resumeWrite = () => { for (const release of delayed.splice(0)) release() }
   const redis = await openAgentRedis({ url: f.url, instance: 'redis-before-send-retry', onLost() {},
     onCommandFailure(event) { events.push(event); resumeWrite() },
-    onReadRecovered(durationMs) { recoveries.push(durationMs) },
+    onReadRecovered(durationMs, step) { recoveries.push({ durationMs, step }) },
   })
   t.mock.method(globalThis, 'setImmediate', (callback, ...args) => {
     const handle = schedule(callback, ...args)
@@ -214,15 +214,23 @@ test('unsent Redis commands report scheduler timing and only the GET retries', r
       dispatchTurnPending: false })
     assert.ok(Number.isSafeInteger(dispatchTurnMs) && dispatchTurnMs >= 0)
     assert.ok(Number.isSafeInteger(timeoutOverrunMs) && timeoutOverrunMs >= 0)
-    assert.equal(recoveries.length, 1)
+    assert.deepEqual(recoveries.map(event => event.step), ['get'])
+
+    holdNext = 1
+    assert.deepEqual(await redis.storage.getMany(['probe', 'missing']), ['saved', null])
+    assert.equal(events.length, 2)
+    assert.equal(events[1].details.step, 'get_many')
+    assert.equal(events[1].details.dispatched, false)
+    assert.equal(events[1].details.result, 'retry_scheduled')
+    assert.deepEqual(recoveries.map(event => event.step), ['get', 'get_many'])
 
     holdNext = 2
     const write = redis.storage.set('probe', 'unsent')
     assert.equal(delayed.length, 2)
     await assert.rejects(write)
     assert.equal(await redis.storage.get('probe'), 'saved')
-    assert.equal(events.length, 2)
-    const { timeoutOverrunMs: writeOverrunMs, ...writeDetails } = events[1].details
+    assert.equal(events.length, 3)
+    const { timeoutOverrunMs: writeOverrunMs, ...writeDetails } = events[2].details
     assert.deepEqual(writeDetails, { step: 'set', limit: 2_000, dispatched: false, result: 'not_dispatched', dispatchTurnPending: true })
     assert.ok(Number.isSafeInteger(writeOverrunMs) && writeOverrunMs >= 0)
   } finally {

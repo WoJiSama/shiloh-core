@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { createOneBotConnection, verifyOneBotLogin } from '../adapters/oneBotConnection.js'
 import { createAgentQzoneLedger } from '../modules/runtime/infrastructure/agentQzoneLedger.js'
 import { sideLLMCall } from '../adapters/sideLLM.js'
+import { normalizeUsage } from '../modules/models/domain/modelPrices.js'
 import { createAgentRuntime, createLinuxSystemdAgentDiceScriptRunner } from '../core/index.js'
 import { openStandaloneTorrent } from './standaloneTorrent.js'
 import { openStandaloneGroupLog } from './standaloneGroupLog.js'
@@ -343,8 +344,8 @@ export async function main(argv: string[]): Promise<void> {
     storage = await openAgentRedis({ url: config.redisUrl, instance: config.instance,
       onLost: () => fail('[Agent] Redis 执行租约丢失，停止处理'),
       onCommandFailure: event => diagnostics.emit({ stage: 'host', ...event }),
-      onReadRecovered: durationMs => diagnostics.emit({ stage: 'host', operation: 'redis_command', outcome: 'succeeded',
-        code: 'redis_read_recovered', durationMs, details: { step: 'get', result: 'recovered', attempt: 2, maxAttempts: 2 } }),
+      onReadRecovered: (durationMs, step) => diagnostics.emit({ stage: 'host', operation: 'redis_command', outcome: 'succeeded',
+        code: 'redis_read_recovered', durationMs, details: { step, result: 'recovered', attempt: 2, maxAttempts: 2 } }),
     })
     if (config.console.enabled) {
       traffic = createAgentTraffic(storage.storage)
@@ -556,7 +557,7 @@ export async function main(argv: string[]): Promise<void> {
       diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: 'started' })
       const result = await sideLLMCall({
         url: vision.apiUrl, apikey: vision.apiKey, model: vision.model,
-        signal: signal ? AbortSignal.any([executionSignal, signal]) : executionSignal, timeoutMs: 15_000, maxTokens: 250,
+        signal: signal ? AbortSignal.any([executionSignal, signal]) : executionSignal, timeoutMs: 15_000, maxTokens: 250, disableThinking: true,
         fetchImpl: (url, init) => visionFetch(url, { ...init, redirect: 'error' }),
         messages: [{
           role: 'user', content: [
@@ -565,23 +566,29 @@ export async function main(argv: string[]): Promise<void> {
           ],
         }],
       })
+      const durationMs = performance.now() - began
+      if (result.ok || result.usage !== undefined) {
+        ledger.record({ scope: groupId, stage: 'sim-vision', model: vision.model, usage: result.usage, ms: Math.round(durationMs) })
+      }
       if (!result.ok) {
         const cancelled = result.code === 'provider_cancelled' || result.code === 'model_source_changed'
+        const usage = result.usage === undefined ? undefined : normalizeUsage(result.usage)
         diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: cancelled ? 'cancelled' : 'failed',
           code: result.code, details: { step: result.status === undefined || result.code === 'http_error' ? 'provider_request' :
             result.code.startsWith('model_response_body') || result.code === 'provider_timeout' ? 'response_body' : 'response_validation',
-            result: 'discarded', ...(result.limit === undefined ? {} : { limit: result.limit }) },
-          ...(result.status === undefined ? {} : { httpStatus: result.status }), durationMs: performance.now() - began })
+            result: 'discarded', ...(result.limit === undefined ? {} : { limit: result.limit }),
+            ...(usage && Number.isSafeInteger(usage.output) && Number.isSafeInteger(usage.reasoning)
+              ? { outputTokens: usage.output, reasoningTokens: usage.reasoning } : {}) },
+          ...(result.status === undefined ? {} : { httpStatus: result.status }), durationMs })
         return null
       }
-      ledger.record({ scope: groupId, stage: 'sim-vision', model: vision.model, usage: result.usage, ms: Math.round(performance.now() - began) })
       const current = isCurrent?.() !== false
       const containsImage = /(?:data:image\/|base64:\/\/)/iu.test(result.content) || images.some(({base64}) => result.content.includes(base64))
       const code = !current ? 'model_source_changed' : containsImage ? 'image_description_contains_image_data' :
         words.findForbiddenWord(result.content, config.forbiddenWords) ? 'image_description_forbidden_content' : undefined
       diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: !current ? 'cancelled' : code ? 'failed' : 'succeeded',
         code: code ?? 'image_description_completed', ...(code ? { details: { step: 'response_validation', result: 'discarded' } } : {}),
-        durationMs: performance.now() - began })
+        durationMs })
       return code ? null : result.content
     })
     const extractionBackend = config.personMemoryExtraction

@@ -73,10 +73,10 @@ function scope(value: unknown): AgentDiagnosticScope {
 export function parseAgentDiagnosticDetails(value: unknown): Readonly<AgentDiagnosticDetails> {
   const row = record(value, ['step', 'cause', 'field', 'rule', 'limit', 'nativeCode', 'dispatched', 'result',
     'retryInMs', 'attempt', 'maxAttempts', 'causeEventId', 'queueMs', 'stepMs', 'blockingStep', 'slowestCompletedStep', 'slowestCompletedStepMs',
-    'dispatchTurnPending', 'dispatchTurnMs', 'timeoutOverrunMs'])
+    'dispatchTurnPending', 'dispatchTurnMs', 'timeoutOverrunMs', 'outputTokens', 'reasoningTokens'])
   for (const key of ['step', 'cause', 'field', 'rule', 'causeEventId']) if (row[key] !== undefined) token(row[key])
   for (const key of ['limit', 'retryInMs', 'attempt', 'maxAttempts', 'queueMs', 'stepMs', 'slowestCompletedStepMs',
-    'dispatchTurnMs', 'timeoutOverrunMs']) if (row[key] !== undefined &&
+    'dispatchTurnMs', 'timeoutOverrunMs', 'outputTokens', 'reasoningTokens']) if (row[key] !== undefined &&
       (!Number.isSafeInteger(row[key]) || Number(row[key]) < 0)) throw failure()
   for (const key of ['blockingStep', 'slowestCompletedStep']) if (row[key] !== undefined &&
       !agentJournalWriteSteps.some(step => step === row[key])) throw failure()
@@ -141,7 +141,9 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
   const queue: { safe: AgentDiagnosticEvent; line: string; size: number; resolve(ok: boolean): void; observe?: AgentJournalWriteObserver }[] = []
   let draining: Promise<void> | undefined, pending = 0, pendingBytes = 0
   let activeStep: AgentJournalWriteStep | undefined
-  let closeResult: Promise<boolean> | undefined, latest: { name: string; size: number } | undefined
+  let closeResult: Promise<boolean> | undefined
+  let latest: { name: string; size: number; dev: number; ino: number; needsDirectorySync: boolean } | undefined
+  let activeFile: FileHandle | undefined
   let rootIdentity: { dev: number; ino: number } | undefined, directoryIdentity: { dev: number; ino: number } | undefined
   let reporting = false
   let releaseWriter: (() => Promise<void>) | undefined
@@ -169,16 +171,24 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
     const handle = await fs.open(directory, constants.O_RDONLY | constants.O_NOFOLLOW)
     try { await handle.sync() } finally { await handle.close() }
   }
+  async function verifyFile(name: string, handle: FileHandle) {
+    const stat = await handle.stat()
+    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.size > 64 * MiB) throw failure()
+    await directories()
+    const actual = await fs.lstat(path.join(directory, name))
+    if (actual.isSymbolicLink() || actual.dev !== stat.dev || actual.ino !== stat.ino || actual.mode !== stat.mode ||
+        actual.nlink !== stat.nlink || actual.size !== stat.size) throw failure()
+    return stat
+  }
   async function privateFile(name: string, flags: number): Promise<FileHandle> {
     const handle = await fs.open(path.join(directory, name), flags | constants.O_NOFOLLOW, 0o600)
-    try {
-      const stat = await handle.stat()
-      if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.size > 64 * MiB) throw failure()
-      await directories()
-      const actual = await fs.lstat(path.join(directory, name))
-      if (actual.isSymbolicLink() || actual.dev !== stat.dev || actual.ino !== stat.ino) throw failure()
-      return handle
-    } catch { await handle.close(); throw failure() }
+    try { await verifyFile(name, handle); return handle }
+    catch (error) { await handle.close(); throw error }
+  }
+  async function closeFile(): Promise<void> {
+    const handle = activeFile
+    activeFile = undefined
+    await handle?.close()
   }
   async function names(): Promise<string[]> {
     await directories()
@@ -199,7 +209,8 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
     for (const name of await names()) {
       const handle = await privateFile(name, constants.O_RDWR)
       try {
-        let size = (await handle.stat()).size
+        const stat = await handle.stat()
+        let { size } = stat
         if (size) {
           let cursor = size, boundary = -1
           while (cursor > 0 && boundary < 0) {
@@ -215,7 +226,7 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
             await handle.truncate(size); await handle.sync()
           }
         }
-        latest = { name, size }
+        latest = { name, size, dev: stat.dev, ino: stat.ino, needsDirectorySync: false }
       } finally { await handle.close() }
     }
     await prune()
@@ -226,22 +237,33 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
   }
 
   async function write(line: string, advance: (step: AgentJournalWriteStep) => void): Promise<void> {
-    advance('journal_open')
-    await directories()
     const bytes = Buffer.from(line, 'utf8'), today = day()
     let file = latest
-    const created = !file || !file.name.startsWith(today + '.') || file.size + bytes.length > maximum
-    if (created) {
-      const existing = (await names()).filter(name => name.startsWith(today + '.'))
-      const sequence = Number(existing.at(-1)?.match(filePattern)?.[2] ?? -1) + 1
-      if (sequence > 999999) throw failure()
-      file = { name: `${today}.${String(sequence).padStart(6, '0')}.ndjson`, size: 0 }
-    }
-    if (!file) throw failure()
-    const handle = await privateFile(file.name, constants.O_WRONLY | constants.O_APPEND | (created ? constants.O_CREAT | constants.O_EXCL : 0))
-    latest = file
     try {
-      if ((await handle.stat()).size !== file.size) throw failure()
+      if (!file || !file.name.startsWith(today + '.') || file.size + bytes.length > maximum) {
+        if (activeFile) { advance('journal_close'); await closeFile() }
+        advance('journal_open')
+        const existing = (await names()).filter(name => name.startsWith(today + '.'))
+        const sequence = Number(existing.at(-1)?.match(filePattern)?.[2] ?? -1) + 1
+        if (sequence > 999999) throw failure()
+        const name = `${today}.${String(sequence).padStart(6, '0')}.ndjson`
+        activeFile = await fs.open(path.join(directory, name), constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT |
+          constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+        advance('journal_verify')
+        const stat = await verifyFile(name, activeFile)
+        if (stat.size !== 0) throw failure()
+        latest = file = { name, size: 0, dev: stat.dev, ino: stat.ino, needsDirectorySync: true }
+      } else {
+        if (!activeFile) {
+          advance('journal_open')
+          await directories()
+          activeFile = await fs.open(path.join(directory, file.name), constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW, 0o600)
+        }
+        advance('journal_verify')
+        const stat = await verifyFile(file.name, activeFile)
+        if (stat.size !== file.size || stat.dev !== file.dev || stat.ino !== file.ino) throw failure()
+      }
+      const handle = activeFile
       try {
         advance('journal_write')
         await handle.writeFile(bytes)
@@ -255,15 +277,16 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
         try { await handle.truncate(file.size); await handle.sync() } catch { /* Keep the last confirmed offset for recovery. */ }
         throw error
       }
-    } finally {
-      advance('journal_close')
-      await handle.close()
-    }
-    if (created) {
-      advance('journal_directory_sync')
-      await syncDirectory()
-      advance('journal_retention')
-      await prune().catch(() => report(undefined, 'JOURNAL_RETENTION_FAILED'))
+      if (file.needsDirectorySync) {
+        advance('journal_directory_sync')
+        await syncDirectory()
+        file.needsDirectorySync = false
+        advance('journal_retention')
+        await prune().catch(() => report(undefined, 'JOURNAL_RETENTION_FAILED'))
+      }
+    } catch (error) {
+      if (activeFile) { advance('journal_close'); await closeFile().catch(() => {}) }
+      throw error
     }
   }
   function drain() {
@@ -347,7 +370,11 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
     flush,
     close(): Promise<boolean> {
       closing = true
-      closeResult ??= flush().then(async () => { try { await releaseWriter?.() } catch { report(undefined, 'JOURNAL_CLOSE_FAILED') } return !degraded })
+      closeResult ??= flush().then(async () => {
+        try { await closeFile() } catch { report(undefined, 'JOURNAL_CLOSE_FAILED') }
+        try { await releaseWriter?.() } catch { report(undefined, 'JOURNAL_CLOSE_FAILED') }
+        return !degraded
+      })
       return closeResult.then(result => result && !degraded)
     },
     health() { return { degraded, written, failed, ...(lastWrittenAt === undefined ? {} : { lastWrittenAt }) } },

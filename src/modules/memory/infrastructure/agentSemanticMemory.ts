@@ -180,9 +180,10 @@ export function createAgentSemanticMemory(ports: {
       name: (incoming.senderName ?? '').slice(0, 24), text, at: incoming.occurredAt,
       ...(binding.target.kind === 'private' ? { peerId: incoming.sender.id } : {}),
     }
-    let phase: 'authorization' | 'save' = 'authorization'
+    let phase: 'authorization' | 'register_source' | 'save' = 'authorization'
     await withContext(binding, guard, { idleMs: captureIdleMs }, async (context, progress) => {
       if (!(await permitted(binding, [row], context.signal, false, true)).length || !context.isCurrent()) return
+      phase = 'register_source'
       progress()
       if (!await ports.memory.registerSource({ identity: identity(binding), subjectId: row.authorId, source: source(binding, row) }, context.isCurrent)) return
       phase = 'save'
@@ -204,7 +205,7 @@ export function createAgentSemanticMemory(ports: {
       const saved = observed.state
       if (!saved) return
       step('source_check')
-      const allowed = (await permitted(binding, saved.rows, context.signal)).slice(-limit())
+      const allowed = (await permitted(binding, saved.rows, context.signal, true)).slice(-limit())
       if (allowed.length !== saved.rows.length) {
         const allowedIds = new Set(allowed.map(row => row.messageId))
         const savedIds = new Set(saved.rows.map(row => row.messageId))
@@ -219,7 +220,7 @@ export function createAgentSemanticMemory(ports: {
       const ensureCurrent = async () => {
         if (sourceChange) throw sourceChange
         await context.ensureCurrent()
-        if (!await present(binding, batch, context.signal) || (await permitted(binding, batch, context.signal)).length !== batch.length ||
+        if (!await present(binding, batch, context.signal) || (await permitted(binding, batch, context.signal, true)).length !== batch.length ||
             !context.isCurrent()) {
           sourceChange = new SemanticSourceChangedError('语义索引来源已失效')
           throw sourceChange
@@ -228,7 +229,11 @@ export function createAgentSemanticMemory(ports: {
       step('source_check')
       await ensureCurrent()
       step('embedding')
-      const result = await abortable(ports.backend!.embed(batch.map(row => row.text), { ...context, ensureCurrent }), context.signal)
+      const result = await abortable(ports.backend!.embed(batch.map(row => row.text), { ...context, ensureCurrent: async () => {
+        step('source_check')
+        await ensureCurrent()
+        step('embedding')
+      } }), context.signal)
         .catch((error: unknown) => { throw sourceChange ?? error })
       step('source_check')
       await ensureCurrent()
@@ -243,7 +248,6 @@ export function createAgentSemanticMemory(ports: {
         const original = sources.get(row.messageId), indexed = vectors.get(row.messageId)
         return original && indexed && sameSemanticMemorySource(original, row) ? { ...row, vector: indexed, providerId: ports.backend!.id } : row
       }) }), context.isCurrent)
-      retryAt.delete(id)
       if (allowed.some(row => !vectors.has(row.messageId) && (!row.vector || row.providerId !== ports.backend!.id))) dirty.add(id)
     })
   }
@@ -321,7 +325,7 @@ export function createAgentSemanticMemory(ports: {
           for (const group of groups.values()) {
             const sourceBinding = group.binding
             if (!current(sourceBinding) || !await present(sourceBinding, group.rows, activeContext.signal) ||
-                (await permitted(sourceBinding, group.rows, activeContext.signal)).length !== group.rows.length) {
+                (await permitted(sourceBinding, group.rows, activeContext.signal, true)).length !== group.rows.length) {
               throw new SemanticSourceChangedError('语义召回来源已失效')
             }
             if (conversationAddressKey(sourceBinding.target) !== conversationAddressKey(binding.target) &&

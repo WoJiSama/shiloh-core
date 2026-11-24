@@ -255,7 +255,12 @@ test('attachment and quality size limits reject whole plans before downloading o
 function assertMetadataEvents(f) {
   assert.ok(f.events.length)
   for (const event of f.events) {
-    assert.deepEqual(Object.keys(event).sort(), ['code', 'operation', 'outcome', 'stage'])
+    const { details, ...eventFields } = event
+    assert.deepEqual(Object.keys(eventFields).sort(), ['code', 'operation', 'outcome', 'stage'])
+    if (details) {
+      assert.ok(Object.keys(details).every(field => ['step', 'nativeCode'].includes(field)))
+      assert.match(details.step, /^bilibili_[a-z_]+$/u)
+    }
     assert.equal(event.stage, 'runtime'); assert.match(event.operation, /^bilibili_[a-z_]+$/u); assert.match(event.code, /^[a-z_]+$/u)
     assert.ok(['failed', 'cancelled'].includes(event.outcome))
   }

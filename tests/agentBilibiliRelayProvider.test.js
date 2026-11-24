@@ -98,6 +98,18 @@ test('references contain bounded IDs only and recognize complete official syntax
   assert.throws(() => validateAgentMediaShare({ provider: 'bilibili', get reference() { invoked = true; return share().reference } })); assert.equal(invoked, false)
 })
 
+test('a fatal provider failure identifies the first failing playback step without upstream content', async t => {
+  const f = await fixture(t, { respond: async url => {
+    if (url.pathname.includes('player/playurl')) throw new Error('PRIVATE_PROVIDER_BODY')
+  } })
+  await rejected(f.prepare())
+  const failure = f.events.find(event => event.code === 'prepare_unavailable')
+  assert.equal(failure.outcome, 'failed')
+  assert.deepEqual(failure.details, { step: 'bilibili_playback' })
+  assert.doesNotMatch(JSON.stringify(f.events), /PRIVATE_PROVIDER_BODY/u)
+  await f.clean()
+})
+
 test('official metadata, cover and every distinct durl preserve order, safe text and owned resources', async t => {
   const first = mp4(64, 11), second = mp4(80, 22), third = mp4(96, 33)
   const f = await fixture(t, { view: { duration: 120, videos: 2, pages: [{ page: 1, cid: 11, part: '上集', duration: 60 }, { page: 2, cid: 12, part: '下集', duration: 60 }], pic: 'https://i0.hdslb.com/cover.png' },
@@ -119,10 +131,12 @@ test('official metadata, cover and every distinct durl preserve order, safe text
   assert.equal(f.thumbs.length, 3); await result.release(); await result.release(); await f.clean()
 })
 
-test('official b23 redirects to the matching episode and accepts its 412 landing page without parsing HTML', async t => {
+test('official b23 redirects to the matching section episode and accepts its 412 landing page without parsing HTML', async t => {
   const f = await fixture(t, { respond: async url => url.hostname === 'b23.tv' ? response('', '', { status: 302, headers: { location: `https://www.bilibili.com/bangumi/play/ep${EP}` } })
     : url.hostname === 'www.bilibili.com' ? response('', '', { status: 412 })
-      : url.pathname === '/pgc/view/web/season' ? response({ code: 0, result: { episodes: [{ id: Number(EP), cid: 99, duration: 721000, long_title: '番剧第九集', cover: '' }] } }) : undefined })
+      : url.pathname === '/pgc/view/web/season' ? response({ code: 0, result: { episodes: [], section: [
+        { episodes: [{ id: Number(EP), cid: 99, duration: 721000, long_title: '番剧第九集', cover: '' }] },
+      ] } }) : undefined })
   const result = await f.prepare(share('short', 'bangumi-test'))
   assert.equal(result.status, 'ready'); assert.equal(result.pageUrl, `https://www.bilibili.com/bangumi/play/ep${EP}`)
   assert.match(result.infoText, /番剧第九集/); assert.match(result.infoText, /12:01/)

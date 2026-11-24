@@ -1,4 +1,5 @@
 import { resolveChatCompletionUrl } from '../modules/models/domain/chatCompletionUrl.js'
+import { glmFlashJsonOptions } from '../modules/models/domain/modelGateway.js'
 import { isModelRequestCurrent } from '../contracts/modelExecution.js'
 
 export interface SideLLMOptions {
@@ -8,6 +9,7 @@ export interface SideLLMOptions {
   messages?: readonly { role: string; content: unknown }[]
   temperature?: number
   maxTokens?: number
+  disableThinking?: boolean
   timeoutMs?: number
   signal?: AbortSignal | null
   isCurrent?: () => boolean
@@ -18,13 +20,13 @@ type SideLLMFailureCode = 'model_configuration_invalid' | 'provider_transport_un
   'model_response_body_invalid' | 'model_response_envelope_invalid' | 'model_response_truncated' |
   'model_response_refused' | 'model_response_empty'
 export type SideLLMResult = { ok: true; content: string; usage?: unknown } |
-  { ok: false; code: SideLLMFailureCode; error: string; status?: number; limit?: number }
+  { ok: false; code: SideLLMFailureCode; error: string; status?: number; limit?: number; usage?: unknown }
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 /** Transport errors are values so each caller retains its own fallback policy. */
 export async function sideLLMCall({ url, apikey, model, messages, temperature = 0.2, maxTokens,
-  timeoutMs = 30000, signal = null, isCurrent, fetchImpl = null }: SideLLMOptions = {}): Promise<SideLLMResult> {
+  disableThinking = false, timeoutMs = 30000, signal = null, isCurrent, fetchImpl = null }: SideLLMOptions = {}): Promise<SideLLMResult> {
   // 调用方给的多是渠道基址(如 .../api/coding/paas/v4),统一补全 /chat/completions;
   // 已经是完整地址的保持不变。曾因裸 POST 到 /v4 导致梗提取/表达学习全线 404。
   const endpoint = resolveChatCompletionUrl(url)
@@ -45,7 +47,7 @@ export async function sideLLMCall({ url, apikey, model, messages, temperature = 
   const revoked = { ok: false, code: 'model_source_changed', error: '角色绑定已改变，模型请求已停止' } as const
   try {
     signal?.throwIfAborted()
-    const payload = JSON.stringify(body)
+    const payload = JSON.stringify(disableThinking ? { ...body, ...glmFlashJsonOptions(new URL(endpoint), model) } : body)
     if (!isModelRequestCurrent(isCurrent)) return revoked
     const response = await doFetch(endpoint, {
       method: 'POST', headers: { Authorization: `Bearer ${apikey}`, 'Content-Type': 'application/json' },
@@ -67,18 +69,19 @@ export async function sideLLMCall({ url, apikey, model, messages, temperature = 
     const first = Array.isArray(data.choices) ? record(data.choices[0]) : {}
     const message = record(first.message)
     const content = typeof message.content === 'string' ? message.content.trim() : ''
+    const usage = data.usage === undefined ? {} : { usage: data.usage }
     if (first.finish_reason === 'content_filter' || typeof message.refusal === 'string' && message.refusal.trim()) {
-      return { ok: false, code: 'model_response_refused', error: '模型拒绝返回正文', status }
+      return { ok: false, code: 'model_response_refused', error: '模型拒绝返回正文', status, ...usage }
     }
     if (!content) {
       if (first.finish_reason === 'length') return { ok: false, code: 'model_response_truncated', error: '模型在输出上限内未返回正文', status,
-        ...(body.max_tokens === undefined ? {} : { limit: body.max_tokens }) }
+        ...(body.max_tokens === undefined ? {} : { limit: body.max_tokens }), ...usage }
       if (!Object.hasOwn(message, 'content') || (message.content !== null && typeof message.content !== 'string')) {
-        return { ok: false, code: 'model_response_envelope_invalid', error: '模型响应结构无效', status }
+        return { ok: false, code: 'model_response_envelope_invalid', error: '模型响应结构无效', status, ...usage }
       }
-      return { ok: false, code: 'model_response_empty', error: '模型返回空', status }
+      return { ok: false, code: 'model_response_empty', error: '模型返回空', status, ...usage }
     }
-    return { ok: true, content, ...(data.usage !== undefined ? { usage: data.usage } : {}) }
+    return { ok: true, content, ...usage }
   } catch (error) {
     if (signal?.aborted) return { ok: false, code: 'provider_cancelled', error: '模型请求已取消' }
     if (!isModelRequestCurrent(isCurrent)) return revoked

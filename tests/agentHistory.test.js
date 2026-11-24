@@ -23,7 +23,7 @@ async function fixture(t, options = {}) {
   const redis = await createAgentRedisFixture(t, 'agent-explicit-history')
   const clock = { at: Date.parse('2026-11-15T12:00:00+08:00') }
   const bindings = new Map(), unavailable = new Set(), recalled = new Set(), authorized = new Set()
-  const calls = { authorized: [], bodyReads: [], acquired: 0, released: 0 }
+  const calls = { authorized: [], bodyReads: [], acquired: 0, released: 0, diagnostics: [] }
   const behavior = { authorize: undefined, afterRead: undefined, begin: undefined }
   const config = { enabled: true, timeoutMs: 5000, ...options.config }
   const memory = createPersonMemoryStore({ redis: redis.storage, now: () => clock.at })
@@ -89,6 +89,7 @@ async function fixture(t, options = {}) {
         privatePeer: target => target.kind === 'private' ? peer.id : undefined,
         isRecalled: async (target, id) => recalled.has(JSON.stringify([conversationAddressKey(target), id])),
         isRunning: redis.isCurrent, allowsText: text => !text.includes('blocked-source'), logger: { warn() {} },
+        diagnostics: { emit: event => calls.diagnostics.push(event) },
         async begin(binding) {
           await behavior.begin?.(binding)
           calls.acquired++
@@ -362,6 +363,24 @@ test('in-flight source invalidation and timeouts terminate bounded reads and rel
   const late = await f.read({ source: 'recent' })
   assert.equal(late.result.status, 'unavailable')
   await delay(250)
+  assert.equal(f.calls.acquired, f.calls.released)
+})
+
+test('a capture timeout identifies a pending authorization acquisition and releases it when it arrives', redisTest, async t => {
+  const f = await fixture(t, { config: { timeoutMs: 100 } })
+  let open
+  const held = new Promise(resolve => { open = resolve })
+  f.behavior.begin = () => held
+  try {
+    await f.capture('未授权的原文')
+    assert.equal(await f.state(), undefined)
+    const [event] = f.calls.diagnostics
+    assert.equal(event.code, 'history_source_timeout')
+    assert.deepEqual(event.details, { step: 'acquire', result: 'not_saved', limit: 100 })
+  } finally { open() }
+  f.behavior.begin = undefined
+  await f.capture('另一次成功的原文')
+  assert.equal((await f.state()).rows.length, 1)
   assert.equal(f.calls.acquired, f.calls.released)
 })
 

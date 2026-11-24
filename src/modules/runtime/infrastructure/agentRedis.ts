@@ -64,7 +64,7 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure, 
   onLost(): void
   onCommandFailure?(event: { operation: RedisCommandOperation; outcome: 'failed' | 'unknown'; code: RedisFailureCode;
     durationMs: number; details: AgentDiagnosticDetails; error: unknown }): void
-  onReadRecovered?(durationMs: number): void
+  onReadRecovered?(durationMs: number, step: 'get' | 'get_many'): void
 }) {
   const client = await connectAgentRedis(url)
   const prefix = agentRedisPrefix(instance)
@@ -129,7 +129,7 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure, 
       else if (error instanceof RedisInvalidReply) code = 'redis_reply_invalid'
       else if (error instanceof RedisLeaseLost) code = 'redis_lease_lost'
       const waiting = code === 'redis_command_queue_full' || code === 'redis_command_queue_timeout'
-      const retryRead = readAttempt === 1 && code === 'redis_command_queue_timeout' && isCurrent()
+      const retryRead = readAttempt === 1 && (step === 'get' || step === 'get_many') && code === 'redis_command_queue_timeout' && isCurrent()
       const uncertain = code === 'redis_socket_idle_timeout' || error instanceof SocketClosedUnexpectedlyError
       const limit = code === 'redis_command_queue_full' ? semanticQueueLimit : code === 'redis_command_queue_timeout' ?
         commandTimeoutMs : code === 'redis_socket_idle_timeout' ? semanticSocketIdleMs : undefined
@@ -150,7 +150,7 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure, 
         details, durationMs, error }) } catch { /* Preserve the command error. */ }
       if (retryRead && isCurrent()) {
         const recovered = await observe(operation, step, run, 2)
-        if (running) try { onReadRecovered?.(performance.now() - started) } catch { /* Preserve the read result. */ }
+        if (running) try { onReadRecovered?.(performance.now() - started, step) } catch { /* Preserve the read result. */ }
         return recovered
       }
       throw error
@@ -170,13 +170,14 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure, 
     // TimeoutError removes an unsent command. Retry this read once while the host still owns its lease.
     get: (name: string) => observe('redis_command', 'get', () => client.get(key(name)), 1),
     async getMany(names: string[]): Promise<(string | null)[]> {
-      return primary('get_many', async () => {
+      if (!names.length) return []
+      return observe('redis_command', 'get_many', async () => {
         const values: unknown = await client.eval(getMany, { keys: names.map(key), arguments: [] })
         if (!Array.isArray(values) || values.length !== names.length || !values.every((value): value is string | null => value === null || typeof value === 'string')) {
           throw new RedisInvalidReply('Redis 批量读取结果无效')
         }
         return values
-      })
+      }, 1)
     },
     async matchesStringDigests(names: string[], digests: string[]): Promise<boolean> {
       return await primary('digest', () => client.eval(matchStringDigests, { keys: names.map(key), arguments: digests })) === 1

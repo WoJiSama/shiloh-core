@@ -1,7 +1,7 @@
 import type { AgentInteractionPlan, AgentInteractionResult } from '../../../contracts/agentInteraction.js'
 import { normalizeAgentInteractionResult, validateAgentInteractionPlan } from '../../tools/infrastructure/agentInteractions.js'
 import type { AgentDiagnosticDetails, AgentDiagnosticScope } from '../../../contracts/agentDiagnostics.js'
-import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import { annotateAgentError, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { createAgentConversationActivity, type AgentConversationActivityCapture } from '../../runtime/infrastructure/agentConversationActivity.js'
 import { generateAgentFailureNotice } from '../../conversation/infrastructure/agentFailureNotice.js'
 import type { CommitmentRunOptions, CommitmentRunResult } from '../../../contracts/commitments.js'
@@ -593,7 +593,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
   async function recoverCharacter(scope: CharacterScope): Promise<void> {
     const key = JSON.stringify(scope)
     if (recoveredCharacters.has(key)) return
-    await characters.update(scope, current => recoverInterruptedCharacter(current, now()))
+    const at = now()
+    await characters.maintain(scope, current => recoverInterruptedCharacter(current, at))
     recoveredCharacters.add(key)
   }
 
@@ -1616,7 +1617,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         delete state.lastConfirmedChat
       }
       state.activityVersion = activityVersion
-      let character = await characters.update(characterScope, current => expireCharacterGoals(current, now()))
+      const goalCheckAt = now()
+      let character = await characters.maintain(characterScope, current => expireCharacterGoals(current, goalCheckAt))
       const cognitionMessageRefs = () => [...new Map([...state!.recent, ...state!.unread].filter(message => message.messageId != null).map(message => [message.seq, { seq: message.seq, messageId: String(message.messageId) }])).values()]
       if (resolvedPersona.binding && ports.projectCognition) try {
         await ports.projectCognition({ agentId: resolvedPersona.binding.agentId, conversation: target, character,
@@ -2250,10 +2252,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             sentMessages: memoryBox.sentTexts,
           })
           await ensureExecution()
-          if (character.revision !== revision) throw new Error('一致性检查期间角色状态已改变，请重新读取后提交')
+          if (character.revision !== revision) throw annotateAgentError(new Error('一致性检查期间角色状态已改变，请重新读取后提交'),
+            { cause: 'character_revision_changed', result: 'not_saved' })
           if (verdict.verdict !== 'accept') {
             requiresClosing = true
-            throw new Error(`提交前一致性检查未通过，本次未保存或发送。${verdict.error ? `检查不可用(${verdict.error})` : JSON.stringify(verdict.issues)}。请用 simFinishTurn 修正正文、选择或依据，或放弃本次表达；不要重复已发送消息。`)
+            throw annotateAgentError(new Error(`提交前一致性检查未通过，本次未保存或发送。${verdict.error ? `检查不可用(${verdict.error})` : JSON.stringify(verdict.issues)}。请用 simFinishTurn 修正正文、选择或依据，或放弃本次表达；不要重复已发送消息。`),
+              { cause: verdict.error ? 'character_review_unavailable' : 'character_review_rejected', result: 'not_saved' })
           }
         }
         const selfMemoryBox = { list: normalizeMemoryList(await selfStore.loadSelfMemories().catch(() => {
@@ -3201,40 +3205,52 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             sendStatus = 'failed'
             const id = randomUUID()
             let pending: CharacterReceipt | undefined
+            let step = 'finish_send_guard'
             try {
               if (uncertainAction || memoryBox.deliveryUnknown) throw new Error('前序外部动作结果未知，已保存收尾状态；核实前不再发送公告')
               const sender = simulationTools.find(tool => tool.name === 'simSendMessage')!
               const event = makeToolEvent()
+              step = 'finish_send_validate'
               const input = prepareSimulationToolInput(sender, {
                 continuation: 'chat', messages: result.messages,
                 ...(result.replyToSeq === undefined ? {} : { replyToSeq: result.replyToSeq }),
                 ...(result.atUserIds === undefined ? {} : { atUserIds: result.atUserIds }),
               }, event)
               if (typeof input === 'string') throw new Error(input)
+              step = 'finish_send_guard'
               await ensureExecution(permit)
+              step = 'finish_receipt_prepare'
               character = await characters.update(characterScope, current => {
-                if (current.revision !== permit.revision) throw new Error('角色状态已改变，公告未登记')
+                if (current.revision !== permit.revision) throw annotateAgentError(new Error('角色状态已改变，公告未登记'),
+                  { cause: 'character_revision_changed' })
                 return recordCharacterReceipt(current, { id, toolName: 'simFinishTurn', status: 'pending', summary: '收尾状态已保存，等待最终消息发送回执', at: now() }, now())
               })
               permit.revision = character.revision
               pending = character.receipts.find(receipt => receipt.id === id)!
               announcement = permit
+              step = 'finish_send'
               const response = await runSimTool(sender, input, event)
               sendStatus = classifyCharacterResult(response) === 'succeeded' ? 'succeeded' : 'failed'
               try { duplicatesSkipped = Number(record(JSON.parse(response.replace(/^error: /, ''))).duplicatesSkipped) || 0 } catch { /* error response retains its own delivery evidence */ }
               if (sendStatus === 'failed') error = response
-            } catch (failure) { error = finishErrorText(failure) }
+            } catch (failure) {
+              error = finishErrorText(failure)
+              diagnose({ stage: 'delivery', operation: 'simulation_finish_send', outcome: 'failed', code: 'finish_announcement_failed', error: failure,
+                details: { step, ...(step === 'finish_send' ? {} : { result: 'not_dispatched' }) } })
+            }
             finally { announcement = undefined }
             if (pending) {
               try {
                 character = await characters.update(characterScope, current => {
-                  if (current.revision !== permit.revision) throw new Error('公告期间角色状态已改变，保留 pending 待核实，不覆盖新状态')
+                  if (current.revision !== permit.revision) throw annotateAgentError(new Error('公告期间角色状态已改变，保留 pending 待核实，不覆盖新状态'),
+                    { cause: 'character_revision_changed' })
                   return recordCharacterReceipt(current, { ...pending, status: sendStatus === 'succeeded' ? 'succeeded' : memoryBox.deliveryUnknown || sends > sentBefore ? 'unknown' : 'failed', summary: sendStatus === 'succeeded' ? `最终消息已确认发送 ${sends - sentBefore} 条，跳过重复 ${duplicatesSkipped} 条` : '最终消息发送未全部确认；已保存状态保留，不自动重发', at: now() }, now())
                 })
                 permit.revision = character.revision
               } catch (failure) {
-                error = finishErrorText(failure)
-                diagnose({ stage: 'delivery', operation: 'simulation_finish_receipt', outcome: 'unknown', code: 'finish_receipt_not_saved', error: failure })
+                error ??= finishErrorText(failure)
+                diagnose({ stage: 'delivery', operation: 'simulation_finish_receipt', outcome: 'unknown', code: 'finish_receipt_not_saved', error: failure,
+                  details: { step: 'finish_receipt_save', result: 'confirmation_pending' } })
               }
             }
           }
@@ -3242,13 +3258,22 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           if (memoryBox.deliveryUnknown) uncertainAction = true
           if (result.throughSeq !== undefined) {
             readStatus = 'failed'
-            try {
-              if (sendStatus === 'failed') throw new Error('最终消息未确认，保留未读，已保存角色状态不回滚')
-              await ensureExecution(permit)
-              if (!acknowledgeMessages(state!, result.throughSeq)) throw new Error('标读范围已改变，保留未读')
-              await store.save(groupId, state!)
-              readStatus = 'succeeded'
-            } catch (failure) { error = finishErrorText(failure) }
+            if (sendStatus !== 'failed') {
+              let step = 'finish_read_guard'
+              try {
+                await ensureExecution(permit)
+                step = 'finish_read_validate'
+                if (!acknowledgeMessages(state!, result.throughSeq)) throw new Error('标读范围已改变，保留未读')
+                step = 'finish_read_save'
+                await store.save(groupId, state!)
+                readStatus = 'succeeded'
+              } catch (failure) {
+                error ??= finishErrorText(failure)
+                diagnose({ stage: 'runtime', operation: 'simulation_finish_mark_read', outcome: step === 'finish_read_save' ? 'unknown' : 'failed',
+                  code: 'finish_mark_read_failed', error: failure,
+                  details: { step, result: step === 'finish_read_save' ? 'confirmation_pending' : 'not_saved' } })
+              }
+            }
           }
           if (error) executionError = error
           const outcome = {
@@ -4326,7 +4351,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         try {
           const scope = scopeFor(groupId, state.botId)
           await recoverCharacter(scope)
-          const current = await characters.update(scope, value => expireCharacterGoals(value, at))
+          const current = await characters.maintain(scope, value => expireCharacterGoals(value, at))
           const cutoff = (await personMemory.getSceneRedactions({ identity: scope, scene: { kind: 'group', id: scope.groupId } })).invalidatedAt
           const due = dueCharacterGoal({ ...current, goals: characterMemoryVisibility(current, cutoff).goals }, at)
           if (due) reasons.push({ kind: 'characterGoal', detail: due.id })

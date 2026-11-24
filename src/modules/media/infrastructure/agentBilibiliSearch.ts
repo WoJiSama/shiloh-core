@@ -6,7 +6,7 @@ import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnos
 import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agentSecretText.js'
 import { bilibiliGuard, bilibiliOfficialUrl, createBilibiliHttp, nativeAgentBilibiliRequest } from './agentBilibiliRelayHttp.js'
 import type { AgentBilibiliLookup, AgentBilibiliRequest } from './agentBilibiliRelayHttp.js'
-import { parseAgentBilibiliReference } from './agentBilibiliRelayReference.js'
+import { findAgentBilibiliEpisode, parseAgentBilibiliReference } from './agentBilibiliRelayReference.js'
 import { validateAgentVideoCard } from './agentVideoCard.js'
 
 export interface AgentBilibiliSearchProviderOptions {
@@ -196,13 +196,9 @@ export function createAgentBilibiliSearchProvider(options: AgentBilibiliSearchPr
         if (data.bvid !== id) throw failure()
         return card(id, data.title, row(data.owner).name, seconds(data.duration))
       }
-      const episodes = row(payload.result).episodes
-      if (!Array.isArray(episodes) || episodes.length > 1000) throw failure()
-      const matches = episodes.filter(value => { const identity = row(value).id; return typeof identity === 'string' && identity === id || typeof identity === 'number' && Number.isSafeInteger(identity) && String(identity) === id })
-      if (matches.length !== 1) throw failure()
-      const data = row(matches[0]), duration = data.duration
-      if (typeof duration !== 'number' || !Number.isSafeInteger(duration) || duration < 0) throw failure()
       const season = row(payload.result)
+      const data = findAgentBilibiliEpisode(season, id), duration = data?.duration
+      if (!data || typeof duration !== 'number' || !Number.isSafeInteger(duration) || duration < 0) throw failure()
       return card(id, data.long_title || data.share_copy || data.title, row(data.owner).name ?? row(season.up_info).uname, duration / 1000, true)
     }
     return { search, resolveUrl }

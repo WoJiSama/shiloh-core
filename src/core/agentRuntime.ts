@@ -2538,6 +2538,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     resolve: target => isRunning() && conversationEnabled(target) ? bindingFor(target) : undefined,
     available: target => allowsConversationAI(target) && adapterFor(target)?.isReady() === true && !privacyBlocked(platformAccountKey(target.account)),
     privatePeer: privatePeerFor, isRecalled: inbox.isRecalled, begin: beginMemoryTurn, isRunning, authorizePrivateSource,
+    ...(options.observeExecutionCurrent ? { observeCurrent } : {}),
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
     logger, diagnostics, ...(options.now ? { now: options.now } : {}),
   })
@@ -3794,7 +3795,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
                   await semanticMemory.capture(incoming, persona.binding, isCurrent)
                   await captureCognition(incoming, persona.binding, isCurrent).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
                   attempt.step = 'capture_history'
-                  await history.capture(incoming, persona.binding, isCurrent)
+                  await diagnostics.withScope(attempt.scope, 'history_capture', () => history.capture(incoming, persona.binding, isCurrent), true)
                   attempt.step = 'capture_group'
                   await groupMemory.capture(incoming, persona.binding, isCurrent)
                   attempt.step = 'ingest'
@@ -3840,7 +3841,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
                 await semanticMemory.capture(incoming, persona.binding, isCurrent)
                 await captureCognition(incoming, persona.binding, isCurrent).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
                 attempt.step = 'capture_history'
-                await history.capture(incoming, persona.binding, isCurrent)
+                await diagnostics.withScope(attempt.scope, 'history_capture', () => history.capture(incoming, persona.binding, isCurrent), true)
                 attempt.step = 'capture_group'
                 await groupMemory.capture(incoming, persona.binding, isCurrent)
                 attempt.step = 'ingest'

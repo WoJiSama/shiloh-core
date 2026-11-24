@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { createCharacterTurnTool } from '../dist/backend/modules/simulation/infrastructure/characterTurn.js'
 import { createCharacterTools } from '../dist/backend/modules/simulation/infrastructure/characterTools.js'
 import { createSimTools } from '../dist/backend/modules/simulation/infrastructure/simTools.js'
+import { createAgentDiagnostics } from '../dist/backend/modules/runtime/infrastructure/agentDiagnostics.js'
 import { beginCharacterGoalAttempt, createCharacterGoal, createEmptyCharacterState, recordCharacterReceipt, validateCharacterState } from '../dist/backend/modules/simulation/domain/characterState.js'
 
 const BASE = 1794200000000
@@ -80,6 +81,23 @@ test('模型检查期间状态变化或权限撤销，旧草稿不能提交', as
     assert.match(await h.call({ choice: 'schedule', reason: '后续研究', goal }), /^error:/)
     assert.equal(h.updates.length, 0); assert.equal(h.finishes.length, 0)
   }
+})
+
+test('a failed finish keeps its review stage after a successful second call', async () => {
+  const h = harness(), events = []
+  const diagnostics = createAgentDiagnostics({ onFailure: event => events.push(event), logger: { info() {}, warn() {}, error() {} } })
+  const input = { choice: 'schedule', reason: '准备安排', goal }
+  h.controls.review = async () => { throw new Error('PRIVATE_REVIEW_FIXTURE') }
+  const first = await h.tool.execute(input, {}, {
+    invalid: () => assert.fail('expected a valid finish candidate'),
+    failed: error => diagnostics.emit({ stage: 'tool', operation: 'simFinishTurn', outcome: 'failed', code: 'tool_threw', error }),
+  })
+  assert.match(first, /^error:/u)
+  assert.deepEqual(events.map(event => event.details), [{ step: 'finish_review', result: 'not_saved' }])
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE_REVIEW_FIXTURE/u)
+  h.controls.review = null
+  assert.equal((await h.call(input)).ok, true)
+  assert.equal(events.length, 1); assert.equal(h.updates.length, 1); assert.equal(h.finishes.length, 1)
 })
 
 test('收尾 schema 复用角色工具字段和描述，嵌套操作不暴露 action', () => {

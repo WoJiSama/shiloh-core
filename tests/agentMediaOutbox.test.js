@@ -493,16 +493,14 @@ test('Bilibili delivers one forward with the card followed by every video and th
   for (const secret of ['sha256', firstVideo.id, '搬运 source', 'bilivideo.com', 'base64', '/tmp/']) assert.equal(raw.includes(secret), false)
 })
 
-test('Bilibili uses a native text and cover card after a definite video rejection', redisTest, async t => {
+test('Bilibili preserves the image-only card after a definite video rejection', redisTest, async t => {
   const f = await fixture(t), job = await f.enqueue()
   f.setSend(call => call.effect === 'link' ? sent('bilibili-link') : resourceFailure())
   await f.outbox.start(); const record = await f.finished(job)
   assert.equal(record.state, 'completed'); assert.deepEqual(f.calls.map(call => call.effect), ['forward', 'forwardRetry', 'link'])
   const fallback = f.calls[1].action.plan.items
   assert.equal(fallback.length, 1)
-  assert.deepEqual(fallback[0].parts.map(part => part.kind), ['text', 'image'])
-  assert.match(fallback[0].parts[0].text, /https:\/\/www\.bilibili\.com\/video\//u)
-  assert.deepEqual(fallback[0].parts[1].artifact, cover)
+  assert.deepEqual(fallback[0].parts, [{ kind: 'image', artifact: cover }])
   assert.match(f.calls[2].action.parts[0].text, /已附原作品链接/u)
   assert.deepEqual(record.effects.map(effect => effect.state), ['failed', 'failed', 'sent'])
 })

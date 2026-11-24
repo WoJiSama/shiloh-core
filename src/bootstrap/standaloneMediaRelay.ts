@@ -270,6 +270,7 @@ export async function openStandaloneMediaRelay(options: {
     const bilibili = options.config.enabled ? createAgentBilibiliRelayProvider({ directory: providerDirectory, artifacts,
       ...(options.config.bilibili.authCookie ? { authCookie: options.config.bilibili.authCookie } : {}),
       autoAuthorizedRetry: options.config.bilibili.autoAuthorizedRetry, secrets: options.secrets, allowsText: options.allowsText,
+      cardRenderer: 'summary',
       ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}) }) : undefined
     let douyin: AgentMediaRelayProvider | undefined
     if (options.config.enabled && options.config.douyin?.enabled) {

@@ -1,4 +1,5 @@
 import type { CharacterState, CharacterMemory, CharacterGoal, CharacterDecision } from '../../../contracts/character.js'
+import { annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { AbstractTool, type ParameterSchema } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { isQqSimulationUserId } from '../domain/simConfig.js'
 import { createCharacterTools, type CharacterToolContext } from './characterTools.js'
@@ -155,47 +156,68 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
     }
     override async func(params: Record<string, unknown>): Promise<unknown> {
       const input = parse(params, memoryFields, goalFields, isUserId)
-      await ctx.ensureActive()
-      const snapshot = structuredClone(await ctx.read())
-      let draft = structuredClone(snapshot), changed = false
-      const visible = [...ctx.visibleEvidenceRefs()]
-      const localTools = createCharacterTools({
-        now: ctx.now, read: async () => structuredClone(draft),
-        update: async mutate => { draft = mutate(structuredClone(draft)); changed = true; return structuredClone(draft) },
-        visibleEvidenceRefs: () => [...visible], makeId: ctx.makeId,
-        ...(ctx.sharedSourceIds ? { sharedSourceIds: ctx.sharedSourceIds } : {}),
-        ...(ctx.memoryInvalidatedAt ? { memoryInvalidatedAt: ctx.memoryInvalidatedAt } : {}),
-        selectGoal: async () => { throw new Error('收尾不支持 focus') }, onDecision: () => {},
-      })
-      const apply = async (name: string, value: Record<string, unknown>) => {
-        const tool = localTools.find(tool => tool.name === name)!
-        const input = prepareSimulationToolInput(tool, value)
-        if (typeof input === 'string') throw new Error(input)
-        const result = await tool.execute(input, {})
-        if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true) throw new Error(typeof result === 'string' ? result : '角色草稿校验失败')
+      let step = 'finish_authorization'
+      try {
+        await ctx.ensureActive()
+        step = 'finish_state_read'
+        const snapshot = structuredClone(await ctx.read())
+        let draft = structuredClone(snapshot), changed = false
+        const visible = [...ctx.visibleEvidenceRefs()]
+        const localTools = createCharacterTools({
+          now: ctx.now, read: async () => structuredClone(draft),
+          update: async mutate => { draft = mutate(structuredClone(draft)); changed = true; return structuredClone(draft) },
+          visibleEvidenceRefs: () => [...visible], makeId: ctx.makeId,
+          ...(ctx.sharedSourceIds ? { sharedSourceIds: ctx.sharedSourceIds } : {}),
+          ...(ctx.memoryInvalidatedAt ? { memoryInvalidatedAt: ctx.memoryInvalidatedAt } : {}),
+          selectGoal: async () => { throw new Error('收尾不支持 focus') }, onDecision: () => {},
+        })
+        const apply = async (name: string, value: Record<string, unknown>) => {
+          const tool = localTools.find(tool => tool.name === name)!
+          let issue: ToolParameterIssue | undefined, failure: unknown
+          const invalid = (value: ToolParameterIssue) => { issue = value }
+          const args = prepareSimulationToolInput(tool, value, undefined, invalid)
+          if (typeof args === 'string') throw annotateAgentError(new Error(args), { cause: 'finish_draft_invalid', ...issue })
+          const result = await tool.execute(args, {}, { invalid, failed: error => { failure = error } })
+          if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true) {
+            const error = new Error(typeof result === 'string' ? result : '角色草稿校验失败', { cause: failure })
+            throw annotateAgentError(error, { ...issue, ...(failure === undefined ? { cause: 'finish_draft_invalid' } : {}) })
+          }
+        }
+        step = 'finish_memory_draft'
+        for (const memory of input.memories) await apply('simCharacterMemory', { ...memory, action: 'remember' })
+        step = 'finish_goal_draft'
+        if (input.goal) await apply('simGoal', { ...input.goal, action: GOAL_ACTIONS[input.choice as keyof typeof GOAL_ACTIONS] })
+        step = 'finish_decision_draft'
+        if (DECISION_CHOICES.has(input.choice)) await apply('simDecide', { kind: input.choice, reason: input.reason })
+        step = 'finish_review'
+        await ctx.review?.({ candidate: { ...structuredClone(input) }, state: structuredClone(draft) })
+        step = 'finish_source_check'
+        await ctx.ensureActive()
+        const stillVisible = new Set(ctx.visibleEvidenceRefs())
+        const submittedRefs = [...input.memories, ...(input.goal ? [input.goal] : [])].flatMap(item => Array.isArray(item.evidenceRefs) ? item.evidenceRefs : [])
+        if (submittedRefs.some(ref => typeof ref !== 'string' || !stillVisible.has(ref))) {
+          throw annotateAgentError(new Error('一致性检查期间引用来源已不可见，收尾未提交'), { cause: 'finish_source_changed' })
+        }
+        step = 'finish_commit'
+        const state = changed ? await ctx.update(current => {
+          if (current.revision !== snapshot.revision) throw annotateAgentError(new Error('角色状态已改变，收尾未提交，请重新读取后选择'),
+            { cause: 'character_revision_changed', result: 'not_saved' })
+          return structuredClone(draft)
+        }) : snapshot
+        step = 'finish_apply'
+        const goal = input.goal ? state.goals.find(item => !snapshot.goals.some(old => old.id === item.id) || (item.id === input.goal!.id && item.revision !== snapshot.goals.find(old => old.id === item.id)?.revision)) : undefined
+        return await ctx.finish({ choice: input.choice, state,
+          memories: state.memories.filter(item => !snapshot.memories.some(old => old.id === item.id)),
+          ...(goal ? { goal } : {}),
+          ...(DECISION_CHOICES.has(input.choice) && state.decision ? { decision: state.decision.kind } : {}),
+          ...(input.messages === undefined ? {} : { messages: input.messages }),
+          ...(input.replyToSeq === undefined ? {} : { replyToSeq: input.replyToSeq }),
+          ...(input.atUserIds === undefined ? {} : { atUserIds: input.atUserIds }),
+          ...(input.throughSeq === undefined ? {} : { throughSeq: input.throughSeq }),
+        })
+      } catch (error) {
+        throw annotateAgentError(error, { step, ...(step !== 'finish_commit' && step !== 'finish_apply' ? { result: 'not_saved' } : {}) })
       }
-      for (const memory of input.memories) await apply('simCharacterMemory', { ...memory, action: 'remember' })
-      if (input.goal) await apply('simGoal', { ...input.goal, action: GOAL_ACTIONS[input.choice as keyof typeof GOAL_ACTIONS] })
-      if (DECISION_CHOICES.has(input.choice)) await apply('simDecide', { kind: input.choice, reason: input.reason })
-      await ctx.review?.({ candidate: { ...structuredClone(input) }, state: structuredClone(draft) })
-      await ctx.ensureActive()
-      const stillVisible = new Set(ctx.visibleEvidenceRefs())
-      const submittedRefs = [...input.memories, ...(input.goal ? [input.goal] : [])].flatMap(item => Array.isArray(item.evidenceRefs) ? item.evidenceRefs : [])
-      if (submittedRefs.some(ref => typeof ref !== 'string' || !stillVisible.has(ref))) throw new Error('一致性检查期间引用来源已不可见，收尾未提交')
-      const state = changed ? await ctx.update(current => {
-        if (current.revision !== snapshot.revision) throw new Error('角色状态已改变，收尾未提交，请重新读取后选择')
-        return structuredClone(draft)
-      }) : snapshot
-      const goal = input.goal ? state.goals.find(item => !snapshot.goals.some(old => old.id === item.id) || (item.id === input.goal!.id && item.revision !== snapshot.goals.find(old => old.id === item.id)?.revision)) : undefined
-      return await ctx.finish({ choice: input.choice, state,
-        memories: state.memories.filter(item => !snapshot.memories.some(old => old.id === item.id)),
-        ...(goal ? { goal } : {}),
-        ...(DECISION_CHOICES.has(input.choice) && state.decision ? { decision: state.decision.kind } : {}),
-        ...(input.messages === undefined ? {} : { messages: input.messages }),
-        ...(input.replyToSeq === undefined ? {} : { replyToSeq: input.replyToSeq }),
-        ...(input.atUserIds === undefined ? {} : { atUserIds: input.atUserIds }),
-        ...(input.throughSeq === undefined ? {} : { throughSeq: input.throughSeq }),
-      })
     }
   }
   return new FinishTurnTool()

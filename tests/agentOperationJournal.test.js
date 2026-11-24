@@ -102,6 +102,35 @@ test('concurrent events share a durable file sync and keep their order', async t
   assert.deepEqual((await rows(f.directory)).map(item => item.id), events.map(item => item.id))
 })
 
+test('separate batches reuse one descriptor, sync each append and reject a replaced file', async t => {
+  const f = await fixture(t), journal = await f.open(), original = fs.open
+  captureEmergency(t)
+  let opened = 0, synced = 0, closed = 0
+  t.mock.method(fs, 'open', async (...args) => {
+    const handle = await original(...args)
+    if (String(args[0]).endsWith('.ndjson')) {
+      opened++
+      const sync = handle.sync.bind(handle), close = handle.close.bind(handle)
+      handle.sync = async () => { synced++; await sync() }
+      handle.close = async () => { closed++; await close() }
+    }
+    return handle
+  })
+  assert.equal(await journal.append(event(1)), true)
+  assert.equal(await journal.append(event(2)), true)
+  assert.deepEqual([opened, synced, closed], [1, 2, 0])
+  const filename = path.join(f.directory, (await files(f.directory))[0])
+  await fs.rename(filename, filename + '.original')
+  const contents = await fs.readFile(filename + '.original')
+  await fs.writeFile(filename, contents, { mode: 0o600 })
+  assert.equal(await journal.append(event(3)), false)
+  assert.equal(await journal.append(event(4)), false)
+  assert.deepEqual([opened, synced, closed], [2, 2, 2])
+  assert.deepEqual(await fs.readFile(filename), contents)
+  assert.deepEqual(await fs.readFile(filename + '.original'), contents)
+  assert.equal(await journal.close(), false)
+})
+
 test('date and size rotation applies global maxFiles and retention while keeping complete bounded records', async t => {
   const f = await fixture(t); await fs.mkdir(f.directory, { mode: 0o700 })
   const expired = path.join(f.directory, '2000-01-01.000000.ndjson'); await fs.writeFile(expired, JSON.stringify(event()) + '\n', { mode: 0o600 })
@@ -174,12 +203,20 @@ test('bounded pending queue reports overflow safely without abandoning admitted 
 
 test('write and fsync failures return false, expose fixed emergency metadata and keep health and close degraded', async t => {
   const f = await fixture(t), stderr = captureEmergency(t), emergency = [], journal = await f.open({ onEmergency(safe, code) { emergency.push([safe, code]); throw Error('PRIVATE_EMERGENCY') } }), original = fs.open
+  let rejectSync = true, fileOpens = 0
   t.mock.method(fs, 'open', async (...args) => {
     if (!String(args[0]).endsWith('.ndjson')) return original(...args)
-    const handle = await original(...args)
-    return new Proxy(handle, { get(owner, key) { if (key === 'sync') return async () => { throw Error('PRIVATE_FS_KEY /private/local/path') }; const value = Reflect.get(owner, key, owner); return typeof value === 'function' ? value.bind(owner) : value } })
+    const handle = await original(...args), sync = handle.sync.bind(handle)
+    fileOpens++
+    handle.sync = async () => { if (rejectSync) throw Error('PRIVATE_FS_KEY /private/local/path'); await sync() }
+    return handle
   })
-  assert.equal(await journal.append(event()), false); assert.equal(await journal.flush(), false); assert.equal(await journal.close(), false); assert.equal(journal.health().written, 0); assert.equal(journal.health().failed, 1)
+  assert.equal(await journal.append(event()), false); assert.equal(await journal.flush(), false)
+  rejectSync = false
+  assert.equal(await journal.append(event(2)), true)
+  assert.equal(fileOpens, 2)
+  assert.deepEqual((await rows(f.directory)).map(item => item.id), ['event-2'])
+  assert.equal(await journal.close(), false); assert.equal(journal.health().written, 1); assert.equal(journal.health().failed, 1)
   assert.equal(emergency.length, 1); assert.equal(emergency[0][1], 'JOURNAL_WRITE_FAILED'); assert.equal(stderr.join('').includes('PRIVATE'), false); assert.equal(stderr.join('').includes('/private/local'), false)
 })
 

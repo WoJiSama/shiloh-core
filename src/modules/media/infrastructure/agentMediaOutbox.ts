@@ -266,11 +266,12 @@ export function createAgentMediaOutbox(options: {
         }
         let result = await relay('forward', value.plan)
         if (result.state === 'failed' && bilibili) {
-          // A confirmed rejection may fall back to the original text and cover in a native forward card.
+          // Keep the image-only intro after a confirmed video rejection.
           const textPart = { kind: 'text' as const, text: linkText(value) }
-          const covers = value.plan.items[0]?.parts.filter(part => part.kind === 'image') ?? []
+          const intro = value.plan.items[0]!.parts
+          const covers = intro.filter(part => part.kind === 'image')
           if (value.plan.items.some(item => item.parts.some(part => part.kind === 'video'))) {
-            const parts = [textPart, ...covers]
+            const parts = covers.length && intro.every(part => part.kind === 'image') ? covers : [textPart, ...covers]
             result = await relay('forwardRetry', { version: 1, items: [{ parts }] })
           } else if (result.code === 'media_resource_preprocessing_failed') {
             result = await relay('forwardRetry', { version: 1, items: [{ parts: [textPart] }] })

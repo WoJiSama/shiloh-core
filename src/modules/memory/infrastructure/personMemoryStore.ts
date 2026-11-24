@@ -133,11 +133,21 @@ function updateSceneRule(rules: PersonMemorySceneRule[], scene: PersonMemoryScen
   if (existing) Object.assign(existing, patch)
   else rules.push({ scene: { ...scene }, forgottenBefore: 0, disabled: false, ...patch })
 }
+function observedSource(person: PersonDocument, scope: ScopeDocument, source: PersonMemorySource): boolean {
+  return scope.subjects.includes(person.subjectId) && person.seen.some(item => samePersonMemoryScene(item.scene, source.scene) && item.at >= source.at)
+}
 function observe(person: PersonDocument, scope: ScopeDocument, source: PersonMemorySource) {
   if (!scope.subjects.includes(person.subjectId)) scope.subjects.push(person.subjectId)
   const previous = person.seen.find(item => samePersonMemoryScene(item.scene, source.scene))
   if (previous) previous.at = Math.max(previous.at, source.at)
   else person.seen.push({ scene: { ...source.scene }, at: source.at })
+}
+function parseIdentities(raw: unknown): PersonMemoryIdentity[] {
+  const values = raw === null || raw === undefined ? [] : json(raw)
+  if (!Array.isArray(values) || !values.every(value => validPersonMemoryIdentity(value as PersonMemoryIdentity))) {
+    throw new Error('人物记忆身份目录损坏')
+  }
+  return values as PersonMemoryIdentity[]
 }
 
 interface MemoryTransferSide {
@@ -385,18 +395,12 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
   }
 
   async function identities(): Promise<PersonMemoryIdentity[]> {
-    const raw = await redis.get(DIRECTORY)
-    if (raw === null || raw === undefined) return []
-    const values = json(raw)
-    if (!Array.isArray(values) || !values.every(value => validPersonMemoryIdentity(value as PersonMemoryIdentity))) throw new Error('人物记忆身份目录损坏')
-    return values as PersonMemoryIdentity[]
+    return parseIdentities(await redis.get(DIRECTORY))
   }
   async function registerIdentity(identity: PersonMemoryIdentity) {
     requireIdentity(identity)
     await transaction(DIRECTORY, async tx => {
-      const raw = await tx.get(DIRECTORY), parsed = raw === null || raw === undefined ? [] : json(raw)
-      if (!Array.isArray(parsed) || !parsed.every(value => validPersonMemoryIdentity(value as PersonMemoryIdentity))) throw new Error('人物记忆身份目录损坏')
-      const values = parsed as PersonMemoryIdentity[]
+      const values = parseIdentities(await tx.get(DIRECTORY))
       if (!values.some(value => sameIdentity(value, identity))) tx.set(DIRECTORY, JSON.stringify([...values, {botId:identity.botId,personaId:identity.personaId}]))
     })
   }
@@ -493,12 +497,30 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
   async function registerSource(input: PersonMemorySubject & { source: PersonMemorySource }, isCurrent?:()=>boolean) {
     requireSubject(input)
     if (!validPersonMemorySource(input.source) || input.source.authorId !== input.subjectId) return false
-    await registerIdentity(input.identity)
+    let identityKnown = false
+    if (redis.getMany) {
+      // Conversation, semantic, history and group stores may register the same
+      // source. Re-read current privacy and the watermark together before skipping a write.
+      const values = await redis.getMany([DIRECTORY, personKey(input.identity, input.subjectId), scopeKey(input.identity)])
+      if (values.length !== 3) throw new Error('人物记忆批量读取结果无效')
+      const [directory, personRaw, scopeRaw] = values
+      identityKnown = parseIdentities(directory).some(value => sameIdentity(value, input.identity))
+      if (identityKnown) {
+        const person = parsePerson(personRaw, input), scope = parseScope(scopeRaw, input.identity)
+        if (observedSource(person, scope, input.source)) {
+          if (isCurrent?.() === false) throw new Error('人物记忆写入期间会话绑定已改变')
+          return !isPersonMemoryRedacted(input.source, input.source.excerpt, redactions(person, scope))
+        }
+      }
+    }
+    if (!identityKnown) await registerIdentity(input.identity)
     return transaction(baseKey(input.identity), async tx => {
       const { person, scope } = await load(input, tx)
       if (isPersonMemoryRedacted(input.source, input.source.excerpt, redactions(person, scope))) return false
-      observe(person, scope, input.source)
-      save(tx, person, scope)
+      if (!observedSource(person, scope, input.source)) {
+        observe(person, scope, input.source)
+        save(tx, person, scope)
+      }
       return true
     }, isCurrent)
   }

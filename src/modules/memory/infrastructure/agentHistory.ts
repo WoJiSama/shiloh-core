@@ -15,6 +15,9 @@ type SourceKind = 'all' | 'recent' | 'archive' | 'memory'
 type Query = { question: string; userId?: string; start: number | null; end: number | null; limit: number; offset: number; kind: SourceKind; ids?: string[]; keywords?: string[] }
 type Evidence = { binding: AgentBindingSnapshot; row: AgentHistoryRow; kind: 'recent' | 'archive' }
 type MemoryEvidence = { entry: PersonMemoryEntry; binding?: AgentBindingSnapshot }
+class HistoryDeadlineError extends Error {
+  constructor(readonly limit: number) { super('历史来源操作超时'); this.name = 'TimeoutError' }
+}
 export interface AgentHistoryStyleSources {
   messages: { userId: string; text: string }[]
   isCurrent(): Promise<boolean>
@@ -30,7 +33,7 @@ function bounded(value: number | undefined, fallback: number, minimum: number, m
 function safeGuard(guard: () => boolean) { try { return guard() } catch { return false } }
 function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
-    const abort = () => reject(new Error('历史来源读取已取消'))
+    const abort = () => reject(signal.reason instanceof HistoryDeadlineError ? signal.reason : new Error('历史来源读取已取消'))
     work.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
     if (signal.aborted) abort()
     else signal.addEventListener('abort', abort, { once: true })
@@ -102,6 +105,7 @@ export function createAgentHistory(ports: {
   isRecalled(target: ConversationAddress, messageId: string): Promise<boolean>
   begin(binding: AgentBindingSnapshot): Promise<MemoryTurn>
   isRunning(): boolean
+  observeCurrent?(check: () => boolean): boolean
   allowsText(text: string): boolean
   logger: { warn(message: string, error?: unknown): void }
   diagnostics?: Pick<AgentDiagnostics, 'emit'>
@@ -131,9 +135,11 @@ export function createAgentHistory(ports: {
     requests.add(request)
     const baseSignal = AbortSignal.any([lifecycle.signal, controller.signal, ...(signal ? [signal] : [])])
     let turn: MemoryTurn | undefined
-    const isCurrent = () => !baseSignal.aborted && turn?.isCurrent() !== false && !turn?.signal.aborted && safeGuard(guard) && current(binding) && related.every(item => current(item))
+    const authorized = () => turn?.isCurrent() !== false && !turn?.signal.aborted && safeGuard(guard) && current(binding) && related.every(item => current(item))
+    const isCurrent = () => !baseSignal.aborted && (ports.observeCurrent ? ports.observeCurrent(authorized) : authorized())
     const poll = setInterval(() => { if (!isCurrent()) controller.abort() }, 25)
-    const deadline = setTimeout(() => controller.abort(), timeout())
+    const budget = timeout()
+    const deadline = setTimeout(() => controller.abort(new HistoryDeadlineError(budget)), budget)
     poll.unref?.(); deadline.unref?.()
     try {
       if (!isCurrent()) throw new Error('历史来源已失效')
@@ -152,9 +158,10 @@ export function createAgentHistory(ports: {
       clearInterval(poll); clearTimeout(deadline); controller.abort(); requests.delete(request); turn?.release()
     }
   }
-  async function permitted(binding: AgentBindingSnapshot, row: AgentHistoryRow, boundedAge = true) {
+  async function permitted(binding: AgentBindingSnapshot, row: AgentHistoryRow, boundedAge = true, afterRecall?: () => void) {
     if (boundedAge && row.at < now() - retention() || row.at > now() + 60_000 || !ports.allowsText(row.text) ||
         binding.target.kind === 'private' && ports.privatePeer(binding.target) !== row.authorId || await ports.isRecalled(binding.target, row.messageId)) return false
+    afterRecall?.()
     return !isPersonMemoryRedacted(sourceOf(binding, row), row.text, await ports.memory.getRedactions({ identity: identity(binding), subjectId: row.authorId }))
   }
   function requestRow(binding: AgentBindingSnapshot, source: AgentHistoryRequestSource): AgentHistoryRow | undefined {
@@ -182,10 +189,12 @@ export function createAgentHistory(ports: {
     const row: AgentHistoryRow = { messageId: incoming.messageId, authorId: incoming.sender.id, name: (incoming.senderName ?? '').slice(0, 24), text, at: incoming.occurredAt,
       ...(binding.target.kind === 'private' ? { peerId: incoming.sender.id } : {}),
     }
-    let step: string = 'authorization'
+    const started = performance.now()
+    let step: string = 'acquire'
     try {
       await withContext(binding, guard, undefined, async context => {
-        if (!await permitted(binding, row) || !context.isCurrent()) return
+        step = 'check_recall'
+        if (!await permitted(binding, row, true, () => { step = 'authorization' }) || !context.isCurrent()) return
         step = 'register_source'
         if (!await ports.memory.registerSource({ identity: identity(binding), subjectId: row.authorId, source: sourceOf(binding, row) }, context.isCurrent)) return
         step = 'save'
@@ -198,9 +207,12 @@ export function createAgentHistory(ports: {
       })
     } catch (error) {
       reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'history_capture',
-        code: step === 'authorization' ? 'history_source_check_failed' : step === 'register_source' ? 'history_source_registration_failed' : 'history_source_write_failed',
+        code: error instanceof HistoryDeadlineError ? 'history_source_timeout' :
+          step === 'save' ? 'history_source_write_failed' : step === 'register_source' ? 'history_source_registration_failed' : 'history_source_check_failed',
         outcome: step === 'save' ? 'unknown' : 'failed',
-        details: { step, result: step === 'save' ? 'confirmation_pending' : 'not_saved' }, error },
+        durationMs: performance.now() - started,
+        details: { step, result: step === 'save' ? 'confirmation_pending' : 'not_saved',
+          ...(error instanceof HistoryDeadlineError ? { limit: error.limit } : {}) }, error },
         () => ports.logger.warn('[Agent] 历史原始来源未能保存'))
     }
   }
