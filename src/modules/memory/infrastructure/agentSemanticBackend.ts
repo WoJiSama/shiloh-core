@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
 import type { AgentSemanticMemoryBackend } from '../../../contracts/semanticMemory.js'
 import type { PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
+import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { EmbeddingGateway } from './EmbeddingGateway.js'
 import { RerankGateway } from './RerankGateway.js'
+import { AgentSemanticMemoryTimeoutError } from './agentSemanticRetrieval.js'
 
 interface SemanticModel {
   readonly baseUrl: string
@@ -15,6 +17,7 @@ export interface AgentSemanticBackendOptions {
   readonly rerank?: SemanticModel
   readonly secrets?: readonly string[]
   readonly fetchFn?: typeof fetch
+  readonly diagnostics?: Pick<AgentDiagnostics, 'emit'>
 }
 
 const MAX_RESPONSE_BYTES = 1024 * 1024
@@ -125,33 +128,60 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
     signal: AbortSignal, reportFailure: () => void): typeof fetch {
     return async (input, init) => {
       let response: Response | undefined
+      let combined: AbortSignal | undefined, dispatched = false
+      let step = 'request_prepare'
+      let failure: string | undefined
+      const started = performance.now()
       try {
         const endpoint = new URL(typeof input === 'string' || input instanceof URL ? input : input.url)
         // Each configured gateway gets only its exact endpoint and credentials.
         if (endpoint.href !== model.baseUrl || init?.method !== 'POST' || typeof init.body !== 'string') fail()
-        const combined = AbortSignal.any([signal, ...(init.signal ? [init.signal] : [])])
+        const requestSignal = AbortSignal.any([signal, ...(init.signal ? [init.signal] : [])])
+        combined = requestSignal
         const body = object(JSON.parse(init.body))
         const count = operation === 'embedding' ? Array.isArray(body.input) ? body.input.length : 0
           : Array.isArray(body.documents) ? body.documents.length : 0
         if (!count) fail()
-        await ensureCurrent(context, combined)
+        step = 'authorization'
+        await ensureCurrent(context, requestSignal)
         // No authorization result survives across actual HTTP requests or batches.
-        assertCurrent(context, combined)
+        assertCurrent(context, requestSignal)
+        step = 'response_headers'
         const pending = Promise.resolve().then(() => {
-          assertCurrent(context, combined)
-          return fetchFn(endpoint.href, { ...init, redirect: 'error', signal: combined })
+          assertCurrent(context, requestSignal)
+          dispatched = true
+          return fetchFn(endpoint.href, { ...init, redirect: 'error', signal: requestSignal })
         })
-        void pending.then(late => { if (combined.aborted) void late.body?.cancel().catch(() => {}) }, () => {})
-        response = await abortable(pending, combined)
-        await ensureCurrent(context, combined)
-        if (!response.ok || response.redirected || response.url && new URL(response.url).href !== model.baseUrl) fail()
-        const payload = await readResponse(response, combined)
-        await ensureCurrent(context, combined)
+        void pending.then(late => { if (requestSignal.aborted) void late.body?.cancel().catch(() => {}) }, () => {})
+        response = await abortable(pending, requestSignal)
+        step = 'authorization'
+        await ensureCurrent(context, requestSignal)
+        if (!response.ok) { failure = 'http_error'; fail() }
+        if (response.redirected || response.url && new URL(response.url).href !== model.baseUrl) { failure = 'provider_redirected'; fail() }
+        step = 'response_body'
+        const payload = await readResponse(response, requestSignal)
+        step = 'authorization'
+        await ensureCurrent(context, requestSignal)
+        step = 'response_validation'
         validatePayload(payload, operation, count)
         // The legacy gateways only see validated JSON, never provider error bodies.
         return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
-      } catch {
+      } catch (error) {
         reportFailure()
+        const deadline = combined?.reason instanceof AgentSemanticMemoryTimeoutError ? combined.reason : undefined
+        const providerTimedOut = !signal.aborted && combined?.reason instanceof DOMException && combined.reason.name === 'TimeoutError'
+        const cancelled = combined?.aborted && !providerTimedOut
+        const code = deadline ? 'semantic_provider_budget_elapsed' : providerTimedOut ? 'provider_timeout' :
+          cancelled ? 'request_cancelled' : failure ?? (step === 'authorization' ? 'model_source_check_failed' :
+            step === 'response_headers' ? 'provider_transport_error' : step === 'response_body'
+              ? error instanceof SyntaxError ? 'model_response_body_invalid' : 'model_response_body_read_failed'
+              : step === 'response_validation' ? 'model_response_envelope_invalid' : 'request_invalid')
+        try {
+          options.diagnostics?.emit({ stage: 'model', operation: operation === 'embedding' ? 'semantic_embedding_provider' : 'semantic_rerank_provider',
+            outcome: cancelled ? 'cancelled' : 'failed', code, durationMs: performance.now() - started,
+            ...(response ? { httpStatus: response.status } : {}), details: { step: failure === 'http_error' ? 'response_headers' : step,
+              dispatched, ...(deadline?.budgetMs === undefined ? {} : { limit: deadline.budgetMs }), result: dispatched ? 'discarded' : 'not_dispatched' } })
+        } catch { /* Observation must not change the safe failure returned to the caller. */ }
         return fail()
       } finally {
         void response?.body?.cancel().catch(() => {})

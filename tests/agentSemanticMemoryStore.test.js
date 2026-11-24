@@ -103,6 +103,31 @@ test('a legacy indexed corpus migrates once and later intake neither reads nor r
   assert.deepEqual(await store.read(input.id), { ...input, rows: [...input.rows, row(65), row(66)] })
 })
 
+test('fresh source verification skips vector payloads and rejects changed or removed sources', redisTest, async t => {
+  const f = await fixture(t, 'semantic-store-source-verification')
+  const input = state(scope(), [row(1, { vector: [0.1, 0.9], providerId }), row(2)])
+  assert.equal(await f.store.update(input.id, () => input), true)
+  let vectorReads = 0
+  const store = createAgentSemanticMemoryStore({ ...f.storage, async eval(script, options) {
+    if (script.includes('HGETALL')) vectorReads++
+    return f.storage.eval(script, options)
+  } })
+  const signal = new AbortController().signal
+  assert.equal(await store.hasSources(input.id, input.rows, signal), true)
+  assert.equal(vectorReads, 0)
+  await store.observe(input.id, signal)
+  assert.equal(vectorReads, 1)
+  assert.equal(await store.hasSources(input.id, [row(1, { text: 'different source' })], signal), false)
+  await f.store.updateSources(input.id, saved => ({ ...saved, rows: [row(2)] }), () => true)
+  assert.equal(await store.hasSources(input.id, [input.rows[0]], signal), false)
+  assert.equal(await store.hasSources(input.id, [input.rows[1]], signal), true)
+  const guard = { signal, isCurrent: () => true, async ensureCurrent() {} }
+  await f.store.purgeSubject({ account: input.scope.target.account, agentId: input.scope.agentId, target: input.scope.target,
+    subjectId: input.rows[1].authorId, through: input.rows[1].at }, guard)
+  assert.equal(await store.hasSources(input.id, [input.rows[1]], signal), false)
+  assert.equal(vectorReads, 1)
+})
+
 test('standalone semantic snapshot traffic cannot hold up the inbox socket or dispatch a revoked queued write', redisTest, async t => {
   const f = await fixture(t, 'semantic-store-isolation')
   const peers = []

@@ -607,7 +607,7 @@ export async function main(argv: string[]): Promise<void> {
     if (config.semanticMemory.enabled && config.semanticMemory.embedding) semanticBackend = createAgentSemanticBackend({
       embedding: config.semanticMemory.embedding,
       ...(config.semanticMemory.rerank ? { rerank: config.semanticMemory.rerank } : {}), secrets: hostSecrets,
-      fetchFn: observeModelFetch('semantic_memory_provider_http'),
+      diagnostics,
     })
     const pixivTools = config.tools.pixiv?.enabled && mediaRelayHost?.pixivToolProvider ? createAgentPixivTools(config.tools.pixiv, {
           provider: createAgentPixivSearchProvider({ ...config.tools.pixiv, secrets: hostSecrets, allowsText: allowsMediaText }),

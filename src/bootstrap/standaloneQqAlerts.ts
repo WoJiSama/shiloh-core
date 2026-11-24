@@ -95,6 +95,8 @@ const operationNames = new Map(Object.entries({
   history_cleanup: '清理历史消息来源',
   semantic_memory_index: '更新语义记忆索引',
   semantic_memory_recall: '语义记忆召回',
+  semantic_embedding_provider: '请求语义向量接口',
+  semantic_rerank_provider: '请求语义重排接口',
   simulation_semantic_memory_read: '群聊语义记忆召回',
   self_profile: '自我档案修订',
   semantic_memory_sweep: '读取语义记忆来源',
@@ -228,8 +230,10 @@ const failureReasons = new Map(Object.entries({
   semantic_recall_local_fallback: '向量召回未完成，本轮降级为本地关键词查找。',
   semantic_recall_local_fallback_source_check: '语义召回复核历史来源超时，本轮使用已核验的关键词结果。',
   semantic_recall_local_fallback_authorization: '语义召回核验查询授权超时，本轮使用已核验的关键词结果。',
-  semantic_recall_local_fallback_embedding: '语义召回等待查询向量超时，本轮使用已核验的关键词结果。',
+  semantic_recall_local_fallback_embedding: '查询向量未在本轮召回预算内完成，已使用核验过的关键词结果。',
   semantic_recall_local_fallback_rerank: '语义召回重排超时，本轮使用已核验的关键词结果。',
+  semantic_recall_budget_elapsed: '本轮召回等待达到本地时限。',
+  semantic_provider_budget_elapsed: '本轮语义记忆的本地时限已到，接口请求停止等待。',
   semantic_recall_source_changed: '召回时来源或授权发生变化，本轮停止使用相关资料。',
   semantic_source_store_unavailable: '语义记忆来源库暂时无法读取。',
   person_profile_store_unavailable: '人物事实学习的存储操作未能完成。',
@@ -251,6 +255,7 @@ const failureReasons = new Map(Object.entries({
   wake_gate_source_changed: '唤醒预判期间资料来源或权限发生变化。',
   wake_gate_source_check_failed: '唤醒预判未能复核消息来源，本轮已中止。',
   provider_timeout: '等待外部服务响应超时。',
+  request_cancelled: '请求在执行期间被取消。',
   provider_transport_error: '与外部服务通信时发生网络错误。',
   request_invalid: '提取请求未通过配置、参数或来源校验。',
   http_error: '服务返回了错误状态。',
@@ -460,6 +465,7 @@ const stepNames = new Map(Object.entries({
   reserve: '领取任务', reconcile: '核对任务状态', list: '读取任务列表', dispatch_work: '派发后台任务',
   enqueue: '加入队列', forward_queue: '移交队列', privacy_command: '处理隐私请求', group_log: '处理群记录',
   provider_request: '请求服务', request_prepare: '准备请求', response_body: '读取响应体', response_validation: '校验响应',
+  response_headers: '等待响应头',
   source_check: '核验来源', schedule: '安排下一次执行', model: '执行模型请求', store: '读取和整理存量数据',
   configuration: '校验配置', connect: '建立连接', acquire: '取得运行授权', connect_redis: '初始化 Redis',
   open_journal: '打开操作日志', initialize_services: '初始化依赖服务', start_console: '启动控制台', start_core: '启动 Core',
@@ -480,7 +486,7 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
   const rule = details?.rule && (ruleNames.get(details.rule) ?? details.rule)
   const location = details?.step && (stepNames.get(details.step) ?? details.step)
   const limitUnit = code === 'model_response_truncated' || details?.cause === 'model_response_truncated' ? ' token' :
-    code?.includes('timeout') ? ' ms' : ''
+    code?.includes('timeout') || code === 'semantic_provider_budget_elapsed' || details?.cause === 'semantic_recall_budget_elapsed' ? ' ms' : ''
   const evidence = [location && `环节 ${location}`, details?.field && `字段 ${details.field}`, rule,
     details?.limit !== undefined && `界限 ${details.limit}${limitUnit}`, details?.nativeCode !== undefined && `平台返回码 ${details.nativeCode}`,
     details?.dispatched === undefined ? undefined : details.dispatched ? '已发起请求' : '未发起请求',
@@ -491,7 +497,8 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
   if (event.outcome === 'succeeded' || event.outcome === 'started') return { operation, evidence, result: disposition }
   const knownReason = code && !genericCodes.has(code) && failureReasons.get(code)
   const reason = glmReason || (rule ? `${details?.field ? `${details.field} ` : ''}${rule}。` : undefined) ||
-    (code === 'http_error' ? httpReason : undefined) || (cause === failureReasons.get('diagnostic_metadata_redacted') ? undefined : cause) ||
+    (code === 'http_error' ? httpReason : undefined) || (details?.result === 'fallback_used' ? knownReason : undefined) ||
+    (cause === failureReasons.get('diagnostic_metadata_redacted') ? undefined : cause) ||
     (knownReason && code !== 'http_error' ? knownReason : undefined) || httpReason || exceptionReasons.get(event.errorKind) || knownReason ||
     (event.outcome === 'unknown' ? '暂时无法确认操作是否完成。' : code && warningCodes.has(code)
       ? '这条兼容日志缺少可确认的原因。' : '此操作未提供可确认的失败原因。')
@@ -515,7 +522,7 @@ export function formatQqOwnerAlerts(batch: AlertBatch): string {
   function format(includeOperation: boolean, includeContext: boolean, rowLimit = Infinity) {
     const lines = batch.alerts.map(alert => {
       const warning = alert.code !== undefined && warningCodes.has(alert.code)
-      const outcome = alert.outcome === 'unknown' ? '结果待确认' : warning ? '出现警告' : '失败'
+      const outcome = alert.details?.result === 'fallback_used' ? '已降级' : alert.outcome === 'unknown' ? '结果待确认' : warning ? '出现警告' : '失败'
       const description = describeAgentDiagnostic(alert)
       const code = alert.code === 'redacted' ? undefined : alert.code
       const status = alert.httpStatus

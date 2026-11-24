@@ -460,6 +460,28 @@ export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) 
         return rememberObservation(id, observation(id, saved))
       } catch { signal?.throwIfAborted(); return fail() }
     },
+    /** Compare source rows against a fresh snapshot including the cleanup fence. Vector state cannot authorize a source. */
+    async hasSources(id: string, expected: readonly AgentSemanticMemoryRow[], signal: AbortSignal): Promise<boolean> {
+      try {
+        if (!ID_PATTERN.test(id)) fail()
+        signal.throwIfAborted()
+        const prior = observations.get(id)
+        let state: AgentSemanticMemoryState | undefined
+        if (prior && await prior.isUnchanged()) state = prior.state
+        else {
+          signal.throwIfAborted()
+          const saved = await sourceSnapshot(id, redis)
+          state = visible(saved.state, saved.cleanup)
+        }
+        signal.throwIfAborted()
+        if (!state) return false
+        const current = new Map(state.rows.map(row => [row.messageId, row]))
+        return expected.every(row => {
+          const present = current.get(row.messageId)
+          return present !== undefined && sameSemanticMemorySource(present, row)
+        })
+      } catch { signal.throwIfAborted(); return fail() }
+    },
     update(id: string, mutate: Mutation, isCurrent?: () => boolean) {
       return update(id, mutate, isCurrent)
     },

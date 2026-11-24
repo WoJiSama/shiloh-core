@@ -223,6 +223,18 @@ test('QQ summary alerts prefer the documented provider reason and keep unknown H
   assert.match(text, /等待摘要模型响应失败，共 1 次\n服务拒绝了本次请求。\n错误码 http_error · HTTP 状态 400/u)
 })
 
+test('QQ semantic recall alerts show a confirmed downgrade and its local time limit', () => {
+  const text = formatQqOwnerAlerts({ version: 1, id: 'fixture', alerts: [{
+    firstAt: 1000, lastAt: 1000, count: 1, traceId: 'semantic-fixture', operation: 'semantic_memory_recall',
+    stage: 'memory', outcome: 'unknown', code: 'semantic_recall_local_fallback_embedding', durationMs: 1002,
+    details: { result: 'fallback_used', cause: 'semantic_recall_budget_elapsed', step: 'embedding', limit: 1000 },
+  }] })
+  assert.match(text, /语义记忆召回已降级.*\n查询向量未在本轮召回预算内完成/u)
+  assert.match(text, /环节 生成向量 · 界限 1000 ms/u)
+  assert.match(text, /耗时 1002 ms/u)
+  assert.doesNotMatch(text, /结果待确认/u)
+})
+
 test('a full QQ batch keeps explanations and trace identifiers within the transport limit', async () => {
   const { QQ_OWNER_ALERT_MAX_LENGTH } = await load('contracts/agentDiagnostics.js')
   const alerts = Array.from({ length: 8 }, (_, i) => ({

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import test from 'node:test'
 import { createAgentSemanticBackend } from '../dist/backend/modules/memory/infrastructure/agentSemanticBackend.js'
+import { AgentSemanticMemoryTimeoutError } from '../dist/backend/modules/memory/infrastructure/agentSemanticRetrieval.js'
 
 const embedding = { baseUrl: 'https://embedding.example/custom/embeddings', name: 'embedding-fixture', apiKey: 'embedding-private-secret-123456' }
 const rerank = { baseUrl: 'https://ranking.example/independent/rerank', name: 'rerank-fixture', apiKey: 'ranking-private-secret-789012' }
@@ -191,4 +192,29 @@ test('semantic late successful fetch is canceled and cannot return a vector afte
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(cancelled, true)
   await rejected(run.embed(['内容'], context()))
+})
+
+test('provider diagnostics distinguish a local budget while waiting for headers from a rejected or invalid response', async () => {
+  const rows = []
+  const diagnostics = { emit: event => rows.push(event) }
+  const controller = new AbortController(), started = Promise.withResolvers()
+  const stalled = backend({ diagnostics, fetchFn: async () => {
+    started.resolve()
+    return new Promise(() => {})
+  } })
+  const wait = stalled.embed(['private-query-content'], context({ signal: controller.signal }))
+  await started.promise
+  controller.abort(new AgentSemanticMemoryTimeoutError('embedding', 1_000))
+  await rejected(wait)
+  for (const response of [new Response('private-provider-response', { status: 503 }), answer({ data: [] })]) {
+    await rejected(backend({ diagnostics, fetchFn: async () => response }).embed(['private-query-content'], context()))
+  }
+  assert.deepEqual(rows.map(({ code, outcome, httpStatus, details }) => [code, outcome, httpStatus, details]), [
+    ['semantic_provider_budget_elapsed', 'cancelled', undefined,
+      { step: 'response_headers', dispatched: true, limit: 1_000, result: 'discarded' }],
+    ['http_error', 'failed', 503, { step: 'response_headers', dispatched: true, result: 'discarded' }],
+    ['model_response_envelope_invalid', 'failed', 200, { step: 'response_validation', dispatched: true, result: 'discarded' }],
+  ])
+  assert.ok(rows.every(row => row.operation === 'semantic_embedding_provider' && Number.isFinite(row.durationMs)))
+  assert.doesNotMatch(JSON.stringify(rows), /private-|embedding\.example/u)
 })
