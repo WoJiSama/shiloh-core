@@ -30,7 +30,7 @@ async function waitFor(check, description) {
 }
 
 /** Compiled production runtime, with isolated persistence, model and adapter ports. */
-function fixture({ groups = [GROUP], script = () => quiet(), fetchCharacterFeed, reflectCharacter, runCharacterWorker, characterWorkerAvailable, beforeGet, beforeSet, diagnostics } = {}) {
+function fixture({ groups = [GROUP], script = () => quiet(), fetchCharacterFeed, reflectCharacter, runCharacterWorker, characterWorkerAvailable, beforeGet, beforeSet, diagnostics, observeCurrent } = {}) {
   const kv = new Map(), clock = { value: BASE }, calls = [], events = [], sent = [], errors = []
   const redis = {
     async get(key) { await beforeGet?.(key); return kv.get(key) ?? null },
@@ -51,6 +51,7 @@ function fixture({ groups = [GROUP], script = () => quiet(), fetchCharacterFeed,
   const runtimePorts = {
     redis, now: () => clock.value, random: () => 0.99,
     ...(diagnostics ? { diagnostics } : {}),
+    ...(observeCurrent ? { observeCurrent } : {}),
     logger: { info() {}, warn(...args) { errors.push(args.join(' ')) }, error(...args) { errors.push(args.map(String).join(' ')) } },
     getSelf: () => ({ id: BOT, name: '希洛' }),
     getPersona: () => ({ personaId: 'shiloh', persona: { name: '希洛' }, systemContent: '喜欢探索与解谜' }),
@@ -197,9 +198,10 @@ test('后台收尾写入等待期间的新消息保持序号与未读，点名�
 
 test('a recalled message cancels the background check while storage failures still alert', async t => {
   const entered = deferred(), resume = deferred(), emitted = []
-  let paused = false, broken = false, pending, subscriptionReads = 0
+  let paused = false, broken = false, pending, subscriptionReads = 0, observedAuthority = 0
   const h = fixture({
     diagnostics: { emit: row => emitted.push(row), traceId: () => 'background-test' },
+    observeCurrent(check) { observedAuthority++; return check() },
     async beforeGet(key) {
       if (key === `${sessionKey(GROUP)}:activity-version` && !paused) {
         paused = true
@@ -232,6 +234,7 @@ test('a recalled message cancels the background check while storage failures sti
   subscriptionReads = 0
   await h.runtime.sweepOnce()
   assert.equal(subscriptionReads, 1)
+  assert.ok(observedAuthority > 0)
   assert.equal(h.calls.length, 0)
   assert.equal(h.sent.length, 0)
 })

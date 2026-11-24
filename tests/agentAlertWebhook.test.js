@@ -114,6 +114,25 @@ test('QQ journal alerts show the blocking phase without combining different bloc
   assert.match(message, /排队 5000 ms.*关联记录 original-event/u)
 })
 
+test('Redis scheduling evidence stays distinct on both first-failure alerts', async () => {
+  const batches = []
+  const queue = createAgentFailureAlerts({ channel: 'qq', logger: quiet,
+    async deliver(batch) { batches.push(batch); return { state: 'confirmed' } } })
+  const diagnostics = createAgentDiagnostics({ logger: quiet, onFailure: queue.report })
+  for (const dispatchTurnPending of [true, false]) {
+    diagnostics.emit({ stage: 'host', operation: 'redis_command', outcome: 'failed', code: 'redis_command_queue_timeout',
+      details: { step: 'get', dispatched: false, dispatchTurnPending, timeoutOverrunMs: 900,
+        ...(dispatchTurnPending ? {} : { dispatchTurnMs: 4 }) } })
+  }
+  await queue.close()
+  assert.equal(batches[0].alerts.length, 2)
+  const message = formatQqOwnerAlerts(batches[0])
+  assert.match(message, /发送调度探针仍在等待/u)
+  assert.match(message, /已运行发送调度探针/u)
+  assert.match(message, /超时回调延后 900 ms/u)
+  assert.match(message, /调度探针 4 ms/u)
+})
+
 test('a new error pushes immediately and repeats flush after the cooldown even when no new error arrives', async t => {
   const f = clockFixture(t)
   f.report(toolFailure)

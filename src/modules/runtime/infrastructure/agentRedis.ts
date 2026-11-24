@@ -95,9 +95,29 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure, 
   timer.unref()
   client.on('end', loseLease)
 
+  type DispatchTurn = { ranAt?: number }
+  let pendingDispatchTurn: DispatchTurn | undefined
+  function observeDispatchTurn(): DispatchTurn {
+    if (pendingDispatchTurn) return pendingDispatchTurn
+    const turn: DispatchTurn = {}
+    pendingDispatchTurn = turn
+    // Node Redis schedules primary writes with setImmediate. A shared probe records
+    // whether the check phase ran while a command was waiting, before any retry.
+    setImmediate(() => {
+      turn.ranAt = performance.now()
+      pendingDispatchTurn = undefined
+    }).unref()
+    return turn
+  }
+
   async function observe<T>(operation: RedisCommandOperation, step: RedisCommandStep, run: () => Promise<T>, readAttempt?: 1 | 2): Promise<T> {
     const started = performance.now()
-    try { return await run() }
+    let dispatchTurn: DispatchTurn | undefined
+    try {
+      const request = run()
+      if (operation === 'redis_command' && onCommandFailure) dispatchTurn = observeDispatchTurn()
+      return await request
+    }
     catch (error) {
       let code: RedisFailureCode = 'redis_command_failed'
       if (error instanceof SemanticRedisQueueFull) code = 'redis_command_queue_full'
@@ -113,13 +133,21 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure, 
       const uncertain = code === 'redis_socket_idle_timeout' || error instanceof SocketClosedUnexpectedlyError
       const limit = code === 'redis_command_queue_full' ? semanticQueueLimit : code === 'redis_command_queue_timeout' ?
         commandTimeoutMs : code === 'redis_socket_idle_timeout' ? semanticSocketIdleMs : undefined
+      const durationMs = performance.now() - started
+      const dispatchTiming = code === 'redis_command_queue_timeout' && dispatchTurn ? {
+        timeoutOverrunMs: Math.max(0, Math.round(durationMs - commandTimeoutMs)),
+        ...(dispatchTurn.ranAt === undefined ? { dispatchTurnPending: true } : {
+          dispatchTurnPending: false, dispatchTurnMs: Math.max(0, Math.round(dispatchTurn.ranAt - started)),
+        }),
+      } : undefined
       const details: AgentDiagnosticDetails = { step, ...(limit === undefined ? {} : { limit }),
+        ...dispatchTiming,
         ...(readAttempt === undefined ? {} : { attempt: readAttempt, maxAttempts: 2 }),
         ...(waiting ? { dispatched: false, result: retryRead ? 'retry_scheduled' : 'not_dispatched' }
           : uncertain ? { result: 'confirmation_pending' } : {}) }
       annotateAgentError(error, { cause: code, ...details })
       if (running) try { onCommandFailure?.({ operation, code, outcome: uncertain ? 'unknown' : 'failed',
-        details, durationMs: performance.now() - started, error }) } catch { /* Preserve the command error. */ }
+        details, durationMs, error }) } catch { /* Preserve the command error. */ }
       if (retryRead && isCurrent()) {
         const recovered = await observe(operation, step, run, 2)
         if (running) try { onReadRecovered?.(performance.now() - started) } catch { /* Preserve the read result. */ }

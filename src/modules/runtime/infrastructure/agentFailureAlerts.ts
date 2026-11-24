@@ -137,7 +137,7 @@ export function createAgentFailureAlerts(options: {
     const sourceTag = event.sourceTag && /^[\p{L}\p{N} _-]{1,24}$/u.test(event.sourceTag) && allowed(event.sourceTag) ? event.sourceTag : undefined
     let key = JSON.stringify([event.stage, operation, event.outcome, code, event.httpStatus, event.errorKind, sourceTag,
       details?.step, details?.blockingStep, details?.cause, details?.field, details?.rule, details?.limit, details?.nativeCode,
-      details?.dispatched, details?.result])
+      details?.dispatched, details?.dispatchTurnPending, details?.result])
     let alert: Alert = { stage: event.stage, operation, outcome: event.outcome,
       ...(code === undefined ? {} : { code }), ...(event.httpStatus === undefined ? {} : { httpStatus: event.httpStatus }),
       ...(event.errorKind === undefined ? {} : { errorKind: event.errorKind }), ...(traceId === 'redacted' ? {} : { traceId }),

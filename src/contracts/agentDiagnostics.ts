@@ -28,6 +28,9 @@ export interface AgentDiagnosticDetails {
   readonly blockingStep?: AgentJournalWriteStep
   readonly slowestCompletedStep?: AgentJournalWriteStep
   readonly slowestCompletedStepMs?: number
+  readonly dispatchTurnPending?: boolean
+  readonly dispatchTurnMs?: number
+  readonly timeoutOverrunMs?: number
 }
 
 export type AgentDiagnosticScope =

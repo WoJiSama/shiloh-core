@@ -72,14 +72,16 @@ function scope(value: unknown): AgentDiagnosticScope {
 }
 export function parseAgentDiagnosticDetails(value: unknown): Readonly<AgentDiagnosticDetails> {
   const row = record(value, ['step', 'cause', 'field', 'rule', 'limit', 'nativeCode', 'dispatched', 'result',
-    'retryInMs', 'attempt', 'maxAttempts', 'causeEventId', 'queueMs', 'stepMs', 'blockingStep', 'slowestCompletedStep', 'slowestCompletedStepMs'])
+    'retryInMs', 'attempt', 'maxAttempts', 'causeEventId', 'queueMs', 'stepMs', 'blockingStep', 'slowestCompletedStep', 'slowestCompletedStepMs',
+    'dispatchTurnPending', 'dispatchTurnMs', 'timeoutOverrunMs'])
   for (const key of ['step', 'cause', 'field', 'rule', 'causeEventId']) if (row[key] !== undefined) token(row[key])
-  for (const key of ['limit', 'retryInMs', 'attempt', 'maxAttempts', 'queueMs', 'stepMs', 'slowestCompletedStepMs']) if (row[key] !== undefined &&
+  for (const key of ['limit', 'retryInMs', 'attempt', 'maxAttempts', 'queueMs', 'stepMs', 'slowestCompletedStepMs',
+    'dispatchTurnMs', 'timeoutOverrunMs']) if (row[key] !== undefined &&
       (!Number.isSafeInteger(row[key]) || Number(row[key]) < 0)) throw failure()
   for (const key of ['blockingStep', 'slowestCompletedStep']) if (row[key] !== undefined &&
       !agentJournalWriteSteps.some(step => step === row[key])) throw failure()
   if (row.nativeCode !== undefined && (!Number.isInteger(row.nativeCode) || Math.abs(Number(row.nativeCode)) > 2_147_483_647)) throw failure()
-  if (row.dispatched !== undefined && typeof row.dispatched !== 'boolean') throw failure()
+  for (const key of ['dispatched', 'dispatchTurnPending']) if (row[key] !== undefined && typeof row[key] !== 'boolean') throw failure()
   if (row.result !== undefined && !agentDiagnosticResults.some(item => item === row.result)) throw failure()
   return Object.freeze(row) as AgentDiagnosticDetails
 }

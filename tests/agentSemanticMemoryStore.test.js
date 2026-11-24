@@ -182,46 +182,49 @@ test('standalone semantic snapshot traffic cannot hold up the inbox socket or di
   } finally { socket.resume() }
 })
 
-test('an unsent Redis GET retries once and an unsent write keeps its failure', redisTest, async t => {
+test('unsent Redis commands report scheduler timing and only the GET retries', redisTest, async t => {
   const f = await fixture(t, 'redis-retry-test-fixture')
   const events = [], recoveries = []
   const schedule = globalThis.setImmediate
-  let holdNext = false, releaseWrite
-  const resumeWrite = () => {
-    const release = releaseWrite
-    releaseWrite = undefined
-    release?.()
-  }
+  let holdNext = 0
+  const delayed = []
+  const resumeWrite = () => { for (const release of delayed.splice(0)) release() }
   const redis = await openAgentRedis({ url: f.url, instance: 'redis-before-send-retry', onLost() {},
     onCommandFailure(event) { events.push(event); resumeWrite() },
     onReadRecovered(durationMs) { recoveries.push(durationMs) },
   })
   t.mock.method(globalThis, 'setImmediate', (callback, ...args) => {
     const handle = schedule(callback, ...args)
-    if (holdNext) {
-      holdNext = false
+    if (holdNext > 0) {
+      holdNext--
       clearImmediate(handle)
-      releaseWrite = () => schedule(callback, ...args)
+      delayed.push(() => schedule(callback, ...args))
     }
     return handle
   })
   try {
     await redis.storage.set('probe', 'saved')
-    holdNext = true
+    holdNext = 1
     const read = redis.storage.get('probe')
-    assert.ok(releaseWrite)
+    assert.equal(delayed.length, 1)
     assert.equal(await read, 'saved')
     assert.equal(events.length, 1)
-    assert.deepEqual(events[0].details, { step: 'get', limit: 2_000, attempt: 1, maxAttempts: 2, dispatched: false, result: 'retry_scheduled' })
+    const { dispatchTurnMs, timeoutOverrunMs, ...readDetails } = events[0].details
+    assert.deepEqual(readDetails, { step: 'get', limit: 2_000, attempt: 1, maxAttempts: 2, dispatched: false, result: 'retry_scheduled',
+      dispatchTurnPending: false })
+    assert.ok(Number.isSafeInteger(dispatchTurnMs) && dispatchTurnMs >= 0)
+    assert.ok(Number.isSafeInteger(timeoutOverrunMs) && timeoutOverrunMs >= 0)
     assert.equal(recoveries.length, 1)
 
-    holdNext = true
+    holdNext = 2
     const write = redis.storage.set('probe', 'unsent')
-    assert.ok(releaseWrite)
+    assert.equal(delayed.length, 2)
     await assert.rejects(write)
     assert.equal(await redis.storage.get('probe'), 'saved')
     assert.equal(events.length, 2)
-    assert.deepEqual(events[1].details, { step: 'set', limit: 2_000, dispatched: false, result: 'not_dispatched' })
+    const { timeoutOverrunMs: writeOverrunMs, ...writeDetails } = events[1].details
+    assert.deepEqual(writeDetails, { step: 'set', limit: 2_000, dispatched: false, result: 'not_dispatched', dispatchTurnPending: true })
+    assert.ok(Number.isSafeInteger(writeOverrunMs) && writeOverrunMs >= 0)
   } finally {
     resumeWrite()
     await redis.close()

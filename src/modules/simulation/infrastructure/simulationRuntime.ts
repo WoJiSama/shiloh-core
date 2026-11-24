@@ -4404,7 +4404,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     let memoryTurn: Awaited<ReturnType<NonNullable<SimulationRuntimePorts['beginMemoryTurn']>>> | undefined
     backgroundControllers.add(controller)
     backgroundByGroup.set(groupId, controller)
-    const canCallModel = () => {
+    const checkBackgroundAuthority = () => {
       if (stopped || controller.signal.aborted || memoryTurn?.isCurrent() === false ||
           ports.isAccountReady?.(target.account) === false || !handlesTarget(target) || !allowsConversationAI(target)) return false
       const live = personaFor(target)
@@ -4412,6 +4412,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         (live.binding ? agentBindingToken(live.binding) : undefined) === bindingToken
       return bindingCurrent && groupActive(runtimeConfig(), groupId) && proactiveAllowed(groupId)
     }
+    const canCallModel = () => ports.observeCurrent ? ports.observeCurrent(checkBackgroundAuthority) === true : checkBackgroundAuthority()
     const guard = async () => {
       await refreshGroupState(true)
       if (!canCallModel()) throw new CharacterBackgroundRevokedError('角色后台活动范围已改变')

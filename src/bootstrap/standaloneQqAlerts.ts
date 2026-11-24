@@ -498,11 +498,17 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
   const journalReason = code === 'diagnostic_journal_timeout' && location
     ? `操作日志确认超过五秒，当时环节为${location}${blocking ? `，前一批正在${blocking}` : ''}。`
     : undefined
+  const queueReason = code === 'redis_command_queue_timeout' && details?.dispatchTurnPending !== undefined
+    ? details.dispatchTurnPending ? 'Redis 命令尚未发出，超时时 Node.js 发送调度探针仍在等待。'
+      : 'Node.js 已运行发送调度探针，Redis 命令到超时时仍留在客户端队列。'
+    : undefined
   const limitUnit = code === 'model_response_truncated' || details?.cause === 'model_response_truncated' ? ' token' :
     code?.includes('timeout') || code === 'semantic_provider_budget_elapsed' || details?.cause === 'semantic_recall_budget_elapsed' ? ' ms' : ''
   const evidence = [!journalReason && location && `环节 ${location}`, details?.field && `字段 ${details.field}`, rule,
     details?.limit !== undefined && `界限 ${details.limit}${limitUnit}`, details?.nativeCode !== undefined && `平台返回码 ${details.nativeCode}`,
     details?.dispatched === undefined ? undefined : details.dispatched ? '已发起请求' : '未发起请求',
+    details?.dispatchTurnMs !== undefined && `调度探针 ${details.dispatchTurnMs} ms`,
+    details?.timeoutOverrunMs !== undefined && `超时回调延后 ${details.timeoutOverrunMs} ms`,
     details?.queueMs !== undefined && `排队 ${details.queueMs} ms`,
     details?.stepMs !== undefined && details.step !== 'journal_queue' && `当前环节 ${details.stepMs} ms`,
     slowest && details?.slowestCompletedStepMs !== undefined && `前面最慢的环节 ${slowest} ${details.slowestCompletedStepMs} ms`,
@@ -513,7 +519,7 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
     details?.attempt !== undefined && `第 ${details.attempt}${details.maxAttempts === undefined ? '' : `/${details.maxAttempts}`} 次`].filter(Boolean).join(' · ')
   if (event.outcome === 'succeeded' || event.outcome === 'started') return { operation, evidence, result: disposition }
   const knownReason = code && !genericCodes.has(code) && failureReasons.get(code)
-  const reason = journalReason || glmReason || (rule ? `${details?.field ? `${details.field} ` : ''}${rule}。` : undefined) ||
+  const reason = journalReason || queueReason || glmReason || (rule ? `${details?.field ? `${details.field} ` : ''}${rule}。` : undefined) ||
     (code === 'http_error' ? httpReason : undefined) || (details?.result === 'fallback_used' ? knownReason : undefined) ||
     (cause === failureReasons.get('diagnostic_metadata_redacted') ? undefined : cause) ||
     (knownReason && code !== 'http_error' ? knownReason : undefined) || httpReason || exceptionReasons.get(event.errorKind) || knownReason ||
