@@ -129,10 +129,10 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
     constructor() {
       super()
       this.name = 'simFinishTurn'
-      this.description = '显式选择本轮如何结束。chat普通聊天、interest_only仅有兴趣不承诺后续、silent旁听、cannot做不到、unauthorized未授权、unwilling不愿意、deferred暂缓；这些选择不自动建目标。schedule创建新自主目标，wait调整已有目标，complete完成有本目标成功回执的目标，abandon放弃目标。可显式保存至多两条有来源记忆；所有变更先完整校验再一次保存，成功后才交运行时发送可选消息、标读并结束本轮。reason只写简短选择理由。goal与memories都不传action，schedule也不传id；不支持focus。不推测聊天文字、不补来源、不自动发消息或重试。保存失败不表示安排或完成已生效，拒绝仍然自由。silent/deferred禁止messages；其余选择可发1至5条消息。需要标读时用 markRead=true，由系统计算连续已展示的位置。'
+      this.description = '结束本轮时必须提交顶层 choice。chat普通聊天、interest_only仅有兴趣不承诺后续、silent旁听、cannot做不到、unauthorized未授权、unwilling不愿意、deferred暂缓；这些选择不自动建目标。schedule创建新自主目标，wait调整已有目标，complete完成有本目标成功回执的目标，abandon放弃目标。可显式保存至多两条有来源记忆；所有变更先完整校验再一次保存，成功后才交运行时发送可选消息、标读并结束本轮。reason只写简短选择理由。goal与memories都不传action，schedule也不传id；不支持focus。不推测聊天文字、不补来源、不自动发消息或重试。保存失败不表示安排或完成已生效，拒绝仍然自由。silent/deferred禁止messages；其余选择可发1至5条消息。需要标读时用 markRead=true，由系统计算连续已展示的位置。'
       this.parameters = {
         type: 'object', additionalProperties: false, required: ['choice'], properties: {
-          choice: { type: 'string', enum: [...CHARACTER_TURN_CHOICES] },
+          choice: { type: 'string', enum: [...CHARACTER_TURN_CHOICES], description: '必填。依据本轮实际选择，普通回话填 chat，安静旁听填 silent。' },
           reason: { type: 'string', minLength: 1, maxLength: 600, description: '本轮选择的简短理由。chat、interest_only、silent 可省略，其余 choice 必填。' },
           memories: { type: 'array', maxItems: 2, description: '仅角色自己的经历、兴趣、观点。社交待办 pendingEvent 和本群相处习惯 interaction 请在收尾前单独调用 simRemember。每项不传 action 或新记录 id。', items: nestedSchema(memoryTool) },
           goal: { ...nestedSchema(goalTool), description: `仅 schedule/wait/complete/abandon 使用，操作由 choice 固定，不传 action。${goalTool.description}` },

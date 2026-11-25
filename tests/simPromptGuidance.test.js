@@ -69,12 +69,17 @@ test('固定协议不含角色名，人格变化和工具变化保留相同前�
   assert.ok(first.indexOf('【希洛口吻优先规则】') < first.indexOf('【本轮工具使用说明】'))
 })
 
-test('每轮尾部只传阶段、剩余轮数、聚焦目标和实际可见来源', () => {
+test('每轮尾部包含当前阶段、可见来源和简短的收尾必填项提示', () => {
   const acting = buildCharacterTurnContext({ phase: 'acting', remainingToolRounds: 3, focusedGoalId: 'goal-a', visibleEvidenceRefs: ['message:8', 'receipt:actual'] })
   const closing = buildCharacterTurnContext({ phase: 'closing', remainingToolRounds: 1, visibleEvidenceRefs: ['memory:old'] })
   assert.deepEqual(JSON.parse(acting.split('\n')[1]), { phase: 'acting', remainingToolRounds: 3, focusedGoalId: 'goal-a', visibleEvidenceRefs: ['message:8', 'receipt:actual'] })
   assert.deepEqual(JSON.parse(closing.split('\n')[1]), { phase: 'closing', remainingToolRounds: 1, focusedGoalId: null, visibleEvidenceRefs: ['memory:old'] })
   assert.match(closing, /仅 simFinishTurn/)
+  for (const context of [acting, closing]) {
+    assert.match(context, /顶层必须填写 choice/u)
+    assert.match(context, /"choice":"chat","messages":/u)
+    assert.match(context, /"choice":"silent","markRead":true/u)
+  }
   assert.doesNotMatch(acting + closing, /原子验证|完成标准|experience\+reported|【回合提交协议】/)
   assert.ok(acting.length < 400 && closing.length < 400)
   assert.notEqual(acting, closing)

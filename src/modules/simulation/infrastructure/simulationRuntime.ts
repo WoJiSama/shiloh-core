@@ -73,7 +73,7 @@ import { buildWakeSnapshot, compactSimMessage } from '../domain/messageView.js'
 import { buildSocialPermissionRequest, readSocialVerdict, type SocialAction } from '../domain/socialPermission.js'
 import { computeWaitOutcome, normalizeWaitPlan, type SimWaitPlan } from '../domain/waitGate.js'
 import { checkSendAllowance, checkWakeBudget, describeBudgetLimit, isDirectAddressKind, limitNoticeDue, shouldAnnounceBudgetLimit, invalidatePreSleepWaitByParticipation, markPreSleepSatisfied, recordSend, recordWake, recordWakeTokens, resetPreSleepWait, rollBudgetDay } from '../domain/budget.js'
-import { buildCharacterTurnContext, buildSimSystemPrompt, buildWakePrompt, trimAgentHistory } from '../domain/promptBuilder.js'
+import { buildCharacterTurnContext, buildSimSystemPrompt, buildWakePrompt, FINISH_CHOICE_GUIDANCE, trimAgentHistory } from '../domain/promptBuilder.js'
 import { isSilentDeclaration, isWrappedAnnotation, mentionsSilenceVocabulary } from '../domain/silentDeclaration.js'
 import { parsePersonProfilePatches, groundPersonProfileCandidate, interestMatchesTitle, type PersonProfile } from '../domain/personProfile.js'
 import { isSleeping, activityFactor, sleepinessNote, staleMessageNote, type RhythmWindow } from '../domain/rhythm.js'
@@ -3373,7 +3373,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             const input = prepareSimulationToolInput(tool, args, event, invalid => { issue = invalid })
             if (typeof input === 'string') {
               if (tool === finishTool) requiresClosing = true
-              return reject('tool_schema_invalid', `error: ${input}`, undefined, issue)
+              const repair = tool === finishTool && issue?.field === 'choice' && issue.rule === 'required' ? ` ${FINISH_CHOICE_GUIDANCE}` : ''
+              return reject('tool_schema_invalid', `error: ${input}${repair}`, undefined, issue)
             }
             args = input
           }

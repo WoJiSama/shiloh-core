@@ -377,6 +377,8 @@ test('finish preflight reports fixed rejection reasons to QQ and allows a correc
   invalidJson.function.arguments = '{"reason":'
   const cases = [
     { code: 'tool_arguments_invalid', cause: /有效 JSON 对象/u, message: tools(invalidJson) },
+    { code: 'tool_schema_invalid', cause: /choice 缺少必填项/u, field: 'choice', rule: 'required',
+      message: tools(toolCall('simFinishTurn', { markRead: true })) },
     { code: 'tool_schema_invalid', cause: /reason 字符数不足/u, field: 'reason', rule: 'minLength', message: tools(toolCall('simFinishTurn', { ...params, reason: '' })) },
     { code: 'tool_content_blocked', cause: /触发了宿主出站内容检查/u, message: tools(toolCall('simFinishTurn', { ...params, reason: 'fixture-private-value' })) },
     { code: 'finish_read_range_invalid', cause: /throughSeq 超出本轮已读范围/u, field: 'throughSeq', rule: 'read_through',
@@ -405,6 +407,9 @@ test('finish preflight reports fixed rejection reasons to QQ and allows a correc
       await diagnostics.flush()
       await alerts.close()
       assert.equal(h.calls.length, 2)
+      if (field === 'choice') {
+        assert.match(h.calls[1].messages.find(row => row.role === 'tool').content, /"choice":"silent","markRead":true/u)
+      }
       assert.equal(h.sent.length, 1)
       assert.ok(JSON.stringify(h.sent[0]).includes(params.messages[0]))
       const finishRows = rows.filter(row => row.operation === 'simFinishTurn')

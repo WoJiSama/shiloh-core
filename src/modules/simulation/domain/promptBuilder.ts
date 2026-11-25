@@ -14,13 +14,16 @@ export interface CharacterTurnContextInput {
   visibleEvidenceRefs: string[]
 }
 
-/** Per-request facts only; stable rules remain in the system protocol. */
+export const FINISH_CHOICE_GUIDANCE = 'simFinishTurn 的参数顶层必须填写 choice。普通回话示例 {"choice":"chat","messages":["实际回复"]}。安静标读示例 {"choice":"silent","markRead":true}。'
+
+/** Keep per-request facts and the required closing arguments next to the tool call. */
 export function buildCharacterTurnContext(input: CharacterTurnContextInput): string {
   return [
     '【本轮执行检查】',
     JSON.stringify({ phase: input.phase, remainingToolRounds: input.remainingToolRounds,
       focusedGoalId: input.focusedGoalId ?? null, visibleEvidenceRefs: input.visibleEvidenceRefs }),
-    input.phase === 'closing' ? '当前允许动作：仅 simFinishTurn；根据实际结果收尾。' : '当前允许动作：本轮实际可用工具；结束时用 simFinishTurn。',
+    input.phase === 'closing' ? '当前允许动作仅 simFinishTurn。' : '结束时调用 simFinishTurn。',
+    FINISH_CHOICE_GUIDANCE,
   ].join('\n')
 }
 
