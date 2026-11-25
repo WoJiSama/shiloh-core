@@ -23,12 +23,12 @@ const systemCauses = new Map([
 /** Attach fixed context while preserving the exception's original type and the caller's error contract. */
 export function annotateAgentError<T>(error: T, details: AgentDiagnosticDetails): T {
   if (error && typeof error === 'object' && types.isNativeError(error)) {
-    knownErrors.set(error, { ...errorDetails(error), ...details })
+    knownErrors.set(error, { ...agentErrorDetails(error), ...details })
   }
   return error
 }
 
-function errorDetails(error: unknown): AgentDiagnosticDetails | undefined {
+export function agentErrorDetails(error: unknown): AgentDiagnosticDetails | undefined {
   for (let depth = 0; depth < 4 && error && typeof error === 'object' && !types.isProxy(error) && types.isNativeError(error); depth++) {
     const trusted = knownErrors.get(error)
     if (trusted) return trusted
@@ -196,7 +196,7 @@ export function createAgentDiagnostics(options: {
     const delivery = input.delivery === undefined ? undefined : deliveryOf(input.delivery)
     const failed = input.outcome === 'failed' || input.outcome === 'unknown'
     const code = input.code ?? delivery?.code ?? (failed ? input.outcome === 'unknown' ? 'result_unconfirmed' : 'failure_reason_unavailable' : undefined)
-    const inferred = errorDetails(input.error)
+    const inferred = agentErrorDetails(input.error)
     let details: AgentDiagnosticDetails | undefined
     if (inferred || input.details) try {
       const validated = parseAgentDiagnosticDetails({ ...inferred, ...input.details })

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
-import { constants } from 'node:fs'
+import { constants, type Stats } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { stderr } from 'node:process'
@@ -159,10 +159,13 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
   }
   async function directories(initial = false): Promise<void> {
     if (initial) await fs.mkdir(dataDir, { recursive: true, mode: 0o700 })
-    const root = await fs.lstat(dataDir)
-    if (!root.isDirectory() || root.isSymbolicLink() || rootIdentity && (rootIdentity.dev !== root.dev || rootIdentity.ino !== root.ino)) throw failure()
+    if (initial) {
+      const root = await fs.lstat(dataDir)
+      if (!root.isDirectory()) throw failure()
+    }
     if (initial) await fs.mkdir(directory, { mode: 0o700 }).catch(error => { if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) throw error })
-    const own = await fs.lstat(directory)
+    const [root, own] = await Promise.all([fs.lstat(dataDir), fs.lstat(directory)])
+    if (!root.isDirectory() || root.isSymbolicLink() || rootIdentity && (rootIdentity.dev !== root.dev || rootIdentity.ino !== root.ino)) throw failure()
     if (!own.isDirectory() || own.isSymbolicLink() || (own.mode & 0o777) !== 0o700 || directoryIdentity && (directoryIdentity.dev !== own.dev || directoryIdentity.ino !== own.ino)) throw failure()
     rootIdentity ??= { dev: root.dev, ino: root.ino }; directoryIdentity ??= { dev: own.dev, ino: own.ino }
   }
@@ -171,13 +174,22 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
     const handle = await fs.open(directory, constants.O_RDONLY | constants.O_NOFOLLOW)
     try { await handle.sync() } finally { await handle.close() }
   }
-  async function verifyFile(name: string, handle: FileHandle) {
-    const stat = await handle.stat()
+  function validateFile(stat: Stats) {
     if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.size > 64 * MiB) throw failure()
+  }
+  async function verifyPath(name: string, expected: { dev: number; ino: number; size: number }, advance?: (step: AgentJournalWriteStep) => void) {
+    advance?.('journal_verify_directories')
     await directories()
+    advance?.('journal_verify_path')
     const actual = await fs.lstat(path.join(directory, name))
-    if (actual.isSymbolicLink() || actual.dev !== stat.dev || actual.ino !== stat.ino || actual.mode !== stat.mode ||
-        actual.nlink !== stat.nlink || actual.size !== stat.size) throw failure()
+    validateFile(actual)
+    if (actual.dev !== expected.dev || actual.ino !== expected.ino || actual.size !== expected.size) throw failure()
+  }
+  async function verifyFile(name: string, handle: FileHandle, advance?: (step: AgentJournalWriteStep) => void) {
+    advance?.('journal_verify')
+    const stat = await handle.stat()
+    validateFile(stat)
+    await verifyPath(name, stat, advance)
     return stat
   }
   async function privateFile(name: string, flags: number): Promise<FileHandle> {
@@ -249,8 +261,7 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
         const name = `${today}.${String(sequence).padStart(6, '0')}.ndjson`
         activeFile = await fs.open(path.join(directory, name), constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT |
           constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-        advance('journal_verify')
-        const stat = await verifyFile(name, activeFile)
+        const stat = await verifyFile(name, activeFile, advance)
         if (stat.size !== 0) throw failure()
         latest = file = { name, size: 0, dev: stat.dev, ino: stat.ino, needsDirectorySync: true }
       } else {
@@ -258,10 +269,13 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
           advance('journal_open')
           await directories()
           activeFile = await fs.open(path.join(directory, file.name), constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW, 0o600)
+          const stat = await verifyFile(file.name, activeFile, advance)
+          if (stat.size !== file.size || stat.dev !== file.dev || stat.ino !== file.ino) throw failure()
+        } else {
+          // An open descriptor keeps its inode. Recheck today's path and
+          // length against the confirmed inode before each durable append.
+          await verifyPath(file.name, file, advance)
         }
-        advance('journal_verify')
-        const stat = await verifyFile(file.name, activeFile)
-        if (stat.size !== file.size || stat.dev !== file.dev || stat.ino !== file.ino) throw failure()
       }
       const handle = activeFile
       try {

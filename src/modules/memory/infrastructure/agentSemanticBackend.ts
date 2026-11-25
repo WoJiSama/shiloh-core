@@ -130,6 +130,8 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
       let response: Response | undefined
       let combined: AbortSignal | undefined, dispatched = false
       let step = 'request_prepare'
+      let stepStarted = performance.now()
+      const advance = (next: string) => { step = next; stepStarted = performance.now() }
       let failure: string | undefined
       const started = performance.now()
       try {
@@ -142,11 +144,11 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
         const count = operation === 'embedding' ? Array.isArray(body.input) ? body.input.length : 0
           : Array.isArray(body.documents) ? body.documents.length : 0
         if (!count) fail()
-        step = 'authorization'
+        advance('authorization')
         await ensureCurrent(context, requestSignal)
         // No authorization result survives across actual HTTP requests or batches.
         assertCurrent(context, requestSignal)
-        step = 'response_headers'
+        advance('response_headers')
         const pending = Promise.resolve().then(() => {
           assertCurrent(context, requestSignal)
           dispatched = true
@@ -154,15 +156,14 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
         })
         void pending.then(late => { if (requestSignal.aborted) void late.body?.cancel().catch(() => {}) }, () => {})
         response = await abortable(pending, requestSignal)
-        step = 'authorization'
-        await ensureCurrent(context, requestSignal)
+        assertCurrent(context, requestSignal)
         if (!response.ok) { failure = 'http_error'; fail() }
         if (response.redirected || response.url && new URL(response.url).href !== model.baseUrl) { failure = 'provider_redirected'; fail() }
-        step = 'response_body'
+        advance('response_body')
         const payload = await readResponse(response, requestSignal)
-        step = 'authorization'
+        advance('authorization')
         await ensureCurrent(context, requestSignal)
-        step = 'response_validation'
+        advance('response_validation')
         validatePayload(payload, operation, count)
         // The legacy gateways only see validated JSON, never provider error bodies.
         return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
@@ -179,8 +180,10 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
         try {
           options.diagnostics?.emit({ stage: 'model', operation: operation === 'embedding' ? 'semantic_embedding_provider' : 'semantic_rerank_provider',
             outcome: cancelled ? 'cancelled' : 'failed', code, durationMs: performance.now() - started,
-            ...(response ? { httpStatus: response.status } : {}), details: { step: failure === 'http_error' ? 'response_headers' : step,
-              dispatched, ...(deadline?.budgetMs === undefined ? {} : { limit: deadline.budgetMs }), result: dispatched ? 'discarded' : 'not_dispatched' } })
+            ...(response ? { httpStatus: response.status } : {}), details: { step,
+              stepMs: Math.round(performance.now() - stepStarted), dispatched,
+              ...(step === 'authorization' ? { field: dispatched ? 'semantic_response_authorization' : 'semantic_request_authorization' } : {}),
+              ...(deadline?.budgetMs === undefined ? {} : { limit: deadline.budgetMs }), result: dispatched ? 'discarded' : 'not_dispatched' } })
         } catch { /* Observation must not change the safe failure returned to the caller. */ }
         return fail()
       } finally {
@@ -197,13 +200,12 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
         const signal = AbortSignal.any([context.signal, lifecycle.signal])
         assertCurrent(context, signal)
         inputs(texts)
-        await ensureCurrent(context, signal)
         if (!texts.length) return []
         let failed = false
         gateway = new EmbeddingGateway({ apiUrl: embedding.baseUrl, model: embedding.name, apiKey: embedding.apiKey,
           fetchFn: operationFetch(embedding, 'embedding', context, signal, () => { failed = true }) })
         const vectors = await abortable(gateway.embedBatch([...texts], { signal }), signal)
-        await ensureCurrent(context, signal)
+        assertCurrent(context, signal)
         if (failed || vectors.some(vector => vector === null)) fail()
         let dimensions: number | undefined
         return vectors.map(vector => {
@@ -223,13 +225,12 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
           inputs([query, ...documents.map(document => document.text)])
           if (documents.some(document => typeof document.id !== 'string' || !document.id || document.id.length > 256 || hasSecret(document.id, secrets)) ||
               new Set(documents.map(document => document.id)).size !== documents.length) fail()
-          await ensureCurrent(context, signal)
           if (!documents.length) return null
           let failed = false
           gateway = new RerankGateway({ apiUrl: rerank.baseUrl, model: rerank.name, apiKey: rerank.apiKey,
             fetchFn: operationFetch(rerank, 'rerank', context, signal, () => { failed = true }) })
           const scores = await abortable(gateway.rerank(query, [...documents], { signal }), signal)
-          await ensureCurrent(context, signal)
+          assertCurrent(context, signal)
           if (failed || !scores) fail()
           return scores
         } catch { return fail() }

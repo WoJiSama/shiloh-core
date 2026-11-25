@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto'
 import {types} from 'node:util'
 import type {AgentBindingSnapshot} from '../../../contracts/agentBinding.js'
 import type {IncomingMessage} from '../../../contracts/platformMessage.js'
+import type {AgentDiagnosticDetails,AgentDiagnosticEvent} from '../../../contracts/agentDiagnostics.js'
 import type {AgentDiagnostics} from '../../runtime/infrastructure/agentDiagnostics.js'
 import {agentBindingToken,agentConversationKey,conversationAddressKey,isPlatformIdentifier} from '../../runtime/domain/agentBindings.js'
 import {KeyedSerialQueue} from '../../messaging/infrastructure/keyedSerialQueue.js'
@@ -43,9 +44,9 @@ export interface AgentDiceEngineContext extends AgentDiceStateGuard {
   ensureCurrent():Promise<void>
   readonly logActive?:boolean
   /** Non-message facts already committed with business state. No message ID is invented. */
-  record?(event:AgentDiceEngineEvent):Promise<void>
+  record?(event:AgentDiceEngineEvent,signal:AbortSignal):Promise<void>
   /** Only a confirmed public result can enter the result archive. */
-  archive?(event:AgentDiceEngineEvent & {readonly text:string;readonly deliveryMessageId:string}):Promise<void>
+  archive?(event:AgentDiceEngineEvent & {readonly text:string;readonly deliveryMessageId:string},signal?:AbortSignal):Promise<void>
 }
 export interface AgentDiceEngineConfig {
   readonly enabled:boolean
@@ -139,15 +140,18 @@ function frozenRandom(seed:string) {
     return createHash('sha256').update(`${seed}:${counter-1}`).digest().readUInt32BE(0)/0x1_0000_0000
   }
 }
-async function bounded<T>(operation:Promise<T>,guard:AgentDiceStateGuard,timeout=15_000):Promise<T> {
-  let timer:ReturnType<typeof setTimeout>|undefined,abort:(()=>void)|undefined
+async function bounded<T>(operation:(signal:AbortSignal)=>Promise<T>,parent:AbortSignal,timeout:number):Promise<T> {
+  const controller=new AbortController(),signal=AbortSignal.any([parent,controller.signal])
+  signal.throwIfAborted()
+  const timer=setTimeout(()=>controller.abort(new DOMException('骰子步骤超时','TimeoutError')),timeout)
+  let abort:(()=>void)|undefined
   try {
-    return await Promise.race([operation,new Promise<never>((_,reject)=>{
-      abort=()=>reject(invalid());timer=setTimeout(abort,timeout)
-      guard.signal.addEventListener('abort',abort,{once:true})
-      if(guard.signal.aborted)abort()
-    })])
-  } finally {if(timer)clearTimeout(timer);if(abort)guard.signal.removeEventListener('abort',abort)}
+    const cancellation=new Promise<never>((_,reject)=>{
+      abort=()=>reject(signal.reason)
+      signal.addEventListener('abort',abort,{once:true})
+    })
+    return await Promise.race([cancellation,operation(signal)])
+  } finally {clearTimeout(timer);if(abort)signal.removeEventListener('abort',abort);controller.abort()}
 }
 function sourceShape(message:IncomingMessage,binding:AgentBindingSnapshot):boolean {
   return binding.source==='configured'&&message.version===1&&message.conversation.kind==='group'&&
@@ -237,8 +241,14 @@ export function createAgentDiceEngine(config:AgentDiceEngineConfig,ports:AgentDi
     isCandidate:(message:IncomingMessage)=>enabled&&message.conversation.kind==='group'&&commands(message.text).some(candidate),
     async handle(message:IncomingMessage,binding:AgentBindingSnapshot,context:AgentDiceEngineContext):Promise<boolean> {
       if(!enabled||message.conversation.kind!=='group'||!commands(message.text).some(candidate))return false
-      const emit=(outcome:'succeeded'|'failed'|'unknown'|'cancelled',code:string)=>{
-        try {ports.diagnostics?.emit({stage:'runtime',operation:'dice_command',outcome,code})}catch{/* Observation cannot authorize effects. */}
+      const started=performance.now()
+      let step='queue',stepStarted=started
+      const advance=(next:string)=>{step=next;stepStarted=performance.now()}
+      const emit=(outcome:'succeeded'|'failed'|'unknown'|'cancelled',code:string,extra?:AgentDiagnosticDetails,error?:unknown,
+        delivery?:AgentDiagnosticEvent['delivery'])=>{
+        try {ports.diagnostics?.emit({stage:'runtime',operation:'dice_command',outcome,code,durationMs:performance.now()-started,
+          details:{step,stepMs:Math.round(performance.now()-stepStarted),...extra},...(error===undefined?{}:{error}),...(delivery?{delivery}:{})})
+        }catch{/* Observation cannot authorize effects. */}
       }
       if(!sourceShape(message,binding)){emit('cancelled','source_unavailable');return true}
       const immutableSource=JSON.parse(JSON.stringify(message)) as IncomingMessage
@@ -246,24 +256,34 @@ export function createAgentDiceEngine(config:AgentDiceEngineConfig,ports:AgentDi
       return queue.run(agentConversationKey(binding),async()=>{
         const controller=new AbortController(),signal=AbortSignal.any([context.signal,controller.signal])
         const current=()=>{try{return !signal.aborted&&context.isCurrent()}catch{return false}}
-        const basic:AgentDiceStateGuard={signal,isCurrent:current,async ensureCurrent(){if(!current())throw invalid();await bounded(context.ensureCurrent(),{signal,isCurrent:current},5000);if(!current())throw invalid()}}
+        const basicGuard=(activeSignal:AbortSignal):AgentDiceStateGuard=>{
+          const isCurrent=()=>!activeSignal.aborted&&current()
+          return {signal:activeSignal,isCurrent,async ensureCurrent(){
+            if(!isCurrent())throw invalid()
+            await bounded(()=>context.ensureCurrent(),activeSignal,5000)
+            if(!isCurrent())throw invalid()
+          }}
+        }
+        const basic=basicGuard(signal)
+        const authorize=(activeSignal:AbortSignal)=>bounded(async checkSignal=>
+          authorization(await ports.authorize({binding:immutableBinding,source:immutableSource},basicGuard(checkSignal)),immutableSource),activeSignal,5000)
         const legacySource={target:immutableBinding.target,agentId:immutableBinding.agentId,authorId:immutableSource.sender.id,messageId:immutableSource.messageId!}
         let operation:AgentDiceStateOperation|undefined,source:{messageId:string;authorId:string;sourceHash:string;occurredAt:number}|undefined,dispatched=false
         try {
-          await basic.ensureCurrent!()
-          const auth=authorization(await bounded(ports.authorize({binding:immutableBinding,source:immutableSource},basic),basic,5000),immutableSource)
+          advance('dice_authorization')
+          const auth=await authorize(signal)
           if(!auth.permissions.includes('player'))throw invalid()
+          advance('dice_legacy_fence')
           const authorityHash=hash(auth),epochs=await ports.legacyLedger.capture(legacySource)
           if(epochs.recalled||await ports.legacyLedger.read(legacySource)){emit('cancelled','legacy_source_fenced');return true}
-          const ensure=async()=>{
-            await basic.ensureCurrent!()
-            const fresh=authorization(await bounded(ports.authorize({binding:immutableBinding,source:immutableSource},basic),basic,5000),immutableSource)
+          const ensure=async(activeSignal=signal)=>{
+            if(!current()||activeSignal.aborted)throw invalid()
+            const fresh=await authorize(activeSignal)
             const captured=await ports.legacyLedger.capture(legacySource)
             if(hash(fresh)!==authorityHash||captured.recalled||captured.global!==epochs.global||captured.scene!==epochs.scene||
               await ports.legacyLedger.read(legacySource))throw invalid()
-            if(!current())throw invalid()
+            if(!current()||activeSignal.aborted)throw invalid()
           }
-          const guard:AgentDiceStateGuard={signal,isCurrent:current,ensureCurrent:ensure}
           const allows=(permission:AgentDiceEnginePermission,id=auth.actor.id)=>{
             if(id===auth.actor.id)return auth.permissions.includes(permission)
             const member=auth.members.find(member=>member.id===id)
@@ -272,7 +292,8 @@ export function createAgentDiceEngine(config:AgentDiceEngineConfig,ports:AgentDi
           }
           source={messageId:immutableSource.messageId!,authorId:immutableSource.sender.id,occurredAt:immutableSource.occurredAt,
             sourceHash:hash([immutableSource,agentBindingToken(immutableBinding),definitionId,authorityHash])}
-          const begun=await ports.state.begin(immutableBinding,source,guard)
+          advance('dice_state_begin')
+          const begun=await ports.state.begin(immutableBinding,source,basic)
           const operationId=begun.kind==='started'?begun.claim.id:begun.operation.id
           const origin=createAgentDicePrivateOrigin(immutableBinding,immutableSource,operationId,auth.revision)
           const privateAuthority=async(effect:AgentDicePrivateEffect,dispatchIndex?:number)=>{
@@ -281,11 +302,12 @@ export function createAgentDiceEngine(config:AgentDiceEngineConfig,ports:AgentDi
               !allows('player',effect.recipientId)||!allows('hidden',effect.recipientId)||
               effect.requiredPermission==='gm'&&!['gm','admin','master'].some(permission=>allows(permission as AgentDiceEnginePermission,effect.recipientId)))throw invalid()
             const retry=saved.operationId!==operationId
-            if(retry&&(!ports.authorizePrivateOrigin||!await bounded(ports.authorizePrivateOrigin({binding:immutableBinding,source:immutableSource,origin:saved,recipientId:effect.recipientId,
-              ...(effect.requiredPermission===undefined?{}:{requiredPermission:effect.requiredPermission})},guard),guard,5000)))throw invalid()
+            if(retry&&(!ports.authorizePrivateOrigin||!await bounded(activeSignal=>ports.authorizePrivateOrigin!({
+              binding:immutableBinding,source:immutableSource,origin:saved,recipientId:effect.recipientId,
+              ...(effect.requiredPermission===undefined?{}:{requiredPermission:effect.requiredPermission})},basicGuard(activeSignal)),signal,5000)))throw invalid()
             if((effect.packId===undefined)!==(effect.deliveryId===undefined))throw invalid()
             if(effect.packId!==undefined&&effect.deliveryId!==undefined){
-              const lease=await ports.state.readDelivery(immutableBinding,{packId:effect.packId,deliveryId:effect.deliveryId},guard)
+              const lease=await ports.state.readDelivery(immutableBinding,{packId:effect.packId,deliveryId:effect.deliveryId},basic)
               if(dispatchIndex!==undefined){
                 if(!lease||lease.state!=='unknown'||lease.operationId!==operationId||lease.originId!==saved.operationId||lease.index!==dispatchIndex)throw invalid()
               }else if(retry&&(!lease||lease.state!=='failed'||lease.originId!==saved.operationId))throw invalid()
@@ -298,6 +320,7 @@ export function createAgentDiceEngine(config:AgentDiceEngineConfig,ports:AgentDi
               emit(operation.state==='confirmed'?'succeeded':'unknown','source_already_owned');return true
             }
           }else{
+            advance('dice_evaluate')
             let draft=business(begun.snapshot?.state),effects:AgentDiceEngineEffect[]=[],events:AgentDiceEngineEvent[]=[],subjects=new Set([auth.actor.id])
             const original=structuredClone(draft),random=frozenRandom(begun.claim.seed)
             const ctx={source:{messageId:source.messageId,authorId:source.authorId,at:source.occurredAt},actor:auth.actor,members:auth.members,
@@ -343,44 +366,76 @@ export function createAgentDiceEngine(config:AgentDiceEngineConfig,ports:AgentDi
             const stored:StoredEffect[]=[...events.filter(event=>event.kind!=='dice_result').map(event=>({kind:'event' as const,event})),...effects]
             if(stored.length>128)throw invalid()
             const prepared=prepareAgentDicePrivateDeliveries(draft,stored,origin,begun.claim.id)
+            advance('dice_commit_authorization')
+            await ensure()
+            advance('dice_state_commit')
             operation=await ports.state.commit(immutableBinding,begun.claim,{state:prepared.state,effects:prepared.effects,event:events,privateDeliveries:prepared.privateDeliveries,
-              subjectIds:[...new Set([...subjects,...actualSubjects(source.messageId,draft,effects,events,auth)])]},guard)
+              subjectIds:[...new Set([...subjects,...actualSubjects(source.messageId,draft,effects,events,auth)])]},basic)
             if(!operation){emit('unknown','state_commit_unconfirmed');return true}
           }
+          let effectDetails:AgentDiagnosticDetails|undefined,effectDelivery:AgentDiagnosticEvent['delivery']
           while(operation.state==='ready'){
+            advance('dice_claim_authorization')
             await ensure()
-            const index=operation.completed,claimed=await ports.state.claimEffect(immutableBinding,source,index,guard)
-            if(!claimed)return true
+            advance('dice_effect_claim')
+            const index=operation.completed,claimed=await ports.state.claimEffect(immutableBinding,source,index,basic)
+            if(!claimed){emit('unknown','effect_claim_unconfirmed',{attempt:index+1});return true}
             operation=claimed.operation
             dispatched=true
             const effect=claimed.effect as unknown as StoredEffect
             let receipt:AgentDiceEffectReceipt={state:'unknown'}
-            let continuation=true
+            let continuation=true,firstFailure:unknown
+            effectDetails={field:effect.kind,attempt:index+1}
             try {
-              await ensure()
               if(effect.kind==='event'){
-                if(context.record)await bounded(context.record(effect.event),guard,timeout)
+                advance('dice_effect_record')
+                if(context.record)await bounded(async activeSignal=>{
+                  await ensure(activeSignal)
+                  await context.record!(effect.event,activeSignal)
+                },signal,timeout)
                 receipt={state:'confirmed'}
               }else{
+                advance('dice_effect_authorization')
                 if(effect.kind==='public'||effect.kind==='private'){
                   if(typeof effect.text!=='string'||!ports.allowsText(effect.text))throw invalid()
                   if(effect.kind==='private')await privateAuthority(effect,index)
                 }else if(effect.kind==='card'&&(!allows('card',effect.subjectId)||effect.subjectId!==auth.actor.id&&!allows('delegate',effect.subjectId)))throw invalid()
-                const raw=object(await bounded(ports.deliver({binding:immutableBinding,source:immutableSource,effect,operationId:operation.id,index},guard),guard,timeout))
+                const operationId=operation.id
+                const raw=object(await bounded(async activeSignal=>{
+                  await ensure(activeSignal)
+                  activeSignal.throwIfAborted()
+                  advance('dice_effect_delivery')
+                  return ports.deliver({binding:immutableBinding,source:immutableSource,effect,operationId,index},
+                    {signal:activeSignal,isCurrent:()=>!activeSignal.aborted&&current(),ensureCurrent:()=>ensure(activeSignal)})
+                },signal,timeout))
                 if(effect.kind==='public'||effect.kind==='private'){
                   receipt=raw.state==='sent'&&safeId(raw.messageId)?{state:'sent',messageId:raw.messageId}:raw.state==='failed'?{state:'failed'}:{state:'unknown'}
                 }else receipt=raw.state==='confirmed'?{state:'confirmed'}:raw.state==='failed'?{state:'failed'}:{state:'unknown'}
+                if(raw.state!==receipt.state) effectDetails={...effectDetails,cause:'dice_receipt_invalid'}
                 if(receipt.state==='sent'&&effect.kind==='public'&&effect.eventIndex!==undefined&&context.archive){
                   const event=(operation.event as unknown as readonly AgentDiceEngineEvent[])[effect.eventIndex]
                   if(!event||object(event.facts).visibility==='private')throw invalid()
                   if(event.kind==='dice_result'){
-                    await ensure()
-                    await bounded(context.archive({...event,text:effect.text,deliveryMessageId:receipt.messageId}),guard,timeout)
+                    advance('dice_effect_archive')
+                    const deliveryMessageId=receipt.messageId
+                    await bounded(async activeSignal=>{
+                      await ensure(activeSignal)
+                      await context.archive!({...event,text:effect.text,deliveryMessageId},activeSignal)
+                    },signal,timeout)
                   }
                 }
               }
-              await ensure()
-            }catch{continuation=false;if(receipt.state!=='sent'&&receipt.state!=='failed')receipt={state:'unknown'}}
+              if(receipt.state==='sent'||receipt.state==='confirmed'){
+                advance('dice_effect_recheck')
+                await ensure()
+              }
+            }catch(error){continuation=false;firstFailure=error;if(receipt.state!=='sent'&&receipt.state!=='failed')receipt={state:'unknown'}}
+            effectDetails={...effectDetails,step,stepMs:Math.round(performance.now()-stepStarted),
+              ...(step==='dice_effect_authorization'?{dispatched:false}:{}),
+              ...(firstFailure instanceof DOMException&&firstFailure.name==='TimeoutError'?{cause:'dice_step_timeout'}:{})}
+            effectDelivery={state:receipt.state}
+            if(!continuation)emit('unknown','effect_continuation_unconfirmed',effectDetails,firstFailure,effectDelivery)
+            advance('dice_effect_settlement')
             let settled:AgentDiceStateOperation|undefined
             try{
               if(effect.kind==='private'){
@@ -389,27 +444,29 @@ export function createAgentDiceEngine(config:AgentDiceEngineConfig,ports:AgentDi
                 const nextState=settleAgentDicePrivateDelivery(snapshot.state,effect,receipt,{operationId:operation.id,index})
                 settled=await ports.state.settleEffectAndState(immutableBinding,source,index,receipt,{snapshot,nextState})
               }else settled=await ports.state.settleEffect(immutableBinding,source,index,receipt)
-            }catch{
+            }catch(error){
+              firstFailure=error
               try{await ports.state.abandonOperation(immutableBinding,source)}catch{/* A durable pending fence still blocks replay. */}
             }
             if(!settled){
               try{await ports.state.abandonOperation(immutableBinding,source)}catch{/* An unconfirmed write never authorizes continuation. */}
-              emit('unknown','effect_settlement_unconfirmed');return true
+              emit('unknown','effect_settlement_unconfirmed',{field:effect.kind,attempt:index+1},firstFailure,effectDelivery);return true
             }
             operation=settled
             if(!continuation){
               if(operation.state==='ready')try{await ports.state.abandonOperation(immutableBinding,source)}catch{/* Confirmed transport never authorizes later effects after lost authority. */}
-              emit('unknown','effect_continuation_unconfirmed');return true
+              return true
             }
           }
-          emit(operation.state==='confirmed'?'succeeded':operation.state==='failed'?'failed':'unknown','command_'+operation.state)
-        }catch{
+          emit(operation.state==='confirmed'?'succeeded':operation.state==='failed'?'failed':'unknown','command_'+operation.state,
+            operation.state==='confirmed'?undefined:effectDetails,undefined,operation.state==='confirmed'?undefined:effectDelivery)
+        }catch(error){
           // A durable preparing/pending fence blocks another roll even when cancellation prevents settlement.
           if(source)try{
             if(dispatched)await ports.state.abandonOperation(immutableBinding,source)
             else await ports.state.recoverOperation(immutableBinding,source)
           }catch{/* Retained fence remains authoritative. */}
-          emit(current()?'unknown':'cancelled',current()?'state_or_authority_unconfirmed':'source_unavailable')
+          emit(current()?'unknown':'cancelled',current()?'state_or_authority_unconfirmed':'source_unavailable',undefined,error)
         }finally{controller.abort()}
         return true
       })

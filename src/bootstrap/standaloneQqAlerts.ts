@@ -108,12 +108,14 @@ const operationNames = new Map(Object.entries({
   commitment_failure_log: '读取托付失败记录',
   simulation_image_description: '识别消息图片',
   simulation_image_read: '取得消息附图',
+  dice_command: '执行骰子命令',
   simulation_forward_read: '取得合并转发内容',
   media_prepare: '准备搬运内容',
   media_provider_prepare: '获取搬运内容',
   media_deliver: '搬运内容投递',
   media_failure_notice: '搬运失败通知',
   bilibili_provider_identify: '解析 B 站链接',
+  bilibili_provider_metadata: '请求 B 站资源信息',
   bilibili_provider_download: '下载 B 站媒体',
   bilibili_provider_prepare: '准备 B 站搬运',
   douyin_provider_prepare: '准备抖音搬运',
@@ -334,6 +336,21 @@ const failureReasons = new Map(Object.entries({
   source_identification_failed: '未能识别分享链接中的作品。',
   bilibili_metadata_rejected: 'B 站作品详情接口拒绝了请求。',
   bilibili_episode_unmatched: '在作品的主列表及分区中未能唯一确认分享的剧集。',
+  metadata_unavailable: '媒体接口未返回可用的资源信息。',
+  bilibili_dns_invalid: 'B 站域名未解析出符合要求的公网地址。',
+  bilibili_url_invalid: 'B 站资源地址未通过校验。',
+  bilibili_status_invalid: 'B 站响应缺少有效的 HTTP 状态。',
+  bilibili_redirect_invalid: 'B 站重定向未通过来源校验。',
+  bilibili_encoding_invalid: 'B 站返回了不支持的传输编码。',
+  bilibili_length_invalid: 'B 站响应声明的文件长度无效。',
+  bilibili_length_mismatch: '收到的文件长度与 B 站声明不符。',
+  bilibili_size_limit: 'B 站资源超过了单文件大小限制。',
+  bilibili_body_invalid: 'B 站响应体的格式无效。',
+  bilibili_http_timeout: 'B 站请求在当前环节达到时限。',
+  bilibili_json_invalid: 'B 站响应体无法解析为 JSON。',
+  bilibili_media_type_invalid: 'B 站响应的媒体类型不符合预期。',
+  media_container_invalid: '下载内容未通过媒体文件头校验。',
+  conversation_state_conflict: '会话记忆的状态或清理版本持续变化，原子写入未完成。',
   prepare_failed: '未能获取搬运需要的内容。',
   prepare_unavailable: '媒体来源暂时无法提供搬运内容。',
   provider_threw: '请求外部服务时发生异常。',
@@ -398,6 +415,21 @@ const failureReasons = new Map(Object.entries({
   finish_reply_reference_invalid: 'replyToSeq 没有指向有效的近期消息，本次收尾未提交。',
   effect_rejected: '接收端拒绝了本次投递。',
   effect_unknown: '暂时无法确认内容是否已送达。',
+  state_or_authority_unconfirmed: '骰子命令未能确认权限或账本状态。',
+  state_commit_unconfirmed: '骰子计算结果的账本提交未获确认。',
+  effect_claim_unconfirmed: '未能确认取得下一步骰子操作的执行权。',
+  effect_continuation_unconfirmed: '骰子命令在当前环节中断，后续操作已停止。',
+  effect_settlement_unconfirmed: '骰子操作的最终回执未能确认写入账本。',
+  command_unknown: '骰子服务未取得可确认的操作回执。',
+  command_failed: '骰子操作收到了失败回执。',
+  dice_admission_unavailable: '未能确认骰子来源仍具备执行资格。',
+  dice_origin_read_unavailable: '未能从 QQ 确认骰子命令原消息。',
+  dice_origin_not_authorized: '骰子命令原消息未通过来源或隐私检查。',
+  dice_members_or_grant_unavailable: '群成员记录或骰子授权未取得有效结果。',
+  dice_quote_not_authorized: '引用的 QQ 消息未通过来源核验。',
+  dice_grant_invalid: '骰子授权与当前会话或发送者不匹配。',
+  dice_receipt_invalid: '投递回执的类型或消息编号无效。',
+  dice_step_timeout: '骰子命令在当前环节达到时限。',
   delivery_failed: '投递过程遇到异常，暂时无法确认是否送达。',
   operation_exception: '执行操作时发生异常。',
   simulation_turn_failed: '本轮群聊提前停止。',
@@ -485,10 +517,25 @@ const stepNames = new Map(Object.entries({
   enqueue: '加入队列', forward_queue: '移交队列', privacy_command: '处理隐私请求', group_log: '处理群记录',
   provider_request: '请求服务', request_prepare: '准备请求', response_body: '读取响应体', response_validation: '校验响应',
   response_headers: '等待响应头',
+  wake_request_authorization: '复核唤醒请求发送权限', wake_response_authorization: '复核唤醒结果使用权限',
+  semantic_request_authorization: '复核向量请求发送权限', semantic_response_authorization: '复核向量结果使用权限',
+  conversation_recall_read: '读取消息撤回凭据', conversation_person_privacy: '读取发送者隐私规则',
+  conversation_admission: '取得会话记忆写入权限', conversation_scene_privacy: '读取会话隐私版本',
+  conversation_cleanup_read: '读取会话记忆清理版本', conversation_register_source: '登记消息来源',
+  conversation_state_read: '读取会话记忆快照', conversation_state_build: '校验会话记忆候选状态',
+  conversation_state_commit: '原子写入会话记忆',
+  dice_authorization: '核验骰子命令授权', dice_legacy_fence: '检查历史骰子账本',
+  dice_state_begin: '登记骰子命令来源', dice_evaluate: '计算骰子命令',
+  dice_commit_authorization: '复核骰子状态提交权限', dice_state_commit: '提交骰子计算结果',
+  dice_claim_authorization: '复核骰子操作执行权限', dice_effect_claim: '领取下一步骰子操作',
+  dice_effect_record: '保存骰子规则事件', dice_effect_authorization: '核验投递前的骰子权限',
+  dice_effect_delivery: '投递骰子操作', dice_effect_archive: '归档已投递的骰子结果',
+  dice_effect_recheck: '核验骰子命令的后续执行权', dice_effect_settlement: '写入骰子操作回执',
   source_check: '核验来源', schedule: '安排下一次执行', model: '执行模型请求', store: '读取和整理存量数据',
   configuration: '校验配置', connect: '建立连接', acquire: '取得运行授权', connect_redis: '初始化 Redis',
   open_journal: '打开操作日志', initialize_services: '初始化依赖服务', start_console: '启动控制台', start_core: '启动 Core',
   journal_queue: '等待日志队列', journal_open: '打开日志文件', journal_verify: '核验日志文件',
+  journal_verify_directories: '核验日志目录', journal_verify_path: '核验当前日志路径和文件大小',
   journal_write: '写入日志文件', journal_sync: '同步日志文件',
   journal_close: '关闭日志文件', journal_directory_sync: '同步日志目录', journal_retention: '清理旧日志',
   journal_recovery: '恢复日志文件', traffic_counter: '等待收发统计',
@@ -505,7 +552,13 @@ const stepNames = new Map(Object.entries({
   bilibili_authorized_playback: '使用已授权账号复查 B 站播放资源', bilibili_video: '下载和核验 B 站视频',
   bilibili_output_check: '核验 B 站出站内容', bilibili_card_render: '渲染 B 站简图', bilibili_card_store: '存储 B 站简图',
   bilibili_plan: '校验 B 站合并转发计划', bilibili_prepare_confirmation: '确认 B 站搬运来源仍有效',
+  bilibili_url: '核验 B 站地址', bilibili_authorization: '复核 B 站来源权限', bilibili_dns: '解析 B 站服务域名',
+  bilibili_media_type: '核验 B 站媒体类型', bilibili_artifact_stage: '写入和核验媒体临时文件',
+  bilibili_image: '下载和核验 B 站图片',
 }))
+const deliveryNames: Record<NonNullable<AgentDiagnosticEvent['delivery']>['state'], string> = {
+  sent: '已发送', uploaded: '已上传', confirmed: '已确认', failed: '失败', unknown: '待确认',
+}
 
 type DiagnosticDescriptionSource = Pick<AgentDiagnosticEvent, 'stage' | 'operation' | 'outcome' | 'code' | 'details' | 'httpStatus' | 'errorKind' | 'sourceTag'>
 
@@ -518,7 +571,7 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
   const httpReason = status === undefined ? undefined : httpReasons.get(status) ??
     (status >= 500 ? '外部服务暂时不可用。' : undefined)
   const glmReason = event.operation === 'summary_provider_http' && status === 400 && code && glmBadRequestReasons.get(code)
-  const cause = details?.cause && failureReasons.get(details.cause)
+  const cause = details?.cause === 'http_error' ? httpReason ?? failureReasons.get('http_error') : details?.cause && failureReasons.get(details.cause)
   const rule = details?.rule && (ruleNames.get(details.rule) ?? details.rule)
   const location = details?.step && (stepNames.get(details.step) ?? details.step)
   const blocking = details?.blockingStep && stepNames.get(details.blockingStep)
@@ -531,9 +584,11 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
     ? details.dispatchTurnPending ? 'Redis 命令尚未发出，超时时 Node.js 发送调度探针仍在等待。'
       : 'Node.js 已运行发送调度探针，Redis 命令到超时时仍留在客户端队列。'
     : undefined
-  const limitUnit = code === 'model_response_truncated' || details?.cause === 'model_response_truncated' ? ' token' :
+  const limitUnit = details?.cause === 'bilibili_size_limit' || details?.cause === 'bilibili_length_mismatch' ? ' 字节' :
+    code === 'model_response_truncated' || details?.cause === 'model_response_truncated' ? ' token' :
     code?.includes('timeout') || code === 'semantic_provider_budget_elapsed' || details?.cause === 'semantic_recall_budget_elapsed' ? ' ms' : ''
-  const evidence = [!journalReason && location && `环节 ${location}`, details?.field && `字段 ${details.field}`, rule,
+  const evidence = [!journalReason && location && `环节 ${location}`, details?.field &&
+    (stepNames.get(details.field) ?? `字段 ${details.field}`), rule,
     details?.limit !== undefined && `界限 ${details.limit}${limitUnit}`, details?.nativeCode !== undefined && `平台返回码 ${details.nativeCode}`,
     details?.dispatched === undefined ? undefined : details.dispatched ? '已发起请求' : '未发起请求',
     details?.dispatchTurnMs !== undefined && `调度探针 ${details.dispatchTurnMs} ms`,
@@ -588,10 +643,12 @@ export function formatQqOwnerAlerts(batch: AlertBatch): string {
         `${time.format(alert.lastAt)}${alert.durationMs === undefined ? '' : ` · 耗时 ${alert.durationMs} ms`}` : ''
       const heading = `${description.operation}${outcome}，共 ${alert.count} 次`
       const trace = alert.traceId && `追踪编号 ${alert.traceId}`
+      const firstTrace = includeContext && alert.firstTraceId && `本批首条追踪编号 ${alert.firstTraceId}`
+      const receipt = alert.deliveryState && `平台回执 ${deliveryNames[alert.deliveryState]}`
       const reasonLimit = Math.max(0, rowLimit - heading.length - details.length - (trace?.length ?? 0) - 3)
       const reason = description.reason && (description.reason.length <= reasonLimit ? description.reason :
         reasonLimit ? description.reason.slice(0, reasonLimit - 1) + '…' : '')
-      return [heading, reason, details, trace, includeContext && description.evidence, includeContext && description.result, timing].filter(Boolean).join('\n')
+      return [heading, reason, details, trace, firstTrace, receipt, includeContext && description.evidence, includeContext && description.result, timing].filter(Boolean).join('\n')
     })
     return ['【助手运行告警】', ...lines].join('\n\n')
   }

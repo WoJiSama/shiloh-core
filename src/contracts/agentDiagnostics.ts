@@ -4,7 +4,7 @@ export const QQ_OWNER_ALERT_MAX_LENGTH = 3_000
 
 export const agentDiagnosticResults = ['not_dispatched', 'not_saved', 'discarded', 'fallback_used', 'retry_scheduled', 'retry_exhausted', 'recovered', 'confirmation_pending'] as const
 export type AgentDiagnosticResult = typeof agentDiagnosticResults[number]
-export const agentJournalWriteSteps = ['journal_queue', 'journal_open', 'journal_verify', 'journal_write', 'journal_sync', 'journal_close',
+export const agentJournalWriteSteps = ['journal_queue', 'journal_open', 'journal_verify', 'journal_verify_directories', 'journal_verify_path', 'journal_write', 'journal_sync', 'journal_close',
   'journal_directory_sync', 'journal_retention', 'journal_recovery', 'traffic_counter'] as const
 export type AgentJournalWriteStep = typeof agentJournalWriteSteps[number]
 export type AgentJournalWriteObserver = (step: AgentJournalWriteStep, blockingStep?: () => AgentJournalWriteStep | undefined) => void

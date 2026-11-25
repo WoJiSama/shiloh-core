@@ -4,12 +4,12 @@ import type { AgentDiagnosticDetails } from '../../../contracts/agentDiagnostics
 import type { AgentMediaArtifact, AgentMediaArtifactLease, AgentMediaRelayItem, AgentMediaResourceContext } from '../../../contracts/agentMediaRelay.js'
 import type { AgentMediaRelayProvider, AgentMediaShare, AgentPreparedMediaRelay } from '../../../contracts/agentMediaRelayWorkflow.js'
 import type { AgentPreparedBilibiliQuality } from '../../../contracts/agentBilibiliQuality.js'
-import { annotateAgentError, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import { agentErrorDetails, annotateAgentError, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agentSecretText.js'
 import { buildTextImageChatSvg } from '../../rendering/infrastructure/textImageTemplates.js'
 import { validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
-import { bilibiliFailure, bilibiliGuard, bilibiliOfficialUrl, createBilibiliHttp, nativeAgentBilibiliRequest } from './agentBilibiliRelayHttp.js'
+import { bilibiliFailure, bilibiliGuard, bilibiliOfficialUrl, createBilibiliHttp, describeBilibiliHttpFailure, nativeAgentBilibiliRequest } from './agentBilibiliRelayHttp.js'
 import type { AgentBilibiliLookup, AgentBilibiliRequest } from './agentBilibiliRelayHttp.js'
 import { findAgentBilibiliEpisode, parseAgentBilibiliReference, validateAgentMediaShare } from './agentBilibiliRelayReference.js'
 import { prepareBilibiliThumbnail } from './agentBilibiliRelayThumbnail.js'
@@ -91,12 +91,22 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
   const cardRenderer = strict ? undefined : options.cardRenderer
   const videoLimit = profile.mode === 'attachment' ? 30 * 1024 * 1024 : VIDEO_BYTES
   const videoCapacity = profile.mode === 'attachment' ? 2 : MAX_VIDEOS
-  const diagnose = (operation: string, code: string, context?: AgentMediaResourceContext, details?: AgentDiagnosticDetails) => {
-    let outcome: 'failed' | 'cancelled' = 'failed'
+  const diagnose = (operation: string, code: string, context?: AgentMediaResourceContext, details?: AgentDiagnosticDetails,
+    error?: unknown, started?: number, responseStatus?: number) => {
+    let outcome: 'succeeded' | 'failed' | 'cancelled' = details?.result === 'recovered' ? 'succeeded' : 'failed'
     if (context) { try { if (context.signal.aborted || !context.isCurrent()) outcome = 'cancelled' } catch { outcome = 'cancelled' } }
-    const event = { stage: 'runtime' as const, operation, outcome, code, ...(details ? { details } : {}) }
+    const http = describeBilibiliHttpFailure(error)
+    const evidence = http?.details ?? agentErrorDetails(error)
+    const httpStatus = http?.httpStatus ?? responseStatus
+    const phase = operation === 'bilibili_provider_prepare' && details?.step && evidence?.step
+      ? { step: details.step, field: evidence.step } : undefined
+    const event = { stage: 'runtime' as const, operation, outcome, code,
+      ...(details || evidence ? { details: { ...details, ...evidence, ...phase } } : {}),
+      ...(httpStatus === undefined ? {} : { httpStatus }),
+      ...(started === undefined ? {} : { durationMs: Math.round(performance.now() - started) }),
+    }
     try { if (options.diagnostics) { options.diagnostics.emit(event); return } } catch { /* Fixed terminal metadata remains available if an observer fails. */ }
-    try { console.error(`[Agent] runtime/${operation} ${outcome} ${code}${details?.step ? ` step=${details.step}` : ''}`) } catch { /* No remaining writable observer. */ }
+    try { (outcome === 'succeeded' ? console.info : console.error)(`[Agent] runtime/${operation} ${outcome} ${code}${event.details?.step ? ` step=${event.details.step}` : ''}`) } catch { /* No remaining writable observer. */ }
   }
   const releaseLeases = async (leases: readonly AgentMediaArtifactLease[]) => {
     const results = await Promise.allSettled(leases.map(lease => Promise.resolve().then(() => lease.release())))
@@ -147,7 +157,9 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
   let fingerprintCache = { value: '', expiresAt: 0 }
   async function json(url: string, context: AgentMediaResourceContext, auth = '', exact = false): Promise<Record<string, unknown>> {
     const guard = bilibiliGuard(context, Math.min(timeout, 10_000))
+    const started = performance.now()
     let response: Awaited<ReturnType<typeof read>> | undefined
+    let step = 'bilibili_metadata'
     try {
       const reader = exact ? createBilibiliHttp({ ...(options.lookup ? { lookup: options.lookup } : {}), allows: hostAllowed,
         onCleanupFailure: code => diagnose('bilibili_provider_release', code),
@@ -156,16 +168,25 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
           return (options.request ?? nativeAgentBilibiliRequest)(current, address, signal, policy)
         } }) : read
       response = await reader(url, 'metadata', guard, META_BYTES, auth)
-      if (response.mime !== 'application/json' && !response.mime.endsWith('+json')) throw bilibiliFailure()
+      step = 'bilibili_media_type'
+      if (response.mime !== 'application/json' && !response.mime.endsWith('+json')) {
+        throw annotateAgentError(bilibiliFailure(), { cause: 'bilibili_media_type_invalid' })
+      }
       const chunks: Uint8Array[] = []; let size = 0
+      step = 'response_body'
       for await (const bytes of response.chunks) { size += bytes.length; chunks.push(bytes) }
+      step = 'response_validation'
       const raw = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, size))
       const responseAllowed = hostAllowed
       if (!responseAllowed(raw)) throw bilibiliFailure()
       const payload = JSON.parse(raw)
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw bilibiliFailure()
       inspect(payload, responseAllowed); await guard.ensure(); return payload as Record<string, unknown>
-    } catch { diagnose('bilibili_provider_metadata', 'metadata_unavailable', context); throw bilibiliFailure() }
+    } catch (error) {
+      diagnose('bilibili_provider_metadata', 'metadata_unavailable', context,
+        { step, ...(error instanceof SyntaxError ? { cause: 'bilibili_json_invalid' } : {}) }, error, started, response?.status)
+      throw describeBilibiliHttpFailure(error) ?? bilibiliFailure(error)
+    }
     finally { try { await closeResponse(response) } finally { guard.close() } }
   }
   async function fingerprint(context: AgentMediaResourceContext): Promise<string> {
@@ -307,21 +328,38 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
     return result
   }
   async function download(urls: string[], kind: 'video' | 'image', context: AgentMediaResourceContext, auth = '', expectedSize = 0): Promise<AgentMediaArtifactLease> {
-    for (const url of urls) {
+    for (const [index, url] of urls.entries()) {
       const guard = bilibiliGuard(context, timeout), maxBytes = kind === 'video' ? videoLimit : IMAGE_BYTES
+      const attempt = index + 1, started = performance.now()
       let response: Awaited<ReturnType<typeof read>> | undefined
+      let step = 'bilibili_' + kind
       try {
         response = await read(url, kind, guard, maxBytes, auth)
+        step = 'bilibili_media_type'
         const mime = response.mime === 'video/x-flv' || response.mime === 'video/flv' ? 'video/x-flv' : response.mime === 'image/jpg' ? 'image/jpeg' : response.mime
-        if (kind === 'video' && !['video/mp4', 'video/quicktime', 'video/webm', 'video/x-flv'].includes(mime) || kind === 'image' && !['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp'].includes(mime)) throw bilibiliFailure()
+        if (kind === 'video' && !['video/mp4', 'video/quicktime', 'video/webm', 'video/x-flv'].includes(mime) || kind === 'image' && !['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp'].includes(mime)) {
+          throw annotateAgentError(bilibiliFailure(), { cause: 'bilibili_media_type_invalid' })
+        }
+        step = 'bilibili_artifact_stage'
         const lease = await guard.wait(options.artifacts.stage({ kind, mime, chunks: response.chunks }, guard.context), late => releaseLeases([late]))
         try {
+          step = 'bilibili_authorization'
           await guard.ensure()
-          if (expectedSize > 0 && lease.artifact.sizeBytes !== expectedSize) throw bilibiliFailure()
+          if (expectedSize > 0 && lease.artifact.sizeBytes !== expectedSize) {
+            throw annotateAgentError(bilibiliFailure(), { step: 'bilibili_video', cause: 'bilibili_length_mismatch', limit: expectedSize })
+          }
+          if (index) diagnose('bilibili_provider_download', 'bilibili_candidate_recovered', context,
+            { step: 'bilibili_' + kind, attempt, maxAttempts: urls.length, result: 'recovered' }, undefined, started)
           return lease
-        } catch { try { await lease.release() } catch { diagnose('bilibili_provider_release', 'artifact_release_failed') }; throw bilibiliFailure() }
-      } catch {
-        diagnose('bilibili_provider_download', kind === 'video' ? 'video_candidate_failed' : 'image_candidate_failed', context)
+        } catch (error) {
+          try { await lease.release() } catch { diagnose('bilibili_provider_release', 'artifact_release_failed') }
+          throw error
+        }
+      } catch (error) {
+        diagnose('bilibili_provider_download', kind === 'video' ? 'video_candidate_failed' : 'image_candidate_failed',
+          context, { step, attempt, maxAttempts: urls.length,
+            ...(guard.signal.reason instanceof DOMException && guard.signal.reason.name === 'TimeoutError' ? { cause: 'bilibili_http_timeout' } : {}),
+          }, response?.failure() ?? error, started, response?.status)
         const current = bilibiliGuard(context, Math.min(timeout, 10_000)); try { await current.ensure() } finally { current.close() }
       } finally { try { await closeResponse(response) } finally { guard.close() } }
     }
@@ -452,8 +490,8 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
         return released ??= releaseLeases(leases)
       } })
       transferred = true; return result
-    } catch {
-      diagnose('bilibili_provider_prepare', 'prepare_unavailable', context, { step })
+    } catch (error) {
+      diagnose('bilibili_provider_prepare', 'prepare_unavailable', context, { step }, error)
       throw annotateAgentError(bilibiliFailure(), { cause: 'prepare_unavailable' })
     }
     finally { guard.close(); if (!transferred) await releaseLeases(leases) }

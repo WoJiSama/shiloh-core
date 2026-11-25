@@ -432,7 +432,13 @@ export function createAgentInbox(client: AgentInboxRedis) {
       })) === 1
     },
     async canReply(target: ConversationAddress, messageId: string): Promise<boolean> {
-      return await client.get(eventKey('message', target, messageId)) !== null && !await isRecalled(target, messageId)
+      const message = eventKey('message', target, messageId)
+      if (!client.getMany) return await client.get(message) !== null && !await isRecalled(target, messageId)
+      const keys = [message, eventKey('recall', target, messageId)]
+      if (target.kind === 'group') keys.push(recalledTextMessage(target, messageId))
+      const values = await client.getMany(keys)
+      if (values.length !== keys.length) throw new Error('回复来源读取结果无效')
+      return typeof values[0] === 'string' && values[1] !== '1' && values[2] !== '1'
     },
     async isTextReplyPending(target: ConversationAddress, messageId: string): Promise<boolean> {
       return await client.get(eventKey('message', target, messageId)) === '1'

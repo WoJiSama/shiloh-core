@@ -1235,7 +1235,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     async sourceAllowed({ binding, source }, guard) {
       if (!guard.isCurrent() || !diceCurrent() || !source.messageId || !bindingIsCurrent(binding.target, agentBindingToken(binding)) ||
           options.allowsText?.(source.text, 'incoming') === false || options.allowsToolInput?.(source.text) === false ||
-          !await inbox.canReply(binding.target, source.messageId) || await inbox.isRecalled(binding.target, source.messageId)) return false
+          !await inbox.canReply(binding.target, source.messageId)) return false
       const { botId, scene } = personMemoryAddress(binding.target)
       const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: source.sender.id })
       return guard.isCurrent() && diceCurrent() && !isPersonMemoryRedacted({ scene, messageId: source.messageId,
@@ -1243,7 +1243,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
     async sendPublic({ binding, source, text }, guard) {
       const receipt = await controlMessageActions.send({ version: 1, kind: 'message.send', target: binding.target, binding,
-        replyTo: source.messageId!, parts: [{ kind: 'text', text }] }, { isCurrent: guard.isCurrent,
+        replyTo: source.messageId!, parts: [{ kind: 'text', text }] }, { isCurrent: guard.isCurrent, signal: guard.signal,
         ensureCurrent: async () => { await guard.ensureCurrent?.() } })
       return receipt.state === 'sent' && isMessageId(receipt.messageId) ? { state: 'sent', messageId: receipt.messageId } :
         { state: receipt.state === 'failed' ? 'failed' : 'unknown' }
@@ -1306,16 +1306,20 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const latest = await groupLogs.capture({ target, agentId: binding.agentId }, incoming.sender.id)
       if (!current() || latest.globalEpoch !== epochs.globalEpoch || latest.sceneEpoch !== epochs.sceneEpoch) throw new Error('骰子入站隐私权限已改变')
     }
-    const ensure = async () => {
-      if (!current() || !await inbox.canReply(target, incoming.messageId!) || await inbox.isRecalled(target, incoming.messageId!)) throw new Error('骰子来源已失效')
+    const ensureSourceAdmission = async () => {
+      if (!current() || !await inbox.canReply(target, incoming.messageId!)) throw new Error('骰子来源已失效')
       await ensureAdmission()
+    }
+    // The engine obtains a fresh native message and checks its fingerprint in
+    // the host bridge. Legacy dice still needs the complete check here.
+    const ensure = diceBridge ? ensureSourceAdmission : async () => {
+      await ensureSourceAdmission()
       const fresh = await adapter.readMessage!(target, incoming.messageId!, { isCurrent: current, signal: memoryTurn.signal })
       if (!fresh || !isConversationAddress(fresh.conversation) || conversationAddressKey(fresh.conversation) !== conversationAddressKey(target) ||
           fresh.messageId !== incoming.messageId || !isPlatformAccount(fresh.sender) || platformAccountKey(fresh.sender) !== platformAccountKey(incoming.sender) ||
           fresh.occurredAt !== incoming.occurredAt || fresh.text !== incoming.text ||
-          (diceBridge ? agentDiceSourceFingerprint(fresh) !== agentDiceSourceFingerprint(incoming) :
-            fresh.quote || fresh.mentions.length || fresh.parts.some(part => part.kind !== 'text') ||
-            fresh.parts.map(part => part.kind === 'text' ? part.text : '').join('') !== incoming.text) ||
+          fresh.quote || fresh.mentions.length || fresh.parts.some(part => part.kind !== 'text') ||
+          fresh.parts.map(part => part.kind === 'text' ? part.text : '').join('') !== incoming.text ||
           options.allowsText?.(fresh.text, 'incoming') === false || options.allowsToolInput?.(fresh.text) === false || !current()) throw new Error('骰子来源已改变')
       const { botId, scene } = personMemoryAddress(target)
       const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: incoming.sender.id })
@@ -1332,8 +1336,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         if (log) await ensure()
         Object.assign(context, {
           ...(log ? { logActive: log.active } : {}),
-          async archive(result: { readonly eventId: string; readonly text: string; readonly deliveryMessageId: string }) {
+          async archive(result: { readonly eventId: string; readonly text: string; readonly deliveryMessageId: string }, signal?: AbortSignal) {
             await ensure()
+            signal?.throwIfAborted()
             const name = incoming.senderName || incoming.sender.id
             if (options.allowsText?.(result.text, 'outgoing') === false || options.allowsToolInput?.(result.text) === false ||
                 options.allowsText?.(name, 'incoming') === false) throw new Error('骰子团录内容已失效')
@@ -1341,8 +1346,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
               occurredAt: incoming.occurredAt, name, content: result.text, type: 'dice_result',
               eventId: result.eventId, deliveryMessageId: result.deliveryMessageId }, epochs)
           },
-          async record(event: Parameters<NonNullable<AgentDiceEngineContext['record']>>[0]) {
+          async record(event: Parameters<NonNullable<AgentDiceEngineContext['record']>>[0], signal: AbortSignal) {
             await ensure()
+            signal.throwIfAborted()
             if (event.producer !== 'agent-dice-engine' || !['card_change', 'rule_event'].includes(event.kind) ||
                 event.source.messageId !== incoming.messageId || event.source.authorId !== incoming.sender.id ||
                 event.source.at !== incoming.occurredAt) throw new Error('骰子规则事件来源无效')
@@ -1356,8 +1362,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           },
         })
       }
-      return await diagnostics.run({ kind: 'conversation', binding, messageId: incoming.messageId }, 'dice_command', () =>
-        (diceBridge ?? diceWorkflow).handle(incoming, binding, context), 'runtime')
+      return await diagnostics.withScope({ kind: 'conversation', binding, messageId: incoming.messageId }, 'dice_command', () => {
+        diagnostics.emit({ stage: 'runtime', operation: 'dice_command', outcome: 'started' })
+        return (diceBridge ?? diceWorkflow).handle(incoming, binding, context)
+      })
     } finally { memoryTurn.release() }
   }
   function bilibiliQualityCurrent(): boolean {
@@ -1995,6 +2003,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
     readPublicFile: (url, guard) => readAgentPublicFile(url, guard),
     isMessageRecalled: (target, messageId) => inbox.isRecalled(target, messageId),
+    recalledMessageIds: inbox.recalledMessageIds,
   })
   async function verifyPersonalText(binding: AgentBindingSnapshot, proof: OwnTextDeliveryProof,
     signal: AbortSignal, guard: () => boolean) {

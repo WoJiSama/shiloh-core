@@ -14,9 +14,11 @@ interface Alert {
   httpStatus?: number
   errorKind?: NonNullable<AgentDiagnosticEvent['errorKind']>
   sourceTag?: string
+  deliveryState?: NonNullable<AgentDiagnosticEvent['delivery']>['state']
   durationMs?: number
   details?: NonNullable<AgentDiagnosticEvent['details']>
   traceId?: string
+  firstTraceId?: string
   firstAt: number
   lastAt: number
   count: number
@@ -137,10 +139,11 @@ export function createAgentFailureAlerts(options: {
     const sourceTag = event.sourceTag && /^[\p{L}\p{N} _-]{1,24}$/u.test(event.sourceTag) && allowed(event.sourceTag) ? event.sourceTag : undefined
     let key = JSON.stringify([event.stage, operation, event.outcome, code, event.httpStatus, event.errorKind, sourceTag,
       details?.step, details?.blockingStep, details?.cause, details?.field, details?.rule, details?.limit, details?.nativeCode,
-      details?.dispatched, details?.dispatchTurnPending, details?.result])
+      details?.dispatched, details?.dispatchTurnPending, details?.result, event.delivery?.state])
     let alert: Alert = { stage: event.stage, operation, outcome: event.outcome,
       ...(code === undefined ? {} : { code }), ...(event.httpStatus === undefined ? {} : { httpStatus: event.httpStatus }),
       ...(event.errorKind === undefined ? {} : { errorKind: event.errorKind }), ...(traceId === 'redacted' ? {} : { traceId }),
+      ...(event.delivery ? { deliveryState: event.delivery.state } : {}),
       ...(sourceTag ? { sourceTag } : {}), ...(Number.isFinite(event.durationMs) ? { durationMs: event.durationMs! } : {}),
       ...(details && Object.keys(details).length ? { details } : {}),
       firstAt: event.at, lastAt: event.at, count: 1 }
@@ -157,8 +160,11 @@ export function createAgentFailureAlerts(options: {
     if (!group) { group = { nextAt: 0 }; groups.set(key, group) }
     const previous = group.pending
     if (previous) {
+      const firstTrace = previous.firstAt <= alert.firstAt ? previous.firstTraceId ?? previous.traceId : alert.traceId
       alert.firstAt = Math.min(previous.firstAt, alert.firstAt)
       if (previous.lastAt > alert.lastAt) alert = { ...previous, firstAt: alert.firstAt, count: alert.count }
+      if (firstTrace && firstTrace !== alert.traceId) alert.firstTraceId = firstTrace
+      else delete alert.firstTraceId
       alert.lastAt = Math.max(previous.lastAt, alert.lastAt)
       alert.count += previous.count
     }

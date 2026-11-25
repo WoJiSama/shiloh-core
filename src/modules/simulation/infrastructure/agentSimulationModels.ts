@@ -3,6 +3,7 @@ import { resolveChatCompletionUrl } from '../../models/domain/chatCompletionUrl.
 import { glmFlashJsonOptions } from '../../models/domain/modelGateway.js'
 import { buildMemeExtractionPrompt } from '../domain/simMemory.js'
 import { conversationAddressKey, isConversationAddress, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
+import { agentErrorDetails, annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
 
 export interface AgentSimulationModelOptions {
   readonly baseUrl: string
@@ -18,6 +19,8 @@ export interface AgentSimulationWakeInput {
   readonly messages: readonly { readonly name: string; readonly text: string; readonly atSelf: boolean }[]
 }
 export interface AgentSimulationMemeMessage { readonly name: string; readonly text: string }
+export type AgentSimulationWakePhase = 'request_prepare' | 'wake_request_authorization' | 'response_headers' |
+  'response_body' | 'wake_response_authorization' | 'response_validation'
 
 const FAILURE = '仿真侧路模型请求失败：请求已取消、授权失效或模型服务不可用。'
 export class AgentSimulationModelError extends Error {
@@ -117,12 +120,14 @@ function client(options: AgentSimulationModelOptions, { deadlineMs, temperature,
 }) {
   const secrets = [...new Set([options.apiKey, ...(options.secrets ?? [])].filter(value => typeof value === 'string' && !!value))]
   const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Math.min(deadlineMs, Math.floor(options.timeoutMs!))) : deadlineMs
-  return async (input: unknown, prompt: () => readonly { role: string; content: string }[], context: PersonProfileExtractionContext | undefined, isCurrent?: () => boolean) => {
+  return async (input: unknown, prompt: () => readonly { role: string; content: string }[], context: PersonProfileExtractionContext | undefined,
+    isCurrent?: () => boolean, onPhase?: (phase: AgentSimulationWakePhase) => void) => {
     const lifecycle = new AbortController()
     let response: Response | undefined
     let signal: AbortSignal | undefined
     let waitingForHeaders = false
     try {
+      onPhase?.('request_prepare')
       assertScope(context)
       const requestSignal = AbortSignal.any([context.signal, lifecycle.signal, AbortSignal.timeout(timeoutMs)])
       signal = requestSignal
@@ -133,11 +138,13 @@ function client(options: AgentSimulationModelOptions, { deadlineMs, temperature,
           hasSecret(options.name, secrets) || hasSecret(JSON.stringify(input), secrets) || containsSecret(input, secrets)) throw new Error(FAILURE)
       const messages = prompt()
       if (hasSecret(JSON.stringify(messages), secrets)) throw new Error(FAILURE)
+      onPhase?.('wake_request_authorization')
       await ensureCurrent(context, signal, isCurrent)
       // Keep reasoning off where the official GLM endpoint supports it.
       const received = await abortable<Response>(Promise.resolve().then(() => {
         assertCurrent(context, requestSignal, isCurrent)
         waitingForHeaders = true
+        onPhase?.('response_headers')
         return (options.fetchImpl ?? fetch)(resolveChatCompletionUrl(endpoint.href), { method: 'POST', redirect: 'error', signal: requestSignal,
           headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: options.name, messages, stream: false, temperature, max_tokens: maxTokens,
@@ -149,16 +156,20 @@ function client(options: AgentSimulationModelOptions, { deadlineMs, temperature,
       assertCurrent(context, signal, isCurrent)
       if (!received.ok) throw new AgentSimulationModelError('http_error', received.status)
       if (received.redirected) throw new AgentSimulationModelError('model_response_envelope_invalid')
+      onPhase?.('response_body')
       const result = await readResponse(received, signal).catch(() => {
         requestSignal.throwIfAborted()
         throw new AgentSimulationModelError('model_response_body_invalid')
       })
+      onPhase?.('wake_response_authorization')
       await ensureCurrent(context, signal, isCurrent)
+      onPhase?.('response_validation')
       if (hasSecret(result.raw, secrets) || containsSecret(result.data, secrets)) throw new AgentSimulationModelError('model_response_blocked')
       const usage = object(result.data.usage), counts = Object.fromEntries(['prompt_tokens', 'completion_tokens', 'total_tokens', 'input_tokens', 'output_tokens']
         .filter(key => typeof usage[key] === 'number' && Number.isSafeInteger(usage[key]) && Number(usage[key]) >= 0).map(key => [key, usage[key]]))
       if (Object.keys(counts).length) context.recordUsage?.(options.name, counts)
-      await ensureCurrent(context, signal, isCurrent)
+      // The request and response each have a fresh authorization check.
+      assertCurrent(context, signal, isCurrent)
       const choice = object(Array.isArray(result.data.choices) ? result.data.choices[0] : undefined)
       const message = object(choice.message)
       if (choice.finish_reason === 'length') throw new AgentSimulationModelError('model_response_truncated')
@@ -172,7 +183,8 @@ function client(options: AgentSimulationModelOptions, { deadlineMs, temperature,
       if (error instanceof AgentSimulationModelError) throw error
       if (response && !response.ok) throw new AgentSimulationModelError('http_error', response.status)
       if (signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError') throw new AgentSimulationModelError('provider_timeout')
-      throw new AgentSimulationModelError(waitingForHeaders ? 'provider_transport_error' : 'model_response_invalid')
+      const failure = new AgentSimulationModelError(waitingForHeaders ? 'provider_transport_error' : 'model_response_invalid')
+      throw annotateAgentError(failure, agentErrorDetails(error) ?? {})
     }
     finally { lifecycle.abort(); void response?.body?.cancel().catch(() => {}) }
   }
@@ -181,14 +193,15 @@ function client(options: AgentSimulationModelOptions, { deadlineMs, temperature,
 /** Low-signal wake screening; unavailable or malformed verdicts preserve fail-open behavior. */
 export function createAgentSimulationWakeGate(options: AgentSimulationModelOptions & { readonly throwOnFailure?: boolean }) {
   const run = client(options, { deadlineMs: 8_000, temperature: 0.1 })
-  return async (input: AgentSimulationWakeInput, isCurrent?: () => boolean, context?: PersonProfileExtractionContext): Promise<{ engage: boolean; reason?: string } | null> => {
+  return async (input: AgentSimulationWakeInput, isCurrent?: () => boolean, context?: PersonProfileExtractionContext,
+    onPhase?: (phase: AgentSimulationWakePhase) => void): Promise<{ engage: boolean; reason?: string } | null> => {
     try {
       const raw = await run(input, () => {
         if (!input || typeof input.reason !== 'string' || input.reason.length > 4000 || !Array.isArray(input.messages) || input.messages.length > 40 ||
             input.messages.some(row => !row || typeof row.name !== 'string' || typeof row.text !== 'string' || typeof row.atSelf !== 'boolean')) throw new Error(FAILURE)
         const messages = input.messages.slice(-10).map(row => ({ name: row.name.slice(0, 80), text: row.text.slice(0, 80), atSelf: row.atSelf }))
         return [{ role: 'system', content: WAKE_SYSTEM }, { role: 'user', content: JSON.stringify({ 唤醒原因: input.reason, 未读消息: messages }) }]
-      }, context, isCurrent)
+      }, context, isCurrent, onPhase)
       if (raw.length > 4000) throw new AgentSimulationModelError('model_response_invalid')
       const verdict = object(parseOutput(raw, '{'))
       if (typeof verdict.engage !== 'boolean' || Object.keys(verdict).some(key => !['engage', 'reason'].includes(key)) ||

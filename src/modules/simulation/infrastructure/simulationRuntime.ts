@@ -83,7 +83,7 @@ import { checkHealth, formatAlerts, type HealthAlert } from '../domain/healthSen
 import { buildChatRequestData } from '../../models/domain/modelGateway.js'
 import { safeTruncateUnicode } from '../../models/domain/unicodeText.js'
 import { createSimSessionStore, simulationSessionKey, type SimGroupOverrides, type SimSessionStore } from './simSessionStore.js'
-import { AgentSimulationModelError } from './agentSimulationModels.js'
+import { AgentSimulationModelError, type AgentSimulationWakePhase } from './agentSimulationModels.js'
 import { createInitialPromptStore } from './simInitialPrompt.js'
 import { resolveSimulationGroupConfig, seedSimulationOverrides, simulationGroupOverride } from './simulationGroupPolicy.js'
 import { decodeSimulationAddressKey, isQqSimulationAddress, qqSimulationAddress, simulationAddressKey } from './simulationAddress.js'
@@ -194,6 +194,7 @@ export interface SimulationRuntimePorts {
   readConversationFile?(target: ConversationAddress, entry: ConversationFileEntry, guard: ConversationFileReadOptions): Promise<AgentFileBytes | undefined>
   readPublicFile?(url: string, guard: FileReadGuard): Promise<AgentFileBytes>
   isMessageRecalled?(target: ConversationAddress, messageId: string): Promise<boolean>
+  recalledMessageIds?(target: ConversationAddress, messageIds: readonly string[], signal: AbortSignal): Promise<ReadonlySet<string>>
   /** 仿真回合额外放通的既有工具（toolPolicy 解析出的实际放通名清单；从 localToolRegistry 取实例） */
   getExtraTools?(names: string[]): import('../../toolSupport/infrastructure/AbstractTool.js').AbstractTool[]
   /** Only hosts whose registry uses the neutral AgentTool contract may opt in. */
@@ -241,7 +242,8 @@ export interface SimulationRuntimePorts {
   supportsQqAction?(target: ConversationAddress, toolName: string): boolean
   executeQzone?(operation: AgentQzoneOperation, context: AgentToolContext): Promise<AgentQzoneResult>
   /** 唤醒预判闸：低信号唤醒先判断值不值得进完整回合；返回 null = 预判不可用（fail-open 放行） */
-  wakeGateJudge?(input: { reason: string; messages: { name: string; text: string; atSelf: boolean }[] }, isCurrent?: ExecutionOptions['isCurrent'], context?: PersonProfileExtractionContext): Promise<{ engage: boolean; reason?: string } | null>
+  wakeGateJudge?(input: { reason: string; messages: { name: string; text: string; atSelf: boolean }[] }, isCurrent?: ExecutionOptions['isCurrent'],
+    context?: PersonProfileExtractionContext, onPhase?: (phase: AgentSimulationWakePhase) => void): Promise<{ engage: boolean; reason?: string } | null>
   /** QQ空间互动：看指定成员的最近说说 / 点赞 / 评论（凭据由装配层处理；内容已在上层脱敏） */
   qzoneInteract?(input: { action: 'visit' | 'like' | 'comment'; userId?: string; tid?: string; text?: string }, target: ConversationAddress, options?: SimSendOptions): Promise<{ ok: boolean; error?: string; feeds?: { tid: string; time: string; text: string; likes: number }[] }>
   /** 人物核心档案提取（侧路小模型）：近期消息 → 跨群身份级事实补丁 */
@@ -519,12 +521,16 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const scope = characterScopeFor(target, resolved.personaId || 'default')
     return normalizeMemoryList(await scopedStore(scope, resolved.binding).loadMemories(groupId), at, isQqSimulationAddress(target) ? undefined : isSimulationUserId)
   }
-  async function redactSceneMessages(scope: CharacterScope, messages: SimMessage[]): Promise<SimMessage[]> {
+  async function redactSceneMessages(scope: CharacterScope, messages: SimMessage[], signal?: AbortSignal): Promise<SimMessage[]> {
     const scene = { kind: 'group' as const, id: scope.groupId }
-    const cutoff = (await personMemory.getSceneRedactions({ identity: scope, scene })).invalidatedAt
+    const [sceneState, batch] = await Promise.all([
+      personMemory.getSceneRedactions({ identity: scope, scene }),
+      signal && messages.length ? personMemory.getRedactionsBatch?.(scope, messages.map(message => message.userId), signal) : undefined,
+    ])
+    const cutoff = sceneState.invalidatedAt
     const snapshots = new Map<string, Awaited<ReturnType<typeof personMemory.getRedactions>>>()
     const readRedactions = async (subjectId: string) => {
-      let snapshot = snapshots.get(subjectId)
+      let snapshot = batch?.get(subjectId) ?? snapshots.get(subjectId)
       if (!snapshot) { snapshot = await personMemory.getRedactions({ identity: scope, subjectId }); snapshots.set(subjectId, snapshot) }
       return snapshot
     }
@@ -550,12 +556,16 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return out
   }
 
-  async function sideModelSourcesCurrent(scope: CharacterScope, target: ConversationAddress, sources: SimMessage[], isCurrent: () => boolean): Promise<boolean> {
+  async function sideModelSourcesCurrent(scope: CharacterScope, target: ConversationAddress, sources: SimMessage[], isCurrent: () => boolean,
+    signal?: AbortSignal, triggerIds: readonly string[] = []): Promise<boolean> {
     if (!isCurrent()) return false
-    const allowed = await redactSceneMessages(scope, sources)
-    if (allowed.length !== sources.length || !isCurrent()) return false
-    const recalled = await Promise.all(sources.map(source => source.messageId ? ports.isMessageRecalled?.(target, String(source.messageId)) : undefined))
-    return !recalled.some(Boolean) && isCurrent()
+    const ids = [...new Set([...triggerIds, ...sources.flatMap(source => source.messageId ? [String(source.messageId)] : [])])]
+    const [allowed, recalled] = await Promise.all([
+      redactSceneMessages(scope, sources, signal),
+      signal && ports.recalledMessageIds ? ports.recalledMessageIds(target, ids, signal).then(rows => rows.size > 0)
+        : Promise.all(ids.map(id => ports.isMessageRecalled?.(target, id))).then(rows => rows.some(Boolean)),
+    ])
+    return allowed.length === sources.length && !recalled && isCurrent()
   }
 
   function withoutResolvedQuote(message: SimMessage): SimMessage {
@@ -1594,14 +1604,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         }
         return
       }
-      const assertTriggerCurrent = async () => {
+      const triggerEvidenceIds = () => {
         const visibleQuote = triggerSource && state!.recent.find(message => message.seq === triggerSource.seq)?.quoteSource
-        if ((triggerSource?.messageId && await ports.isMessageRecalled?.(target, String(triggerSource.messageId))) ||
-            (visibleQuote && await ports.isMessageRecalled?.(target, visibleQuote.messageId))) {
-          throw new SimulationSourceRevokedError('消息来源已撤回，停止使用旧上下文')
-        }
-        for (const id of attachmentSourceIds) {
-          if (await ports.isMessageRecalled?.(target, id)) throw new SimulationSourceRevokedError('附件来源已撤回，停止使用旧上下文')
+        return [...(triggerSource?.messageId ? [String(triggerSource.messageId)] : []),
+          ...(visibleQuote ? [visibleQuote.messageId] : []), ...attachmentSourceIds]
+      }
+      const assertTriggerCurrent = async () => {
+        for (const id of triggerEvidenceIds()) if (await ports.isMessageRecalled?.(target, id)) {
+          throw new SimulationSourceRevokedError('消息或附件来源已撤回，停止使用旧上下文')
         }
       }
       const allowUnprovenAggregates = memorySceneState.invalidatedAt === 0
@@ -1849,7 +1859,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           let sourceFailure: 'wake_gate_source_changed' | 'wake_gate_source_check_failed' | undefined
           let gateUsageRecorded = false, gateActive = true
           const gateTimeoutMs = 8_000, gateStarted = now()
-          let gateStep = 'authorization'
+          let gateStep: AgentSimulationWakePhase | 'provider_request' = 'wake_request_authorization'
+          let gateStepStarted = gateStarted, gateDispatched = false
+          const gatePhase = (step: typeof gateStep) => {
+            gateStep = step
+            gateStepStarted = now()
+            if (step === 'response_headers') gateDispatched = true
+          }
           const gateSignal = AbortSignal.any([turnSignal, AbortSignal.timeout(gateTimeoutMs)])
           const gateAuthorized = () => gateActive && !sourceFailure && canCallModel() && gateSources.every(source => turnState.recent.some(message =>
             message.seq === source.seq && message.messageId === source.messageId && message.userId === source.userId &&
@@ -1859,8 +1875,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             signal: gateSignal, isCurrent: gateCurrent,
             async ensureCurrent() {
               try {
-                await assertTriggerCurrent()
-                if (!await sideModelSourcesCurrent(characterScope, target, gateSources, gateAuthorized)) {
+                if (!await sideModelSourcesCurrent(characterScope, target, gateSources, gateCurrent, gateSignal, triggerEvidenceIds())) {
+                  gateSignal.throwIfAborted()
                   throw new SimulationSourceRevokedError('唤醒预判来源已失效')
                 }
               } catch (error) {
@@ -1880,15 +1896,15 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               if (!gateCurrent() || !gateSources.length) return null
               const started = now()
               if (durableWake) { recordWakeStart(); noteProactiveCheck?.() }
-              await gateContext.ensureCurrent()
-              gateStep = 'provider_request'
+              await awaitSideModel(() => gateContext.ensureCurrent(), gateSignal, gateCurrent)
+              gatePhase('provider_request')
               const verdict = await awaitSideModel(() => judgeWake({
                 reason: formatWakeReason(reason),
                 messages: gateSources
                   .map(m => ({ name: String(m.name || ''), text: String(m.text || '').slice(0, 80), atSelf: Boolean(m.atSelf || m.quoteToSelf) })),
-              }, gateCurrent, gateContext), gateSignal, gateCurrent)
-              gateStep = 'authorization'
-              await gateContext.ensureCurrent()
+              }, gateCurrent, gateContext, phase => { if (gateCurrent()) gatePhase(phase) }), gateSignal, gateCurrent)
+              gatePhase('wake_response_authorization')
+              await awaitSideModel(() => gateContext.ensureCurrent(), gateSignal, gateCurrent)
               if (verdict === null) diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'failed', code: 'wake_gate_unavailable',
                 durationMs: now() - started, details: { step: 'response_validation', result: 'discarded' } })
               else diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'succeeded', durationMs: now() - started })
@@ -1907,7 +1923,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: cancelled ? 'cancelled' : 'failed',
               code: sourceFailure ?? (cancelled ? 'wake_gate_cancelled' : timedOut ? 'wake_gate_timeout' : failure?.code ?? 'wake_gate_unavailable'),
               ...(httpStatus === undefined ? {} : { httpStatus }), error, durationMs: now() - gateStarted,
-              details: { step: sourceFailure ? 'authorization' : gateStep, result: 'discarded',
+              details: { step: gateStep, stepMs: Math.max(0, now() - gateStepStarted),
+                ...(gateStep === 'provider_request' ? {} : { dispatched: gateDispatched }), result: gateDispatched || gateStep === 'provider_request' ? 'discarded' : 'not_dispatched',
                 ...(useBackoff ? { retryInMs } : {}), ...(timedOut ? { limit: gateTimeoutMs } : {}) } })
             return null
           })

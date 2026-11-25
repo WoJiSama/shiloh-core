@@ -267,6 +267,8 @@ export function createAgentSemanticMemory(ports: {
     const viewerCurrent = () => guard() && !callerSignal?.aborted
     const started = performance.now()
     let phase: NonNullable<AgentSemanticMemoryTimeoutError['phase']> = 'source_check'
+    let phaseStarted = started
+    const advance = (next: typeof phase) => { phase = next; phaseStarted = performance.now() }
     let fallback: AgentSemanticMemoryRecall | undefined
     return withContext(binding, viewerCurrent, budget, async context => {
         const id = agentSemanticMemoryId(binding)
@@ -324,8 +326,12 @@ export function createAgentSemanticMemory(ports: {
           }
           for (const group of groups.values()) {
             const sourceBinding = group.binding
-            if (!current(sourceBinding) || !await present(sourceBinding, group.rows, activeContext.signal) ||
-                (await permitted(sourceBinding, group.rows, activeContext.signal, true)).length !== group.rows.length) {
+            if (!current(sourceBinding)) throw new SemanticSourceChangedError('语义召回来源已失效')
+            const [exists, allowed] = await Promise.all([
+              present(sourceBinding, group.rows, activeContext.signal),
+              permitted(sourceBinding, group.rows, activeContext.signal, true),
+            ])
+            if (!exists || allowed.length !== group.rows.length) {
               throw new SemanticSourceChangedError('语义召回来源已失效')
             }
             if (conversationAddressKey(sourceBinding.target) !== conversationAddressKey(binding.target) &&
@@ -338,7 +344,7 @@ export function createAgentSemanticMemory(ports: {
         }
         if (!groupQuery) await ensureEvidence(evidence)
         const authorizeQuery = async () => {
-          phase = 'authorization'
+          advance('authorization')
           queryEpoch = (await ports.memory.getSceneRedactions(queryScope)).invalidatedAt
           remoteQuery = await allowsQuery()
         }
@@ -381,9 +387,10 @@ export function createAgentSemanticMemory(ports: {
           (ranking ??= prepareAgentSemanticRanking(evidence, text, ports.backend!.id, threshold, mode))(queryVector)
         const ensureEmbeddingCurrent = groupQuery ? ensureQueryAuthority : () => ensureQuery(evidence)
         const checkProviderCurrent = async (resume: 'embedding' | 'rerank', check: () => Promise<void>) => {
-          phase = 'authorization'
+          advance('authorization')
           await check()
-          phase = resume
+          context.signal.throwIfAborted()
+          advance(resume)
         }
         const embedQuery = async () => {
           const ensureCurrent = () => checkProviderCurrent('embedding', ensureEmbeddingCurrent)
@@ -393,12 +400,10 @@ export function createAgentSemanticMemory(ports: {
             queryVector = vector((await abortable(ports.backend!.embed([text], { ...context, ensureCurrent }), context.signal))[0])
           } catch (error) {
             context.signal.throwIfAborted()
-            phase = 'authorization'
-            await ensureEmbeddingCurrent()
+            await checkProviderCurrent('embedding', ensureEmbeddingCurrent)
             throw new SemanticProviderError('语义召回向量请求失败', { cause: error })
           }
-          phase = 'authorization'
-          await ensureEmbeddingCurrent()
+          await checkProviderCurrent('embedding', ensureEmbeddingCurrent)
           if (!queryVector) throw new SemanticProviderError('语义召回未收到有效向量')
           return queryVector
         }
@@ -411,12 +416,16 @@ export function createAgentSemanticMemory(ports: {
         const retrieveVector = async () => {
           await authorizeQuery()
           const result = remoteQuery && mode !== 'bm25' ? await embedQuery() : undefined
-          phase = 'source_check'
+          advance('source_check')
           return result
         }
         let queryVector: number[] | undefined
         if (groupQuery && mode === 'production' && ports.recalledMessageIds && ports.memory.getRedactionsBatch) {
-          const [result] = await Promise.all([retrieveVector().then(value => ({ value }), (error: unknown) => ({ error })), prepareFallback()])
+          // Only the primary branch updates the reported phase. Once it
+          // settles, any remaining wait belongs to the local source check.
+          const vectorResult = retrieveVector().then(value => ({ value }), (error: unknown) => ({ error }))
+            .finally(() => { if (!context.signal.aborted) advance('source_check') })
+          const [result] = await Promise.all([vectorResult, prepareFallback()])
           if ('error' in result) throw result.error
           queryVector = result.value
         } else queryVector = await retrieveVector()
@@ -428,12 +437,11 @@ export function createAgentSemanticMemory(ports: {
           const ensureCurrent = () => checkProviderCurrent('rerank', () => ensureQuery(candidates()))
           await ensureCurrent()
           const scores = await abortable(ports.backend.rerank(text, hits.map(hit => hit.chunk), { ...context, ensureCurrent }), context.signal)
-          phase = 'authorization'
           await ensureCurrent()
           if (scores) hits.sort((a, b) => (scores.get(b.chunk.id) ?? -1) - (scores.get(a.chunk.id) ?? -1))
           rerank = scores ? 'applied' : 'fallback'
         }
-        phase = 'source_check'
+        advance('source_check')
         const sourceRef = (item: Evidence) => ({ scopeId: agentSemanticMemoryId(item.binding), messageId: item.row.messageId })
         const ranked = ports.retrieval?.observe ? candidates().map(sourceRef) : []
         hits = hits.slice(0, topK)
@@ -454,6 +462,9 @@ export function createAgentSemanticMemory(ports: {
         }
         return project(selected, projection)
       }, related, callerSignal, () => phase).catch(error => {
+        if (error instanceof AgentSemanticMemoryTimeoutError) annotateAgentError(error, {
+          stepMs: Math.round(performance.now() - phaseStarted),
+        })
         if (!fallback || !(error instanceof AgentSemanticMemoryTimeoutError || error instanceof SemanticProviderError) ||
             !viewerCurrent() || !current(binding)) throw error
         reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'semantic_memory_recall',

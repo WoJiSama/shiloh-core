@@ -3,11 +3,12 @@ import { constants, type Stats } from 'node:fs'
 import { chmod, lstat, mkdtemp, open, realpath, rm, unlink, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import type { AgentMediaArtifact, AgentMediaArtifactLease, AgentMediaArtifactReader, AgentMediaResourceContext, AgentMediaResourcePort } from '../../../contracts/agentMediaRelay.js'
+import { agentErrorDetails, annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
 
 export const MAX_AGENT_ARTIFACT_VIDEO_BYTES = 512 * 1024 * 1024
 export const MAX_AGENT_ARTIFACT_IMAGE_BYTES = 32 * 1024 * 1024
 const BLOCK = 1024 * 1024, HEADER = 65536, TOTAL = 16 * 1024 * 1024 * 1024, COUNT = 128
-const failure = () => new Error('媒体资源不可用或操作已取消')
+const failure = (cause?: unknown) => annotateAgentError(new Error('媒体资源不可用或操作已取消'), agentErrorDetails(cause) ?? {})
 export interface AgentMediaArtifactStoreOptions {
   readonly directory: string
   readonly maxTotalBytes?: number
@@ -134,7 +135,7 @@ export async function createAgentMediaArtifactStore(options: AgentMediaArtifactS
       const timer = setInterval(() => { try { check() } catch { cancel.abort() } }, 20); timer.unref()
       const wait = <T>(promise: Promise<T>): Promise<T> => new Promise((resolve, reject) => {
         const abort = () => reject(failure()), clear = () => signal.removeEventListener('abort', abort)
-        promise.then(value => { clear(); try { check(); resolve(value) } catch { reject(failure()) } }, () => { clear(); reject(failure()) })
+        promise.then(value => { clear(); try { check(); resolve(value) } catch { reject(failure()) } }, error => { clear(); reject(failure(error)) })
         if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true })
       })
       return { signal, check, wait, async authorize() {
@@ -213,7 +214,9 @@ export async function createAgentMediaArtifactStore(options: AgentMediaArtifactS
           if (blockBytes === BLOCK) { blocks.push(blockHash.digest('hex')); blockHash = createHash('sha256'); blockBytes = 0 }
         }
       }
-      if (!bytes || !headerValid(mime, Buffer.concat(headers), bytes)) throw failure()
+      if (!bytes || !headerValid(mime, Buffer.concat(headers), bytes)) {
+        throw annotateAgentError(failure(), { cause: 'media_container_invalid' })
+      }
       if (blockBytes) blocks.push(blockHash.digest('hex'))
       await current.authorize(); await handle.chmod(0o400)
       const stat = await handle.stat()
@@ -225,7 +228,7 @@ export async function createAgentMediaArtifactStore(options: AgentMediaArtifactS
         blocks: Object.freeze(blocks), abort: new AbortController(), readers: new Set(), opens: new Set(), refs: 1, revoked: false }
       entries.set(id, entry); committed = true
       return lease(entry)
-    } catch { throw failure() }
+    } catch (error) { throw failure(error) }
     finally {
       current.stop()
       if (!committed) {

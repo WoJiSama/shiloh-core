@@ -7,7 +7,7 @@ import type { ConversationEpisodeInput, ConversationMemoryState, ConversationMem
   AgentConversationMemoryPurgeSubject, AgentConversationMemoryCleanupGuard, AgentConversationMemoryCleanupReceipt,
   ConversationSummaryContext, ConversationSummaryModelPhase } from '../../../contracts/conversationMemory.js'
 import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js'
-import type { AgentDiagnosticInput, AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import { annotateAgentError, type AgentDiagnosticInput, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey } from '../../runtime/domain/agentBindings.js'
 import { simulationAddressKey } from '../../simulation/infrastructure/simulationAddress.js'
 import { isPersonMemoryRedacted } from '../domain/personMemory.js'
@@ -29,6 +29,11 @@ const summaryStages = {
 type SummaryPhase = keyof typeof summaryStages
 function boundedNumber(value: number | undefined, fallback: number, minimum: number, maximum: number) {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(minimum, Math.min(maximum, Math.floor(value))) : fallback
+}
+async function captureStep<T>(field: string, work: () => Promise<T>): Promise<T> {
+  const started = performance.now()
+  try { return await work() }
+  catch (error) { throw annotateAgentError(error, { field, stepMs: Math.round(performance.now() - started) }) }
 }
 
 /** Scoped durable narrative memory. Raw records are host evidence; generated summaries are untrusted context. */
@@ -96,7 +101,7 @@ export function createConversationMemory(ports: {
   const source = (binding: AgentBindingSnapshot, row: ConversationMemoryRecord) => ({
     scene: scene(binding.target, row.peerId), authorId: row.authorId, messageId: row.messageId, at: row.at, excerpt: row.text,
   })
-  async function safeRecords(binding: AgentBindingSnapshot, rows: readonly ConversationMemoryRecord[], signal?: AbortSignal) {
+  async function safeRecords(binding: AgentBindingSnapshot, rows: readonly ConversationMemoryRecord[], signal?: AbortSignal, intake = false) {
     signal?.throwIfAborted()
     const candidates = rows.filter(row => (binding.target.kind !== 'private' || ports.privatePeer(binding.target) === row.authorId) && ports.allowsText(row.text))
     if (!candidates.length) return []
@@ -105,7 +110,8 @@ export function createConversationMemory(ports: {
     const sources: ConversationMemoryRecord[] = []
     for (const row of candidates) {
       signal?.throwIfAborted()
-      if (!(recalled ? recalled.has(row.messageId) : await ports.isRecalled(binding.target, row.messageId))) sources.push(row)
+      const checkRecall = () => ports.isRecalled(binding.target, row.messageId)
+      if (!(recalled ? recalled.has(row.messageId) : await (intake ? captureStep('conversation_recall_read', checkRecall) : checkRecall()))) sources.push(row)
     }
     signal?.throwIfAborted()
     if (!sources.length) return []
@@ -118,7 +124,8 @@ export function createConversationMemory(ports: {
       signal?.throwIfAborted()
       let state = batch?.get(row.authorId) ?? snapshots.get(row.authorId)
       if (!state) {
-        state = await ports.memory.getRedactions({ identity: owner, subjectId: row.authorId })
+        const readPrivacy = () => ports.memory.getRedactions({ identity: owner, subjectId: row.authorId })
+        state = await (intake ? captureStep('conversation_person_privacy', readPrivacy) : readPrivacy())
         snapshots.set(row.authorId, state)
       }
       if (!isPersonMemoryRedacted(source(binding, row), row.text, state)) result.push(row)
@@ -141,15 +148,19 @@ export function createConversationMemory(ports: {
       name: (incoming.senderName ?? '').slice(0, 24), text: incoming.text, at: incoming.occurredAt,
       ...(binding.target.kind === 'private' ? { peerId: incoming.sender.id } : {}),
     }
-    if (row.at > now() + 60_000 || !(await safeRecords(binding, [row])).length) return
-    const memoryTurn = await ports.begin(binding)
+    if (row.at > now() + 60_000 || !(await safeRecords(binding, [row], undefined, true)).length) return
+    const memoryTurn = await captureStep('conversation_admission', () => ports.begin(binding))
     const isCurrent = () => current(binding) && guard() && memoryTurn.isCurrent() &&
       (binding.target.kind !== 'private' || ports.privatePeer(binding.target) === row.authorId)
     try {
       if (!isCurrent()) return
-      const invalidatedAt = await epoch(binding)
-      const cleanupToken = await store.cleanupToken(binding)
-      if (!await ports.memory.registerSource({ identity: identity(binding), subjectId: row.authorId, source: source(binding, row) }, isCurrent)) return
+      const [invalidatedAt, cleanupToken] = await Promise.all([
+        captureStep('conversation_scene_privacy', () => epoch(binding)),
+        captureStep('conversation_cleanup_read', () => store.cleanupToken(binding)),
+      ])
+      const registered = await captureStep('conversation_register_source', () =>
+        ports.memory.registerSource({ identity: identity(binding), subjectId: row.authorId, source: source(binding, row) }, isCurrent))
+      if (!registered) return
       await store.update(conversationMemoryId(binding), saved => {
         const state = saved ?? initial(binding)
         if (state.records.some(record => record.messageId === row.messageId)) return state

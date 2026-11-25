@@ -94,11 +94,11 @@ test('semantic authorization is checked before network, between actual batches a
     return answer(vectors(count))
   } })
   const scoped = context({ async ensureCurrent() {
-    if (++checks === 5) { revoked = true; throw new Error('source-private-revoked') }
+    if (++checks === 3) { revoked = true; throw new Error('source-private-revoked') }
   }, isCurrent: () => !revoked })
   await rejected(run.embed(Array.from({ length: 17 }, (_, index) => `内容${index}`), scoped))
   assert.equal(calls, 1, 'second actual embedding batch must request fresh authorization')
-  assert.equal(checks, 5)
+  assert.equal(checks, 3, 'the first request and its response each checked authorization')
   let current = true
   await rejected(backend({ fetchFn: async () => { current = false; return answer(vectors()) } }).embed(['内容'], context({ isCurrent: () => current })))
 })
@@ -209,7 +209,10 @@ test('provider diagnostics distinguish a local budget while waiting for headers 
   for (const response of [new Response('private-provider-response', { status: 503 }), answer({ data: [] })]) {
     await rejected(backend({ diagnostics, fetchFn: async () => response }).embed(['private-query-content'], context()))
   }
-  assert.deepEqual(rows.map(({ code, outcome, httpStatus, details }) => [code, outcome, httpStatus, details]), [
+  assert.deepEqual(rows.map(({ code, outcome, httpStatus, details: { stepMs, ...details } }) => {
+    assert.ok(Number.isSafeInteger(stepMs) && stepMs >= 0)
+    return [code, outcome, httpStatus, details]
+  }), [
     ['semantic_provider_budget_elapsed', 'cancelled', undefined,
       { step: 'response_headers', dispatched: true, limit: 1_000, result: 'discarded' }],
     ['http_error', 'failed', 503, { step: 'response_headers', dispatched: true, result: 'discarded' }],

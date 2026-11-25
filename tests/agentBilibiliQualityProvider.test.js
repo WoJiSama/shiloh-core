@@ -256,13 +256,13 @@ function assertMetadataEvents(f) {
   assert.ok(f.events.length)
   for (const event of f.events) {
     const { details, ...eventFields } = event
-    assert.deepEqual(Object.keys(eventFields).sort(), ['code', 'operation', 'outcome', 'stage'])
+    assert.ok(Object.keys(eventFields).every(field => ['code', 'operation', 'outcome', 'stage', 'durationMs', 'httpStatus'].includes(field)))
     if (details) {
-      assert.ok(Object.keys(details).every(field => ['step', 'nativeCode'].includes(field)))
-      assert.match(details.step, /^bilibili_[a-z_]+$/u)
+      assert.ok(Object.keys(details).every(field => ['step', 'field', 'nativeCode', 'cause', 'limit', 'stepMs', 'dispatched', 'attempt', 'maxAttempts', 'result'].includes(field)))
+      assert.match(details.step, /^(?:bilibili|response)_[a-z_]+$/u)
     }
     assert.equal(event.stage, 'runtime'); assert.match(event.operation, /^bilibili_[a-z_]+$/u); assert.match(event.code, /^[a-z_]+$/u)
-    assert.ok(['failed', 'cancelled'].includes(event.outcome))
+    assert.ok(['failed', 'cancelled'].includes(event.outcome) || event.outcome === 'succeeded' && event.code === 'bilibili_candidate_recovered')
   }
   for (const secret of [COOKIE, 'AUTHORIZED_ACCOUNT_PRIVATE', 'CSRF_PRIVATE', PRIVATE, 'QUALITY_DEVICE_PRIVATE', f.directory, BV, 'https:', 'stack']) assert.equal(JSON.stringify(f.events).includes(secret), false)
 }
@@ -283,11 +283,15 @@ test('provider metadata events expose optional fingerprint, cover and thumbnail 
 test('a failed video candidate remains observable when its existing authorized backup succeeds', async t => {
   const f = await fixture(t, { playback: { durl: [{ order: 1, url: `https://cn-test.bilivideo.com/primary.mp4?token=${PRIVATE}`,
     backup_url: [`https://cn-test.bilivideo.com/backup.mp4?token=${PRIVATE}`], length: 60000, size: 64 }] },
-  respond: url => url.pathname === '/primary.mp4' ? response('unavailable', 'text/plain') : undefined })
+  respond: url => url.pathname === '/primary.mp4' ? response('unavailable', 'text/plain', 503) : undefined })
   const result = await f.prepare(); assert.equal(result.status, 'ready'); assert.equal(videos(result).length, 1)
   const downloads = f.calls.filter(call => call.url.hostname.endsWith('.bilivideo.com'))
   assert.deepEqual(downloads.map(call => call.url.pathname), ['/primary.mp4', '/backup.mp4']); assert.ok(downloads.every(call => call.policy.headers.Cookie === COOKIE))
-  assert.equal(f.events.filter(event => event.code === 'video_candidate_failed').length, 1); assert.equal(f.events.some(event => event.code === 'video_plan_incomplete'), false); assertMetadataEvents(f)
+  const failures = f.events.filter(event => event.code === 'video_candidate_failed')
+  assert.equal(failures.length, 1); assert.equal(failures[0].httpStatus, 503)
+  assert.equal(failures[0].details.step, 'response_headers'); assert.equal(failures[0].details.attempt, 1)
+  assert.equal(f.events.find(event => event.code === 'bilibili_candidate_recovered').details.attempt, 2)
+  assert.equal(f.events.some(event => event.code === 'video_plan_incomplete'), false); assertMetadataEvents(f)
 })
 
 const rejectingRelease = artifacts => ({ ...artifacts, async stage(...args) {
