@@ -32,20 +32,24 @@ function sourceKey(row: Pick<StoredClaim, 'binding' | 'identity' | 'kind' | 'use
   // A configuration save/rebind never gives an already attempted source a second external effect.
   return PREFIX + 'source:' + hash([accountKey(target.account), target.kind, target.id, row.identity, row.kind, ...subject])
 }
-function effectKey(row: Pick<StoredClaim, 'binding' | 'kind' | 'userId' | 'postId'>): string | undefined {
+function effectKey(row: Pick<StoredClaim, 'binding' | 'kind' | 'userId' | 'postId' | 'identity'>): string | undefined {
   if (row.kind === 'like' || row.kind === 'comment') return PREFIX + 'effect:' + hash([accountKey(row.binding.target.account), row.kind, row.userId, row.postId])
   if (row.kind === 'delete') return PREFIX + 'effect:' + hash([accountKey(row.binding.target.account), row.kind, row.postId])
+  if (row.kind === 'publish' && /^personal:publish:[a-f0-9]{64}$/u.test(row.identity)) {
+    return PREFIX + 'effect:' + hash([accountKey(row.binding.target.account), row.identity])
+  }
   return undefined
 }
 function stored(input: unknown): StoredClaim {
   const row = qzoneData(input, ['version', 'state', 'token', 'binding', 'identity', 'operationHash', 'kind', 'createdAt', 'userId', 'postId'])
   if (row.version !== 1 || !['pending', 'confirmed', 'failed', 'unknown'].includes(row.state as string) ||
-      !['publish', 'delete', 'visit', 'like', 'comment'].includes(row.kind as string) || !isHash(row.operationHash) || !isTime(row.createdAt)) throw invalid()
+      !['publish', 'delete', 'read', 'visit', 'like', 'comment'].includes(row.kind as string) || !isHash(row.operationHash) || !isTime(row.createdAt)) throw invalid()
   const kind = row.kind as AgentQzoneOperation['kind'], binding = validateAgentQzoneBinding(row.binding)
-  const hasUser = ['visit', 'like', 'comment'].includes(kind), hasPost = ['delete', 'like', 'comment'].includes(kind)
+  const hasUser = ['read', 'visit', 'like', 'comment'].includes(kind), hasPost = ['delete', 'like', 'comment'].includes(kind)
   if (Object.keys(row).length !== 8 + Number(hasUser) + Number(hasPost) ||
       Object.hasOwn(row, 'userId') !== hasUser || Object.hasOwn(row, 'postId') !== hasPost ||
-      hasUser && binding.target.kind !== 'group') throw invalid()
+      (kind === 'read' ? binding.target.kind !== 'private' || binding.target.id !== row.userId
+        : hasUser && binding.target.kind !== 'group')) throw invalid()
   return Object.freeze({ version: 1, state: row.state as StoredClaim['state'], token: qzoneToken(row.token, 128), binding,
     identity: qzoneToken(row.identity, 4096), operationHash: row.operationHash, kind, createdAt: row.createdAt,
     ...(hasUser ? { userId: qzoneToken(row.userId) } : {}), ...(hasPost ? { postId: qzoneToken(row.postId) } : {}) })
@@ -136,6 +140,9 @@ export function createAgentQzoneLedger(storage: AgentQzoneStorage): AgentQzoneLe
         if (!isTime(args.now)) throw invalid()
         const now = args.now, kind = operation.kind, simulation = kind === 'visit' || kind === 'like' || kind === 'comment'
         if (simulation && (!limits.enabled || binding.target.kind !== 'group')) return { state: 'failed', code: 'qzone_disabled' }
+        if (operation.kind === 'read' && (binding.target.kind !== 'private' || binding.target.id !== operation.userId)) {
+          return { state: 'failed', code: 'qzone_disabled' }
+        }
         const row: StoredClaim = Object.freeze({ version: 1, state: 'pending', token: randomUUID(), binding, identity,
           operationHash: hash(operation), kind, createdAt: now,
           ...('userId' in operation ? { userId: operation.userId } : {}), ...('postId' in operation ? { postId: operation.postId } : {}) })

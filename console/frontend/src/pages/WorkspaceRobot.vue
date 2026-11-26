@@ -45,7 +45,7 @@ interface PersonalWorkSummary {
   goals: { id: string; title: string; nextAt: number; state: 'active' | 'completed' | 'abandoned'; waitingFor?: string
     engineering?: { mode: 'investigate' | 'candidate'; status: 'queued' | 'running' | 'confirmed' | 'failed' | 'unknown'; result?: string }
   }[]
-  actions: { id: string; kind: 'contact' | 'reserve' | 'research' | 'coding' | 'follow-share'; state: 'pending' | 'confirmed' | 'failed' | 'unknown'; at: number; goalId?: string; followId?: string }[]
+  actions: { id: string; kind: 'contact' | 'reserve' | 'research' | 'coding' | 'follow-share' | 'qzone-read' | 'qzone-publish'; state: 'pending' | 'confirmed' | 'failed' | 'unknown'; at: number; goalId?: string; followId?: string }[]
   tools: { name: string; description: string; activeRevision?: number; versions?: number[] }[]
   followEnabled?: boolean
   follows?: { id: string; title: string; url: string; state: 'active' | 'stopped'; nextAt: number; lastCheckedAt?: number;
@@ -83,7 +83,8 @@ watch(() => [tab.value, agent.value?.id, capability('self-profile.read').status]
   }
 }, { immediate: true })
 const goalStates = { active: '进行中', completed: '已完成', abandoned: '已放下' }
-const actionNames = { contact: '联系', reserve: '预约登记', research: '检索', coding: '编程候选', 'follow-share': '分享兴趣更新' }
+const actionNames = { contact: '联系', reserve: '预约登记', research: '检索', coding: '编程候选', 'follow-share': '分享兴趣更新',
+  'qzone-read': '查看好友说说', 'qzone-publish': '发表自己的说说' }
 const actionStates = { pending: '待回执', confirmed: '已确认', failed: '失败', unknown: '待核实' }
 const engineeringStates = { queued: '等待开发工作器', running: '开发工作器处理中', confirmed: '结果已记录', failed: '失败', unknown: '结果待核实' }
 const beijingTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Asia/Shanghai' })

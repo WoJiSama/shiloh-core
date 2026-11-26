@@ -78,6 +78,21 @@ test('the personal follow provider can be disabled with a boolean', async t => {
   assert.throws(() => readStandaloneAgentConfig(f.file, { MAIN_KEY: 'private-key' }), /personalFollow/)
 })
 
+test('autonomous Qzone is opt-in and owned by one bound agent on a declared NapCat connection', async t => {
+  const f = await fixture(t), env = { MAIN_KEY: 'fixture-key' }
+  const connections = [{ id: 'main', url: 'ws://127.0.0.1:3001', qqActions: { driver: 'napcat', qzone: true } }]
+  const grant = { agentId: 'daily', connectionId: 'main', readQzone: true }
+  assert.deepEqual(readStandaloneAgentConfig(f.file, env).personalSocial, [])
+  await writeFile(f.file, JSON.stringify(host({ connections, personalSocial: [grant] })))
+  assert.deepEqual(readStandaloneAgentConfig(f.file, env).personalSocial, [{ ...grant, publishQzone: false }])
+  for (const bad of [null, [{ ...grant, agentId: 'outsider' }], [{ ...grant, connectionId: 'elsewhere' }], [{ ...grant, publishQzone: 'true' }]]) {
+    await writeFile(f.file, JSON.stringify(host({ connections, personalSocial: bad })))
+    assert.throws(() => readStandaloneAgentConfig(f.file, env), /personalSocial/)
+  }
+  await writeFile(f.file, JSON.stringify(host({ personalSocial: [grant] })))
+  assert.throws(() => readStandaloneAgentConfig(f.file, env), /personalSocial/)
+})
+
 test('candidate validation needs no existing files and performs no filesystem or network calls', async t => {
   const f = await fixture(t), validate = createStandaloneAgentCandidateValidator(f.file, { MAIN_KEY: 'private-key' })
   await rm(f.directory, { recursive: true, force: true })

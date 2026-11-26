@@ -56,14 +56,14 @@ export function prepareAgentQzoneText(input: unknown, kind: 'publish' | 'comment
 }
 export function validateAgentQzoneOperation(input: unknown): Readonly<AgentQzoneOperation> {
   const row = qzoneData(input, ['kind', 'text', 'postId', 'userId', 'visitId'])
-  const keys: Record<string, readonly string[]> = { publish: ['kind', 'text'], delete: ['kind', 'postId'], visit: ['kind', 'userId'],
+  const keys: Record<string, readonly string[]> = { publish: ['kind', 'text'], delete: ['kind', 'postId'], read: ['kind', 'userId'], visit: ['kind', 'userId'],
     like: ['kind', 'userId', 'postId', 'visitId'], comment: ['kind', 'userId', 'postId', 'visitId', 'text'] }
   if (typeof row.kind !== 'string' || !Object.hasOwn(keys, row.kind)) throw invalid()
   const allowed = keys[row.kind]!
   if (Object.keys(row).length !== allowed.length || Object.keys(row).some(key => !allowed.includes(key))) throw invalid()
   if (row.kind === 'publish') return Object.freeze({ kind: row.kind, text: prepareAgentQzoneText(row.text, 'publish') })
   if (row.kind === 'delete') return Object.freeze({ kind: row.kind, postId: qzoneToken(row.postId) })
-  if (row.kind === 'visit') return Object.freeze({ kind: row.kind, userId: qzoneToken(row.userId) })
+  if (row.kind === 'visit' || row.kind === 'read') return Object.freeze({ kind: row.kind, userId: qzoneToken(row.userId) })
   const effect = { userId: qzoneToken(row.userId), postId: qzoneToken(row.postId), visitId: qzoneToken(row.visitId) }
   if (row.kind === 'like') return Object.freeze({ kind: row.kind, ...effect })
   return Object.freeze({ kind: 'comment', ...effect, text: prepareAgentQzoneText(row.text, 'comment') })
@@ -72,7 +72,8 @@ export function validateAgentQzoneAction(input: unknown): Readonly<AgentQzoneAct
   const row = qzoneData(input, ['version', 'binding', 'operation'])
   if (row.version !== 1) throw invalid()
   const binding = validateAgentQzoneBinding(row.binding), operation = validateAgentQzoneOperation(row.operation)
-  if (operation.kind !== 'publish' && operation.kind !== 'delete' && binding.target.kind !== 'group') throw invalid()
+  if (operation.kind === 'read' ? binding.target.kind !== 'private' || binding.target.id !== operation.userId :
+      operation.kind !== 'publish' && operation.kind !== 'delete' && binding.target.kind !== 'group') throw invalid()
   return Object.freeze({ version: 1, binding, operation })
 }
 export function normalizeAgentQzoneLimits(input: unknown = {}): Readonly<AgentQzoneLimits> {
@@ -99,13 +100,14 @@ export function validateAgentQzoneVisit(input: unknown): Readonly<AgentQzoneVisi
   return Object.freeze({ id: qzoneToken(row.id), binding, sourceId: qzoneToken(row.sourceId, 4096), userId: qzoneToken(row.userId), postIds: Object.freeze(postIds), observedAt: row.observedAt, expiresAt: row.expiresAt })
 }
 export function normalizeAgentQzoneReceipt(input: unknown, operation: AgentQzoneOperation): AgentQzoneReceipt {
+  const readsFeed = operation.kind === 'visit' || operation.kind === 'read'
   try {
     const row = qzoneData(input, ['state', 'postId', 'feeds', 'code'])
     if (row.state === 'unknown' && Object.keys(row).length === 1) return Object.freeze({ state: 'unknown' })
     if (row.state === 'failed' && Object.keys(row).length === 2 && typeof row.code === 'string' && /^[a-z][a-z0-9_]{0,79}$/u.test(row.code)) return Object.freeze({ state: 'failed', code: 'qzone_rejected' })
     if (row.state !== 'confirmed') throw invalid()
     if (operation.kind === 'publish' && Object.keys(row).length === 2 && Object.hasOwn(row, 'postId')) return Object.freeze({ state: 'confirmed', postId: qzoneToken(row.postId) })
-    if (operation.kind === 'visit' && Object.keys(row).length === 2 && Object.hasOwn(row, 'feeds')) {
+    if (readsFeed && Object.keys(row).length === 2 && Object.hasOwn(row, 'feeds')) {
       const feeds: AgentQzoneFeed[] = qzoneArray(row.feeds, 8).map(value => {
         const feed = qzoneData(value, ['postId', 'userId', 'text', 'createdAt', 'likes'])
         if (feed.userId !== operation.userId || typeof feed.text !== 'string' || feed.text.length > 200 || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\uD800-\uDFFF]/u.test(feed.text) ||
@@ -117,7 +119,7 @@ export function normalizeAgentQzoneReceipt(input: unknown, operation: AgentQzone
       if (new Set(feeds.map(feed => feed.postId)).size !== feeds.length) throw invalid()
       return Object.freeze({ state: 'confirmed', feeds: Object.freeze(feeds) })
     }
-    if (!['publish', 'visit'].includes(operation.kind) && Object.keys(row).length === 1) return Object.freeze({ state: 'confirmed' })
+    if (operation.kind !== 'publish' && !readsFeed && Object.keys(row).length === 1) return Object.freeze({ state: 'confirmed' })
     throw invalid()
-  } catch { return Object.freeze(operation.kind === 'visit' ? { state: 'failed', code: 'qzone_invalid_response' } : { state: 'unknown' }) }
+  } catch { return Object.freeze(readsFeed ? { state: 'failed', code: 'qzone_invalid_response' } : { state: 'unknown' }) }
 }

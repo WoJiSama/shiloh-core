@@ -1,7 +1,7 @@
 import type { AgentBilibiliQualityConfig, AgentBilibiliQualityProvider } from '../contracts/agentBilibiliQuality.js'
 import type { AgentBilibiliAuthService } from '../contracts/agentBilibiliAuth.js'
 import { createAgentBilibiliQualityWorkflow, isAgentBilibiliQualityCommand, validateAgentBilibiliQualityConfig } from '../modules/media/infrastructure/agentBilibiliQualityWorkflow.js'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { AgentManagementError, type AgentManagementBindings, type AgentManagementContext, type AgentManagementModules } from '../contracts/agentManagement.js'
 import { createAgentProfileManagement } from '../modules/memory/infrastructure/agentProfileManagement.js'
@@ -105,7 +105,11 @@ import { createGroupMemory } from '../modules/memory/infrastructure/groupMemory.
 import { createGroupMemoryManagement } from '../modules/memory/infrastructure/groupMemoryManagement.js'
 import { createGroupKnowledgeTool } from '../modules/memory/infrastructure/groupKnowledgeTool.js'
 import { createPersonaSnapshot } from '../modules/conversation/infrastructure/personaSnapshot.js'
-import { createAgentPersonalRuntime, type AgentPersonalSeed, type PersonalPorts } from '../modules/simulation/infrastructure/agentPersonalRuntime.js'
+import { createAgentPersonalRuntime, type AgentPersonalSeed, type AgentPersonalSocialGrant, type PersonalPorts } from '../modules/simulation/infrastructure/agentPersonalRuntime.js'
+import type { AgentQzoneOperation } from '../contracts/agentQzone.js'
+import { createAgentQzoneLedger } from '../modules/runtime/infrastructure/agentQzoneLedger.js'
+import { createAgentQzoneRuntime } from '../modules/runtime/infrastructure/agentQzoneRuntime.js'
+import { prepareAgentQzoneText } from '../modules/tools/infrastructure/agentQzoneValidation.js'
 import { createAgentGroupModeration } from '../modules/groupAdmin/infrastructure/agentGroupModeration.js'
 import type { AgentGroupPolicy } from '../modules/groupAdmin/domain/agentGroupPolicy.js'
 import { sanitizeFinalReplyText } from '../modules/conversation/domain/replySanitizer.js'
@@ -174,6 +178,7 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   unifiedGroupChat?: boolean
   groupPolicy?(binding: AgentBindingSnapshot): AgentGroupPolicy
   personalSeeds?: readonly AgentPersonalSeed[]
+  personalSocial?: readonly AgentPersonalSocialGrant[]
   codingWorker?: PersonalPorts['coding']
   personalToolAuthor?: NonNullable<PersonalPorts['publishTool']>
   personalFollowFeed?: NonNullable<PersonalPorts['followFeed']>
@@ -2141,6 +2146,75 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     return target.kind === 'private' && !!privatePeerFor(target, adapter) && typeof adapter?.verifyPrivateFriend === 'function' &&
       await storage.get(personalContactKey(binding)) !== 'off'
   }
+  const socialGrants = options.personalSocial ?? []
+  const personalSpaceLedger = socialGrants.length ? createAgentQzoneLedger(storage) : undefined
+  function socialScope(binding: AgentBindingSnapshot, kind: 'read' | 'publish') {
+    const adapter = adapterFor(binding.target), provider = adapter?.qzone, ledger = personalSpaceLedger
+    const grant = socialGrants.find(row => row.agentId === binding.agentId && row.connectionId === binding.connectionId)
+    if (!grant || !provider || !ledger || adapter.account.platform !== 'qq' ||
+        !(kind === 'read' ? grant.readQzone : grant.publishQzone) || !isPersonalBindingCurrent(binding)) return
+    const current = () => adapterFor(binding.target) === adapter && adapter.qzone === provider && isPersonalBindingCurrent(binding)
+    const space = createAgentQzoneRuntime({ ledger, provider, personal: { read: grant.readQzone, publish: grant.publishQzone },
+      diagnostics, ...(options.now ? { now: options.now } : {}) })
+    return { adapter, current, space }
+  }
+  function publicationBinding(id: string) {
+    return personalTargetList(id).find(binding => socialScope(binding, 'publish'))
+  }
+  async function readPersonalSpace(id: string, key: string, signal: AbortSignal, guard: () => boolean) {
+    const binding = personalBindingFor(id, key)
+    if (!binding || binding.target.kind !== 'private') return
+    const scope = socialScope(binding, 'read'), target = binding.target
+    if (!scope || privatePeerFor(target, scope.adapter) !== target.id || !scope.adapter.verifyPrivateFriend) return
+    const { botId, scene } = personMemoryAddress(target, target.id)
+    const subject = { identity: { botId, personaId: agentPersonaScopeId(id) }, subjectId: target.id }
+    const current = () => !signal.aborted && guard() && scope.current()
+    if (!current()) return
+    const redactions = await personMemory.getRedactions(subject)
+    let friendVerifiedUntil = 0
+    const authorize = async () => {
+      if (!current() || redactions.disabled || redactions.scenes.some(rule => rule.disabled && rule.scene.kind === scene.kind && rule.scene.id === scene.id) ||
+          !await personalContactAllowed(binding) || !current()) return false
+      if ((await personMemory.getRedactions(subject)).revision !== redactions.revision || !current()) return false
+      if (Date.now() >= friendVerifiedUntil) {
+        if (!await scope.adapter.verifyPrivateFriend!(target, { signal, isCurrent: current }) || !current()) return false
+        // Native read guards may re-enter within one operation. Require fresh proof again before projection.
+        friendVerifiedUntil = Date.now() + 2_000
+      }
+      return current()
+    }
+    const result = await scope.space.execute({ binding, identity: 'personal:read:' + randomUUID(), actor: { kind: 'autonomous' },
+      operation: { kind: 'read', userId: target.id }, signal, isCurrent: current, async ensureCurrent() {
+        if (!current()) throw new Error('空间访问授权已失效')
+      }, authorize })
+    friendVerifiedUntil = 0
+    if (result.state !== 'confirmed' || !result.feeds || !await authorize()) return
+    const posts = result.feeds.filter(feed => feed.text.trim() && options.allowsText?.(feed.text, 'incoming') !== false &&
+      options.allowsToolInput?.(feed.text) !== false &&
+      !isPersonMemoryRedacted({ scene, messageId: 'qzone:' + feed.postId, authorId: target.id, at: feed.createdAt ?? 1,
+        excerpt: feed.text }, feed.text, redactions))
+      .map(({ text, createdAt }) => ({ text, ...(createdAt ? { createdAt } : {}) }))
+    return { posts, isCurrent: authorize }
+  }
+  async function publishPersonalSpace(id: string, text: string, signal: AbortSignal, guard: () => boolean) {
+    const binding = publicationBinding(id)
+    const scope = binding && socialScope(binding, 'publish')
+    const body = prepareAgentQzoneText(text, 'publish')
+    if (!binding || !scope || personalTargetList(id).some(row => body.includes(row.target.id) || body.includes(row.target.account.id))) {
+      return { state: 'failed' as const }
+    }
+    const operation = { kind: 'publish', text: body } satisfies AgentQzoneOperation
+    const identity = 'personal:publish:' + createHash('sha256').update(body).digest('hex')
+    const current = () => !signal.aborted && guard() && scope.current()
+    const result = await actionExecutor.send('qzone:' + platformAccountKey(binding.target.account), () =>
+      scope.space.execute({ binding, identity, operation, actor: { kind: 'autonomous' }, signal, isCurrent: current,
+        async ensureCurrent() { if (!current()) throw new Error('空间发表授权已失效') },
+        authorize: async () => current(),
+        allowsText: async value => options.allowsText?.(value, 'outgoing') !== false && options.allowsToolInput?.(value) !== false,
+      }))
+    return result.state === 'confirmed' && result.postId ? { state: 'confirmed' as const, postId: result.postId }
+      : { state: result.state === 'unknown' ? 'unknown' as const : 'failed' as const }
+  }
   if (options.personalSeeds?.length) {
     const publicSearch = options.toolRegistry?.builtIn?.find(tool => tool.name === 'searchInformationTool' && tool.effect === 'read')
     personal = createAgentPersonalRuntime({
@@ -2156,7 +2230,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
             const history = await runtime.personalGroupActivity(binding.target)
             if (history && isPersonalBindingCurrent(binding)) rows.push({ key: personalTargetKey(binding), kind, label: '群 ' + id, history })
           } else if (kind === 'private' && await personalContactAllowed(binding)) {
-            rows.push({ key: personalTargetKey(binding), kind, label: '好友 ' + id })
+            const name = adapterFor(binding.target)?.conversationName?.(binding.target)
+            const label = name && options.allowsToolInput?.(name) !== false && options.allowsText?.(name, 'incoming') !== false ? name : '好友 ' + id
+            rows.push({ key: personalTargetKey(binding), kind, label, ...(socialScope(binding, 'read') ? { canReadSpace: true } : {}) })
           }
         }
         return rows
@@ -2220,6 +2296,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       } } : {}),
       ...(options.codingWorker ? { coding: options.codingWorker } : {}),
       capabilities: coreCapabilities,
+      ...(personalSpaceLedger ? { social: { revision(id) {
+        const grant = socialGrants.find(row => row.agentId === id && (row.readQzone || row.publishQzone))
+        return grant && createHash('sha256').update(JSON.stringify(grant)).digest('hex')
+      }, canPublishSpace: id => !!publicationBinding(id),
+        publishSpace: publishPersonalSpace, readSpace: readPersonalSpace } } : {}),
       capabilityOrigin: (agentId, key) => {
         const binding = personalBindingFor(agentId, key)
         return binding && capabilityBindingCurrent(binding) ? capabilityOrigin(binding) : undefined

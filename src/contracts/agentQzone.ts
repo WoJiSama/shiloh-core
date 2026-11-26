@@ -5,6 +5,7 @@ import type { ConversationMemberSnapshot } from './platformConnection.js'
 export type AgentQzoneOperation =
   | { readonly kind: 'publish'; readonly text: string }
   | { readonly kind: 'delete'; readonly postId: string }
+  | { readonly kind: 'read'; readonly userId: string }
   | { readonly kind: 'visit'; readonly userId: string }
   | { readonly kind: 'like'; readonly userId: string; readonly postId: string; readonly visitId: string }
   | { readonly kind: 'comment'; readonly userId: string; readonly postId: string; readonly visitId: string; readonly text: string }

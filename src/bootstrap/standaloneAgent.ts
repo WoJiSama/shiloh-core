@@ -786,6 +786,7 @@ export async function main(argv: string[]): Promise<void> {
       unifiedGroupChat: true,
       groupPolicy: binding => config.groupPolicy.effective(binding.connectionId, binding.target.id),
       personalSeeds: config.personalSeeds,
+      personalSocial: config.personalSocial,
       personalToolAuthor,
       ...(config.personalFollow.enabled ? { personalFollowFeed: (url: string, current: () => boolean, signal: AbortSignal) =>
         readPersonalFollowFeed(url, current, { signal }) } : {}),

@@ -7,7 +7,7 @@ import { normalizeAgentQzoneCode, normalizeAgentQzoneLimits, normalizeAgentQzone
 
 const invalid = () => new Error('qzone_source_unavailable')
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
-const isSimulation = (action: AgentQzoneAction) => !['publish', 'delete'].includes(action.operation.kind)
+const isSimulation = ({ operation }: AgentQzoneAction) => operation.kind === 'visit' || operation.kind === 'like' || operation.kind === 'comment'
 const callable = (input: unknown) => typeof input === 'function' && !types.isProxy(input)
 const executionKeys = ['binding', 'identity', 'actor', 'operation', 'signal', 'isCurrent', 'ensureCurrent', 'authorize', 'readMember', 'affinity', 'allowsText'] as const
 export interface AgentQzoneRuntimeOptions {
@@ -15,6 +15,8 @@ export interface AgentQzoneRuntimeOptions {
   readonly provider: AgentQzoneProvider
   /** Own publishing/deletion remain disabled without this explicit host switch and live authorize grant. */
   readonly enabled?: boolean
+  /** Only the owner's background worker supplies this grant. The regular tool coordinator has no autonomous path. */
+  readonly personal?: Readonly<{ read: boolean; publish: boolean }>
   readonly limits?: Partial<AgentQzoneLimits>
   /** Re-read simulation.qzone for every external step. Revocation must also invalidate the host guard. */
   getLimits?(binding: AgentBindingSnapshot): Partial<AgentQzoneLimits>
@@ -35,7 +37,7 @@ export function createAgentQzoneRuntime(options: AgentQzoneRuntimeOptions) {
   }
   return {
     async execute(input: AgentQzoneExecution): Promise<AgentQzoneResult> {
-      let action: Readonly<AgentQzoneAction>, identity: string, actorId: string, actorKey: string
+      let action: Readonly<AgentQzoneAction>, identity: string, actorId: string | undefined, actorKey: string, personal: boolean
       let rejectedKind: AgentQzoneResult['kind'] = 'publish'
       let parent: AbortSignal, execution: AgentQzoneExecution
       try {
@@ -43,12 +45,19 @@ export function createAgentQzoneRuntime(options: AgentQzoneRuntimeOptions) {
         action = validateAgentQzoneAction({ version: 1, binding: row.binding, operation: row.operation }); identity = qzoneToken(row.identity, 4096)
         rejectedKind = action.operation.kind
         const actor = qzoneData(row.actor, ['kind', 'user'])
-        // The legacy actor contract forbids autonomous and commitment simQzoneInteract. Own autonomy is not inferred either.
-        if (actor.kind !== 'user') throw invalid()
-        const user = validateAgentQzoneAccount(actor.user), account = action.binding.target.account
-        if (user.platform !== account.platform || user.namespace !== account.namespace || user.id === account.id) throw invalid()
-        actorId = user.id
-        actorKey = JSON.stringify(user)
+        personal = actor.kind === 'autonomous'
+        const account = action.binding.target.account
+        if (personal) {
+          if (Object.hasOwn(actor, 'user') || (rejectedKind === 'read' ? options.personal?.read !== true :
+              rejectedKind !== 'publish' || options.personal?.publish !== true)) throw invalid()
+          actorKey = 'autonomous'
+        } else {
+          if (actor.kind !== 'user' || rejectedKind === 'read') throw invalid()
+          const user = validateAgentQzoneAccount(actor.user)
+          if (user.platform !== account.platform || user.namespace !== account.namespace || user.id === account.id) throw invalid()
+          actorId = user.id
+          actorKey = JSON.stringify(user)
+        }
         if (!['isCurrent', 'ensureCurrent', 'authorize'].every(key => callable(row[key])) || types.isProxy(row.signal) || !(row.signal instanceof AbortSignal)) throw invalid()
         parent = row.signal
         if (isSimulation(action) && (!callable(row.readMember) || !callable(row.affinity)) ||
@@ -58,14 +67,15 @@ export function createAgentQzoneRuntime(options: AgentQzoneRuntimeOptions) {
         emit('qzone_invalid_request')
         return { state: 'failed', kind: rejectedKind, code: 'qzone_invalid_request', terminal: false }
       }
-      const kind = action.operation.kind, simulation = isSimulation(action), snapshot = JSON.stringify(action)
+      const kind = action.operation.kind, readsFeed = kind === 'visit' || kind === 'read', simulation = isSimulation(action), snapshot = JSON.stringify(action)
       const fail = (code: string, terminal = false): AgentQzoneResult => ({ state: 'failed', kind, code, terminal })
       const cancel = new AbortController(), signal = AbortSignal.any([cancel.signal, parent]), timer = setTimeout(() => cancel.abort(), timeoutMs)
       const current = () => {
         try {
           const row = qzoneData(input, executionKeys), actor = qzoneData(row.actor, ['kind', 'user'])
-          return !signal.aborted && execution.isCurrent() === true && row.identity === identity && actor.kind === 'user' &&
-            JSON.stringify(validateAgentQzoneAccount(actor.user)) === actorKey &&
+          const matchesActor = personal ? actor.kind === 'autonomous' && !Object.hasOwn(actor, 'user')
+            : actor.kind === 'user' && JSON.stringify(validateAgentQzoneAccount(actor.user)) === actorKey
+          return !signal.aborted && execution.isCurrent() === true && row.identity === identity && matchesActor &&
             JSON.stringify(validateAgentQzoneAction({ version: 1, binding: row.binding, operation: row.operation })) === snapshot
         } catch { return false }
       }
@@ -82,6 +92,8 @@ export function createAgentQzoneRuntime(options: AgentQzoneRuntimeOptions) {
       }
       const baseGuard: AgentQzoneGuard = Object.freeze({ signal, isCurrent: current, ensureCurrent: base })
       const limits = () => normalizeAgentQzoneLimits(options.getLimits ? options.getLimits(action.binding) : defaults)
+      const operationAllowed = (config: AgentQzoneLimits) => personal
+        ? (kind === 'read' ? options.personal?.read : options.personal?.publish) === true : simulation ? config.enabled : options.enabled === true
       let capturedLimits: string | undefined
       const fresh = async (userId: string) => {
         await base()
@@ -102,7 +114,7 @@ export function createAgentQzoneRuntime(options: AgentQzoneRuntimeOptions) {
           if (capturedLimits !== undefined && identity !== capturedLimits) throw invalid()
           capturedLimits = identity
         }
-        if (simulation ? !config.enabled : options.enabled !== true) throw invalid()
+        if (!operationAllowed(config)) throw invalid()
         if (await wait(Promise.resolve().then(() => execution.authorize(action))) !== true) throw invalid()
         await base()
         if ('text' in action.operation) {
@@ -115,9 +127,10 @@ export function createAgentQzoneRuntime(options: AgentQzoneRuntimeOptions) {
           const raw = await wait(ledger.readOwnPost(action.binding.target.account, op.postId))
           const own = validateAgentQzoneOwnPost(raw)
           if (own.agentId !== action.binding.agentId || own.postId !== op.postId || !same(own.account, action.binding.target.account)) throw invalid()
-        } else if (op.kind !== 'publish') {
+        } else if (op.kind === 'visit' || op.kind === 'like' || op.kind === 'comment') {
           const affinity = execution.affinity!(op.userId)
           if (op.userId === action.binding.target.account.id || typeof affinity !== 'number' || !Number.isFinite(affinity) || affinity < config.minAffinity) throw invalid()
+          if (!actorId) throw invalid()
           await fresh(actorId)
           if (op.userId !== actorId) await fresh(op.userId)
           if (op.kind !== 'visit') {
@@ -129,7 +142,8 @@ export function createAgentQzoneRuntime(options: AgentQzoneRuntimeOptions) {
         }
         await base()
         // Async member/ledger reads must not carry a grant past a configuration or host-policy revocation.
-        if (simulation ? !limits().enabled || JSON.stringify(limits()) !== capturedLimits : options.enabled !== true) throw invalid()
+        const liveLimits = limits()
+        if (!operationAllowed(liveLimits) || simulation && JSON.stringify(liveLimits) !== capturedLimits) throw invalid()
         if (await wait(Promise.resolve().then(() => execution.authorize(action))) !== true) throw invalid()
         await base()
       }
@@ -145,7 +159,7 @@ export function createAgentQzoneRuntime(options: AgentQzoneRuntimeOptions) {
           const state = claim.state === 'unknown' ? 'unknown' : 'failed'
           const code = normalizeAgentQzoneCode(claim.code)
           emit(code, state)
-          return { state, kind, code, terminal: state === 'unknown' || code === 'qzone_already_confirmed' && kind !== 'visit' }
+          return { state, kind, code, terminal: state === 'unknown' || code === 'qzone_already_confirmed' && !readsFeed }
         }
         claimed = true
         const pending = claim.claim
@@ -162,9 +176,9 @@ export function createAgentQzoneRuntime(options: AgentQzoneRuntimeOptions) {
             dispatched = true
             return provider.execute(action, Object.freeze({ signal, isCurrent: current, ensureCurrent: guarded }))
           })), action.operation)
-        } catch { receipt = dispatched && kind !== 'visit' ? { state: 'unknown' } : { state: 'failed', code: 'qzone_source_unavailable' } }
+        } catch { receipt = dispatched && !readsFeed ? { state: 'unknown' } : { state: 'failed', code: 'qzone_source_unavailable' } }
         // Reads must still be current before feed text can be returned. Writes settle their actual receipt even after revocation.
-        if (kind === 'visit' && receipt.state === 'confirmed') {
+        if (readsFeed && receipt.state === 'confirmed') {
           try { await guarded() } catch { receipt = { state: 'failed', code: 'qzone_source_unavailable' } }
         }
         const observedAt = now(), visitId = kind === 'visit' && receipt.state === 'confirmed' ? randomUUID() : undefined
@@ -184,16 +198,16 @@ export function createAgentQzoneRuntime(options: AgentQzoneRuntimeOptions) {
         }
         if (receipt.state !== 'confirmed') {
           emit(receipt.state === 'unknown' ? 'qzone_outcome_unknown' : 'qzone_rejected', receipt.state)
-          return { state: receipt.state, kind, code: receipt.state === 'unknown' ? 'qzone_outcome_unknown' : 'qzone_rejected', terminal: dispatched && kind !== 'visit' || receipt.state === 'unknown' }
+          return { state: receipt.state, kind, code: receipt.state === 'unknown' ? 'qzone_outcome_unknown' : 'qzone_rejected', terminal: dispatched && !readsFeed || receipt.state === 'unknown' }
         }
-        if (kind === 'visit') {
+        if (readsFeed) {
           // Settlement can itself await durable storage while the source is withdrawn. Never release a late private feed.
           try { await authorize() }
           catch { emit('qzone_source_unavailable'); return fail('qzone_source_unavailable') }
         }
-        return { state: 'confirmed', kind, terminal: kind !== 'visit',
+        return { state: 'confirmed', kind, terminal: !readsFeed,
           ...('postId' in receipt && receipt.postId ? { postId: receipt.postId } : {}),
-          ...(visitId && receipt.feeds ? { visitId, feeds: receipt.feeds } : {}) }
+          ...(readsFeed && receipt.feeds ? { feeds: receipt.feeds, ...(visitId ? { visitId } : {}) } : {}) }
       } catch {
         emit(claimed ? 'qzone_outcome_unknown' : 'qzone_source_unavailable', claimed ? 'unknown' : 'failed')
         return { state: claimed ? 'unknown' : 'failed', kind, code: claimed ? 'qzone_outcome_unknown' : 'qzone_source_unavailable', terminal: claimed }

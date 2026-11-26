@@ -66,6 +66,17 @@ test('source identity cannot change a pending or completed publication payload',
   assert.equal(await ledger.readOwnPost(otherAccount, 'published-1'), undefined)
 })
 
+test('an autonomous publication cannot be replayed against a different binding for the same account', { skip: !qzoneRedisAvailable }, async t => {
+  const { ledger, connect } = await setup(t), operation = { kind: 'publish', text: '今晚试了个新玩法。' }
+  const identity = 'personal:publish:' + createHash('sha256').update(operation.text).digest('hex')
+  const before = await claimed(ledger, input(operation, { identity }))
+  assert.equal(await ledger.settle(before, 'unknown'), true)
+  const restarted = createAgentQzoneLedger(await connect())
+  assert.deepEqual(await restarted.claim(input(operation, { identity, binding: binding('200002') })), {
+    state: 'unknown', code: 'qzone_already_unknown',
+  })
+})
+
 test('Core console checks the selected QQ binding and never repeats a confirmed or unknown native publication', { skip: !qzoneRedisAvailable }, async t => {
   const { ledger } = await setup(t), calls = []
   const first = binding()

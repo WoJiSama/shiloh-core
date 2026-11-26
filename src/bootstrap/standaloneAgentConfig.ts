@@ -39,6 +39,7 @@ import { readStandaloneMagnetSearchConfig } from './standaloneMagnetSearch.js'
 import { readStandaloneLocalEmojiConfig } from './standaloneLocalEmoji.js'
 import { readStandaloneBilibiliQualityConfig } from './standaloneBilibiliQuality.js'
 import { readStandaloneQqActionsConfig, readStandaloneQqActionsConnection } from './standaloneQqActions.js'
+import type { AgentPersonalSocialGrant } from '../modules/simulation/infrastructure/agentPersonalRuntime.js'
 import { readStandaloneDeferredActionsConfig } from './standaloneDeferredActions.js'
 import { resolveAgentTextTriggerConfig } from '../modules/conversation/infrastructure/agentTextTriggerConfig.js'
 import { readStandaloneAgentConsoleConfig } from './standaloneAgentConsoleConfig.js'
@@ -649,6 +650,22 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     }
     return { ...endpoint, accessToken }
   })
+  const socialRows = raw.personalSocial === undefined ? [] : raw.personalSocial
+  if (!Array.isArray(socialRows) || socialRows.length > connections.length) throw new Error('personalSocial 必须是按 QQ 连接声明的本人授权列表')
+  const socialOwners = new Set<string>(), socialConnections = new Set<string>()
+  const personalSocial = Object.freeze(socialRows.map((value): AgentPersonalSocialGrant => {
+    const row = object(value), { agentId, connectionId, readQzone, publishQzone } = row
+    if (Object.keys(row).some(key => !['agentId', 'connectionId', 'readQzone', 'publishQzone'].includes(key)) ||
+        typeof agentId !== 'string' || typeof connectionId !== 'string' || (readQzone !== undefined && typeof readQzone !== 'boolean') ||
+        (publishQzone !== undefined && typeof publishQzone !== 'boolean') || socialOwners.has(agentId) || socialConnections.has(connectionId) ||
+        !connections.some(endpoint => endpoint.connection.id === connectionId && endpoint.qqActions?.qzone === true) ||
+        !bindings.listBindings().some(binding => binding.agentId === agentId && binding.connectionId === connectionId)) {
+      throw new Error('personalSocial 需要唯一且已绑定的本人和 QQ 空间连接')
+    }
+    socialOwners.add(agentId)
+    socialConnections.add(connectionId)
+    return Object.freeze({ agentId, connectionId, readQzone: readQzone === true, publishQzone: publishQzone === true })
+  }))
   if (consoleConfig.qqLogin.some(row => !connections.some(({ connection }) =>
     connection.id === row.connectionId && connection.account.id === row.accountId))) {
     throw new Error('console.qqLogin 的连接和 QQ 账号须与当前宿主绑定一致')
@@ -739,6 +756,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     instance, dataDir, games, groupPolicy, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, cognition: { enabled: cognition.enabled }, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords,
     workspaceAgents,
     personalSeeds,
+    personalSocial,
     personalFollow: { enabled: personalFollow.enabled },
     loadedBindings: Object.freeze([...bindings.listBindings()]),
     listBindings: () => readBindings()?.listBindings() ?? [],
