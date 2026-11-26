@@ -146,7 +146,7 @@ for (const duration of [0, 1801]) test(`video duration ${duration} leaves its pa
   assert.match(result.infoText, duration ? /超过30分钟/ : /时长未通过验证/)
 })
 
-test('unavailable metadata retains the original official page and emits a single sanitized diagnostic', async t => {
+test('unavailable metadata retains the original official page and records the page and browser results', async t => {
   const diagnostics = []
   const f = await fixture(t, { item: item({ video: {} }), options: {
     diagnostics: { emit(event) { diagnostics.push(event) } },
@@ -154,7 +154,33 @@ test('unavailable metadata retains the original official page and emits a single
   const result = await f.prepare()
   assert.equal(result.status, 'metadata-only')
   assert.equal(result.pageUrl, `https://www.douyin.com/video/${ID}`)
-  assert.deepEqual(diagnostics, [{ stage: 'runtime', operation: 'douyin_provider_prepare', outcome: 'failed', code: 'metadata_unavailable' }])
+  assert.deepEqual(diagnostics.map(({ operation, outcome, code, httpStatus, details }) => [operation, outcome, code, httpStatus, details.step]), [
+    ['douyin_metadata_page', 'cancelled', 'douyin_page_metadata_incomplete', 200, 'douyin_page_parse'],
+    ['douyin_provider_prepare', 'failed', 'metadata_unavailable', undefined, 'douyin_browser_extract'],
+  ])
+  assert.equal(diagnostics[1].details.result, 'fallback_used')
+  assert.equal(diagnostics[1].details.cause, 'douyin_browser_target_missing')
+  assert.ok(diagnostics[1].details.queueMs >= 0)
+  assert.doesNotMatch(JSON.stringify(diagnostics), /https?:|7651971027728274617/u)
+})
+
+test('static JSON with a literal percent sign does not unnecessarily launch the browser', async t => {
+  const f = await fixture(t, { respond: url => url.hostname === 'www.douyin.com'
+    ? response(`<script id="RENDER_DATA">${JSON.stringify(item({ desc: '进度到 100%' }))}</script>`) : undefined })
+  const result = await f.prepare()
+  assert.equal(result.status, 'ready')
+  assert.match(result.infoText, /进度到 100%/u)
+  assert.equal(f.browsers.length, 0)
+})
+
+test('a first HTTP failure is recorded even when the browser supplies a full result', async t => {
+  const diagnostics = []
+  const f = await fixture(t, { respond: url => url.hostname === 'www.douyin.com' ? response('PRIVATE-HTTP-BODY', 'text/html', { status: 503 }) : undefined,
+    browser: async () => douyinMetadata(item(), ID, 'video'), options: { diagnostics: { emit: event => diagnostics.push(event) } } })
+  assert.equal((await f.prepare()).status, 'ready')
+  assert.deepEqual(diagnostics.map(({ operation, outcome, code, httpStatus, details }) => [operation, outcome, code, httpStatus, details.step]),
+    [['douyin_metadata_page', 'failed', 'douyin_page_failed', 503, 'douyin_http_status']])
+  assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE-HTTP-BODY|https?:/u)
 })
 
 test('incomplete static metadata uses target-bound browser fallback and scoped anonymous result only', async t => {
@@ -319,7 +345,7 @@ test('real isolated Chrome keeps anonymous first-party challenge cookies, uses p
   const previousChrome = process.env.PUPPETEER_EXECUTABLE_PATH; process.env.PUPPETEER_EXECUTABLE_PATH = chrome
   t.after(() => { if (previousChrome === undefined) delete process.env.PUPPETEER_EXECUTABLE_PATH; else process.env.PUPPETEER_EXECUTABLE_PATH = previousChrome })
   const cookie = 'ANONYMOUS_BROWSER_SESSION_12345', jsCookie = 'ANONYMOUS_BROWSER_JS_TOKEN_12345', observations = []
-  let pages = 0, detailCookies = '', inFlight = 0, maximum = 0
+  let pages = 0, detailCookies = '', inFlight = 0, maximum = 0, detailedAt = 0
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'douyin-browser-test-'))), artifacts = await createAgentMediaArtifactStore({ directory })
   let prepared
   t.after(async () => { await prepared?.release(); await artifacts.close(); assert.deepEqual(await readdir(directory), []); await rm(directory, { recursive: true, force: true }) })
@@ -330,13 +356,14 @@ test('real isolated Chrome keeps anonymous first-party challenge cookies, uses p
       output.setHeader('set-cookie', `ttwid=${cookie}; Secure; HttpOnly; Path=/`)
       output.end(`<html><head>${Array.from({ length: 8 }, (_, index) => `<script async src="https://lf3.bytegoofy.com/app-${index}.js"></script>`).join('')}</head><body><script>
         document.cookie='msToken=${jsCookie}; Secure; Path=/';
-        fetch('/aweme/v1/web/aweme/detail/?aweme_id=${ID}').then(r=>r.json()).then(data=>{document.body.innerHTML='<main data-aweme-id="${ID}"><h1>目标图集</h1><img src="https://p3.douyinpic.com/image-1.png"></main>'});
+        fetch('/aweme/v1/web/aweme/detail/?aweme_id=${ID}').then(r=>r.json());
         fetch('http://127.0.0.1:${server.address().port}/forbidden').catch(()=>{});
         fetch('https://evil.test/forbidden').catch(()=>{});
         fetch('https://lf-private.bytegoofy.com/private').catch(()=>{});
       </script></body></html>`)
     } else if (request.url.startsWith('/aweme/v1/web/aweme/detail/')) {
       detailCookies = request.headers.cookie || ''; output.setHeader('content-type', 'application/json')
+      detailedAt = performance.now()
       output.end(JSON.stringify({ recommended: [gallery(1, { aweme_id: OTHER })], aweme_detail: gallery(2) }))
     } else if (/^\/app-\d+\.js$/u.test(request.url)) { output.setHeader('content-type', 'application/javascript'); setTimeout(() => output.end('window.fixtureLoaded=true'), 20) }
     else { output.setHeader('content-type', 'image/png'); output.end(PNG) }
@@ -354,6 +381,7 @@ test('real isolated Chrome keeps anonymous first-party challenge cookies, uses p
     }) })
   prepared = await provider.prepare(share('note'), scope())
   assert.equal(prepared.status, 'ready'); assert.equal(prepared.plan.items.length, 3); assert.equal(pages, 2)
+  assert.ok(detailedAt && performance.now() - detailedAt < 7500, 'the matching detail response must not wait for an absent DOM node')
   assert.ok(detailCookies.includes(`ttwid=${cookie}`)); assert.ok(detailCookies.includes(`msToken=${jsCookie}`))
   assert.ok(maximum <= 4, `browser transport concurrency ${maximum}`)
   assert.equal(observations.some(value => value.path.includes('forbidden') || value.path.includes('private')), false)

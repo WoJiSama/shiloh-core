@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import type { AgentDiagnosticDetails } from '../../../contracts/agentDiagnostics.js'
 import type { AgentBindingSnapshot, AgentConversationScope, ConversationAddress } from '../../../contracts/agentBinding.js'
 import type { IncomingMessage } from '../../../contracts/platformMessage.js'
 import type { PersonMemoryStore } from '../../../contracts/personMemory.js'
@@ -275,10 +276,23 @@ export function createAgentSemanticMemory(ports: {
     const viewerCurrent = () => guard() && !callerSignal?.aborted
     const started = performance.now()
     let phase: NonNullable<AgentSemanticMemoryTimeoutError['phase']> = 'source_check'
-    let phaseStarted = started, localStarted = started, localStep = 'semantic_acquire'
-    const advance = (next: typeof phase) => { phase = next; phaseStarted = performance.now() }
-    const observeSource = (step: string) => { localStep = step; localStarted = performance.now() }
-    let fallback: AgentSemanticMemoryRecall | undefined
+    let phaseStarted = started, phaseField: string | undefined
+    let local: { step: string; started: number } | undefined = { step: 'semantic_acquire', started }
+    let slowest: { step: string; ms: number } | undefined
+    const complete = (step: string, since: number) => {
+      const ms = Math.round(performance.now() - since)
+      if (!slowest || ms > slowest.ms) slowest = { step, ms }
+    }
+    const advance = (next: typeof phase, field?: string) => {
+      if (phase !== 'source_check') complete(phaseField ?? phase, phaseStarted)
+      phase = next; phaseField = field; phaseStarted = performance.now()
+    }
+    const finishSource = () => {
+      if (local) complete(local.step, local.started)
+      local = undefined
+    }
+    const observeSource = (step: string) => { finishSource(); local = { step, started: performance.now() } }
+    let fallback: AgentSemanticMemoryRecall | undefined, deadlineEvidence: AgentDiagnosticDetails | undefined
     return withContext(binding, viewerCurrent, budget, async context => {
         const id = agentSemanticMemoryId(binding)
         observeSource('semantic_store_observation')
@@ -356,7 +370,7 @@ export function createAgentSemanticMemory(ports: {
         }
         if (!groupQuery) await ensureEvidence(evidence)
         const authorizeQuery = async () => {
-          advance('authorization')
+          advance('authorization', 'semantic_query_privacy')
           queryEpoch = (await ports.memory.getSceneRedactions(queryScope)).invalidatedAt
           remoteQuery = await allowsQuery()
         }
@@ -399,7 +413,7 @@ export function createAgentSemanticMemory(ports: {
           (ranking ??= prepareAgentSemanticRanking(evidence, text, ports.backend!.id, threshold, mode))(queryVector)
         const ensureEmbeddingCurrent = groupQuery ? ensureQueryAuthority : () => ensureQuery(evidence)
         const checkProviderCurrent = async (resume: 'embedding' | 'rerank', check: () => Promise<void>) => {
-          advance('authorization')
+          advance('authorization', resume === 'embedding' ? 'semantic_query_recheck' : 'semantic_rerank_recheck')
           await check()
           context.signal.throwIfAborted()
           advance(resume)
@@ -420,12 +434,15 @@ export function createAgentSemanticMemory(ports: {
           return queryVector
         }
         const prepareFallback = async () => {
-          observeSource('semantic_keyword_ranking')
-          const selected = rank().slice(0, topK).map(hit => rowById.get(hit.chunk.id)!)
-          if (!selected.length) return
-          await ensureEvidence(selected)
-          fallback = project(selected, linesFor(selected).join('\n').slice(0, 5000), true)
+          try {
+            observeSource('semantic_keyword_ranking')
+            const selected = rank().slice(0, topK).map(hit => rowById.get(hit.chunk.id)!)
+            if (!selected.length) return
+            await ensureEvidence(selected)
+            fallback = project(selected, linesFor(selected).join('\n').slice(0, 5000), true)
+          } finally { finishSource() }
         }
+        finishSource()
         const retrieveVector = async () => {
           await authorizeQuery()
           const result = remoteQuery && mode !== 'bm25' ? await embedQuery() : undefined
@@ -475,11 +492,14 @@ export function createAgentSemanticMemory(ports: {
             ...(!selected.length ? { reason: 'no-match' as const } : {}) })
         }
         return project(selected, projection)
-      }, related, callerSignal, () => phase).catch(error => {
-        if (error instanceof AgentSemanticMemoryTimeoutError) annotateAgentError(error, {
-          stepMs: Math.round(performance.now() - (error.phase === 'source_check' ? localStarted : phaseStarted)),
-          ...(error.phase === 'source_check' ? { field: localStep } : {}),
-        })
+      }, related, callerSignal, () => {
+        const active = phase === 'source_check' ? local : { step: phaseField, started: phaseStarted }
+        const stepMs = Math.round(performance.now() - (active?.started ?? phaseStarted))
+        deadlineEvidence = { stepMs, ...(active?.step ? { field: active.step } : {}),
+          ...(slowest && slowest.ms > stepMs ? { slowestCompletedStep: slowest.step, slowestCompletedStepMs: slowest.ms } : {}) }
+        return phase
+      }).catch(error => {
+        if (error instanceof AgentSemanticMemoryTimeoutError && deadlineEvidence) annotateAgentError(error, deadlineEvidence)
         if (!fallback || !(error instanceof AgentSemanticMemoryTimeoutError || error instanceof SemanticProviderError) ||
             !viewerCurrent() || !current(binding)) throw error
         reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'semantic_memory_recall',

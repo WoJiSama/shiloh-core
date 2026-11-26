@@ -2,9 +2,9 @@ import type { Browser, HTTPRequest } from 'puppeteer'
 import { lstat, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { AgentMediaResourceContext } from '../../../contracts/agentMediaRelay.js'
-import { douyinFailure, douyinGuard, douyinOfficialUrl } from './agentDouyinRelayHttp.js'
+import { DouyinHttpError, douyinFailure, douyinGuard, douyinOfficialUrl } from './agentDouyinRelayHttp.js'
 import type { createDouyinHttp } from './agentDouyinRelayHttp.js'
-import { douyinCanonicalPage, douyinDisplay, douyinDocumentMetadata, douyinMetadata } from './agentDouyinRelayMetadata.js'
+import { douyinCanonicalPage, douyinDisplay, douyinDocumentMetadata, douyinMetadata, hasDouyinMedia } from './agentDouyinRelayMetadata.js'
 import type { AgentDouyinResolvedMedia } from './agentDouyinRelayMetadata.js'
 
 export interface AgentDouyinBrowserInput {
@@ -13,6 +13,7 @@ export interface AgentDouyinBrowserInput {
   readonly pageUrl: string
   /** Core-created private job directory; never a model-supplied path. */
   readonly directory: string
+  readonly observeStep?: (step: string, httpStatus?: number) => void
 }
 export type AgentDouyinBrowserRead = ReturnType<typeof createDouyinHttp>
 /** Host-only testing hook. Production always uses a fresh anonymous browser and the supplied pinned HTTP port. */
@@ -68,12 +69,21 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
   const guard = douyinGuard(context, 25_000)
   let session: Awaited<ReturnType<typeof openAgentDouyinBrowserSession>> | undefined, matched: AgentDouyinResolvedMedia | undefined, total = 0, requests = 0
   const work = new Set<Promise<void>>()
+  let signalMediaReady!: () => void
+  const mediaReady = new Promise<void>(resolve => { signalMediaReady = resolve })
+  const capture = (candidate: AgentDouyinResolvedMedia | undefined) => {
+    if (!candidate || hasDouyinMedia(matched)) return
+    matched = candidate
+    if (hasDouyinMedia(candidate)) signalMediaReady()
+  }
+  let navigationFailure: DouyinHttpError | undefined, detailFailure: DouyinHttpError | undefined
   let active = 0
   const waiting: (() => void)[] = []
   try {
     await guard.ensure()
     // HTTP is fulfilled only through the pinned port. Engine policy separately blocks
     // non-proxied WebRTC UDP and QUIC, which page request interception cannot observe.
+    input.observeStep?.('douyin_browser_launch')
     session = await openAgentDouyinBrowserSession(guard, input.directory)
     const page = await guard.wait(session.browser.newPage(), late => late.close())
     await guard.wait(page.setBypassServiceWorker(true))
@@ -92,10 +102,11 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
     }))
     await guard.wait(page.setRequestInterception(true))
     const handle = async (request: HTTPRequest) => {
-      let acquired = false
+      let acquired = false, detail = false
       try {
         if (requests >= 128 || request.method() !== 'GET' || ['media', 'font', 'websocket', 'eventsource', 'other'].includes(request.resourceType())) throw douyinFailure()
         const url = douyinOfficialUrl(request.url(), 'browser')
+        detail = url.hostname === 'www.douyin.com' && url.pathname === '/aweme/v1/web/aweme/detail/'
         if (/\/(?:log|collect|beacon|applog|webmssdk|slardar|mcs|tnc)(?:\/|\?|$)/iu.test(url.pathname)) throw douyinFailure()
         // Image src attributes are enough for scoped gallery extraction; never spend the
         // browser's memory on decoded source images or media streams.
@@ -125,31 +136,44 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
               path: '/', secure: true, httpOnly: attributes.some(value => /^\s*httponly\s*$/iu.test(value)) }))
           }
         }
-        if (url.pathname === '/aweme/v1/web/aweme/detail/') {
-          try { const candidate = douyinMetadata(JSON.parse(body.toString('utf8')), input.id, input.kind); if (candidate) matched = candidate } catch { /* Ignore unrelated or malformed responses. */ }
+        if (detail) {
+          try {
+            const candidate = douyinMetadata(JSON.parse(body.toString('utf8')), input.id, input.kind)
+            capture(candidate)
+            if (!hasDouyinMedia(candidate)) detailFailure = new DouyinHttpError('douyin_browser_detail', response.status)
+          } catch { detailFailure = new DouyinHttpError('douyin_browser_detail', response.status) }
         }
         if (request.isNavigationRequest()) {
-          const candidate = douyinDocumentMetadata(body.toString('utf8'), input.id, input.kind)
-          if (candidate) matched = candidate
+          capture(douyinDocumentMetadata(body.toString('utf8'), input.id, input.kind))
         }
         await guard.ensure()
         await request.respond({ status: 200, contentType: response.mime || 'application/octet-stream', body, headers: {
           'Access-Control-Allow-Origin': 'https://www.douyin.com',
           'Content-Security-Policy': "sandbox allow-scripts allow-same-origin; worker-src 'none'; child-src 'none'; frame-src 'none'; object-src 'none'",
         } })
-      } catch { await request.abort('blockedbyclient').catch(() => {}) }
+      } catch (error) {
+        if (error instanceof DouyinHttpError) {
+          if (request.isNavigationRequest()) navigationFailure = error
+          else if (detail) detailFailure = error
+        }
+        await request.abort('blockedbyclient').catch(() => {})
+      }
       finally { if (acquired) { const next = waiting.shift(); if (next) next(); else active-- } }
     }
     page.on('request', request => {
       const task = handle(request); work.add(task); void task.finally(() => work.delete(task)).catch(() => {})
     })
+    input.observeStep?.('douyin_browser_navigation')
     await guard.wait(page.goto(input.pageUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 }))
-    if (!matched || matched.kind === 'note' && !matched.images.length || matched.kind === 'video' && !matched.video) await guard.wait(page.waitForFunction((id, kind) => {
+    input.observeStep?.('douyin_browser_extract')
+    if (!hasDouyinMedia(matched)) await guard.wait(Promise.race([mediaReady, page.waitForFunction((id, kind) => {
       const nodes = document.querySelectorAll('[data-aweme-id], [data-video-id]')
       const scope = [...nodes].find(node => node.getAttribute('data-aweme-id') === id || node.getAttribute('data-video-id') === id)
       return Boolean(scope && (kind === 'note' ? scope.querySelector('img') : scope.querySelector('video')?.src))
-    }, { timeout: 8000, polling: 150 }, input.id, input.kind).catch(() => undefined))
+    }, { timeout: 8000, polling: 150 }, input.id, input.kind).then(handle => handle.dispose()).catch(() => undefined)]))
     await guard.ensure()
+    if (page.url().split('?')[0] !== douyinCanonicalPage(input.id, input.kind)) throw douyinFailure()
+    if (hasDouyinMedia(matched)) return matched
     const dom = await guard.wait(page.evaluate((id, kind) => {
       const nodes = document.querySelectorAll('[data-aweme-id], [data-video-id]')
       const scope = [...nodes].find(node => node.getAttribute('data-aweme-id') === id || node.getAttribute('data-video-id') === id)
@@ -161,14 +185,22 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
       return { video: video?.src || video?.currentSrc || '', duration: Number(video?.duration || 0), cover: video?.poster || '', images,
         title: scope.querySelector('h1')?.textContent || document.querySelector<HTMLMetaElement>('meta[property="og:title"]')?.content || document.title }
     }, input.id, input.kind))
-    if (!matched || matched.kind === 'video' && !matched.video || matched.kind === 'note' && !matched.images.length) {
-      if (dom) matched = { id: input.id, kind: input.kind, title: douyinDisplay(dom.title, 300) || '抖音作品', author: matched?.author || '', description: matched?.description || '',
-        duration: Number.isFinite(dom.duration) && dom.duration > 0 ? dom.duration : matched?.duration || 0,
-        video: dom.video, images: [...new Set(dom.images)], cover: dom.cover || matched?.cover || '', music: matched?.music || '', stats: matched?.stats || {} }
+    if (dom && !hasDouyinMedia(matched)) matched = {
+      id: input.id, kind: input.kind, title: douyinDisplay(dom.title, 300) || '抖音作品',
+      author: matched?.author || '', description: matched?.description || '',
+      duration: Number.isFinite(dom.duration) && dom.duration > 0 ? dom.duration : matched?.duration || 0,
+      video: dom.video || matched?.video || '', images: [...new Set(dom.images)], cover: dom.cover || matched?.cover || '',
+      music: matched?.music || '', stats: matched?.stats || {},
     }
     await guard.ensure()
     if (page.url().split('?')[0] !== douyinCanonicalPage(input.id, input.kind)) throw douyinFailure()
+    if (!hasDouyinMedia(matched) && detailFailure) input.observeStep?.(detailFailure.step, detailFailure.httpStatus)
     return matched
-  } catch { await guard.ensure(); return undefined }
+  } catch {
+    const failure = navigationFailure ?? detailFailure
+    if (failure) input.observeStep?.(failure.step, failure.httpStatus)
+    await guard.ensure()
+    return undefined
+  }
   finally { guard.close(); await session?.close().catch(() => {}); await Promise.allSettled([...work]) }
 }

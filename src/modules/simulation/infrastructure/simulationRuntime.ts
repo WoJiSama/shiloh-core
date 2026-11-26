@@ -3377,13 +3377,15 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               if (tool === finishTool) requiresClosing = true
               let repair = tool === finishTool && issue?.field === 'choice' && issue.rule === 'required' ? ` ${FINISH_CHOICE_GUIDANCE}` : ''
               let details: AgentDiagnosticDetails | undefined = issue
-              if (tool.name === 'simSendMessage' && issue?.field === 'messages' && issue.rule === 'type') {
+              if ((tool === finishTool || tool.name === 'simSendMessage') && issue?.field === 'messages' && issue.rule === 'type') {
                 const messages = normalizeStringArrayInput(args.messages)
                 const array = Array.isArray(messages)
                 const rejected = array ? messages.find(value => typeof value !== 'string') : messages
                 details = { ...issue, field: array ? 'messages.items' : 'messages', expectedType: array ? 'string' : 'array',
                   actualType: diagnosticValueType(rejected) }
-                repair = ' 请把消息正文写成字符串数组，例如 {"continuation":"chat","messages":["你好"]}。'
+                repair = tool === finishTool
+                  ? ` ${FINISH_CHOICE_GUIDANCE}`
+                  : ' 请把消息正文写成字符串数组，例如 {"continuation":"chat","messages":["你好"]}。'
               }
               return reject('tool_schema_invalid', `error: ${input}${repair}`, undefined, details)
             }

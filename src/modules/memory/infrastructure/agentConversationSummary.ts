@@ -129,7 +129,7 @@ export function createAgentConversationSummary(options: AgentConversationSummary
     let response: Response | undefined
     let signal: AbortSignal | undefined
     let httpCode: SummaryHttpError = 'http_error'
-    let waitingForHeaders = false
+    let waitingForHeaders = false, dispatched = false
     const lifecycle = new AbortController()
     try {
       if (!context) throw new Error(FAILURE)
@@ -157,7 +157,7 @@ export function createAgentConversationSummary(options: AgentConversationSummary
       context.observePhase?.('request_authorization')
       await ensureCurrent(context, signal)
       context.observePhase?.('provider_http')
-      waitingForHeaders = true
+      waitingForHeaders = true; dispatched = true
       response = await abortable((options.fetchImpl ?? fetch)(url, {
         method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
@@ -190,10 +190,14 @@ export function createAgentConversationSummary(options: AgentConversationSummary
       await ensureCurrent(context, signal)
       return summary
     } catch (error) {
-      if (response && !response.ok) throw new AgentConversationSummaryError(httpCode, response.status)
+      const details = { ...agentErrorDetails(error), dispatched,
+        ...(waitingForHeaders ? { step: 'response_headers' } : {}),
+        ...(signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError' ? { limit: timeoutMs } : {}),
+      }
+      if (response && !response.ok) throw annotateAgentError(new AgentConversationSummaryError(httpCode, response.status), details)
       const code = signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError' ? 'provider_timeout' :
         waitingForHeaders ? 'provider_transport_error' : 'model_response_invalid'
-      throw annotateAgentError(new AgentConversationSummaryError(code), agentErrorDetails(error) ?? {})
+      throw annotateAgentError(new AgentConversationSummaryError(code), details)
     }
     finally {
       lifecycle.abort()

@@ -379,6 +379,10 @@ test('finish preflight reports fixed rejection reasons to QQ and allows a correc
     { code: 'tool_arguments_invalid', cause: /有效 JSON 对象/u, message: tools(invalidJson) },
     { code: 'tool_schema_invalid', cause: /choice 缺少必填项/u, field: 'choice', rule: 'required',
       message: tools(toolCall('simFinishTurn', { markRead: true })) },
+    { code: 'tool_schema_invalid', cause: /要求 字符串，收到 对象/u, field: 'messages.items', rule: 'type',
+      message: tools(toolCall('simFinishTurn', { ...params, messages: [{ text: 'PRIVATE-SHAPE-CONTENT' }] })) },
+    { code: 'tool_schema_invalid', cause: /要求 数组，收到 null/u, field: 'messages', rule: 'type',
+      message: tools(toolCall('simFinishTurn', { ...params, messages: null })) },
     { code: 'tool_schema_invalid', cause: /reason 字符数不足/u, field: 'reason', rule: 'minLength', message: tools(toolCall('simFinishTurn', { ...params, reason: '' })) },
     { code: 'tool_content_blocked', cause: /触发了宿主出站内容检查/u, message: tools(toolCall('simFinishTurn', { ...params, reason: 'fixture-private-value' })) },
     { code: 'finish_read_range_invalid', cause: /throughSeq 超出本轮已读范围/u, field: 'throughSeq', rule: 'read_through',
@@ -410,6 +414,9 @@ test('finish preflight reports fixed rejection reasons to QQ and allows a correc
       if (field === 'choice') {
         assert.match(h.calls[1].messages.find(row => row.role === 'tool').content, /"choice":"silent","markRead":true/u)
       }
+      if (field?.startsWith('messages')) {
+        assert.match(h.calls[1].messages.find(row => row.role === 'tool').content, /"choice":"chat","messages":\["实际回复"\]/u)
+      }
       assert.equal(h.sent.length, 1)
       assert.ok(JSON.stringify(h.sent[0]).includes(params.messages[0]))
       const finishRows = rows.filter(row => row.operation === 'simFinishTurn')
@@ -423,9 +430,24 @@ test('finish preflight reports fixed rejection reasons to QQ and allows a correc
       }
       assert.ok(text.includes(`错误码 ${code}`))
       assert.ok(text.includes(`追踪编号 ${finishRows[0].traceId}`))
-      assert.doesNotMatch(JSON.stringify({ rows, batches, text }), /fixture-private-value|这一段正文在工具参数外|修改后成功发送/u)
+      assert.doesNotMatch(JSON.stringify({ rows, batches, text }), /fixture-private-value|PRIVATE-SHAPE-CONTENT|这一段正文在工具参数外|修改后成功发送/u)
     })
   }
+})
+
+test('finish accepts the serialized string array on the first call and sends only its text', async t => {
+  const diagnostics = spy()
+  const h = fixture({ diagnostics, script: () => tools(toolCall('simFinishTurn', {
+    choice: 'chat', messages: JSON.stringify(['直接完成收尾']),
+  })) })
+  t.after(() => h.runtime.stop())
+  await h.ingest()
+  await settled(h, 1)
+  assert.equal(h.calls.length, 1)
+  assert.equal(h.sent.length, 1)
+  assert.match(JSON.stringify(h.sent[0]), /直接完成收尾/u)
+  assert.doesNotMatch(JSON.stringify(h.sent[0]), /\[\\"直接完成收尾/u)
+  assert.deepEqual(diagnostics.events.filter(row => row.operation === 'simFinishTurn').map(row => row.outcome), ['started', 'succeeded'])
 })
 
 test('simSendMessage reports the invalid value type and accepts the corrected string array', async t => {

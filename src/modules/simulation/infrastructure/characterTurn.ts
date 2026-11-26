@@ -1,6 +1,7 @@
 import type { CharacterState, CharacterMemory, CharacterGoal, CharacterDecision } from '../../../contracts/character.js'
 import { annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { AbstractTool, type ParameterSchema } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { normalizeStringArrayInput } from '../domain/paramTolerance.js'
 import { isQqSimulationUserId } from '../domain/simConfig.js'
 import { createCharacterTools, type CharacterToolContext } from './characterTools.js'
 import { prepareSimulationToolInput } from './simulationToolInput.js'
@@ -86,7 +87,7 @@ function parse(input: Record<string, unknown>, memoryFields: string[], goalField
   let messages: string[] | undefined
   if (Object.hasOwn(input, 'messages')) {
     if (choice === 'silent' || choice === 'deferred') throw new FinishParameterError('silent/deferred 不接受 messages', { field: 'messages', rule: 'incompatible' })
-    const values = typeof input.messages === 'string' ? [input.messages] : input.messages
+    const values = normalizeStringArrayInput(input.messages)
     if (!Array.isArray(values) || values.length < 1 || values.length > 5 || values.some(value => typeof value !== 'string' || !value.trim() || value.length > 500))
       throw new FinishParameterError('messages 必须是 1 至 5 条非空字符串，每条至多 500 字符', { field: 'messages', rule: 'message_list' })
     messages = values as string[]
@@ -136,7 +137,7 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
           reason: { type: 'string', minLength: 1, maxLength: 600, description: '本轮选择的简短理由。chat、interest_only、silent 可省略，其余 choice 必填。' },
           memories: { type: 'array', maxItems: 2, description: '仅角色自己的经历、兴趣、观点。社交待办 pendingEvent 和本群相处习惯 interaction 请在收尾前单独调用 simRemember。每项不传 action 或新记录 id。', items: nestedSchema(memoryTool) },
           goal: { ...nestedSchema(goalTool), description: `仅 schedule/wait/complete/abandon 使用，操作由 choice 固定，不传 action。${goalTool.description}` },
-          messages: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', minLength: 1, maxLength: 500 }, description: '可选的最终群消息；兼容单个字符串。silent/deferred 禁止。' },
+          messages: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', minLength: 1, maxLength: 500 }, description: '可选的最终群消息，填写字符串数组，例如 ["你好"]。silent/deferred 省略此字段。' },
           replyToSeq: { type: 'number', minimum: 1, description: '可选：引用已展示的消息序号，须为整数。' },
           atUserIds: { type: 'array', maxItems: 3, items: { type: 'string', ...(ctx.platformUserId ? { minLength: 1, maxLength: 128 } : { pattern: '^\\d{1,12}$' }) } },
           markRead: { type: 'boolean', description: '传 true 标读已经连续展示的消息，遇到未展示的消息时停下。省略或传 false 保留已读位置。' },
@@ -154,7 +155,10 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
       if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('收尾参数必须是对象')
       const input = params as Record<string, unknown>
       const normalized = { ...input }
-      if (typeof input.messages === 'string') normalized.messages = [input.messages]
+      if (Object.hasOwn(input, 'messages')) {
+        if (input.messages === null && (input.choice === 'silent' || input.choice === 'deferred')) delete normalized.messages
+        else normalized.messages = normalizeStringArrayInput(input.messages)
+      }
       const reason = typeof input.choice === 'string' && !Object.hasOwn(input, 'reason') ? ROUTINE_REASONS.get(input.choice) : undefined
       if (reason !== undefined) normalized.reason = reason
       return normalized

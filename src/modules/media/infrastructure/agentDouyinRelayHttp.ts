@@ -3,9 +3,16 @@ import type { LookupAddress } from 'node:dns'
 import https from 'node:https'
 import { isIP } from 'node:net'
 import type { AgentMediaResourceContext } from '../../../contracts/agentMediaRelay.js'
+import { agentErrorDetails, annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { isPublicAddress } from '../../shared/infrastructure/publicAddress.js'
 
 export const douyinFailure = () => new Error('抖音媒体获取失败：来源、权限、网络或内容不符合要求')
+export class DouyinHttpError extends Error {
+  constructor(readonly step: string, readonly httpStatus?: number, error?: unknown) {
+    super('抖音媒体获取失败：来源、权限、网络或内容不符合要求')
+    annotateAgentError(this, agentErrorDetails(error) ?? {})
+  }
+}
 export type DouyinRequestKind = 'page' | 'browser' | 'video' | 'image' | 'music'
 export interface AgentDouyinRequestPolicy { readonly maxBytes: number; readonly headers: Readonly<Record<string, string>> }
 export interface AgentDouyinResponse {
@@ -25,7 +32,8 @@ export function douyinGuard(context: AgentMediaResourceContext, timeoutMs: numbe
   if (!(context?.signal instanceof AbortSignal) || typeof context.isCurrent !== 'function' || context.ensureCurrent !== undefined && typeof context.ensureCurrent !== 'function') throw douyinFailure()
   const signal = AbortSignal.any([context.signal, cancel.signal])
   const check = () => { try { if (signal.aborted || context.isCurrent() !== true) throw douyinFailure() } catch { throw douyinFailure() } }
-  const timer = setTimeout(() => cancel.abort(), timeoutMs); timer.unref()
+  let deadlineElapsed = false
+  const timer = setTimeout(() => { deadlineElapsed = true; cancel.abort() }, timeoutMs); timer.unref()
   let checking = false
   // The parent already polls source authority; its abort signal stops every child stage.
   const watcher = watchedContexts.has(context) ? undefined : setInterval(() => {
@@ -45,7 +53,10 @@ export function douyinGuard(context: AgentMediaResourceContext, timeoutMs: numbe
       signal.removeEventListener('abort', abort)
       try { if (settled) throw douyinFailure(); check(); settled = true; resolve(value) }
       catch { if (late) void Promise.resolve().then(() => late(value)).catch(() => {}); reject(douyinFailure()) }
-    }, () => { settled = true; signal.removeEventListener('abort', abort); reject(douyinFailure()) })
+    }, error => {
+      settled = true; signal.removeEventListener('abort', abort)
+      reject(annotateAgentError(douyinFailure(), agentErrorDetails(error) ?? {}))
+    })
     if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true })
   })
   const scoped = Object.freeze({ signal, isCurrent: () => { try { check(); return true } catch { return false } },
@@ -53,6 +64,7 @@ export function douyinGuard(context: AgentMediaResourceContext, timeoutMs: numbe
   watchedContexts.add(scoped)
   return { signal, check, wait, async ensure() { check(); if (context.ensureCurrent) await wait(Promise.resolve().then(() => context.ensureCurrent!())); check() },
     context: scoped,
+    get deadlineElapsed() { return deadlineElapsed },
     close() { clearTimeout(timer); clearInterval(watcher); cancel.abort() } }
 }
 
@@ -87,7 +99,7 @@ export const nativeAgentDouyinRequest: AgentDouyinRequest = (url, address, signa
       ...(response.headers['set-cookie'] ? { setCookies: response.headers['set-cookie'] } : {}),
       close() { response.destroy(); request.destroy() } })
   })
-  request.once('error', () => reject(douyinFailure())); request.end()
+  request.once('error', error => reject(annotateAgentError(douyinFailure(), agentErrorDetails(error) ?? {}))); request.end()
 })
 
 export function createDouyinHttp(options: { lookup?: AgentDouyinLookup; request?: AgentDouyinRequest; allows(value: string): boolean; registerAnonymousSecrets?(values: readonly string[]): void }) {
@@ -97,19 +109,22 @@ export function createDouyinHttp(options: { lookup?: AgentDouyinLookup; request?
       if (!options.allows(url.href)) throw douyinFailure()
       await guard.ensure()
       const addresses = await guard.wait((options.lookup ?? (host => dnsLookup(host, { all: true, verbatim: true })))(url.hostname))
-      if (!Array.isArray(addresses) || !addresses.length || addresses.length > 32 || addresses.some(address => !address || isIP(address.address) !== address.family || !isPublicAddress(address.address))) throw douyinFailure()
+        .catch(error => { throw new DouyinHttpError('douyin_http_dns', undefined, error) })
+      if (!Array.isArray(addresses) || !addresses.length || addresses.length > 32 || addresses.some(address => !address || isIP(address.address) !== address.family || !isPublicAddress(address.address))) {
+        throw new DouyinHttpError('douyin_http_address_policy')
+      }
       await guard.ensure()
       const cookie = kind === 'browser' && url.hostname === 'www.douyin.com' && session?.cookie ? session.cookie : ''
       if (cookie && (cookie.length > 8192 || /[\r\n\u0000-\u001f\u007f]/u.test(cookie) || !options.allows(cookie))) throw douyinFailure()
       if (cookie) options.registerAnonymousSecrets?.(cookie.split(';').map(value => value.trim().split('=').slice(1).join('=')).filter(value => value.length >= 8))
       const response = await guard.wait((options.request ?? nativeAgentDouyinRequest)(url, addresses[0]!, guard.signal, {
         maxBytes, headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36', Referer: 'https://www.douyin.com/', Accept: '*/*', ...(cookie ? { Cookie: cookie } : {}) },
-      }), late => late.close?.())
+      }), late => late.close?.()).catch(error => { throw new DouyinHttpError('response_headers', undefined, error) })
       let closed = false
       const close = async () => { if (closed) return; closed = true; try { await response.close?.() } catch {} }
       try {
         await guard.ensure()
-        if (!Number.isInteger(response.status)) throw douyinFailure()
+        if (!Number.isInteger(response.status) || response.status < 100 || response.status > 599) throw douyinFailure()
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.location
           if (hop === 4 || typeof location !== 'string' || !options.allows(location) || /[\\\s]/u.test(location) ||
@@ -122,9 +137,10 @@ export function createDouyinHttp(options: { lookup?: AgentDouyinLookup; request?
         // anonymous-browser challenge. Preserve that validated identity without parsing
         // the challenge response or treating it as media.
         if (kind === 'page' && url.hostname !== 'v.douyin.com' && [403, 412, 429].includes(response.status)) {
-          await close(); return { url, mime: '', close, setCookies: [] as readonly string[], chunks: (async function* () {})() }
+          await close(); return { url, status: response.status, mime: '', close, setCookies: [] as readonly string[], chunks: (async function* () {})() }
         }
-        if (response.status !== 200 || response.headers['content-encoding'] && response.headers['content-encoding']!.toLowerCase() !== 'identity') throw douyinFailure()
+        if (response.status !== 200) throw new DouyinHttpError('douyin_http_status', response.status)
+        if (response.headers['content-encoding'] && response.headers['content-encoding']!.toLowerCase() !== 'identity') throw douyinFailure()
         const length = response.headers['content-length']
         if (length !== undefined && (!/^\d+$/u.test(length) || !Number.isSafeInteger(Number(length)) || Number(length) > maxBytes)) throw douyinFailure()
         const body = response.body
@@ -135,7 +151,7 @@ export function createDouyinHttp(options: { lookup?: AgentDouyinLookup; request?
         const setCookies: readonly string[] = kind === 'browser' && url.hostname === 'www.douyin.com' && Array.isArray(response.setCookies) ? response.setCookies : []
         if (setCookies.length > 32 || setCookies.some(value => typeof value !== 'string' || value.length > 4096 || /[\r\n\u0000-\u001f\u007f]/u.test(value) || !options.allows(value))) throw douyinFailure()
         options.registerAnonymousSecrets?.(setCookies.map(value => value.split(';', 1)[0]!.split('=').slice(1).join('=')).filter(value => value.length >= 8))
-        return { url, mime: (response.headers['content-type'] ?? '').split(';', 1)[0]!.trim().toLowerCase(), close, setCookies,
+        return { url, status: response.status, mime: (response.headers['content-type'] ?? '').split(';', 1)[0]!.trim().toLowerCase(), close, setCookies,
           chunks: (async function* () {
             if (consumed) throw douyinFailure(); consumed = true
             let size = 0
@@ -151,9 +167,14 @@ export function createDouyinHttp(options: { lookup?: AgentDouyinLookup; request?
               }
               if (!size || length !== undefined && Number(length) !== size) throw douyinFailure()
               await guard.ensure()
-            } finally { try { const returned = iterator.return?.(); if (returned) void Promise.resolve(returned).catch(() => {}) } catch {}; await close() }
+            } catch (error) { throw new DouyinHttpError('response_body', response.status, error) }
+            finally { try { const returned = iterator.return?.(); if (returned) void Promise.resolve(returned).catch(() => {}) } catch {}; await close() }
           })() }
-      } catch { await close(); throw douyinFailure() }
+      } catch (error) {
+        await close()
+        const status = Number.isInteger(response.status) && response.status >= 100 && response.status <= 599 ? response.status : undefined
+        throw error instanceof DouyinHttpError ? error : new DouyinHttpError('douyin_http_response', status, error)
+      }
     }
     throw douyinFailure()
   }

@@ -428,26 +428,36 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
     let scope = scopeRaw === undefined ? undefined : parseScope(scopeRaw, identity)
     const ids = [...new Set(subjects ?? scope!.subjects)]
     const result = new Map<string, PersonMemoryRedactions>()
-    for (let offset = 0; offset < ids.length; offset += 32) {
+    const batchSize = 32, concurrentBatches = 4
+    for (let offset = 0; offset < ids.length; offset += batchSize * concurrentBatches) {
       signal.throwIfAborted()
-      const batch = ids.slice(offset, offset + 32).map(subjectId => ({ identity, subjectId }))
-      batch.forEach(requireSubject)
-      const [currentScope, ...people] = await redis.getMany!([scopeName, ...batch.map(subject => personKey(identity, subject.subjectId))])
-      signal.throwIfAborted()
-      if (people.length !== batch.length) throw new Error('人物记忆批量读取结果无效')
-      if (!scope || currentScope !== scopeRaw) {
-        const next = parseScope(currentScope, identity)
-        // Registering a source also updates the scope revision. Keep batches
-        // compatible across those writes if the privacy rules are identical.
-        if (scope && (next.invalidatedAt !== scope.invalidatedAt ||
-            JSON.stringify([next.scenes, next.revokedSources, next.tombstones]) !==
-            JSON.stringify([scope.scenes, scope.revokedSources, scope.tombstones]) ||
-            subjects === undefined && JSON.stringify(next.subjects) !== JSON.stringify(scope.subjects))) return
-        scopeRaw = currentScope
-        scope = next
+      const batches = []
+      for (let start = offset; start < Math.min(ids.length, offset + batchSize * concurrentBatches); start += batchSize) {
+        const batch = ids.slice(start, start + batchSize).map(subjectId => ({ identity, subjectId }))
+        batch.forEach(requireSubject)
+        batches.push(batch)
       }
-      for (const [index, subject] of batch.entries()) {
-        result.set(subject.subjectId, redactions(parsePerson(people[index], subject), scope))
+      // Keep each Redis read small while avoiding a round trip per 32 subjects.
+      // Each response carries its own scope fence and must match the other batches.
+      const snapshots = await Promise.all(batches.map(async batch =>
+        redis.getMany!([scopeName, ...batch.map(subject => personKey(identity, subject.subjectId))])))
+      signal.throwIfAborted()
+      for (const [batchIndex, batch] of batches.entries()) {
+        const [currentScope, ...people] = snapshots[batchIndex]!
+        if (people.length !== batch.length) throw new Error('人物记忆批量读取结果无效')
+        if (!scope || currentScope !== scopeRaw) {
+          const next = parseScope(currentScope, identity)
+          // Ordinary source registration may update the revision without changing privacy.
+          if (scope && (next.invalidatedAt !== scope.invalidatedAt ||
+              JSON.stringify([next.scenes, next.revokedSources, next.tombstones]) !==
+              JSON.stringify([scope.scenes, scope.revokedSources, scope.tombstones]) ||
+              subjects === undefined && JSON.stringify(next.subjects) !== JSON.stringify(scope.subjects))) return
+          scopeRaw = currentScope
+          scope = next
+        }
+        for (const [index, subject] of batch.entries()) {
+          result.set(subject.subjectId, redactions(parsePerson(people[index], subject), scope))
+        }
       }
     }
     return result

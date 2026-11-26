@@ -226,18 +226,24 @@ export async function openQqMediaRelayBridge(options: QqMediaRelayBridgeOptions)
       await current.authorize(); route.guard.check()
       response.writeHead(200, { 'Content-Type': route.lease.artifact.mime, 'Content-Length': String(size),
         'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Accept-Ranges': 'none', Connection: 'close' })
-      const end = () => current!.wait(new Promise<void>((resolve, reject) => {
+      const end = (chunk?: Uint8Array) => current!.wait(new Promise<void>((resolve, reject) => {
         const finish = () => { remove(); resolve() }, close = () => { remove(); reject(failure()) }
         const remove = () => { response.removeListener('finish', finish); response.removeListener('close', close) }
-        response.once('finish', finish); response.once('close', close); response.end()
+        response.once('finish', finish); response.once('close', close)
+        response.end(chunk)
+        sent += chunk?.byteLength ?? 0
       }))
       step = 'bridge_finish'
       if (request.method === 'HEAD') { await end(); return }
       step = 'bridge_read_artifact'
+      let lastChunk: Uint8Array | undefined
       for await (const chunk of reader!.chunks) {
+        if (lastChunk || !(chunk instanceof Uint8Array) || !chunk.byteLength || chunk.byteLength > BLOCK || chunk.byteLength > size - sent) throw failure()
+        // Keep the final bytes until the reader has closed and the last authorization is complete.
+        // A Content-Length client can disconnect as soon as it has those bytes.
+        if (chunk.byteLength === size - sent) { lastChunk = chunk; continue }
         step = 'bridge_request_authorization'
         await current.authorize(); route.guard.check()
-        if (!(chunk instanceof Uint8Array) || !chunk.byteLength || chunk.byteLength > BLOCK || chunk.byteLength > size - sent) throw failure()
         step = 'bridge_write_socket'
         const ready = response.write(chunk)
         sent += chunk.byteLength
@@ -248,9 +254,11 @@ export async function openQqMediaRelayBridge(options: QqMediaRelayBridgeOptions)
         }))
         step = 'bridge_read_artifact'
       }
-      if (sent !== size) throw failure()
+      if (!lastChunk) throw failure()
+      step = 'bridge_request_authorization'
+      await current.authorize(); route.guard.check()
       step = 'bridge_finish'
-      await current.authorize(); route.guard.check(); await end()
+      await end(lastChunk)
     } catch (error) {
       if (route && registered && !route.guard.signal.aborted) {
         const code = idleTimeout ? 'media_bridge_socket_timeout' : cancel.signal.aborted ? 'media_bridge_peer_closed' : 'media_bridge_read_failed'

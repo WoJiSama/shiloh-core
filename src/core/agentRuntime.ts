@@ -3119,7 +3119,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           if ((target.kind === 'group' || privateChat) && await inbox.recallText(target, event.messageId)) textConversation.invalidate(target)
           const queue = privateChat ? undefined : await inbox.accept({ event })
           const { botId, scene } = personMemoryAddress(target)
-          await revokePersonMemorySourceForAccount(personMemory, botId, scene, event.messageId, binding && agentPersonaScopeId(binding.agentId))
+          let diagnosticBinding = binding
+          if (!diagnosticBinding) try { diagnosticBinding = bindingFor(target)?.binding } catch { /* Keep source revocation independent of diagnostics. */ }
+          const scope: AgentDiagnosticScope = diagnosticBinding
+            ? { kind: 'conversation', binding: diagnosticBinding, messageId: event.messageId } : { kind: 'account', account: target.account }
+          await diagnostics.run(scope, 'conversation_memory_source_revocation',
+            () => revokePersonMemorySourceForAccount(personMemory, botId, scene, event.messageId, binding && agentPersonaScopeId(binding.agentId)), 'memory')
           if (queue) kickInbox(queue)
         })(),
       ])

@@ -205,6 +205,15 @@ test('普通聊天与纯兴趣可以不写状态；拒绝和沉默不自动生�
   }
 })
 
+test('静默和暂缓的空值可按无正文收尾', async () => {
+  for (const choice of ['silent', 'deferred']) {
+    const h = harness()
+    assert.equal((await h.call({ choice, reason: '本轮不发言', messages: null })).ok, true)
+    assert.equal(h.finishes.length, 1)
+    assert.equal(h.finishes[0].messages, undefined)
+  }
+})
+
 test('顶层、嵌套字段和收尾发送参数严格验证，不忽略 action、枚举或调用者指定新 ID', async () => {
   const chat = { choice: 'chat', reason: '普通聊天' }
   const invalid = [

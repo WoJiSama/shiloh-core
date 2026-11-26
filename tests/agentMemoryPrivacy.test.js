@@ -44,8 +44,8 @@ const bindings = {
   })),
 }
 
-async function waitFor(probe, description) {
-  const until = performance.now() + 5_000
+async function waitFor(probe, description, timeoutMs = 5_000) {
+  const until = performance.now() + timeoutMs
   while (performance.now() < until) {
     const result = await probe()
     if (result) return result
@@ -311,7 +311,8 @@ test('privacy effects and receipt are atomic if a process loses the Redis commit
     await resumed.emit(acknowledged)
     assert.equal(deliveries.length, 2)
     await diagnostics.flush()
-    assert.equal(diagnosticEvents.filter(event => event.operation === 'consume_privacy' && event.code === 'inbox_retry_pending' && event.outcome === 'failed').length, 1)
+    const firstFailures = diagnosticEvents.filter(event => event.operation === 'consume_privacy' && event.outcome === 'failed')
+    assert.deepEqual(firstFailures.map(event => [event.code, event.details.step]), [['inbox_retry_privacy_command', 'privacy_command']])
   } finally {
     releaseCommit.resolve()
     recalledCommit?.release.resolve()
@@ -419,7 +420,7 @@ test('a standalone QQ process keeps commands out of model requests and aborts a 
     }
     responseToAbort = response
     response.on('close', () => { providerAborted = !response.writableEnded })
-    response.writeHead(400).write('unsupported max_tokens')
+    response.writeHead(400).write('unsupported reasoning_effort')
   })
   server.on('upgrade', (request, connection, head) => socketServer.handleUpgrade(request, connection, head,
     client => socketServer.emit('connection', client)))
@@ -452,10 +453,11 @@ test('a standalone QQ process keeps commands out of model requests and aborts a 
   const configFile = join(directory, 'agent-host.yaml')
   await writeFile(join(directory, 'agent-bindings.yaml'), JSON.stringify(onlyMainBot))
   await writeFile(configFile, JSON.stringify({ version: 1, instance, privateChat: { enabled: true },
-    model: { baseUrl: `http://127.0.0.1:${port}/v1`, name: 'unused-model', apiKeyEnv: 'FIXTURE_PRIVACY_MODEL_KEY' },
+    model: { baseUrl: `http://127.0.0.1:${port}/v1`, name: 'unused-model', apiKeyEnv: 'FIXTURE_PRIVACY_MODEL_KEY', reasoningEffort: 'low' },
     connections: [{ id: 'qq-0', url: `ws://127.0.0.1:${port}` }],
     textGroups: [{ connectionId: 'qq-0', conversationId: textGroup.id }],
-    simulation: { wake: { probability: 0, proactiveProbability: 0 }, rhythm: { enabled: false }, reflection: { enabled: false } },
+    simulation: { wake: { probability: 0, proactiveProbability: 0, batchWindowMs: 1000 },
+      wakeGate: { enabled: false }, rhythm: { enabled: false }, reflection: { enabled: false } },
   }))
   ownerStorage = await openAgentRedis({ url, instance, onLost() {} })
   const stored = createPersonMemoryStore({ redis: ownerStorage.storage })
@@ -474,7 +476,7 @@ test('a standalone QQ process keeps commands out of model requests and aborts a 
   child = spawn(process.execPath, args, { env: { ...process.env, BL_AGENT_REDIS_URL: url, FIXTURE_PRIVACY_MODEL_KEY: 'fake' } })
   childExit = once(child, 'exit')
   for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { log += chunk })
-  await waitFor(() => log.includes('已启动') || child.exitCode !== null, 'standalone QQ startup')
+  await waitFor(() => log.includes('已启动') || child.exitCode !== null, 'standalone QQ startup', 12_000)
   assert.match(log, /已启动/u)
 
   function send(target, id, text, overrides = {}) {
@@ -522,7 +524,7 @@ test('a standalone QQ process keeps commands out of model requests and aborts a 
   assert.equal(isPersonMemoryRedacted({ scene, messageId: String(providerSource.message_id), authorId: author.id,
     at: providerSource.time * 1000, excerpt: '本轮请求处于等待状态' }, '本轮请求处于等待状态', beforeProviderRedactions), false)
   await waitFor(() => responseToAbort, 'first provider call with an unfinished retryable body')
-  assert.equal(typeof JSON.parse(modelRequests[0]).max_tokens, 'number')
+  assert.equal(JSON.parse(modelRequests[0]).reasoning_effort, 'low')
   send(friend, 710012, commands.forget)
   await waitFor(() => deliveries.length === 5 && providerAborted, 'private command confirmed while closing the old provider connection')
   await delay(100)

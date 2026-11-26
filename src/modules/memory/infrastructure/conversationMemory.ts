@@ -7,7 +7,7 @@ import type { ConversationEpisodeInput, ConversationMemoryState, ConversationMem
   AgentConversationMemoryPurgeSubject, AgentConversationMemoryCleanupGuard, AgentConversationMemoryCleanupReceipt,
   ConversationSummaryContext, ConversationSummaryModelPhase } from '../../../contracts/conversationMemory.js'
 import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js'
-import { annotateAgentError, type AgentDiagnosticInput, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import { agentErrorDetails, annotateAgentError, type AgentDiagnosticInput, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey } from '../../runtime/domain/agentBindings.js'
 import { simulationAddressKey } from '../../simulation/infrastructure/simulationAddress.js'
 import { isPersonMemoryRedacted } from '../domain/personMemory.js'
@@ -292,13 +292,15 @@ export function createConversationMemory(ports: {
         authorizationStep = 'summary_binding_check'
         if (!isCurrent()) throw new Error('主线摘要执行授权已改变')
         authorizationStep = 'summary_privacy_epoch'
-        if (await epoch(binding) !== invalidatedAt) throw new Error('主线摘要隐私版本已改变')
+        if (await epoch(binding) !== invalidatedAt) throw annotateAgentError(new Error('主线摘要隐私版本已改变'),
+          { cause: 'summary_privacy_epoch_changed' })
         authorizationStep = 'summary_source_records'
         if ((await safeRecords(binding, rows, controller.signal)).length !== rows.length) throw new Error('主线摘要来源已改变')
         authorizationStep = 'summary_scene_privacy'
         if (!await canReadUnattributedMemory(ports.memory, identity(binding), scene(target), controller.signal)) throw new Error('主线摘要场景隐私不允许概括')
         authorizationStep = 'summary_cleanup_fence'
-        if (await store.cleanupToken(binding) !== cleanupToken) throw new Error('主线摘要清理版本已改变')
+        if (await store.cleanupToken(binding) !== cleanupToken) throw annotateAgentError(new Error('主线摘要清理版本已改变'),
+          { cause: 'summary_cleanup_fence_changed' })
         authorizationStep = 'summary_binding_check'
         if (!isCurrent()) throw new Error('主线摘要执行授权已改变')
         authorizationStep = undefined
@@ -360,9 +362,16 @@ export function createConversationMemory(ports: {
       else finishPhase('succeeded', { code: 'summary_saved' })
     } catch (error) {
       if (!isCurrent() && !(timedOut && scopeCurrent())) return
+      const cause = agentErrorDetails(error)?.cause
+      if (!timedOut && (cause === 'summary_privacy_epoch_changed' || cause === 'summary_cleanup_fence_changed')) {
+        // The sweep re-evaluates the newer generation and schedules only its eligible sources.
+        finishPhase('cancelled', { code: cause, error, details: { result: 'discarded' } })
+        return
+      }
       const provider = error instanceof AgentConversationSummaryError ? error : undefined
       const code = timedOut || (provider?.code === 'provider_timeout' && phase && summaryStages[phase.name] === 'memory')
-        ? 'summary_timeout' : provider?.code ?? 'summary_failed'
+        ? 'summary_timeout' : authorizationStep === 'summary_privacy_epoch' ? 'summary_privacy_epoch_read_failed'
+          : provider?.code ?? 'summary_failed'
       const writing = phase?.name === 'save'
       finishPhase(writing ? 'unknown' : 'failed', {
         code, error, ...(provider?.httpStatus === undefined ? {} : { httpStatus: provider.httpStatus }),
@@ -374,7 +383,7 @@ export function createConversationMemory(ports: {
       controller.abort()
       enterPhase('retry')
       try {
-        if (await store.cleanupToken(binding) !== cleanupToken) {
+        if (await epoch(binding) !== invalidatedAt || await store.cleanupToken(binding) !== cleanupToken) {
           finishPhase('cancelled', { code: 'summary_source_changed' })
           return
         }

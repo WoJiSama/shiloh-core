@@ -638,6 +638,8 @@ test('group keyword fallback remains usable when outbound query authorization st
   assert.equal(f.calls.embed.length, indexedCalls)
   assert.deepEqual(events.map(({ outcome, code }) => [outcome, code]), [['unknown', 'semantic_recall_local_fallback_authorization']])
   assert.equal(events[0].error.budgetMs, 300)
+  const { agentErrorDetails } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
+  assert.equal(agentErrorDetails(events[0].error).field, 'semantic_query_privacy')
   assert.equal(events[0].details.cause, 'semantic_recall_budget_elapsed')
   assert.equal(events[0].details.result, 'fallback_used')
   assert.ok(Number.isFinite(events[0].durationMs))

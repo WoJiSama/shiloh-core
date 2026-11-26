@@ -332,6 +332,35 @@ test('a late summary failure from another owner cannot spend the new cleanup gen
   assert.equal(summaries[1].input.previous, '')
 })
 
+test('a privacy epoch change during authorization discards the old summary without a failed attempt', settings, async t => {
+  const f = await fixture(t), events = [], failures = [], summaries = []
+  const state = await f.seed(group, 'daily', Array.from({ length: 4 }, () => ({})))
+  await f.store.update(state.id, saved => ({ ...saved, summary: undefined, dueAt: f.now - 1 }))
+  const diagnostics = createAgentDiagnostics({ logger, onFailure: event => failures.push(event),
+    sink: { async append(event) { events.push(event); return true } } })
+  let reads = 0
+  const owner = f.createOwner({ diagnostics, memory: { ...f.memory, async getSceneRedactions(input) {
+    if (++reads === 3) await f.memory.revokeSource({ ...input, messageId: state.records[0].messageId })
+    return f.memory.getSceneRedactions(input)
+  } }, async summarize(input) { summaries.push(input); return '新的来源已通过核对' } })
+  await owner.tick()
+  await waitFor(() => events.some(event => event.code === 'summary_privacy_epoch_changed'), 'old privacy epoch cancelled')
+  const cancelled = events.find(event => event.code === 'summary_privacy_epoch_changed')
+  assert.equal(cancelled.outcome, 'cancelled')
+  assert.equal(cancelled.details.field, 'summary_privacy_epoch')
+  assert.deepEqual(failures, [])
+  const old = await f.raw()
+  assert.equal(old.attempts, 0); assert.equal(old.retryAt, 0)
+  assert.equal(summaries.length, 0)
+  assert.equal(old.summary, undefined)
+  for (let index = 0; index < 4; index++) await f.capture(owner, `新版本-${index}`)
+  f.advance(5001)
+  await waitFor(async () => { await owner.tick(); return (await f.raw()).summary?.text === '新的来源已通过核对' }, 'new privacy generation saved')
+  assert.equal(summaries.length, 1)
+  assert.ok(summaries[0].messages.every(row => row.text.startsWith('新版本-')))
+  await diagnostics.flush()
+})
+
 test('a timed-out summary logs its active phase, stops authorization reads and respects persisted backoff on a stale sweep', settings, async t => {
   const f = await fixture(t)
   const state = await f.seed(group, 'daily', Array.from({ length: 4 }, () => ({})))

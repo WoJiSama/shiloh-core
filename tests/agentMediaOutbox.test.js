@@ -537,6 +537,8 @@ test('Bilibili retries a proved transport rejection once and records the first f
     if (retry === 'failed') assert.deepEqual(f.calls[2].action.plan.items, [{ parts: [{ kind: 'image', artifact: cover }] }])
     const first = alerts[0]
     assert.equal(first.code, 'media_resource_fetch_closed')
+    assert.ok(events.some(event => event.operation === 'media_prepare' && event.code === 'prepare_ready' &&
+      event.traceId === first.traceId && event.scope.messageId === job.source.messageId))
     assert.ok(events.some(event => event.operation === 'media_forward' && event.details?.causeEventId === first.id && event.traceId === first.traceId))
     assert.equal(alerts.length, retry === 'sent' ? 1 : 2)
     assert.ok(!events.some(event => event.code === 'close_ledger_failed'))

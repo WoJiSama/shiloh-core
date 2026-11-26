@@ -251,6 +251,29 @@ test('HTTP streaming cancellation and release interrupt backpressure without del
   assert.deepEqual(await f.copiedFiles(), [])
 })
 
+test('a peer closing after the declared body finishes does not wait for another authorization', async t => {
+  const failures = [], f = await fixture(t, { diagnostics: { emit: event => failures.push(event) } })
+  const original = await f.image(), afterBody = gate()
+  let checks = 0, serving = false, received = 0
+  const lease = await f.bridge.stage(original.artifact, context({ async ensureCurrent() {
+    // A single-block GET checks admission, opens and reads the artifact, then authorizes writing it.
+    if (serving && ++checks > 7) await afterBody.promise
+  } }))
+  serving = true
+  try {
+    const response = await bounded(download(lease.nativeUrl, { onData(bytes, response) {
+      received += bytes.length
+      if (received === PNG.length) response.socket.destroy()
+    } }), 'complete body and peer close')
+    assert.equal(response.sha256, sha(PNG))
+    assert.equal(checks, 7)
+    assert.deepEqual(failures, [])
+  } finally {
+    afterBody.resolve()
+    await lease.release(); await original.release()
+  }
+})
+
 test('a peer disconnect records the active transfer step and byte count without disclosing the bridge URL', async t => {
   const failures = [], f = await fixture(t, { diagnostics: { emit: event => failures.push(event) } })
   const original = await f.video(16 * MiB), lease = await f.bridge.stage(original.artifact, context())

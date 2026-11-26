@@ -14,7 +14,7 @@ export interface CharacterTurnContextInput {
   visibleEvidenceRefs: string[]
 }
 
-export const FINISH_CHOICE_GUIDANCE = 'simFinishTurn 的参数顶层必须填写 choice。普通回话示例 {"choice":"chat","messages":["实际回复"]}。安静标读示例 {"choice":"silent","markRead":true}。'
+export const FINISH_CHOICE_GUIDANCE = 'simFinishTurn 的参数顶层必须填写 choice。普通回话示例 {"choice":"chat","messages":["实际回复"]}。messages 的每一项是正文字符串，没有正文就省略 messages。安静标读示例 {"choice":"silent","markRead":true}。'
 
 /** Keep per-request facts and the required closing arguments next to the tool call. */
 export function buildCharacterTurnContext(input: CharacterTurnContextInput): string {

@@ -387,6 +387,16 @@ test('conversation summary authorization waits can be cancelled or timed out bef
   }
 })
 
+test('summary requests that reach the provider and time out before headers retain the dispatch stage', async t => {
+  const baseUrl = await listen(t, () => {})
+  const { agentErrorDetails } = await importBilibiliHost('modules/runtime/infrastructure/agentDiagnostics.js')
+  await assert.rejects(provider({ baseUrl, timeoutMs: 50 })(input, context()), error => {
+    assert.equal(error.code, 'provider_timeout')
+    assert.deepEqual(agentErrorDetails(error), { dispatched: true, step: 'response_headers', limit: 50 })
+    return true
+  })
+})
+
 test('conversation summary transport waits can be cancelled even when injected transport ignores the signal', async () => {
   const controller = new AbortController()
   let transportSignal

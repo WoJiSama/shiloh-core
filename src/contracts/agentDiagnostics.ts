@@ -30,7 +30,7 @@ export interface AgentDiagnosticDetails {
   readonly queueMs?: number
   readonly stepMs?: number
   readonly blockingStep?: AgentJournalWriteStep
-  readonly slowestCompletedStep?: AgentJournalWriteStep
+  readonly slowestCompletedStep?: string
   readonly slowestCompletedStepMs?: number
   readonly dispatchTurnPending?: boolean
   readonly dispatchTurnMs?: number

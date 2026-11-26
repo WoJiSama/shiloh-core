@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type { AgentDiagnosticScope } from '../../../contracts/agentDiagnostics.js'
 import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import type { AgentMediaRelayProvider, AgentMediaRelayPrepareContext, AgentMediaShare, AgentMediaShareAccess, AgentPreparedMediaRelay } from '../../../contracts/agentMediaRelayWorkflow.js'
@@ -19,6 +20,7 @@ export interface AgentMediaOutboxContext extends AgentMediaResourceContext {
   release(): void
 }
 interface Prepared {
+  readonly status: AgentPreparedMediaRelay['status']
   readonly plan: Readonly<AgentMediaRelayPlan>
   readonly infoText: string
   readonly pageUrl: string
@@ -33,6 +35,7 @@ interface Entry {
   prepared?: Prepared
   readyAt?: number
   lastDelivery?: DeliveryReceipt
+  preparationScope?: ReturnType<typeof AsyncLocalStorage.snapshot>
   preparing: boolean
   sending: boolean
   cleanup?: Promise<void>
@@ -48,7 +51,7 @@ const sameSource = (record: AgentMediaOutboxRecord, value: Awaited<ReturnType<Ag
 /** Durable scheduling is independent of platform objects and of any model turn. */
 export function createAgentMediaOutbox(options: {
   readonly diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'> & Partial<Pick<AgentDiagnostics, 'emitFailure' | 'emitReceipt'>>
-  withDiagnosticScope?<T>(scope: AgentDiagnosticScope, operation: string, run: () => Promise<T>): Promise<T>
+  withDiagnosticScope?<T>(scope: AgentDiagnosticScope, operation: string, run: () => Promise<T>, inheritTrace?: boolean): Promise<T>
   readonly storage: AgentInboxRedis
   readonly actions: MessageActionPort
   readonly provider?: AgentMediaRelayProvider
@@ -77,7 +80,10 @@ export function createAgentMediaOutbox(options: {
       }
       catch (error) { diagnose({ stage: 'runtime', operation, outcome: 'failed', code: 'workflow_threw', error }); throw error }
     }
-    return options.withDiagnosticScope ? options.withDiagnosticScope({ kind: 'conversation', binding: record.binding, messageId: record.source.messageId }, operation, observed) : observed()
+    const scoped = () => options.withDiagnosticScope
+      ? options.withDiagnosticScope({ kind: 'conversation', binding: record.binding, messageId: record.source.messageId }, operation, observed, !!entry.preparationScope)
+      : observed()
+    return entry.preparationScope ? entry.preparationScope(scoped) : scoped()
   }
   const ledger = createAgentMediaOutboxLedger(options.storage, { now })
   const entries = new Map<string, Entry>(), tasks = new Set<Promise<void>>(), connections = new Set<string>()
@@ -151,11 +157,12 @@ export function createAgentMediaOutbox(options: {
         !safeText(input.pageUrl)) throw failure()
     const plan = validateAgentMediaRelayPlan(input.plan, { allowsText: safeText })
     const release = input.release
-    return Object.freeze({ plan, infoText: input.infoText, pageUrl: input.pageUrl, linkOnly: false,
+    return Object.freeze({ status: input.status, plan, infoText: input.infoText, pageUrl: input.pageUrl, linkOnly: false,
       release: () => release.call(input) })
   }
   async function prepare(record: AgentMediaOutboxRecord, entry: Entry) {
     return inScope(entry, 'media_prepare', async () => {
+      if (options.withDiagnosticScope) entry.preparationScope = AsyncLocalStorage.snapshot()
       let providerReported = false
       let step = 'authorization'
       try {
@@ -206,7 +213,7 @@ export function createAgentMediaOutbox(options: {
               : share.provider === 'douyin' ? '抖音作品（媒体资源准备失败）'
                 : share.provider === 'youtube' ? 'YouTube视频（媒体资源准备失败）'
                   : share.provider === 'pixiv' ? 'Pixiv作品（图片资源准备失败）' : '小红书笔记（媒体资源准备失败）'
-            entry.prepared = { pageUrl, infoText, linkOnly: true,
+            entry.prepared = { status: 'metadata-only', pageUrl, infoText, linkOnly: true,
               plan: { version: 1, items: [{ parts: [{ kind: 'text', text: infoText }] }] }, async release() {} }
             entry.readyAt = now()
             diagnose({ stage: 'runtime', operation: 'media_prepare', outcome: 'succeeded', code: 'prepare_fallback_ready',
@@ -219,7 +226,9 @@ export function createAgentMediaOutbox(options: {
         if (entry.readyAt === undefined) await cleanup(record.id, entry)
         if (!stopped && entry.readyAt !== undefined) void tick().catch(() => {})
       }
-      diagnose({ stage: 'runtime', operation: 'media_prepare', outcome: entry.readyAt === undefined ? 'cancelled' : 'succeeded', code: entry.readyAt === undefined ? 'prepare_not_ready' : 'prepare_ready' })
+      const code = entry.readyAt === undefined ? 'prepare_not_ready'
+        : entry.prepared?.status === 'metadata-only' ? 'prepare_metadata_only' : 'prepare_ready'
+      diagnose({ stage: 'runtime', operation: 'media_prepare', outcome: entry.readyAt === undefined ? 'cancelled' : 'succeeded', code })
     })
   }
   async function effect(entry: Entry, name: MediaOutboxEffect, send: () => Promise<DeliveryReceipt>): Promise<DeliveryReceipt> {

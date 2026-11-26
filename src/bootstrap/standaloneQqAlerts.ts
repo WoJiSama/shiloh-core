@@ -40,6 +40,7 @@ const operationNames = new Map(Object.entries({
   vision_provider_http: '请求视觉模型',
   'diagnostic.redacted': '运行日志脱敏',
   simulation_ingest: '处理群消息',
+  conversation_memory_source_revocation: '记录消息撤回并停止使用旧记忆来源',
   simulation_poke: '处理群戳一戳',
   simulation_sweep: '检查群聊调度',
   simulation_session_load: '读取群聊会话',
@@ -124,6 +125,7 @@ const operationNames = new Map(Object.entries({
   bilibili_provider_download: '下载 B 站媒体',
   bilibili_provider_prepare: '准备 B 站搬运',
   douyin_provider_prepare: '准备抖音搬运',
+  douyin_metadata_page: '读取抖音官方作品页',
   simFinishTurn: '结束群聊回合',
   simulation_finish_send: '发送回合收尾消息',
   simulation_finish_receipt: '保存回合收尾回执',
@@ -335,6 +337,9 @@ const failureReasons = new Map(Object.entries({
   model_threw: '调用模型时发生异常。',
   summary_timeout: '本阶段未能在摘要任务的时间预算内完成。',
   summary_failed: '会话摘要未能生成或保存。',
+  summary_privacy_epoch_changed: '摘要处理期间隐私版本已经更新，旧来源已停止使用。',
+  summary_privacy_epoch_read_failed: '未能读取摘要所用的场景隐私版本。',
+  summary_cleanup_fence_changed: '摘要处理期间清理版本已经更新，旧来源已停止使用。',
   summary_retry_failed: '摘要重试次数或下次执行时间未能保存。',
   summary_store_unavailable: '摘要存储暂时不可用。',
   summary_queue_unavailable: '摘要队列暂时不可用。',
@@ -342,6 +347,14 @@ const failureReasons = new Map(Object.entries({
   bilibili_metadata_rejected: 'B 站作品详情接口拒绝了请求。',
   bilibili_episode_unmatched: '在作品的主列表及分区中未能唯一确认分享的剧集。',
   metadata_unavailable: '媒体接口未返回可用的资源信息。',
+  douyin_page_failed: '读取或核验抖音官方作品页时失败。',
+  douyin_page_timeout: '读取抖音官方作品页超过本阶段时限。',
+  douyin_page_challenge: '抖音作品页要求浏览器验证。',
+  douyin_page_target_missing: '作品页没有找到与分享链接一致的作品数据。',
+  douyin_page_metadata_incomplete: '作品页有目标作品数据，缺少可用的媒体信息。',
+  douyin_browser_timeout: '抖音浏览器补查超过本阶段时限。',
+  douyin_browser_target_missing: '浏览器未提取到所分享作品的完整媒体信息，已保留作品页面。',
+  douyin_browser_failed: '抖音浏览器补查未能完成，已保留作品页面。',
   bilibili_dns_invalid: 'B 站域名未解析出符合要求的公网地址。',
   bilibili_url_invalid: 'B 站资源地址未通过校验。',
   bilibili_status_invalid: 'B 站响应缺少有效的 HTTP 状态。',
@@ -533,6 +546,8 @@ const stepNames = new Map(Object.entries({
   semantic_recall_fence: '批量检查语义原文是否已撤回', semantic_person_privacy: '批量核对语义原文隐私规则',
   semantic_binding_authorization: '复核语义原文所属会话授权', semantic_source_commit_fence: '复核原文仍存在且未被清理',
   semantic_keyword_ranking: '计算关键词排名', semantic_hybrid_ranking: '合并关键词和向量排名',
+  semantic_query_privacy: '核验查询文本出站的隐私规则', semantic_query_recheck: '复核查询向量请求授权',
+  semantic_rerank_recheck: '复核重排原文和查询授权',
   summary_binding_check: '核验摘要任务当前的会话绑定和执行权', summary_privacy_epoch: '核对摘要场景隐私版本',
   summary_source_records: '复核摘要原文的撤回和个人隐私规则', summary_scene_privacy: '核验场景是否允许生成综合摘要',
   summary_cleanup_fence: '核对摘要原文清理版本',
@@ -574,6 +589,13 @@ const stepNames = new Map(Object.entries({
   bilibili_output_check: '核验 B 站出站内容', bilibili_card_render: '渲染 B 站简图', bilibili_card_store: '存储 B 站简图',
   bilibili_plan: '校验 B 站合并转发计划', bilibili_prepare_confirmation: '确认 B 站搬运来源仍有效',
   bilibili_url: '核验 B 站地址', bilibili_authorization: '复核 B 站来源权限', bilibili_dns: '解析 B 站服务域名',
+  douyin_page_request: '请求抖音作品详情页', douyin_page_identity: '核验抖音作品与原链接一致',
+  douyin_page_parse: '读取同一作品的页面数据', douyin_http_dns: '解析抖音域名',
+  douyin_http_address_policy: '检查抖音域名解析结果', douyin_http_status: '接收抖音 HTTP 状态',
+  douyin_http_response: '核验抖音 HTTP 响应', douyin_browser_queue: '等待匿名浏览器',
+  douyin_browser_launch: '启动匿名浏览器', douyin_browser_navigation: '加载官方作品页面',
+  douyin_browser_extract: '从页面和详情响应中提取原作品信息',
+  douyin_browser_detail: '读取作品详情接口中的目标媒体字段',
   bridge_request_authorization: '核验桥接资源的访问权限',
   bridge_open_artifact: '打开桥接临时文件',
   bridge_read_artifact: '读取和校验桥接文件分块',
@@ -605,7 +627,7 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
   const rule = details?.rule && (ruleNames.get(details.rule) ?? details.rule)
   const location = details?.step && (stepNames.get(details.step) ?? details.step)
   const blocking = details?.blockingStep && stepNames.get(details.blockingStep)
-  const slowest = details?.slowestCompletedStep && stepNames.get(details.slowestCompletedStep)
+  const slowest = details?.slowestCompletedStep && (stepNames.get(details.slowestCompletedStep) ?? details.slowestCompletedStep)
   const journal = event.operation === 'operation_journal' || event.operation === 'traffic_counter'
   const journalReason = code === 'diagnostic_journal_timeout' && location
     ? `操作日志确认超过五秒，当时环节为${location}${blocking ? `，前一批正在${blocking}` : ''}。`
@@ -616,7 +638,7 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
     : undefined
   const limitUnit = details?.cause === 'bilibili_size_limit' || details?.cause === 'bilibili_length_mismatch' ? ' 字节' :
     code === 'model_response_truncated' || details?.cause === 'model_response_truncated' ? ' token' :
-    code?.includes('timeout') || code === 'semantic_provider_budget_elapsed' || details?.cause === 'semantic_recall_budget_elapsed' ? ' ms' : ''
+    code?.includes('timeout') || code === 'semantic_provider_budget_elapsed' || details?.cause === 'semantic_recall_budget_elapsed' || details?.cause === 'douyin_browser_timeout' ? ' ms' : ''
   const evidence = [!journalReason && location && `环节 ${location}`, details?.field &&
     (stepNames.get(details.field) ?? `字段 ${details.field}`), rule,
     details?.expectedType && details.actualType && `要求 ${diagnosticTypeNames[details.expectedType]}，收到 ${diagnosticTypeNames[details.actualType]}`,
