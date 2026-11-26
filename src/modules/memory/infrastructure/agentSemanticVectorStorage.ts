@@ -30,7 +30,14 @@ export function unpackSemanticVector(value: string): StoredSemanticVector | unde
   const bytes = Buffer.from(encoded, 'base64')
   const dimensions = bytes.length / doubleBytes
   if (!Number.isInteger(dimensions) || dimensions < 2 || dimensions > maximumDimensions || bytes.toString('base64') !== encoded) return undefined
-  const vector = Array.from({ length: dimensions }, (_, index) => bytes.readDoubleLE(index * doubleBytes))
-  if (!vector.every(Number.isFinite) || !vector.some(value => value !== 0)) return undefined
+  const vector: number[] = []
+  let nonzero = false
+  for (let offset = 0; offset < bytes.length; offset += doubleBytes) {
+    const component = bytes.readDoubleLE(offset)
+    if (!Number.isFinite(component)) return undefined
+    nonzero ||= component !== 0
+    vector.push(component)
+  }
+  if (!nonzero) return undefined
   return { providerId, sourceDigest, vector }
 }

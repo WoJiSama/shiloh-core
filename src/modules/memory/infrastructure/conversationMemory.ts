@@ -92,7 +92,7 @@ export function createConversationMemory(ports: {
     binding: structuredClone(binding), token: agentBindingToken(binding), nextSeq: 1,
     records: [], episodes: [], dueAt: 0, dueInvalidatedAt: 0, attempts: 0, retryAt: 0,
   })
-  const sameScheduleGeneration = (state: ConversationMemoryState, invalidatedAt: number, cleanupToken: string | undefined) =>
+  const sameScheduleGeneration = (state: Pick<ConversationMemoryState, 'dueInvalidatedAt' | 'dueCleanupToken'>, invalidatedAt: number, cleanupToken: string | undefined) =>
     (state.dueInvalidatedAt ?? 0) === invalidatedAt && state.dueCleanupToken === cleanupToken
   function scheduleGeneration(state: ConversationMemoryState, invalidatedAt: number, cleanupToken: string | undefined): ConversationMemoryState {
     const { dueCleanupToken: _previous, ...rest } = state
@@ -410,8 +410,7 @@ export function createConversationMemory(ports: {
     if (!summaryEnabled() || !ports.isRunning()) return Promise.resolve()
     if (sweep) return sweep
     sweep = (async () => {
-      for (const stored of await store.list()) {
-        const state = await store.filterState(stored)
+      for (const state of await store.observeSchedule()) {
         if (!summaryEnabled() || !ports.isRunning()) return
         const selected = ports.resolve(state.scope.target)
         if (!selected || selected.binding.agentId !== state.scope.agentId || state.scope.target.kind !== 'group' || !ports.available(state.scope.target)) continue

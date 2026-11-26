@@ -48,6 +48,32 @@ async function rejects(operation) {
   await assert.rejects(operation, error => error.message === FAILURE && error.cause === undefined)
 }
 
+test('group scheduling discovers jobs added to a warm partition and drops completed jobs', redisTest, async t => {
+  const f = await fixture(t, 'group-schedule-snapshot'), input = state()
+  await f.store.update(input.id, () => input)
+  const reads = []
+  const store = createGroupMemoryStore({ ...f.storage, async eval(script, options) {
+    const result = await f.storage.eval(script, options)
+    if (script.includes('sha1hex') && Array.isArray(result)) reads.push(result.slice(1).filter(value => typeof value === 'string').length)
+    return result
+  } })
+  assert.deepEqual(await store.observeSchedule(), [])
+  assert.deepEqual(await store.observeSchedule(), [])
+  await f.store.update(input.id, current => {
+    current.agents[0].jobs.push(job())
+    return current
+  })
+  const [scheduled] = await store.observeSchedule()
+  assert.deepEqual(scheduled.agents[0].jobs, [job()])
+  assert.deepEqual(await store.observeSchedule(), [scheduled])
+  await f.store.update(input.id, current => {
+    current.agents[0].jobs = []
+    return current
+  })
+  assert.deepEqual(await store.observeSchedule(), [])
+  assert.deepEqual(reads, [1, 0, 1, 0, 1])
+})
+
 function staging(initial = []) {
   const stored = new Map(initial), original = new Map(), staged = new Map(), writes = []
   const storage = {

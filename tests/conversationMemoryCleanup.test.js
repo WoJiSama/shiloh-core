@@ -108,11 +108,14 @@ test('after physical failure the durable fence filters raw leftovers, captured s
     if (failPhysical && args.keys.some(key => key.startsWith(prefix + ':state:'))) throw Error('physical reads unavailable')
     return storage.eval(script, args)
   } })), original = state(scope(), [record()], { summary: summary(), episodes: [episode()] })
-  await f.store.update(original.id, () => original); failPhysical = true
+  await f.store.update(original.id, () => original)
+  assert.equal((await f.store.observeSchedule()).length, 1)
+  failPhysical = true
   assert.deepEqual(await f.store.purgeSubject(selector(), guard()), { usage: 'blocked', cleanup: 'unknown', removedRecords: 0, removedSummaries: 0, removedEpisodes: 0, removedPartitions: 0 })
   assert.deepEqual(JSON.parse(await f.raw(stateKey(original.id))), original); failPhysical = false
   assert.equal(await createConversationMemoryStore(f.storage).load(original.id), undefined)
   assert.deepEqual(await f.store.list(), [])
+  assert.deepEqual(await f.store.observeSchedule(), [])
   const projected = await f.store.filterState(original)
   assert.deepEqual(projected.records, []); assert.deepEqual(projected.episodes, []); assert.equal(projected.summary, undefined)
   const retried = await f.store.purgeSubject(selector(), guard())

@@ -4,6 +4,7 @@ import type { AgentConversationMemoryCleanupGuard, AgentConversationMemoryCleanu
 import { agentConversationKey, agentPersonaScopeId, conversationAddressKey, decodeAgentConversationKey, isConversationAddress, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
 import { agentErrorDetails, annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { personMemoryAddress } from './personMemoryContext.js'
+import { createMemoryScheduleSnapshot } from './memoryScheduleSnapshot.js'
 import { conversationCleanupCurrent, conversationCleanupMatchesScope, conversationCleanupSelector, conversationCleanupToken, ensureConversationCleanup, filterConversationCleanupRows, filterConversationMemoryState, parseConversationCleanup, CONVERSATION_CLEANUP_MAX_BYTES, CONVERSATION_CLEANUP_MAX_SELECTORS, type ConversationCleanupFences } from './conversationMemoryCleanup.js'
 
 interface ConversationMemoryRedis {
@@ -178,6 +179,22 @@ export function createConversationMemoryStore(redis: ConversationMemoryRedis) {
     const projected = filterConversationMemoryState(state, cleanup)
     return content(state) && !content(projected) ? undefined : projected
   }
+  const readSchedule = createMemoryScheduleSnapshot(redis, {
+    catalogKey: CATALOG_KEY, cleanupKey: CLEANUP_KEY, stateKey, parseCatalog, parseCleanup: parseConversationCleanup,
+    project(value, id, cleanup) {
+      const state = visible(parseState(value, id), cleanup)
+      if (!state || state.scope.target.kind !== 'group') return
+      const { binding, scope, token, summary, dueAt, dueInvalidatedAt, dueCleanupToken, attempts, retryAt } = state
+      return {
+        id, binding, scope, token, dueAt, attempts, retryAt,
+        ...(dueInvalidatedAt === undefined ? {} : { dueInvalidatedAt }),
+        ...(dueCleanupToken === undefined ? {} : { dueCleanupToken }),
+        records: state.records.map(({ seq, at }) => ({ seq, at })),
+        summary: summary && { coveredSeq: summary.coveredSeq, updatedAt: summary.updatedAt,
+          invalidatedAt: summary.invalidatedAt, cleanupToken: summary.cleanupToken },
+      }
+    },
+  })
   async function rawList() {
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const catalogRaw = raw(await redis.get(CATALOG_KEY))
@@ -206,6 +223,15 @@ export function createConversationMemoryStore(redis: ConversationMemoryRedis) {
   }
 
   return {
+    async observeSchedule() {
+      try {
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+          const states = await readSchedule()
+          if (states) return states
+        }
+      } catch (cause) { throw annotateAgentError(new Error(FAILURE), agentErrorDetails(cause) ?? {}) }
+      return fail()
+    },
     async list(): Promise<ConversationMemoryState[]> {
       try {
         const { states, cleanup } = await rawList()

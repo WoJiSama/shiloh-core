@@ -80,7 +80,7 @@ test('a legacy indexed corpus migrates once and later intake neither reads nor r
   const store = createAgentSemanticMemoryStore({ ...f.storage, captureStorage: {
     get: f.storage.get,
     async eval(script, options) {
-      assert.ok(!script.includes('HGETALL'), 'intake may only read source metadata')
+      assert.ok(!/HGETALL|HKEYS|HMGET/u.test(script), 'intake may only read source metadata')
       if (script.includes("redis.call('SET'")) intakeWrites.push(options.arguments.reduce((sum, arg) => sum + Buffer.byteLength(arg), 0))
       else intakeReads++
       return f.storage.eval(script, options)
@@ -109,7 +109,7 @@ test('fresh source verification skips vector payloads and rejects changed or rem
   assert.equal(await f.store.update(input.id, () => input), true)
   let vectorReads = 0
   const store = createAgentSemanticMemoryStore({ ...f.storage, async eval(script, options) {
-    if (script.includes('HGETALL')) vectorReads++
+    if (script.includes('HMGET')) vectorReads++
     return f.storage.eval(script, options)
   } })
   const signal = new AbortController().signal
@@ -126,6 +126,57 @@ test('fresh source verification skips vector payloads and rejects changed or rem
     subjectId: input.rows[1].authorId, through: input.rows[1].at }, guard)
   assert.equal(await store.hasSources(input.id, [input.rows[1]], signal), false)
   assert.equal(vectorReads, 1)
+})
+
+test('a confirmed vector write advances a warm observation without rereading other vectors', redisTest, async t => {
+  const f = await fixture(t, 'semantic-incremental-vector')
+  const input = state(scope(), Array.from({ length: 65 }, (_, index) => row(index + 1, { vector: [1, 0], providerId })))
+  await f.store.update(input.id, () => input)
+  const pages = []
+  const store = createAgentSemanticMemoryStore({ ...f.storage, async eval(script, args) {
+    if (script.includes('HMGET')) pages.push(args.arguments.length - 1)
+    return f.storage.eval(script, args)
+  } })
+  assert.deepEqual((await store.observe(input.id)).state, input)
+  assert.deepEqual(pages, [32, 32, 1])
+  pages.length = 0
+  const replacement = [0, 1]
+  await store.updateSources(input.id, current => ({
+    ...current, rows: current.rows.slice(1).map(item => item.messageId === row(33).messageId ? { ...item, vector: replacement, providerId } : item),
+  }), () => true)
+  const expected = input.rows.slice(1).map(item => item.messageId === row(33).messageId ? { ...item, vector: replacement } : item)
+  assert.deepEqual((await store.observe(input.id)).state.rows, expected)
+  assert.deepEqual(pages, [])
+  assert.equal(await store.hasSources(input.id, [input.rows[0]], new AbortController().signal), false)
+  const restarted = createAgentSemanticMemoryStore(f.storage)
+  assert.deepEqual((await restarted.observe(input.id)).state.rows, expected)
+  await f.store.updateSources(input.id, current => ({
+    ...current, rows: current.rows.map(item => item.messageId === row(33).messageId ? { ...item, vector: [1, 1], providerId } : item),
+  }), () => true)
+  assert.deepEqual((await store.observe(input.id)).state.rows.find(item => item.messageId === row(33).messageId).vector, [1, 1])
+  assert.deepEqual(pages, [32, 32])
+})
+
+test('a revision change between pages cannot mix vector generations', redisTest, async t => {
+  const f = await fixture(t, 'semantic-paged-vector-change')
+  const input = state(scope(), Array.from({ length: 33 }, (_, index) => row(index + 1, { vector: [1, 0], providerId })))
+  await f.store.update(input.id, () => input)
+  let updated = false, pages = 0
+  const store = createAgentSemanticMemoryStore({ ...f.storage, async eval(script, args) {
+    const result = await f.storage.eval(script, args)
+    if (script.includes('HMGET')) {
+      pages++
+      if (!updated) {
+        updated = true
+        await f.store.updateSources(input.id, current => ({ ...current, rows: current.rows.map(item => ({ ...item, vector: [0, 1], providerId })) }), () => true)
+      }
+    }
+    return result
+  } })
+  const observed = await store.observe(input.id)
+  assert.equal(pages, 4)
+  assert.equal(observed.state.rows.length, 33)
+  assert.ok(observed.state.rows.every(item => item.vector[0] === 0 && item.vector[1] === 1))
 })
 
 test('standalone semantic snapshot traffic cannot hold up the inbox socket or dispatch a revoked queued write', redisTest, async t => {

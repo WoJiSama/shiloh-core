@@ -182,7 +182,8 @@ export function createGroupMemory(ports: {
       ...(file ? { file: structuredClone(file) } : {}), tags: (proposal.tags ?? []).slice(0, 8).map(tag => tag.slice(0, 24)),
       ...(job.cleanupToken ? { cleanupToken: job.cleanupToken } : {}) }
   }
-  async function runJob(state: GroupMemoryState, agent: GroupMemoryAgentState, job: GroupMemoryJob, retryAt: number, cancel: AbortController) {
+  async function runJob(stateId: string, agent: Pick<GroupMemoryAgentState, 'binding' | 'token'>,
+    job: GroupMemoryJob, retryAt: number, cancel: AbortController) {
     const binding = agent.binding, startedAt = now()
     const teaching = job.mode === 'teaching'
     const operation = teaching ? 'group_teaching_extract' : 'group_memory_extract'
@@ -259,7 +260,7 @@ export function createGroupMemory(ports: {
       }
       const commitCurrent = () => isCurrent() && (job.mode !== 'teaching' || Date.now() - roleCheckedAt <= 1500)
       step = 'save'
-      const committed = await abortable(store.update(state.id, saved => {
+      const committed = await abortable(store.update(stateId, saved => {
         preparedSave = false
         const live = saved?.agents.find(item => item.agentId === binding.agentId)
         if (!saved || !live || live.token !== agent.token || !live.jobs.some(item => item.id === job.id && item.cleanupToken === job.cleanupToken)) return saved
@@ -319,7 +320,7 @@ export function createGroupMemory(ports: {
     const wait = <T>(value: Promise<T>) => untilAborted(value, signal)
     let step = 'list'
     sweep = (async () => {
-      for (const state of await wait(store.list())) for (const agent of state.agents) {
+      for (const state of await wait(store.observeSchedule())) for (const agent of state.agents) {
         if (!sweepCurrent(agent.binding) || !ports.available(state.target)) continue
         for (const job of agent.jobs) {
           const key = `${state.id}:${job.id}`
@@ -360,7 +361,7 @@ export function createGroupMemory(ports: {
           if (!committed || claimedRetryAt === undefined || !sweepCurrent(agent.binding)) continue
           const retryAt = claimedRetryAt
           const cancel = new AbortController()
-          const run = () => runJob(state, agent, job, retryAt, cancel).catch(error => {
+          const run = () => runJob(state.id, agent, job, retryAt, cancel).catch(error => {
             reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'group_memory_extract', code: 'group_memory_job_failed', error },
               () => ports.logger.warn('[Agent] 群学习任务暂时不可用'))
           })
