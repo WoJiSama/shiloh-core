@@ -1029,7 +1029,7 @@ node scripts/start-agent.mjs --config /path/to/agent-host.yaml \
 
 本人也可以在自主工作回合开始或结束公开兴趣跟进。支持 GitHub 仓库的 Releases 和 Steam 游戏公告，首次成功检查以当前条目建立基线。之后按本人选择的间隔检查，收到新条目时可选一条整理摘要或保持安静。建立跟进时可指定一个当时允许主动联系的会话，分享仅发往该会话并沿用原投递回执。「行动 → 兴趣跟进」显示状态、下次检查以及最近一次摘要和原公告。配置 `personalFollow.enabled: false` 并重启可停止本人兴趣跟进。
 
-允许本人自主使用 QQ 空间时，在宿主配置中声明其专用 QQ 连接。该连接需要 `qqActions: { driver: napcat, qzone: true }`，Agent 须有此连接下的有效绑定。
+本人通过 `personalSocial` 获得 QQ 自主动作权限。Agent 须有该连接下的有效绑定。空间动作需要连接配置 `qqActions: { driver: napcat, qzone: true }`。资料点赞需要 `tools.interactions.enabled`，发送收藏表情包需要 `tools.localEmoji.enabled`。
 
 ```yaml
 personalSocial:
@@ -1037,9 +1037,12 @@ personalSocial:
     connectionId: qq-main
     readQzone: true
     publishQzone: true
+    interactQzone: true
+    likeProfile: true
+    sendEmoji: true
 ```
 
-她可以在无人发消息时选择看一位已绑定好友的说说，或写一条自己的文字说说并决定是否发表。两个权限均需显式开启。「行动」显示读取或发布的回执。QQ 空间根据平台规则记录访问，允许好友按平台规则设置可见范围。群里有适合一起玩的机会时，她也可以在原群发出邀请，由对方通过 QQ 加好友。
+她可以在无人发消息时读已绑定好友的说说，或写自己的文字说说并决定是否发表。启用 `interactQzone` 后，她也可以从近期的群话题打开其中一位群友的空间，按兴趣决定点赞、短评或继续旁听。每次浏览最多互动一条。资料点赞每位对象每天最多一次。表情从她自己的收藏选择，发送到当前选中的群或已绑定好友。点进控制台的「行动」可以查看平台回执。QQ 空间根据平台规则记录访问。群里有适合一起玩的机会时，她可以在原群发出邀请，由对方通过 QQ 加好友。
 
 兴趣检查和一次性固定群提醒共用 Core 调度入口。群提醒沿用原承诺账本。首次登记保留当前请求来源，到期实际派发前复核会话和来源。回执未知时可以通过平台历史核实。 [Core 调度与动作执行 V1](core-scheduling-and-actions-v1.md)
 

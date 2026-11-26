@@ -654,17 +654,22 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   if (!Array.isArray(socialRows) || socialRows.length > connections.length) throw new Error('personalSocial 必须是按 QQ 连接声明的本人授权列表')
   const socialOwners = new Set<string>(), socialConnections = new Set<string>()
   const personalSocial = Object.freeze(socialRows.map((value): AgentPersonalSocialGrant => {
-    const row = object(value), { agentId, connectionId, readQzone, publishQzone } = row
-    if (Object.keys(row).some(key => !['agentId', 'connectionId', 'readQzone', 'publishQzone'].includes(key)) ||
-        typeof agentId !== 'string' || typeof connectionId !== 'string' || (readQzone !== undefined && typeof readQzone !== 'boolean') ||
-        (publishQzone !== undefined && typeof publishQzone !== 'boolean') || socialOwners.has(agentId) || socialConnections.has(connectionId) ||
-        !connections.some(endpoint => endpoint.connection.id === connectionId && endpoint.qqActions?.qzone === true) ||
+    const row = object(value), { agentId, connectionId, readQzone, publishQzone, interactQzone, likeProfile, sendEmoji } = row
+    const grants = ['readQzone', 'publishQzone', 'interactQzone', 'likeProfile', 'sendEmoji']
+    const connection = connections.find(endpoint => endpoint.connection.id === connectionId)
+    if (Object.keys(row).some(key => key !== 'agentId' && key !== 'connectionId' && !grants.includes(key)) ||
+        grants.some(key => row[key] !== undefined && typeof row[key] !== 'boolean') ||
+        typeof agentId !== 'string' || typeof connectionId !== 'string' || socialOwners.has(agentId) || socialConnections.has(connectionId) ||
+        !connection || (readQzone || publishQzone || interactQzone) && connection.qqActions?.qzone !== true ||
+        likeProfile === true && tools.interactions?.enabled !== true || sendEmoji === true && !tools.localEmoji.enabled ||
         !bindings.listBindings().some(binding => binding.agentId === agentId && binding.connectionId === connectionId)) {
-      throw new Error('personalSocial 需要唯一且已绑定的本人和 QQ 空间连接')
+      throw new Error('personalSocial 需要唯一的本人和已绑定的 QQ 连接，授权的动作须配置对应能力')
     }
     socialOwners.add(agentId)
     socialConnections.add(connectionId)
-    return Object.freeze({ agentId, connectionId, readQzone: readQzone === true, publishQzone: publishQzone === true })
+    return Object.freeze({ agentId, connectionId, readQzone: readQzone === true, publishQzone: publishQzone === true,
+      ...(interactQzone === undefined ? {} : { interactQzone: interactQzone === true }),
+      ...(likeProfile === undefined ? {} : { likeProfile: likeProfile === true }), ...(sendEmoji === undefined ? {} : { sendEmoji: sendEmoji === true }) })
   }))
   if (consoleConfig.qqLogin.some(row => !connections.some(({ connection }) =>
     connection.id === row.connectionId && connection.account.id === row.accountId))) {

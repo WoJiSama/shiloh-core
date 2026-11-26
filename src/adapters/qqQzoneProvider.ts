@@ -86,8 +86,10 @@ function operation(input: unknown): AgentQzoneOperation {
 function action(input: unknown, expectedAccount: PlatformAccountRef, connectionId: string): AgentQzoneAction {
   const row = data(input, ['version', 'binding', 'operation']), selected = binding(row.binding), op = operation(row.operation)
   if (row.version !== 1 || selected.target.account.id !== expectedAccount.id || selected.connectionId !== connectionId ||
-      op.kind === 'read' && (selected.target.kind !== 'private' || selected.target.id !== op.userId || op.userId === expectedAccount.id) ||
-      ['visit', 'like', 'comment'].includes(op.kind) && selected.target.kind !== 'group') throw invalid()
+      'userId' in op && op.userId === expectedAccount.id ||
+      op.kind === 'read' && (selected.target.kind !== 'private' || selected.target.id !== op.userId) ||
+      op.kind === 'visit' && selected.target.kind !== 'group' ||
+      (op.kind === 'like' || op.kind === 'comment') && selected.target.kind === 'private' && selected.target.id !== op.userId) throw invalid()
   return Object.freeze({ version: 1, binding: selected, operation: op })
 }
 function nativeId(input: unknown): string | undefined {
@@ -271,12 +273,12 @@ export function createQqQzoneProvider(options: QqQzoneProviderOptions): AgentQzo
         }
         const secret = credentials(await native('get_credentials', { domain: 'qzone.qq.com' }), selected)
         await ensureCurrent()
-        const quiet = op.kind === 'read', readsFeed = quiet || op.kind === 'visit'
-        const url = new URL(endpoints[quiet ? 'visit' : op.kind], origin), form = new URLSearchParams()
+        const readsFeed = op.kind === 'read' || op.kind === 'visit'
+        const url = new URL(endpoints[op.kind === 'read' ? 'visit' : op.kind], origin), form = new URLSearchParams()
         url.searchParams.set('g_tk', secret.token)
         if (readsFeed) {
-          for (const [key, value] of Object.entries({ uin: expectedAccount.id, hostUin: op.userId, ftype: '0', sort: '0', pos: '0', num: '8', replynum: quiet ? '0' : '20',
-            code_version: '1', format: 'json', need_private_comment: quiet ? '0' : '1' })) url.searchParams.set(key, value)
+          for (const [key, value] of Object.entries({ uin: expectedAccount.id, hostUin: op.userId, ftype: '0', sort: '0', pos: '0', num: '8', replynum: '0',
+            code_version: '1', format: 'json', need_private_comment: '0' })) url.searchParams.set(key, value)
         } else if (op.kind === 'like') {
           for (const [key, value] of Object.entries({ qzreferrer: `${origin}/${expectedAccount.id}/main`, opuin: expectedAccount.id, unikey: op.postId,
             curkey: `${origin}/${op.userId}/mood/${op.postId}`, appid: '311', typename: '0', abstime: '0', fid: op.postId, active: '0', fupdatever: '0', format: 'json' })) form.set(key, value)

@@ -85,6 +85,13 @@ test('autonomous Qzone is opt-in and owned by one bound agent on a declared NapC
   assert.deepEqual(readStandaloneAgentConfig(f.file, env).personalSocial, [])
   await writeFile(f.file, JSON.stringify(host({ connections, personalSocial: [grant] })))
   assert.deepEqual(readStandaloneAgentConfig(f.file, env).personalSocial, [{ ...grant, publishQzone: false }])
+  const actions = { ...grant, interactQzone: true, likeProfile: true, sendEmoji: true }
+  const tools = { interactions: { enabled: true }, localEmoji: { enabled: true,
+    config: { visionTagOnAdd: false, contentFiltration: false, useEmbedding: false } } }
+  await writeFile(f.file, JSON.stringify(host({ connections, tools, personalSocial: [actions] })))
+  assert.deepEqual(readStandaloneAgentConfig(f.file, env).personalSocial, [{ ...actions, publishQzone: false }])
+  await writeFile(f.file, JSON.stringify(host({ connections, personalSocial: [actions] })))
+  assert.throws(() => readStandaloneAgentConfig(f.file, env), /personalSocial/)
   for (const bad of [null, [{ ...grant, agentId: 'outsider' }], [{ ...grant, connectionId: 'elsewhere' }], [{ ...grant, publishQzone: 'true' }]]) {
     await writeFile(f.file, JSON.stringify(host({ connections, personalSocial: bad })))
     assert.throws(() => readStandaloneAgentConfig(f.file, env), /personalSocial/)

@@ -3,6 +3,7 @@ import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createAgentBindingDirectory, createAgentRuntime } from '../dist/backend/core/index.js'
 import { createAgentQzoneLedger } from '../dist/backend/modules/runtime/infrastructure/agentQzoneLedger.js'
+import { simulationSessionKey } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
 
 const account = { platform: 'qq', namespace: 'global', id: '985300001' }
@@ -105,4 +106,127 @@ test('background QQ social work stays within its own account and gives private f
   at += 3 * 3600_000
   await waitFor(async () => (await readState()).receipts.some(item => item.kind === 'qzone-read' && item.state === 'failed'), 'lost friendship')
   assert.equal(calls.length, 2)
+})
+
+test('idle turns choose group space interaction, profile likes and a sticker from their own grants', {
+  skip: !redisAvailable, timeout: 30_000,
+}, async t => {
+  const { storage, isCurrent } = await createAgentRedisFixture(t, 'personal-social-effects')
+  const room = { kind: 'group', account, id: '985300100' }
+  const member = { ...account, id: peer.id }
+  const directory = createAgentBindingDirectory({ version: 1, agents: [{ id: seed.id, personaId: 'default' }],
+    connections: [{ id: 'qq-main', platform: account.platform, namespace: account.namespace, accountId: account.id }],
+    bindings: [room, peer].map(({ kind, id }) => ({ connectionId: 'qq-main', kind, conversationId: id, agentId: seed.id })),
+  }, 'fixture')
+  let at = Date.now(), ready = false, emit, choice = 'qzone-read', spaceAction = 'like', allowFriend = true, serial = 0
+  t.mock.method(Date, 'now', () => at)
+  const spaces = [], interactions = [], images = []
+  const fakePng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jFp0AAAAASUVORK5CYII='
+  const host = createAgentRuntime({
+    storage, isExecutionCurrent: isCurrent, now: () => at, privateChatEnabled: true, unifiedGroupChat: true,
+    logger: { info() {}, warn() {}, error() {} }, personalSeeds: [seed], interactions: { enabled: true },
+    personalSocial: [{ agentId: seed.id, connectionId: 'qq-main', readQzone: true, publishQzone: true, interactQzone: true, likeProfile: true, sendEmoji: true }],
+    managementBindings: { list: () => directory.listBindings(), resolve: directory.resolve },
+    resolvePersona(target) { return { binding: directory.resolve(target), persona: { name: seed.name }, systemContent: '' } },
+    getSection: () => ({ qzone: { enabled: false }, wakeGate: { enabled: false }, wake: { probability: 0, proactiveProbability: 0 },
+      reflection: { enabled: false }, rhythm: { enabled: false }, personProfile: { enabled: false }, mood: { enabled: false } }),
+    getExecutionConfig: () => ({}),
+    toolRegistry: { builtIn: [{ name: 'sendLocalEmojiTool', description: '从本人表情库选一张图片。', parameters: { type: 'object', required: [], properties: {} },
+      async execute(input, context) {
+        assert.deepEqual(context.actor, { kind: 'autonomous' })
+        assert.equal(context.request, undefined)
+        assert.deepEqual(context.binding.target, room)
+        assert.match(input.query, /拼图/u)
+        await context.ensureCurrent()
+        const result = await context.sendImage({ mime: 'image/png', base64: fakePng, presentation: 'sticker' })
+        assert.equal(result.state, 'sent')
+        const duplicate = await context.sendImage({ mime: 'image/png', base64: fakePng, presentation: 'sticker' })
+        assert.equal(duplicate.state, 'failed')
+        return { status: 'succeeded', content: '已发表情' }
+      },
+    }] },
+    adapters: [{
+      id: 'qq-main', account, botUserId: account.id, botName: seed.name, isReady: () => ready,
+      start(send) { emit = send; ready = true }, stop() { ready = false },
+      async verifyPrivateFriend(target, guard) { assert.deepEqual(target, peer); return allowFriend && guard.isCurrent() },
+      async readConversationMember(target, user, guard) {
+        assert.deepEqual(target, room); assert.deepEqual(user, member)
+        return guard.isCurrent() ? { target, observedAt: at, member: { user, displayName: '小林', role: 'member' } } : undefined
+      },
+      actions: {
+        async send(action, guard) { await guard.ensureCurrent(); images.push(action); return { state: 'sent', messageId: '985399000' } },
+        async interact(action, guard) { await guard.ensureCurrent(); interactions.push(action); return { state: 'confirmed' } },
+      },
+      qzone: { async execute(action, guard) {
+        await guard.ensureCurrent()
+        spaces.push(action)
+        const op = action.operation
+        return op.kind === 'read' || op.kind === 'visit' ? { state: 'confirmed', feeds: [
+          { userId: member.id, postId: action.binding.target.kind === 'group' ? 'group-post' : 'friend-post', text: friendText, createdAt: at - 1000 },
+        ] } : { state: 'confirmed' }
+      } },
+    }],
+    async YTapi(request) {
+      const data = JSON.parse(request.messages[1].content)
+      if (data.posts) {
+        assert.deepEqual(data.posts.map(item => item.text), [friendText])
+        assert.ok(!JSON.stringify(data).includes('group-post'))
+        return response({ action: spaceAction, index: 0, ...(spaceAction === 'comment' ? { text: '夹在书里很有意思。' } : {}) })
+      }
+      assert.ok(!JSON.stringify(data).includes(friendText))
+      if (data.messages) {
+        return response({ action: choice, sourceMessageId: data.messages.at(-1).messageId, query: '拼图梗' })
+      }
+      if (!data.goals) return response({ action: 'keep' })
+      if (choice === 'friend-space') return response({ action: 'qzone-read', key: data.targets.find(item => item.kind === 'private').key })
+      return response({ action: 'look-group', key: data.targets.find(item => item.kind === 'group').key })
+    },
+  })
+  t.after(() => host.stop())
+  await host.start()
+  const state = async () => JSON.parse(await storage.get(personalKey))
+  const groupStateKey = simulationSessionKey(await host.runtime.conversationKey(room))
+  const advanceToNextWork = async () => { at = (await state()).nextWorkAt + 1 }
+  const seedGroup = async () => {
+    const text = '今晚的拼图缺最后一块。', messageId = String(985310000 + ++serial)
+    await emit({ kind: 'message', message: { version: 1, conversation: room, sender: member, senderName: '小林',
+      messageId, occurredAt: at, text, parts: [{ kind: 'text', text }], mentions: [], directedToAccount: false } })
+    await waitFor(async () => JSON.parse(await storage.get(groupStateKey))?.recent.some(item => item.messageId === messageId), 'group ingress')
+  }
+  const receipt = (kind, outcome) => waitFor(async () => (await state()).receipts.filter(item => item.kind === kind).at(-1)?.state === outcome, kind)
+  await seedGroup()
+  await advanceToNextWork()
+  await receipt('qzone-like', 'confirmed')
+  assert.deepEqual(spaces.map(row => row.operation.kind), ['visit', 'like'])
+  assert.equal(spaces[1].operation.postId, 'group-post')
+  assert.equal(spaces[1].operation.userId, member.id)
+
+  choice = 'profile-like'
+  await advanceToNextWork()
+  await receipt('profile-like', 'confirmed')
+  assert.deepEqual(interactions.map(row => row.interaction), [{ kind: 'profile-like', user: member, count: 1 }])
+  const tries = (await state()).receipts.length
+  await advanceToNextWork()
+  await waitFor(async () => (await state()).receipts.length > tries && (await state()).receipts.at(-1).state === 'failed', 'profile limit')
+  assert.equal(interactions.length, 1)
+
+  choice = 'emoji'
+  await seedGroup()
+  await advanceToNextWork()
+  await receipt('emoji', 'confirmed')
+  assert.equal(images.length, 1); assert.deepEqual(images[0].target, room)
+  assert.equal(images[0].parts[0].presentation, 'sticker')
+
+  choice = 'friend-space'; spaceAction = 'comment'
+  await advanceToNextWork()
+  await receipt('qzone-comment', 'confirmed')
+  assert.deepEqual(spaces.slice(-2).map(row => row.operation.kind), ['read', 'comment'])
+  assert.deepEqual(spaces.at(-1).binding.target, peer)
+  assert.equal(spaces.at(-1).operation.postId, 'friend-post')
+  assert.ok(!(await storage.get(personalKey)).includes(friendText))
+  assert.ok(!(await storage.get(personalKey)).includes('夹在书里很有意思'))
+  allowFriend = false
+  at += 4 * 3_600_000
+  await receipt('qzone-read', 'failed')
+  assert.equal(spaces.length, 4)
 })

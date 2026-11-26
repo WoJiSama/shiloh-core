@@ -48,8 +48,8 @@ function stored(input: unknown): StoredClaim {
   const hasUser = ['read', 'visit', 'like', 'comment'].includes(kind), hasPost = ['delete', 'like', 'comment'].includes(kind)
   if (Object.keys(row).length !== 8 + Number(hasUser) + Number(hasPost) ||
       Object.hasOwn(row, 'userId') !== hasUser || Object.hasOwn(row, 'postId') !== hasPost ||
-      (kind === 'read' ? binding.target.kind !== 'private' || binding.target.id !== row.userId
-        : hasUser && binding.target.kind !== 'group')) throw invalid()
+      (kind === 'read' && binding.target.kind !== 'private' || kind === 'visit' && binding.target.kind !== 'group' ||
+        hasUser && binding.target.kind === 'private' && binding.target.id !== row.userId)) throw invalid()
   return Object.freeze({ version: 1, state: row.state as StoredClaim['state'], token: qzoneToken(row.token, 128), binding,
     identity: qzoneToken(row.identity, 4096), operationHash: row.operationHash, kind, createdAt: row.createdAt,
     ...(hasUser ? { userId: qzoneToken(row.userId) } : {}), ...(hasPost ? { postId: qzoneToken(row.postId) } : {}) })
@@ -138,8 +138,9 @@ export function createAgentQzoneLedger(storage: AgentQzoneStorage): AgentQzoneLe
         const args = qzoneData(input, ['binding', 'identity', 'operation', 'now', 'limits']), binding = validateAgentQzoneBinding(args.binding),
           identity = qzoneToken(args.identity, 4096), operation = validateAgentQzoneOperation(args.operation), limits = normalizeAgentQzoneLimits(args.limits)
         if (!isTime(args.now)) throw invalid()
-        const now = args.now, kind = operation.kind, simulation = kind === 'visit' || kind === 'like' || kind === 'comment'
-        if (simulation && (!limits.enabled || binding.target.kind !== 'group')) return { state: 'failed', code: 'qzone_disabled' }
+        const now = args.now, kind = operation.kind, feedInteraction = kind === 'visit' || kind === 'like' || kind === 'comment'
+        if (feedInteraction && !limits.enabled || kind === 'visit' && binding.target.kind !== 'group' ||
+            'userId' in operation && binding.target.kind === 'private' && operation.userId !== binding.target.id) return { state: 'failed', code: 'qzone_disabled' }
         if (operation.kind === 'read' && (binding.target.kind !== 'private' || binding.target.id !== operation.userId)) {
           return { state: 'failed', code: 'qzone_disabled' }
         }
@@ -186,7 +187,7 @@ export function createAgentQzoneLedger(storage: AgentQzoneStorage): AgentQzoneLe
           const post = validateAgentQzoneOwnPost(values.ownPost)
           if (!same(post.account, row.binding.target.account) || post.agentId !== row.binding.agentId || !same(post.source, row.binding)) throw invalid()
           evidenceKey = ownKey(post.account, post.postId); serialized = JSON.stringify(post)
-        } else if (state === 'confirmed' && row.kind === 'visit') {
+        } else if (state === 'confirmed' && (row.kind === 'visit' || row.kind === 'read' && Object.hasOwn(values, 'visit'))) {
           if (Object.keys(values).length !== 1 || !Object.hasOwn(values, 'visit')) throw invalid()
           const visit = validateAgentQzoneVisit(values.visit)
           if (!same(visit.binding, row.binding) || visit.sourceId !== row.identity || visit.userId !== row.userId ||

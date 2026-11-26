@@ -72,8 +72,10 @@ export function validateAgentQzoneAction(input: unknown): Readonly<AgentQzoneAct
   const row = qzoneData(input, ['version', 'binding', 'operation'])
   if (row.version !== 1) throw invalid()
   const binding = validateAgentQzoneBinding(row.binding), operation = validateAgentQzoneOperation(row.operation)
-  if (operation.kind === 'read' ? binding.target.kind !== 'private' || binding.target.id !== operation.userId :
-      operation.kind !== 'publish' && operation.kind !== 'delete' && binding.target.kind !== 'group') throw invalid()
+  const target = binding.target
+  if (operation.kind === 'read' && (target.kind !== 'private' || target.id !== operation.userId) ||
+      operation.kind === 'visit' && target.kind !== 'group' ||
+      (operation.kind === 'like' || operation.kind === 'comment') && target.kind === 'private' && target.id !== operation.userId) throw invalid()
   return Object.freeze({ version: 1, binding, operation })
 }
 export function normalizeAgentQzoneLimits(input: unknown = {}): Readonly<AgentQzoneLimits> {
@@ -95,7 +97,7 @@ export function validateAgentQzoneOwnPost(input: unknown): Readonly<AgentQzoneOw
 export function validateAgentQzoneVisit(input: unknown): Readonly<AgentQzoneVisit> {
   const row = qzoneData(input, ['id', 'binding', 'sourceId', 'userId', 'postIds', 'observedAt', 'expiresAt']), binding = validateAgentQzoneBinding(row.binding)
   const postIds = qzoneArray(row.postIds, 8).map(value => qzoneToken(value))
-  if (binding.target.kind !== 'group' || new Set(postIds).size !== postIds.length || typeof row.observedAt !== 'number' || !Number.isSafeInteger(row.observedAt) || row.observedAt <= 0 ||
+  if (binding.target.kind === 'private' && binding.target.id !== row.userId || new Set(postIds).size !== postIds.length || typeof row.observedAt !== 'number' || !Number.isSafeInteger(row.observedAt) || row.observedAt <= 0 ||
       typeof row.expiresAt !== 'number' || !Number.isSafeInteger(row.expiresAt) || row.expiresAt <= row.observedAt || row.expiresAt > row.observedAt + 900_000) throw invalid()
   return Object.freeze({ id: qzoneToken(row.id), binding, sourceId: qzoneToken(row.sourceId, 4096), userId: qzoneToken(row.userId), postIds: Object.freeze(postIds), observedAt: row.observedAt, expiresAt: row.expiresAt })
 }
