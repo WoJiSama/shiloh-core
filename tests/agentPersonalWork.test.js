@@ -332,6 +332,7 @@ test('a chosen group can receive a fresh same-scene follow-up after everyone has
   clock += 90 * minute
   await runtime.tick()
   assert.deepEqual(sent.map(row => row.key), [selected])
+  assert.equal(JSON.parse(values.get(personalKey)).lastChoice.groupRead, 'read')
   clock += 5 * 60 * minute
   await runtime.tick()
   assert.equal(sent.length, 1)

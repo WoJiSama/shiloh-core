@@ -312,6 +312,7 @@ export interface SimulationRuntime {
   isGroupActive(groupId: string): boolean
   isConversationActive(target: ConversationAddress): Promise<boolean>
   canInitiateGroupChat(target: ConversationAddress, checkAvailability?: boolean): Promise<boolean>
+  personalGroupActivity(target: ConversationAddress): Promise<'recent' | 'earlier' | 'empty' | undefined>
   readPersonalWorkContext(binding: AgentBindingSnapshot, isCurrent: () => boolean, allowsText: (value: string) => boolean): Promise<{
     messages: readonly { messageId: string; authorId: string; name: string; at: number; text: string }[]
     isCurrent(): Promise<boolean>
@@ -885,16 +886,37 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return isSimulationGroup(key)
   }
 
-  async function canInitiateGroupChat(target: ConversationAddress, checkAvailability = false): Promise<boolean> {
-    if (target.kind !== 'group' || !allowsConversationAI(target)) return false
+  async function personalGroupKey(target: ConversationAddress, checkAvailability: boolean): Promise<string | undefined> {
+    if (target.kind !== 'group' || !allowsConversationAI(target)) return
     await refreshGroupState()
     const key = await conversationKey(target)
-    if (!key || !isSimulationGroup(key) || !proactiveAllowed(key)) return false
-    if (!checkAvailability) return true
+    if (!key || !isSimulationGroup(key) || !proactiveAllowed(key)) return
+    if (!checkAvailability) return key
     const scope = characterScopeFor(target, personaFor(target).personaId || 'default')
-    if ((await characters.load(scope)).paused) return false
+    if ((await characters.load(scope)).paused) return
     const cfg = runtimeConfig(key)
-    return !cfg.rhythm.enabled || !isSleeping(new Date(now() + 8 * 3600_000).getUTCHours(), await loadRhythmWindow(cfg, scope))
+    if (!cfg.rhythm.enabled || !isSleeping(new Date(now() + 8 * 3600_000).getUTCHours(), await loadRhythmWindow(cfg, scope))) return key
+  }
+
+  async function canInitiateGroupChat(target: ConversationAddress, checkAvailability = false): Promise<boolean> {
+    return !!await personalGroupKey(target, checkAvailability)
+  }
+
+  function personalWorkMessages(state: SimSessionState, botId: string) {
+    return [...new Map([...state.recent, ...state.unread].map(message => [message.seq, message])).values()]
+      .filter(message => message.kind === 'text' && message.text.trim() && message.messageId && message.userId !== botId)
+      .sort((a, b) => a.seq - b.seq).slice(-16)
+  }
+
+  async function personalGroupActivity(target: ConversationAddress): Promise<'recent' | 'earlier' | 'empty' | undefined> {
+    const key = await personalGroupKey(target, true)
+    if (!key || !proactiveAllowed(key) || !allowsConversationAI(target)) return
+    const state = liveStates.get(key) ?? await store.load(key)
+    const binding = personaFor(target).binding
+    if (!binding || !allowsConversationAI(target) || !proactiveAllowed(key)) return
+    if (state.botId !== target.account.id || state.bindingToken !== agentBindingToken(binding)) return 'empty'
+    const latest = personalWorkMessages(state, target.account.id).at(-1)
+    return latest ? now() - latest.at < 4 * 3600_000 ? 'recent' : 'earlier' : 'empty'
   }
 
   async function readPersonalWorkContext(binding: AgentBindingSnapshot, guard: () => boolean, allowsText: (value: string) => boolean) {
@@ -906,9 +928,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const resolved = personaFor(target)
     const scope = characterScopeFor(target, resolved.personaId || 'default')
     const state = liveStates.get(key) ?? await store.load(key)
-    const candidates = [...new Map([...state.recent, ...state.unread].map(message => [message.seq, message])).values()]
-      .filter(message => message.kind === 'text' && message.text.trim() && message.messageId && message.userId !== target.account.id)
-      .sort((a, b) => a.seq - b.seq).slice(-16)
+    if (state.botId !== target.account.id || state.bindingToken !== agentBindingToken(binding)) return undefined
+    const candidates = personalWorkMessages(state, target.account.id)
     const redacted = await redactSceneMessages(scope, candidates)
     const visible: SimMessage[] = []
     for (const message of redacted) {
@@ -5779,7 +5800,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return `【群友好感 · 前8】\n${top}${mineLine}`
   }
 
-  return { runAdministration: administration.run, ingest, ingestNudge, start, stop, drain, sweepOnce, invalidateConversation, enableGroup, disableGroup, setGroupReplyMode, groupStatus, resetGroup, listMemories, listAffinity, ingestPoke, handleRecall, overview, describeGroup, controlCharacter, controlActivity, getInitialPrompt, setInitialPrompt, setGroupBudget, setGroupTurnsCap, setDefaultBudget, conversationKey, isGroupActive: isSimulationGroup, isConversationActive, canInitiateGroupChat, readPersonalWorkContext, groupTextBudget, wakeForCommitment, listPersonProfiles: () => store.listPersonProfiles(), deletePersonProfile: (userId: string) => store.deletePersonProfile(userId), deletePersonProfileField: (userId: string, field: string, value?: string) => store.deletePersonProfileField(userId, field, value),
+  return { runAdministration: administration.run, ingest, ingestNudge, start, stop, drain, sweepOnce, invalidateConversation, enableGroup, disableGroup, setGroupReplyMode, groupStatus, resetGroup, listMemories, listAffinity, ingestPoke, handleRecall, overview, describeGroup, controlCharacter, controlActivity, getInitialPrompt, setInitialPrompt, setGroupBudget, setGroupTurnsCap, setDefaultBudget, conversationKey, isGroupActive: isSimulationGroup, isConversationActive, canInitiateGroupChat, personalGroupActivity, readPersonalWorkContext, groupTextBudget, wakeForCommitment, listPersonProfiles: () => store.listPersonProfiles(), deletePersonProfile: (userId: string) => store.deletePersonProfile(userId), deletePersonProfileField: (userId: string, field: string, value?: string) => store.deletePersonProfileField(userId, field, value),
   lifeOverview: async (groupIds?: readonly string[]) => {
     const cfg = runtimeConfig()
     const stored = await store.loadRhythm().catch(() => null)

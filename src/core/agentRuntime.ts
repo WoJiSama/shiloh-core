@@ -2149,11 +2149,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       model: (request, signal, current, ensureCurrent) => options.YTapi(request, options.getExecutionConfig(), signal, current, ensureCurrent),
       allowsText: text => options.allowsToolInput?.(text) !== false && options.allowsText?.(text, 'outgoing') !== false,
       async targets(agentId) {
-        const rows: { key: string; kind: 'group' | 'private'; label: string }[] = []
+        const rows: Awaited<ReturnType<PersonalPorts['targets']>>[number][] = []
         for (const binding of personalTargetList(agentId)) {
           const { kind, id } = binding.target
-          if ((kind === 'group' || kind === 'private') && await personalContactAllowed(binding)) {
-            rows.push({ key: personalTargetKey(binding), kind, label: kind === 'group' ? '群 ' + id : '好友 ' + id })
+          if (kind === 'group' && isPersonalBindingCurrent(binding)) {
+            const history = await runtime.personalGroupActivity(binding.target)
+            if (history && isPersonalBindingCurrent(binding)) rows.push({ key: personalTargetKey(binding), kind, label: '群 ' + id, history })
+          } else if (kind === 'private' && await personalContactAllowed(binding)) {
+            rows.push({ key: personalTargetKey(binding), kind, label: '好友 ' + id })
           }
         }
         return rows

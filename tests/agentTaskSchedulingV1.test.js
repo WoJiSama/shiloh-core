@@ -125,6 +125,7 @@ test('Core initiates a conversation without any ingress and rechecks the group s
       const input = JSON.parse(request.messages[1].content)
       if (!input.goals) return response('{"action":"keep"}')
       assert.equal(input.targets.length, 1)
+      assert.equal(input.targets[0].history, 'empty')
       if (revoke) await h.quiet()
       return response(JSON.stringify({ action: 'contact', key: input.targets[0].key, text: '我想到一种新的书签做法。' }))
     },
