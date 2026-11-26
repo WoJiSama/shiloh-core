@@ -2137,7 +2137,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   async function personalContactAllowed(binding: AgentBindingSnapshot) {
     const { target } = binding, adapter = adapterFor(target)
     if (!isPersonalBindingCurrent(binding)) return false
-    if (target.kind === 'group') return runtime.canInitiateGroupChat(target)
+    if (target.kind === 'group') return runtime.canInitiateGroupChat(target, true)
     return target.kind === 'private' && !!privatePeerFor(target, adapter) && typeof adapter?.verifyPrivateFriend === 'function' &&
       await storage.get(personalContactKey(binding)) !== 'off'
   }

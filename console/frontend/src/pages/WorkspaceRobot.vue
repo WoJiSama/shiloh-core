@@ -39,6 +39,9 @@ interface SelfProfileVersion {
   changedAt: number
 }
 interface PersonalWorkSummary {
+  lastWorkAt?: number
+  lastChoice?: string
+  nextWorkAt?: number
   goals: { id: string; title: string; nextAt: number; state: 'active' | 'completed' | 'abandoned'; waitingFor?: string
     engineering?: { mode: 'investigate' | 'candidate'; status: 'queued' | 'running' | 'confirmed' | 'failed' | 'unknown'; result?: string }
   }[]
@@ -288,6 +291,10 @@ watch(
           <NAlert v-if="profileError" type="error">{{ profileError }}</NAlert>
           <p v-else-if="profileLoading">正在读取自主工作</p>
           <template v-else-if="personalWork">
+            <p v-if="personalWork.nextWorkAt">
+              <span v-if="personalWork.lastWorkAt">上次自主醒来 {{ beijingTime.format(personalWork.lastWorkAt) }}<template v-if="personalWork.lastChoice">，选择了「{{ personalWork.lastChoice }}」</template> · </span>
+              下次自主醒来 {{ beijingTime.format(personalWork.nextWorkAt) }}
+            </p>
             <div v-for="goal in personalWork.goals" :key="goal.id" class="workspace-row">
               <span class="row-main">
                 <strong>{{ goal.title }}</strong>

@@ -311,7 +311,7 @@ export interface SimulationRuntime {
   /** 承诺账本查询口：该群当前是否仿真生效（commitmentTool 创建 agent 类承诺前的闸） */
   isGroupActive(groupId: string): boolean
   isConversationActive(target: ConversationAddress): Promise<boolean>
-  canInitiateGroupChat(target: ConversationAddress): Promise<boolean>
+  canInitiateGroupChat(target: ConversationAddress, checkAvailability?: boolean): Promise<boolean>
   readPersonalWorkContext(binding: AgentBindingSnapshot, isCurrent: () => boolean, allowsText: (value: string) => boolean): Promise<{
     messages: readonly { messageId: string; authorId: string; name: string; at: number; text: string }[]
     isCurrent(): Promise<boolean>
@@ -885,11 +885,16 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return isSimulationGroup(key)
   }
 
-  async function canInitiateGroupChat(target: ConversationAddress): Promise<boolean> {
+  async function canInitiateGroupChat(target: ConversationAddress, checkAvailability = false): Promise<boolean> {
     if (target.kind !== 'group' || !allowsConversationAI(target)) return false
     await refreshGroupState()
     const key = await conversationKey(target)
-    return !!key && isSimulationGroup(key) && proactiveAllowed(key)
+    if (!key || !isSimulationGroup(key) || !proactiveAllowed(key)) return false
+    if (!checkAvailability) return true
+    const scope = characterScopeFor(target, personaFor(target).personaId || 'default')
+    if ((await characters.load(scope)).paused) return false
+    const cfg = runtimeConfig(key)
+    return !cfg.rhythm.enabled || !isSleeping(new Date(now() + 8 * 3600_000).getUTCHours(), await loadRhythmWindow(cfg, scope))
   }
 
   async function readPersonalWorkContext(binding: AgentBindingSnapshot, guard: () => boolean, allowsText: (value: string) => boolean) {
