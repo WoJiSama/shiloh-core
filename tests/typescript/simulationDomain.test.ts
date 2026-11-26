@@ -539,7 +539,7 @@ test('continuation：窗口内对话对象不点名也醒，@别人/过期/陌�
   assert.equal(evaluateWakeTrigger(msg({ seq: 5, text: 'x', at: 9_000, atSelf: true }), cfg, ctx)?.kind, 'atMention')
   // 无延续状态时行为不变
   assert.equal(evaluateWakeTrigger(msg({ seq: 6, text: '那第二个问题呢', at: 9_000 }), cfg, SELF), null)
-  assert.ok(WAKE_PRIORITY.question > WAKE_PRIORITY.continuation && WAKE_PRIORITY.continuation > WAKE_PRIORITY.nameMention)
+  assert.ok(WAKE_PRIORITY.nameMention > WAKE_PRIORITY.question && WAKE_PRIORITY.question > WAKE_PRIORITY.continuation)
 })
 
 test('continuation 插话熔断：我上次发言后第三人插过话 → 不当延续唤醒；点名类不受影响', () => {
