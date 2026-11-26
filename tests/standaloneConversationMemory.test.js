@@ -50,9 +50,11 @@ async function waitFor(probe, description, timeoutMs = 8000) {
 function completion(content, usage = { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 }) {
   return JSON.stringify({ choices: [{ message: { content } }], usage })
 }
+function wakePromptIndex(body) {
+  return body.messages.findLastIndex(row => row.role === 'user' && typeof row.content === 'string' && row.content.includes('【唤醒原因】'))
+}
 function wakeContains(body, text) {
-  return body.messages.some(row => row.role === 'user' && typeof row.content === 'string' &&
-    row.content.includes('【唤醒原因】') && row.content.includes(text))
+  return body.messages[wakePromptIndex(body)]?.content.includes(text) === true
 }
 function finishReply(text, callId) {
   const args = text ? { choice: 'chat', reason: '回复当前群消息', messages: [text] } : { choice: 'silent', reason: '本次回复已尝试' }
@@ -83,7 +85,7 @@ async function fixture(t, { instance, backend = true, enabled = true, cleanup = 
       if (request.url === '/main/v1/chat/completions') {
         mainRequests.push({ epoch, auth: request.headers.authorization, body })
         assert.ok(body.tools?.some(tool => tool.function?.name === 'simFinishTurn'))
-        const attempted = body.messages.some(row => row.role === 'tool')
+        const attempted = body.messages.slice(wakePromptIndex(body) + 1).some(row => row.role === 'tool')
         const reply = attempted ? undefined : wakeContains(body, confirmedProbe) ? confirmedReply :
           wakeContains(body, unknownProbe) ? unknownReply : '嗯，安排已经收到。'
         response.end(finishReply(reply, `summary-finish-${mainRequests.length}`))
@@ -143,7 +145,7 @@ async function fixture(t, { instance, backend = true, enabled = true, cleanup = 
     episodicMemory: { enabled: true, proactiveEnabled: true },
     textGroups: [groupId, ...(cleanup ? [groupId + 1] : [])].map(id => ({ connectionId: 'qq-summary', conversationId: String(id) })),
     connections: [{ id: 'qq-summary', url: `ws://127.0.0.1:${port}/onebot`, accessTokenEnv: 'TEST_SUMMARY_ONEBOT_TOKEN' }],
-    simulation: { wake: { probability: 0, proactiveProbability: 0, batchWindowMs: 1000 }, wakeGate: { enabled: false }, reflection: { enabled: false },
+    simulation: { wake: { probability: 0, proactiveProbability: 0, batchWindowMs: 1000, maxWakePerMinute: 10 }, wakeGate: { enabled: false }, reflection: { enabled: false },
       rhythm: { enabled: false }, personProfile: { enabled: false }, turn: { minSendGapMs: 0 }, budget: { dailyCostCny: 0 } },
   }
   await writeFile(path.join(directory, 'agent-bindings.yaml'), JSON.stringify({
@@ -307,11 +309,14 @@ test('standalone uses its summary service after a real debounce, injects the res
   await run.start()
   assert.equal((await run.state()).summary.text, digest)
   assert.equal((await run.state()).episodes[0].id, confirmed.id)
-  const recalled = await waitFor(() => run.mainRequests.find(row => row.epoch === 2 && wakeContains(row.body, recall)), 'restored session wake recalls confirmed history')
+  let recalled
+  try {
+    recalled = await waitFor(() => run.mainRequests.find(row => row.epoch === 2 && wakeContains(row.body, recall)), 'restored session wake recalls confirmed history')
+  } catch (error) { assert.fail(`${error.message}; ${JSON.stringify(run.diagnostics())}`) }
   assert.ok(recalled.body.messages.some(row => row.content?.includes('【近期群聊主线】') && row.content.includes(digest)))
   const episodeSection = recalled.body.messages.find(row => row.content?.includes('【近期情节】'))
   assert.ok(episodeSection?.content.includes(confirmedReply), 'the session wake receives the persisted confirmed episode')
-  assert.ok(!JSON.stringify(recalled.body.messages).includes(unknownReply))
+  assert.ok(!episodeSection.content.includes(unknownReply), 'an unconfirmed tool attempt is never promoted to an episode')
   await waitFor(() => run.deliveries.length === 3, 'post-restart reply')
   await run.stop()
   assert.equal(run.summaries.length, 1)
