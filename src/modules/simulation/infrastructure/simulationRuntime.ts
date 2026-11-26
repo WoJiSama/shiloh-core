@@ -730,6 +730,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         const details: AgentDiagnosticDetails | undefined = invalid ? { ...invalid, result: 'not_dispatched' } :
           status === 'unknown' ? { result: 'confirmation_pending' } :
           code === 'image_turn_limit' ? { limit: 2, result: 'not_dispatched' } :
+          code === 'image_source_is_file' ? { step: 'image_attachment_select', result: 'not_dispatched' } :
           code === 'poke_rate_limit' ? { limit: 6, result: 'not_dispatched' } :
           imageStep ? { step: imageStep, result: 'discarded' } :
           code === 'image_description_unavailable' ? { step: 'response_validation', result: 'discarded' } : undefined
@@ -2690,7 +2691,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             const message = visibleMessage()
             if (!message?.messageId) return { seq, code: 'image_source_not_visible', error: '请使用本轮可见的附图消息序号' }
             const quote = message.imageCount === 0 ? message.quoteSource : undefined
-            if (!message.imageCount && !quote?.image) return { seq, code: 'image_source_has_no_image', error: '这条消息没有可取的附图' }
+            if (!message.imageCount && !quote?.image) {
+              if (message.files?.length || quote?.file?.files.length) {
+                const canReadFile = actor.kind === 'user' && extraTools.some(tool => tool.name === 'fileTextTool')
+                return { seq, code: 'image_source_is_file', error: canReadFile
+                  ? '这条消息只有文件附件，请用 fileTextTool 读取。' : '这条消息只有文件附件，本轮的看图工具只接受附图。' }
+              }
+              return { seq, code: 'image_source_has_no_image', error: '这条消息没有可取的附图' }
+            }
             if (visionAttempts >= 2) return { seq, code: 'image_turn_limit', error: '已达本轮看图次数上限' }
             visionAttempts++
             const isCurrent = () => canRunTurn() && visibleMessage() === message

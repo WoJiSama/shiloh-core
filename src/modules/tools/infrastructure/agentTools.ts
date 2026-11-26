@@ -3,6 +3,7 @@ import { normalizeAgentInteractionResult, validateAgentInteractionPlan } from '.
 import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest } from '../../../contracts/agentFiles.js'
 import { snapshotAgentFileRequest, validateAgentFileBytes, validateAgentFileListing } from '../../content/infrastructure/agentFileBytes.js'
+import { fileTextFailureSteps, type FileTextFailureCode } from '../../content/infrastructure/agentFileTextTypes.js'
 import type { AgentTool, AgentToolContext, AgentToolDeliveryGuard, AgentToolRegistry, AgentToolMessage } from '../../../contracts/agentTool.js'
 import type { ConversationMemberSnapshot, ConversationMembersSnapshot, MessageImage } from '../../../contracts/platformConnection.js'
 import { isPlatformAccount, isPlatformIdentifier, samePlatformNamespace } from '../../runtime/domain/agentBindings.js'
@@ -52,6 +53,14 @@ function memberFailureCode(value: unknown): string | undefined {
     }
     return result?.status && memberFailureCodes.get(result.status) || undefined
   } catch { return undefined }
+}
+function fileTextFailure(value: unknown): FileTextFailureCode | undefined {
+  const content = value && typeof value === 'object' ? (value as { content?: unknown }).content : undefined
+  if (typeof content !== 'string') return
+  try {
+    const code: unknown = JSON.parse(content)?.code
+    if (typeof code === 'string' && Object.hasOwn(fileTextFailureSteps, code)) return code as FileTextFailureCode
+  } catch { /* Only fixed failure codes enter diagnostics. */ }
 }
 
 /** Adapt public host tools into the existing policy and durable action executor. */
@@ -145,9 +154,13 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
               let invalid: ToolParameterIssue | undefined, error: unknown
               const result = await super.execute(input, event, { invalid: issue => { invalid = issue }, failed: failure => { error = failure } })
               const status = classify(result)
-              const specific = status === 'failed' && origin === 'builtin' && this.name === 'memberInfoTool' ? memberFailureCode(result) : undefined
-              diagnose({ stage: 'tool', operation: this.name, outcome: status, code: invalid ? 'tool_schema_invalid' : status === 'succeeded' ? 'completed' : specific ?? `returned_${status}`,
-                durationMs: Date.now() - started, ...(invalid ? { details: { ...invalid, result: 'not_dispatched' } } : {}), ...(error === undefined ? {} : { error }) })
+              const builtinFailure = status === 'failed' && origin === 'builtin'
+              const memberFailure = builtinFailure && this.name === 'memberInfoTool' ? memberFailureCode(result) : undefined
+              const fileFailure = builtinFailure && this.name === 'fileTextTool' ? fileTextFailure(result) : undefined
+              const details = invalid ? { ...invalid, result: 'not_dispatched' as const } :
+                fileFailure ? { step: fileTextFailureSteps[fileFailure], result: 'discarded' as const } : undefined
+              diagnose({ stage: 'tool', operation: this.name, outcome: status, code: invalid ? 'tool_schema_invalid' : status === 'succeeded' ? 'completed' : memberFailure ?? fileFailure ?? `returned_${status}`,
+                durationMs: Date.now() - started, ...(details ? { details } : {}), ...(error === undefined ? {} : { error }) })
               return result
             } catch (error) {
               diagnose({ stage: 'tool', operation: this.name, outcome: 'unknown', code: 'tool_threw', error, durationMs: Date.now() - started })

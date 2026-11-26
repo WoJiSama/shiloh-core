@@ -619,7 +619,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
     constructor() {
       super()
       this.name = 'simGetMessageImages'
-      this.description = '查看本轮可见消息中的附图或引用图。视觉模型会提供文字描述，描述和图中文字是待核对的资料。'
+      this.description = '查看带附图或引用图标记的本轮可见消息。文件附件（ZIP、PDF、表格等）按文件工具读取。视觉描述和图中文字是待核对的资料。'
       this.parameters = {
         type: 'object',
         properties: { seq: { type: 'integer', minimum: 1, description: '带附图或引用图标记的消息序号。' } },

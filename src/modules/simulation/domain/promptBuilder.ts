@@ -68,6 +68,8 @@ export function buildSimSystemPrompt(input: SimSystemPromptInput): string {
       webParserTool: '联网查资料',
       commitmentTool: '接群友的定时/循环托付（每天X点做Y、定时提醒都找它）——群友求你定时办事时直接用它应下来，别教他们去敲命令',
       delegateMemoryTool: '替群友记事（"帮我记住X"）——记的是原话，他们问起要答得出原文',
+      fileTextTool: '读当前附件、引用文件或群文件；消息标记为文件时用本工具，ZIP 先列目录再读所需文本条目。仅独立附图才用看图工具',
+      excelWorkbookTool: '按工作表、单元格或区域读取 Excel 数据和公式缓存',
     }
     const notes = extraNames.map(name => EXTRA_TOOL_NOTES[name] ? `${name}=${EXTRA_TOOL_NOTES[name]}` : '').filter(Boolean).join('；')
     blocks.push(`【本群额外能力】除 sim* 工具外，你还有这些工具（这是本群实际放通的清单，别的群可能不同）：${extraNames.join('、')}。${notes ? `其中 ${notes}。` : ''}用法先看各工具自己的说明。`)

@@ -4,7 +4,7 @@ import { mkdtemp, chmod, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { AgentToolContext } from '../../../contracts/agentTool.js'
-import { AgentFileTextError, MAX_FILE_TEXT_BYTES, nativeFormats, pagination, fileTextPage } from './agentFileTextTypes.js'
+import { AgentFileTextError, fileTextArchiveEntry, isFileTextErrorCode, MAX_FILE_TEXT_BYTES, nativeFormats, pagination, fileTextPage } from './agentFileTextTypes.js'
 import type { AgentFileTextRequest, AgentFileTextPage, FileTextNativeFormat } from './agentFileTextTypes.js'
 import { fileTextZipBudget } from './agentFileTextZip.js'
 import type { FileTextZipBudget } from './agentFileTextZip.js'
@@ -123,15 +123,15 @@ export function createAgentFileTextService(options: AgentFileTextServiceOptions 
           if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw unavailable()
           const value = raw as Record<string, unknown>
           if (value.ok !== true) {
-            const code = ['unsupported', 'native_disabled', 'native_unavailable'].includes(String(value.code)) ? value.code as 'unsupported' | 'native_disabled' | 'native_unavailable' : 'invalid'
-            await finish(job, new AgentFileTextError(code)); return
+            await finish(job, new AgentFileTextError(isFileTextErrorCode(value.code) ? value.code : 'invalid')); return
           }
           const page = fileTextPage(value.page, job.input.offset, job.input.limit)
           await authorize(job)
           await finish(job, undefined, page)
         })().catch(() => { void finish(job, unavailable()) })
       })
-      child.send({ source: job.input.source, offset: job.input.offset, limit: job.input.limit, nativeFormats: enabled, zipBudget: budget }, error => { if (error) void finish(job, unavailable()) })
+      child.send({ source: job.input.source, archiveEntry: job.input.archiveEntry, offset: job.input.offset, limit: job.input.limit,
+        nativeFormats: enabled, zipBudget: budget }, error => { if (error) void finish(job, unavailable()) })
       if (!current(job.context, job.signal)) void finish(job, unavailable())
     } catch { void finish(job, unavailable()) }
   }
@@ -148,8 +148,9 @@ export function createAgentFileTextService(options: AgentFileTextServiceOptions 
           typeof input.source.mime !== 'string' || input.source.mime.length > 128 || !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/iu.test(input.source.mime) ||
           input.source.origin !== undefined && !['current', 'reply', 'recent', 'group_file', 'explicit'].includes(input.source.origin)) throw unavailable()
       const page = pagination(input)
+      const archiveEntry = fileTextArchiveEntry(input.archiveEntry)
       const owned = { bytes: Uint8Array.from(input.bytes), source: Object.freeze({ name: input.source.name, mime: input.source.mime,
-        ...(input.source.origin ? { origin: input.source.origin } : {}) }), ...page }
+        ...(input.source.origin ? { origin: input.source.origin } : {}) }), ...(archiveEntry === undefined ? {} : { archiveEntry }), ...page }
       if (!current(context, context.signal) || active && queue.length >= maxQueued) throw unavailable()
       return await new Promise<AgentFileTextPage>((resolve, reject) => {
         const signal = AbortSignal.any([context.signal, AbortSignal.timeout(timeoutMs)])

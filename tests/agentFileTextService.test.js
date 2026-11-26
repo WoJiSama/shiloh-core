@@ -51,6 +51,29 @@ test('real child preserves text/code/JSON/CSV/HTML/XML/Markdown, UTF16 and small
     assert.match(page.text, new RegExp(marker), name); assert.doesNotMatch(page.text, /DO_NOT_INCLUDE/); assert.ok(page.totalChars < 1000)
   }
 })
+
+test('ordinary ZIP lists paths, then reads only one chosen text entry with Unicode pagination', async () => {
+  const service = createAgentFileTextService(), archive = await zip({
+    'docs/说明.txt': `${marker}😀后续`, 'docs/其他.txt': 'OTHER_ENTRY_PRIVATE', 'image.bin': Buffer.from([0, 255, 3]),
+    'data/sample.xml': '<!DOCTYPE example><bad>',
+  })
+  const listing = await service.extract(request('sources.zip', archive), context())
+  assert.match(listing.text, /4 个普通文件条目/)
+  assert.match(listing.text, /docs\/说明\.txt/)
+  assert.doesNotMatch(listing.text, /OTHER_ENTRY_PRIVATE|REAL_DOCUMENT_MARKER/)
+  const member = { archiveEntry: 'docs/说明.txt', offset: marker.length, limit: 2 }
+  const page = await service.extract(request('sources.zip', archive, member), context())
+  assert.deepEqual(page, { text: '😀后', totalChars: marker.length + 3, offset: marker.length, nextOffset: marker.length + 2 })
+  await assert.rejects(service.extract(request('sources.zip', archive, { archiveEntry: 'other.txt' }), context()), { code: 'archive_entry_missing' })
+  await assert.rejects(service.extract(request('sources.zip', archive, { archiveEntry: 'image.bin' }), context()), { code: 'archive_entry_not_text' })
+  await assert.rejects(service.extract(request('sources.zip', archive, { archiveEntry: 'docs/../image.bin' }), context()))
+  const corrupt = await zip({ 'test.txt': marker })
+  const centralHeader = corrupt.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]))
+  assert.ok(centralHeader >= 0)
+  corrupt.writeUInt32LE(0, centralHeader + 16)
+  assert.match((await service.extract(request('corrupt.zip', corrupt), context())).text, /test\.txt/)
+  await assert.rejects(service.extract(request('corrupt.zip', corrupt, { archiveEntry: 'test.txt' }), context()), { code: 'invalid' })
+})
 test('real Office/ODF/EPUB parsers preserve DOCX/PPTX/POTX/Excel XML XLS/XLSX/XLSM/XLTX/XLSB and all OpenDocument families', { timeout: 30_000 }, async t => {
   const doc = await zip({ 'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${marker}</w:t></w:r></w:p></w:body></w:document>` })
   const slide = await zip({ 'ppt/slides/slide1.xml': `<a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:r><a:t>${marker}</a:t></a:r></a:p>`, 'ppt/notesSlides/notesSlide1.xml': '<a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:r><a:t>NOTES_MARKER</a:t></a:r></a:p>' })
@@ -95,8 +118,11 @@ test('abort and timeout kill the real detached parser group, await exit, clean p
       const directory = f.state.options[0].cwd, pid = Number(await readFile(path.join(directory, 'descendant.pid'), 'utf8'))
       if (mode === 'abort') controller.abort(); if (mode === 'authority') allowed = false
       await rejected
-      assert.ok(ticks >= 2); assert.notEqual(f.state.children[0].exitCode, undefined)
-      assert.equal(f.state.children[0].signalCode, 'SIGKILL'); await assert.rejects(access(directory))
+      assert.ok(ticks >= 2)
+      const child = f.state.children[0]
+      if (process.platform === 'win32') assert.ok(child.signalCode === 'SIGKILL' || (child.exitCode ?? 0) !== 0)
+      else assert.equal(child.signalCode, 'SIGKILL')
+      await assert.rejects(access(directory))
       assert.deepEqual(f.state.options[0].execArgv, ['--max-old-space-size=256']); assert.equal(f.state.options[0].detached, true)
       assert.equal(f.state.options[0].env.NODE_OPTIONS, undefined); assert.equal(f.state.options[0].env.OPENAI_API_KEY, undefined)
       if (process.platform !== 'win32') { try { const result = await promisify(execFile)('ps', ['-o', 'stat=', '-p', String(pid)]); assert.match(result.stdout, /^\s*Z/u) } catch (error) { if (error.code !== 1) throw error } }

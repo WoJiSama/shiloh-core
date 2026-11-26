@@ -561,7 +561,9 @@ tools:
 
 保留文本/代码/JSON/CSV、HTML/XML/Markdown、PDF、DOCX、PPTX/POTX、Excel（含旧表格与XLSB）、OpenDocument及EPUB解析。扫描PDF不自动OCR。DOC、RTF、图片OCR和DXF须由宿主在 `nativeFormats` 显式授权 `doc`、`rtf`、`ocr`、`dxf`，并安装对应固定程序：macOS的textutil，其他系统的antiword/unrtf，以及tesseract、drawingtotext。未启用或缺程序明确报告，不把损坏二进制当文字返回。原生能力使用固定命令和参数，模型不能配置程序、路径或环境。
 
-每次解析使用独立进程组、256MiB Node heap与私有临时目录，默认1个运行、4个排队，排队及解析共20秒。退出前终止整个所属进程组并清理临时文件；它是资源和生命周期隔离，不提供操作系统沙箱。ZIP逐项按实际解压量预检，最多2000项、单项16MiB、总64MiB，拒绝路径穿越、重复项、加密、DTD及实体；HTML/XHTML只兼容不含内部子集的已知惰性doctype。文本最多100万Unicode字符，每页最多11000字，完整结果最多12000字；`offset/limit/nextOffset` 可继续读取后部，无跨会话解析缓存。PDF字节使用精确独立视图，避免旧PDF.js的Buffer偏移错误。
+普通 ZIP 先通过 `fileTextTool` 列目录，再用同一文件来源和 `archiveEntry` 指定目录返回的完整相对路径。支持逐个读取 UTF-8 或带 BOM 的 UTF-16 文本，目录和条目正文都可分页。目录读取不解压，正文读取只解压选中条目并检查实际长度和 CRC。ZIP 内的嵌套压缩包和二进制文档只列名称。
+
+每次解析使用独立进程组、256MiB Node heap与私有临时目录，默认1个运行、4个排队，排队及解析共20秒。退出前终止整个所属进程组并清理临时文件；它是资源和生命周期隔离，不提供操作系统沙箱。ZIP 最多2000项、单项16MiB、总64MiB，拒绝越界路径、重复项和加密。ZIP 格式文档逐项按实际解压量预检，拒绝 DTD 及实体。HTML/XHTML只兼容不含内部子集的已知惰性doctype。文本最多100万Unicode字符，每页最多11000字，完整结果最多12000字；`offset/limit/nextOffset` 可继续读取后部，无跨会话解析缓存。PDF字节使用精确独立视图，避免旧PDF.js的Buffer偏移错误。
 
 `AgentToolContext.sendFile({ name, mime, base64 })` 为可信宿主工具提供当前会话的文件上传原语：最多12MiB，只接受完整字节与安全文件名，禁止路径、URL、平台文件引用及接收者参数。与文本/图片共用回合队列、配额、绑定复核和未知结果闸门；完成后端口撤销，同回合重复文件拒绝。文本文件的名称与正文经过出站规则；二进制生成器须在编码前执行相应内容审核。临时文件读取工具不获得上传端口，读取临时资料后不允许文件导出。
 
