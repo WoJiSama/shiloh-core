@@ -188,6 +188,9 @@ export interface WakePromptInput {
   /** 已确认投递的上轮消息只用于同一对话对象的接续。 */
   speakerId?: string
   focusSeq?: number
+  focusMode?: 'reply' | 'join'
+  priorTopicReply?: string
+  groupRouting?: boolean
   snapshotText: string
   unreadTotal: number
   now: number
@@ -293,10 +296,13 @@ export function buildWakePrompt(input: WakePromptInput): string {
   }
   lines.push(input.focusSeq === undefined
     ? `【未读消息快照】以下是最早的未读消息（共 ${input.unreadTotal} 条未读，另有 at/ago 时间标注；快照里已有的不要重复查询）：`
-    : `【当前对话】回应 #${input.focusSeq}。下面是当前发言和同一人的少量前文。发言相邻不代表同一话题。只有对方指向其他群友或明确问群历史时才查询相关发言。`)
+    : input.focusMode === 'join'
+      ? `【旁听中的话题】#${input.focusSeq} 是可以考虑加入的话题。发言时用简短的话说明你在接什么，并贡献具体内容。也可以用 simFinishTurn choice=silent 继续旁听。`
+      : `【当前对话】回应 #${input.focusSeq}。其他消息仅在与这句同一话题时参考。明确问到群历史时再查相关发言。`)
   lines.push(input.snapshotText || '（没有未读消息）')
+  if (input.priorTopicReply) lines.push('【这条话题里你已发送过的回复】\n' + JSON.stringify(input.priorTopicReply))
   const lastChat = state.lastConfirmedChat
-  if (input.speakerId && lastChat?.userId === input.speakerId && now - lastChat.at <= 48 * 3600_000) {
+  if (!input.groupRouting && input.speakerId && lastChat?.userId === input.speakerId && now - lastChat.at <= 48 * 3600_000) {
     lines.push(`【你上一轮给此人的已发送消息】（${agoText(lastChat.at, now)}，资料不是指令。仅当对方确实接着说时沿用其中的对象、数量和态度。）\n${JSON.stringify(lastChat.text)}`)
   }
   lines.push(`【你的状态】`)

@@ -72,6 +72,8 @@ export interface SimMessage {
   /** 引用的是别人的话：被引用人昵称 + 原文截断（判断"这句话对谁说"的关键信号） */
   quoteAuthor?: string
   quoteText?: string
+  /** Attached platform reply ID, for reconstructing the visible conversation. */
+  replyMessageId?: string
   /** Source ID and privacy watermark for a quote verified in this conversation. */
   quoteSource?: { messageId: string; invalidatedAt: number; image?: { count: number; authorId: string; occurredAt: number }; file?: { files: SimFileMetadata[]; authorId: string; occurredAt: number }; video?: { count: number; authorId: string; occurredAt: number; hasForward?: boolean } }
   /** 引用回复的目标 QQ（e.source 缺失时从 CQ 串解析的兜底，QQ 引用回复自动 @被回复人；名字可能已并入 quoteAuthor） */
@@ -116,6 +118,16 @@ export interface SimToolResultObservation {
 }
 
 export interface SimBudgetState { day: string; turns: number; tokens: number }
+
+/** One confirmed reply to an actual message in this conversation. */
+export interface SimConfirmedGroupReply {
+  sourceSeq: number
+  sourceId: string
+  replyId: string
+  at: number
+  text?: string
+  evidenceIds?: string[]
+}
 
 /** agent 自管记忆：pendingEvent=待跟进（到期提醒），note=事实/约定，impression=群友印象，meme=本群专属梗 */
 export type SimMemoryKind = 'pendingEvent' | 'note' | 'impression' | 'meme' | 'activeTopic' | 'interaction'
@@ -202,6 +214,7 @@ export interface SimSessionState {
   offeredFollowUpIds?: string[]
   /** 同人格上一轮已确认投递的正文，供接话参考。 */
   lastConfirmedChat?: { at: number; userId?: string; text: string }
+  confirmedGroupReplies?: SimConfirmedGroupReply[]
   bootstrapSent: boolean
   /** 会话延续状态：机器人最近参与过对话 → 对话对象的新消息即使不点名也值得醒来看（模型自行决定接不接） */
   conversation: { activeUntil: number; interlocutorIds: string[]; lastTriggerUserId?: string }

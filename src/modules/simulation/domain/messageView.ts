@@ -1,5 +1,6 @@
 import type { SimMessage, SimSessionState } from '../../../contracts/simulation.js'
 import { readThroughSeq } from './watermark.js'
+import { isAddressedElsewhere } from './groupTurnRouting.js'
 
 /** epoch → "HH:MM"（北京时间，与主链路 local_time 口径一致）。 */
 export function atClock(now: number): string {
@@ -47,10 +48,11 @@ export interface SimSnapshot {
  * 唤醒快照：最早未读优先（最老的上下文最重要），超出条数/字符预算从最新的开始丢并标记 partial。
  * 快照即「已给模型」，调用方必须 noteModelSeen。
  */
-export function buildWakeSnapshot(state: SimSessionState, opts: { limit: number; maxChars: number; now: number; anchor?: SimMessage }): SimSnapshot {
-  const { anchor } = opts
+export function buildWakeSnapshot(state: SimSessionState, opts: { limit: number; maxChars: number; now: number; anchor?: SimMessage;
+  relatedMessages?: SimMessage[]; mode?: 'reply' | 'join' }): SimSnapshot {
+  const { anchor, relatedMessages } = opts
   const ordered = anchor
-    ? [anchor, ...[...state.recent].reverse().filter(m => m.seq !== anchor.seq && m.userId === anchor.userId && !m.atOther && !m.replyToUserId).slice(0, 4)]
+    ? [anchor, ...(relatedMessages ?? [...state.recent].reverse().filter(m => m.seq !== anchor.seq && m.userId === anchor.userId && !isAddressedElsewhere(m)).slice(0, 4))]
     : [...state.unread].sort((a, b) => a.seq - b.seq)
   const budget = Math.max(1, Math.floor(opts.limit))
   const chosen: SimMessage[] = []
@@ -64,7 +66,9 @@ export function buildWakeSnapshot(state: SimSessionState, opts: { limit: number;
   }
   const lines = chosen.sort((a, b) => a.seq - b.seq).map(m => compactSimMessage(m, opts.now))
   const partial = chosen.length < ordered.length
-  if (anchor) lines.push(`（当前要接的是 #${anchor.seq}。只附此人的少量前文。明确在问群里其他内容时，再查对应历史。）`)
+  if (anchor) lines.push(opts.mode === 'join' ? `（可主动参与 #${anchor.seq} 的话题。发言时点明你在接哪个话题。）` :
+    relatedMessages ? `（当前要接的是 #${anchor.seq}。其余是这条话题的参考消息。）` :
+      `（当前要接的是 #${anchor.seq}。只附此人的少量前文。明确在问群里其他内容时，再查对应历史。）`)
   else if (partial && lines.length) lines.push(`（未读共 ${ordered.length} 条，这里只给出最早的 ${chosen.length} 条；其余请用 simGetUnreadMessages 从 readThroughSeq 之后续读）`)
   return {
     text: lines.join('\n'),
