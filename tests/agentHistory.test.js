@@ -376,7 +376,9 @@ test('a capture timeout identifies a pending authorization acquisition and relea
     assert.equal(await f.state(), undefined)
     const [event] = f.calls.diagnostics
     assert.equal(event.code, 'history_source_timeout')
-    assert.deepEqual(event.details, { step: 'acquire', result: 'not_saved', limit: 100 })
+    const { stepMs, ...details } = event.details
+    assert.ok(Number.isSafeInteger(stepMs) && stepMs >= 0)
+    assert.deepEqual(details, { step: 'acquire', result: 'not_saved', limit: 100 })
   } finally { open() }
   f.behavior.begin = undefined
   await f.capture('另一次成功的原文')

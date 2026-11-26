@@ -3,7 +3,7 @@ import type { AgentHistoryConfig, AgentHistoryRecall, AgentHistoryRequestSource 
 import type { IncomingMessage } from '../../../contracts/platformMessage.js'
 import type { PersonMemoryEntry, PersonMemoryQuery, PersonMemoryStore } from '../../../contracts/personMemory.js'
 import type { PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
-import { reportAgentFailure, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import { agentErrorDetails, reportAgentFailure, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey, isPlatformIdentifier, platformAccountKey } from '../../runtime/domain/agentBindings.js'
 import { isPersonMemoryRedacted, samePersonMemoryScene } from '../domain/personMemory.js'
@@ -190,28 +190,36 @@ export function createAgentHistory(ports: {
       ...(binding.target.kind === 'private' ? { peerId: incoming.sender.id } : {}),
     }
     const started = performance.now()
-    let step: string = 'acquire'
+    let step: string = 'acquire', stepStarted = started
+    let confirmationPending = false
+    const advance = (next: string) => { step = next; stepStarted = performance.now() }
     try {
       await withContext(binding, guard, undefined, async context => {
-        step = 'check_recall'
-        if (!await permitted(binding, row, true, () => { step = 'authorization' }) || !context.isCurrent()) return
-        step = 'register_source'
+        advance('check_recall')
+        if (!await permitted(binding, row, true, () => advance('authorization')) || !context.isCurrent()) return
+        advance('register_source')
         if (!await ports.memory.registerSource({ identity: identity(binding), subjectId: row.authorId, source: sourceOf(binding, row) }, context.isCurrent)) return
-        step = 'save'
-        await store.update(agentHistoryId(binding), saved => {
+        const saved = await store.update(agentHistoryId(binding), saved => {
           if (saved?.rows.some(item => item.messageId === row.messageId)) return saved
           return { version: 1, id: agentHistoryId(binding), scope: { agentId: binding.agentId, target: structuredClone(binding.target) },
             rows: [...(saved?.rows ?? []).filter(item => item.at >= now() - retention()), row].slice(-maxRows()),
           }
-        }, context.isCurrent)
+        }, context.isCurrent, advance)
+        if (confirmationPending && saved) {
+          try {
+            ports.diagnostics?.emit({ stage: 'memory', operation: 'history_capture', outcome: 'succeeded', code: 'history_source_late_confirmed',
+              durationMs: performance.now() - started, details: { step, result: 'recovered' } })
+          } catch { /* Reporting cannot change a committed write. */ }
+        }
       })
     } catch (error) {
+      confirmationPending = step === 'history_store_commit' && agentErrorDetails(error)?.dispatched !== false
       reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'history_capture',
         code: error instanceof HistoryDeadlineError ? 'history_source_timeout' :
-          step === 'save' ? 'history_source_write_failed' : step === 'register_source' ? 'history_source_registration_failed' : 'history_source_check_failed',
-        outcome: step === 'save' ? 'unknown' : 'failed',
+          step.startsWith('history_store_') ? 'history_source_write_failed' : step === 'register_source' ? 'history_source_registration_failed' : 'history_source_check_failed',
+        outcome: confirmationPending ? 'unknown' : 'failed',
         durationMs: performance.now() - started,
-        details: { step, result: step === 'save' ? 'confirmation_pending' : 'not_saved',
+        details: { step, stepMs: Math.round(performance.now() - stepStarted), result: confirmationPending ? 'confirmation_pending' : 'not_saved',
           ...(error instanceof HistoryDeadlineError ? { limit: error.limit } : {}) }, error },
         () => ports.logger.warn('[Agent] 历史原始来源未能保存'))
     }

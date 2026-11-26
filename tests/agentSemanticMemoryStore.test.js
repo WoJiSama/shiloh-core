@@ -209,11 +209,12 @@ test('unsent Redis commands report scheduler timing and only reads retry', redis
     assert.equal(delayed.length, 1)
     assert.equal(await read, 'saved')
     assert.equal(events.length, 1)
-    const { dispatchTurnMs, timeoutOverrunMs, ...readDetails } = events[0].details
+    const { dispatchTurnMs, timeoutOverrunMs, loopActiveMs, ...readDetails } = events[0].details
     assert.deepEqual(readDetails, { step: 'get', limit: 2_000, attempt: 1, maxAttempts: 2, dispatched: false, result: 'retry_scheduled',
       dispatchTurnPending: false })
     assert.ok(Number.isSafeInteger(dispatchTurnMs) && dispatchTurnMs >= 0)
     assert.ok(Number.isSafeInteger(timeoutOverrunMs) && timeoutOverrunMs >= 0)
+    assert.ok(Number.isSafeInteger(loopActiveMs) && loopActiveMs >= 0)
     assert.deepEqual(recoveries.map(event => event.step), ['get'])
 
     holdNext = 1
@@ -230,9 +231,11 @@ test('unsent Redis commands report scheduler timing and only reads retry', redis
     await assert.rejects(write)
     assert.equal(await redis.storage.get('probe'), 'saved')
     assert.equal(events.length, 3)
-    const { timeoutOverrunMs: writeOverrunMs, ...writeDetails } = events[2].details
+    const { dispatchTurnMs: pendingMs, timeoutOverrunMs: writeOverrunMs, loopActiveMs: writeActiveMs, ...writeDetails } = events[2].details
     assert.deepEqual(writeDetails, { step: 'set', limit: 2_000, dispatched: false, result: 'not_dispatched', dispatchTurnPending: true })
     assert.ok(Number.isSafeInteger(writeOverrunMs) && writeOverrunMs >= 0)
+    assert.ok(Number.isSafeInteger(pendingMs) && pendingMs >= 0)
+    assert.ok(Number.isSafeInteger(writeActiveMs) && writeActiveMs >= 0)
   } finally {
     resumeWrite()
     await redis.close()

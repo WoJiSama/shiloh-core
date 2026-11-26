@@ -349,8 +349,9 @@ export async function openStandaloneMediaRelay(options: {
       await ownedRoot()
       const directory = path.join(run, `bridge-${digest(config.connectionId)}`)
       await mkdir(directory, { mode: 0o700 }); await chmod(directory, 0o700)
-      const bridge = await openQqMediaRelayBridge({ directory, resources: artifacts, listen: config.listen,
-        advertisedOrigin: config.advertisedOrigin, allowedPeers: config.allowedPeers })
+      // The bridge verifies the full copy before publishing its capability.
+      const bridge = await openQqMediaRelayBridge({ directory, resources: { open: artifacts.openStream }, listen: config.listen,
+        advertisedOrigin: config.advertisedOrigin, allowedPeers: config.allowedPeers, ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}) })
       bridges.set(config.connectionId, bridge)
     }
     await ownedRoot()

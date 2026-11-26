@@ -824,9 +824,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (!adapter.isReady()) return { state: 'failed', code: 'account_disconnected' }
       if (!adapter.actions.sendMediaRelay) return { state: 'failed', code: 'media_relay_unavailable' }
       const expected = agentBindingToken(binding)
-      const send = guardPendingSend(targetKey, () => !guard?.signal?.aborted && isRunning() && adapter.isReady() && adapterFor(target) === adapter &&
+      const send = guardPendingSend(targetKey, () => observeCurrent(() => !guard?.signal?.aborted && isRunning() && adapter.isReady() && adapterFor(target) === adapter &&
         conversationAddressKey(target) === targetKey && conversationEnabled(target) && guard?.isCurrent?.() !== false &&
-        bindingIsCurrent(target, expected) && allowsText(allText) && texts.every(allowsText) && plan.items.every(item => item.parts.every(part => part.kind !== 'text' || allowsText(part.text))))
+        bindingIsCurrent(target, expected) && allowsText(allText) && texts.every(allowsText) && plan.items.every(item => item.parts.every(part => part.kind !== 'text' || allowsText(part.text)))))
       try {
         if (!send.isCurrent()) return { state: 'failed', code: 'binding_changed' }
         try { return normalizeDeliveryReceipt(await adapter.actions.sendMediaRelay({ ...action, plan, binding },
@@ -1397,7 +1397,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
   })
   const mediaOutbox = createAgentMediaOutbox({
-    diagnostics, withDiagnosticScope: diagnostics.run,
+    diagnostics, withDiagnosticScope: diagnostics.withScope,
     storage, actions: messageActions, ...(options.mediaRelayProvider ? { provider: options.mediaRelayProvider } : {}),
     allowsText: text => options.allowsText?.(text, 'outgoing') !== false,
     ...(options.now ? { now: options.now } : {}), openContext: openMediaRelayContext,

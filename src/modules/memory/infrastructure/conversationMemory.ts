@@ -286,10 +286,23 @@ export function createConversationMemory(ports: {
     const timer = setTimeout(() => { timedOut = true; controller.abort() }, 40_000)
     const poll = setInterval(() => { if (!isCurrent()) controller.abort() }, 50)
     timer.unref?.(); poll.unref?.()
+    let authorizationStep: string | undefined
     const ensureCurrent = () => bounded((async () => {
-      if (!isCurrent() || await epoch(binding) !== invalidatedAt || (await safeRecords(binding, rows, controller.signal)).length !== rows.length ||
-          !await canReadUnattributedMemory(ports.memory, identity(binding), scene(target), controller.signal) ||
-          await store.cleanupToken(binding) !== cleanupToken || !isCurrent()) throw new Error('主线摘要来源已改变')
+      try {
+        authorizationStep = 'summary_binding_check'
+        if (!isCurrent()) throw new Error('主线摘要执行授权已改变')
+        authorizationStep = 'summary_privacy_epoch'
+        if (await epoch(binding) !== invalidatedAt) throw new Error('主线摘要隐私版本已改变')
+        authorizationStep = 'summary_source_records'
+        if ((await safeRecords(binding, rows, controller.signal)).length !== rows.length) throw new Error('主线摘要来源已改变')
+        authorizationStep = 'summary_scene_privacy'
+        if (!await canReadUnattributedMemory(ports.memory, identity(binding), scene(target), controller.signal)) throw new Error('主线摘要场景隐私不允许概括')
+        authorizationStep = 'summary_cleanup_fence'
+        if (await store.cleanupToken(binding) !== cleanupToken) throw new Error('主线摘要清理版本已改变')
+        authorizationStep = 'summary_binding_check'
+        if (!isCurrent()) throw new Error('主线摘要执行授权已改变')
+        authorizationStep = undefined
+      } catch (error) { throw annotateAgentError(error, { field: authorizationStep ?? 'summary_binding_check' }) }
     })())
     try {
       enterPhase('acquire')
@@ -354,6 +367,7 @@ export function createConversationMemory(ports: {
       finishPhase(writing ? 'unknown' : 'failed', {
         code, error, ...(provider?.httpStatus === undefined ? {} : { httpStatus: provider.httpStatus }),
         details: { result: writing ? 'confirmation_pending' : 'not_saved', attempt: state.attempts + 1, maxAttempts: MAX_SUMMARY_ATTEMPTS,
+          ...(authorizationStep ? { field: authorizationStep } : {}),
           ...(timedOut ? { limit: 40_000 } : {}) },
       })
       if (!ports.diagnostics) reportFailure(code, '[Agent] 主线摘要未完成，保留来源等待有限重试', error, now() - startedAt)

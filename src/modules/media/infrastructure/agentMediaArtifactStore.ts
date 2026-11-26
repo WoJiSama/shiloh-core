@@ -16,6 +16,7 @@ export interface AgentMediaArtifactStoreOptions {
 }
 export interface AgentMediaArtifactStore extends AgentMediaResourcePort {
   stage(input: { readonly kind: 'image' | 'video'; readonly mime: string; readonly chunks: AsyncIterable<Uint8Array> }, context: AgentMediaResourceContext): Promise<AgentMediaArtifactLease>
+  openStream(artifact: AgentMediaArtifact, context: AgentMediaResourceContext): Promise<AgentMediaArtifactReader>
   close(): Promise<void>
 }
 interface Entry {
@@ -242,7 +243,7 @@ export async function createAgentMediaArtifactStore(options: AgentMediaArtifactS
       }
     }
   }
-  async function openReader(artifact: AgentMediaArtifact, context: AgentMediaResourceContext): Promise<AgentMediaArtifactReader> {
+  async function openReader(artifact: AgentMediaArtifact, context: AgentMediaResourceContext, preflight: boolean): Promise<AgentMediaArtifactReader> {
     let entry: Entry | undefined
     try {
       const descriptor = artifact && typeof artifact === 'object' ? Object.getOwnPropertyDescriptor(artifact, 'id') : undefined
@@ -278,9 +279,11 @@ export async function createAgentMediaArtifactStore(options: AgentMediaArtifactS
       await current.authorize(); await ownDirectory(); current.check()
       handle = await open(selected.filename, constants.O_RDONLY | constants.O_NOFOLLOW)
       await matches(handle)
-      const hash = createHash('sha256')
-      for (let position = 0; position < selected.artifact.sizeBytes; position += BLOCK) hash.update(await readBlock(handle, position))
-      if (hash.digest('hex') !== selected.artifact.sha256) throw failure()
+      if (preflight) {
+        const hash = createHash('sha256')
+        for (let position = 0; position < selected.artifact.sizeBytes; position += BLOCK) hash.update(await readBlock(handle, position))
+        if (hash.digest('hex') !== selected.artifact.sha256) throw failure()
+      }
       await current.authorize()
       const file = handle
       let started = false, readerClosed = false, closing: Promise<void> | undefined
@@ -340,7 +343,10 @@ export async function createAgentMediaArtifactStore(options: AgentMediaArtifactS
   }
   const store: AgentMediaArtifactStore = {
     stage: (input, context) => track(stage(input, context)),
-    open: (artifact, context) => track(openReader(artifact, context)),
+    open: (artifact, context) => track(openReader(artifact, context, true)),
+    // Each block is checked against the digest recorded at staging before it
+    // can leave the bridge. Avoid a full second pass before the first byte.
+    openStream: (artifact, context) => track(openReader(artifact, context, false)),
     close() {
       if (closePromise) return closePromise
       closed = true; stop.abort()

@@ -1,6 +1,7 @@
 import { ClientClosedError, ClientOfflineError, ConnectionTimeoutError, createClient, ErrorReply,
   SocketClosedUnexpectedlyError, SocketTimeoutError, TimeoutError, type RedisClientOptions } from '@redis/client'
 import { randomUUID } from 'node:crypto'
+import { performance } from 'node:perf_hooks'
 import type { AgentDiagnosticDetails } from '../../../contracts/agentDiagnostics.js'
 import { annotateAgentError } from './agentDiagnostics.js'
 
@@ -58,13 +59,14 @@ class SemanticRedisQueueFull extends Error {}
 class RedisInvalidReply extends Error {}
 class RedisLeaseLost extends Error {}
 
-export async function openAgentRedis({ url, instance, onLost, onCommandFailure, onReadRecovered }: {
+export async function openAgentRedis({ url, instance, onLost, onCommandFailure, onReadRecovered, sampleConfigReadWork }: {
   url: string
   instance: string
   onLost(): void
   onCommandFailure?(event: { operation: RedisCommandOperation; outcome: 'failed' | 'unknown'; code: RedisFailureCode;
     durationMs: number; details: AgentDiagnosticDetails; error: unknown }): void
   onReadRecovered?(durationMs: number, step: 'get' | 'get_many'): void
+  sampleConfigReadWork?(): { configReadCount: number; configReadMs: number }
 }) {
   const client = await connectAgentRedis(url)
   const prefix = agentRedisPrefix(instance)
@@ -95,11 +97,13 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure, 
   timer.unref()
   client.on('end', loseLease)
 
-  type DispatchTurn = { ranAt?: number }
+  type DispatchTurn = { ranAt?: number; startedAt: number; loop: ReturnType<typeof performance.eventLoopUtilization>;
+    config?: ReturnType<NonNullable<typeof sampleConfigReadWork>> }
   let pendingDispatchTurn: DispatchTurn | undefined
   function observeDispatchTurn(): DispatchTurn {
     if (pendingDispatchTurn) return pendingDispatchTurn
-    const turn: DispatchTurn = {}
+    const config = sampleConfigReadWork?.()
+    const turn: DispatchTurn = { startedAt: performance.now(), loop: performance.eventLoopUtilization(), ...(config ? { config } : {}) }
     pendingDispatchTurn = turn
     // Node Redis schedules primary writes with setImmediate. A shared probe records
     // whether the check phase ran while a command was waiting, before any retry.
@@ -134,12 +138,19 @@ export async function openAgentRedis({ url, instance, onLost, onCommandFailure, 
       const limit = code === 'redis_command_queue_full' ? semanticQueueLimit : code === 'redis_command_queue_timeout' ?
         commandTimeoutMs : code === 'redis_socket_idle_timeout' ? semanticSocketIdleMs : undefined
       const durationMs = performance.now() - started
-      const dispatchTiming = code === 'redis_command_queue_timeout' && dispatchTurn ? {
-        timeoutOverrunMs: Math.max(0, Math.round(durationMs - commandTimeoutMs)),
-        ...(dispatchTurn.ranAt === undefined ? { dispatchTurnPending: true } : {
-          dispatchTurnPending: false, dispatchTurnMs: Math.max(0, Math.round(dispatchTurn.ranAt - started)),
-        }),
-      } : undefined
+      let dispatchTiming: AgentDiagnosticDetails | undefined
+      if (code === 'redis_command_queue_timeout' && dispatchTurn) {
+        const sample = sampleConfigReadWork?.(), before = dispatchTurn.config
+        const loop = performance.eventLoopUtilization(dispatchTurn.loop)
+        dispatchTiming = {
+          timeoutOverrunMs: Math.max(0, Math.round(durationMs - commandTimeoutMs)),
+          dispatchTurnPending: dispatchTurn.ranAt === undefined,
+          dispatchTurnMs: Math.max(0, Math.round((dispatchTurn.ranAt ?? performance.now()) - dispatchTurn.startedAt)),
+          loopActiveMs: Math.max(0, Math.round(loop.active)),
+          ...(before && sample ? { configReadCount: sample.configReadCount - before.configReadCount,
+            configReadMs: Math.max(0, Math.round(sample.configReadMs - before.configReadMs)) } : {}),
+        }
+      }
       const details: AgentDiagnosticDetails = { step, ...(limit === undefined ? {} : { limit }),
         ...dispatchTiming,
         ...(readAttempt === undefined ? {} : { attempt: readAttempt, maxAttempts: 2 }),

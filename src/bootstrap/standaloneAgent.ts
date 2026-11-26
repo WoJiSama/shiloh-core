@@ -81,7 +81,7 @@ import { createStandaloneAgentConsoleQqLogin } from './standaloneAgentConsoleQqL
 import { runStandaloneLegacyGroupArchiveMigration } from './standaloneAgentLegacyGroupArchive.js'
 import { createStandaloneAgentConsoleRuntime } from './standaloneAgentConsoleRuntime.js'
 import { createStandaloneAgentConsolePersistence } from './standaloneAgentConsolePersistence.js'
-import { inspectStandaloneAgentConfigTransaction, isStandaloneAgentSourceSnapshotCurrent, recoverStandaloneAgentConfigTransaction } from './standaloneAgentConfigSources.js'
+import { inspectStandaloneAgentConfigTransaction, isStandaloneAgentSourceSnapshotCurrent, recoverStandaloneAgentConfigTransaction, standaloneConfigReadWork } from './standaloneAgentConfigSources.js'
 import { createStandaloneAgentConsoleManagement } from './standaloneAgentConsoleManagement.js'
 import { createStandaloneAgentForgetOperations } from './standaloneAgentForgetOperations.js'
 import { createStandaloneAgentWorkspace } from './standaloneAgentWorkspace.js'
@@ -343,6 +343,7 @@ export async function main(argv: string[]): Promise<void> {
   try {
     storage = await openAgentRedis({ url: config.redisUrl, instance: config.instance,
       onLost: () => fail('[Agent] Redis 执行租约丢失，停止处理'),
+      sampleConfigReadWork: standaloneConfigReadWork,
       onCommandFailure: event => diagnostics.emit({ stage: 'host', ...event }),
       onReadRecovered: (durationMs, step) => diagnostics.emit({ stage: 'host', operation: 'redis_command', outcome: 'succeeded',
         code: 'redis_read_recovered', durationMs, details: { step, result: 'recovered', attempt: 2, maxAttempts: 2 } }),

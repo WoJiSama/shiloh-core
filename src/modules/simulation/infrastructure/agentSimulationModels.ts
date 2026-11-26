@@ -182,7 +182,9 @@ function client(options: AgentSimulationModelOptions, { deadlineMs, temperature,
     } catch (error) {
       if (error instanceof AgentSimulationModelError) throw error
       if (response && !response.ok) throw new AgentSimulationModelError('http_error', response.status)
-      if (signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError') throw new AgentSimulationModelError('provider_timeout')
+      if (signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError') {
+        throw annotateAgentError(new AgentSimulationModelError('provider_timeout'), { limit: timeoutMs })
+      }
       const failure = new AgentSimulationModelError(waitingForHeaders ? 'provider_transport_error' : 'model_response_invalid')
       throw annotateAgentError(failure, agentErrorDetails(error) ?? {})
     }
@@ -220,7 +222,8 @@ export function createAgentSimulationMemeExtractor(options: AgentSimulationModel
   const endpoint = URL.parse(options.baseUrl)
   const jsonObject = !!endpoint && glmFlashJsonOptions(endpoint, options.name).thinking?.type === 'disabled'
   const run = client(options, { deadlineMs: 15_000, temperature: 0.2, maxTokens: 2000, jsonObject })
-  return async (messages: readonly AgentSimulationMemeMessage[], isCurrent?: () => boolean, context?: PersonProfileExtractionContext): Promise<string> => {
+  return async (messages: readonly AgentSimulationMemeMessage[], isCurrent?: () => boolean, context?: PersonProfileExtractionContext,
+    onPhase?: (phase: AgentSimulationWakePhase) => void): Promise<string> => {
     const raw = await run(messages, () => {
       if (!Array.isArray(messages) || !messages.length || messages.length > 40 || messages.some(row => !row || typeof row.name !== 'string' || typeof row.text !== 'string')) throw new Error(FAILURE)
       return [
@@ -229,7 +232,7 @@ export function createAgentSimulationMemeExtractor(options: AgentSimulationModel
           : '你是群聊梗提取器，只输出 JSON 数组。' },
         { role: 'user', content: buildMemeExtractionPrompt(messages.map(row => ({ name: row.name.slice(0, 80), text: row.text })), jsonObject) },
       ]
-    }, context, isCurrent)
+    }, context, isCurrent, onPhase)
     let parsed: unknown
     try { parsed = parseOutput(raw, jsonObject ? '{' : '[') }
     catch { throw new AgentSimulationModelError('meme_output_json_invalid') }

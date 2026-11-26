@@ -4,6 +4,8 @@ export const QQ_OWNER_ALERT_MAX_LENGTH = 3_000
 
 export const agentDiagnosticResults = ['not_dispatched', 'not_saved', 'discarded', 'fallback_used', 'retry_scheduled', 'retry_exhausted', 'recovered', 'confirmation_pending'] as const
 export type AgentDiagnosticResult = typeof agentDiagnosticResults[number]
+export const agentDiagnosticValueTypes = ['missing', 'null', 'array', 'object', 'string', 'number', 'boolean', 'other'] as const
+export type AgentDiagnosticValueType = typeof agentDiagnosticValueTypes[number]
 export const agentJournalWriteSteps = ['journal_queue', 'journal_open', 'journal_verify', 'journal_verify_directories', 'journal_verify_path', 'journal_write', 'journal_sync', 'journal_close',
   'journal_directory_sync', 'journal_retention', 'journal_recovery', 'traffic_counter'] as const
 export type AgentJournalWriteStep = typeof agentJournalWriteSteps[number]
@@ -15,6 +17,8 @@ export interface AgentDiagnosticDetails {
   readonly cause?: string
   readonly field?: string
   readonly rule?: string
+  readonly expectedType?: AgentDiagnosticValueType
+  readonly actualType?: AgentDiagnosticValueType
   readonly limit?: number
   readonly nativeCode?: number
   readonly dispatched?: boolean
@@ -30,11 +34,16 @@ export interface AgentDiagnosticDetails {
   readonly slowestCompletedStepMs?: number
   readonly dispatchTurnPending?: boolean
   readonly dispatchTurnMs?: number
+  readonly loopActiveMs?: number
+  readonly configReadCount?: number
+  readonly configReadMs?: number
   readonly timeoutOverrunMs?: number
   readonly outputTokens?: number
   readonly reasoningTokens?: number
   readonly requestedSeq?: number
   readonly firstUnseenSeq?: number
+  readonly bytesWritten?: number
+  readonly bytesExpected?: number
 }
 
 export type AgentDiagnosticScope =

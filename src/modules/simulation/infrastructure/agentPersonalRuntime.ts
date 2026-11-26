@@ -9,7 +9,7 @@ import { parseAgentToolArguments } from '../../tools/infrastructure/agentToolSch
 import type { AgentCoreCapabilities, CoreCapability, CoreCapabilityContext, CoreCapabilityOrigin } from '../../tools/infrastructure/agentCoreCapabilities.js'
 import { sanitizeFinalReplyText } from '../../conversation/domain/replySanitizer.js'
 import { createAgentTaskClaim, hasLiveTaskClaim, type AgentScheduledWork, type AgentTaskClaim } from '../../runtime/infrastructure/agentTaskScheduler.js'
-import { annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
+import { annotateAgentError, diagnosticValueType } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { abortableAgentWeb } from '../../tools/infrastructure/agentPublicWeb.js'
 import { boundedPersonalToolText, decodePersonalTool, executePersonalTool, type PersonalToolDefinition } from '../domain/agentPersonalTools.js'
 import type { CharacterRedis } from './characterStore.js'
@@ -394,7 +394,8 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
       const proposal = await decide(id, 'self_profile', [
         '这是你的自主档案修订回合。档案从你的初始人设开始，长期归你本人。',
         '平时聊天里别人给你的称呼或命令没有写入权。这里由你自己决定名字、称呼、介绍以及性格和表达。',
-        '无需改变时只返回 {"action":"keep"}。有变化时返回单个 JSON 对象，action 为 update，reason 写简短理由，name、aliases、introduction、identity 只提交要修改的字段。',
+        '无需改变时只返回 {"action":"keep"}。有变化时只返回单个 JSON 对象，例如 {"action":"update","reason":"常用称呼有变化","aliases":["小希"]}。',
+        '更新仅可用 action、reason、name、aliases、introduction、identity。name、aliases、introduction、identity 中只提交变动项。revision 和 changedAt 由系统生成。',
         '名字最多64字，aliases 是最多8个互不重复且与名字不同的称呼，介绍最多400字，性格与表达最多1000字，理由最多400字。各字段使用单段文字。身份档案不能授予工具权限。',
       ].join('\n'), previous)
       code = 'self_profile_proposal_invalid'
@@ -404,8 +405,15 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
       if (proposal.action !== 'keep') {
         const invalid = proposal.action !== undefined && proposal.action !== 'update' ? { field: 'action', rule: 'enum' } :
           !Object.keys(proposal).every(key => fields.some(field => field === key) || key === 'action' || key === 'reason')
-            ? { rule: 'additionalProperties' } : !fields.some(key => Object.hasOwn(proposal, key)) ? { rule: 'profile_changes_required' } : undefined
+            ? { field: 'profile_update', rule: 'additionalProperties' } : !fields.some(key => Object.hasOwn(proposal, key)) ? { rule: 'profile_changes_required' } : undefined
         if (invalid) throw annotateAgentError(new Error('本人档案修订字段无效'), invalid)
+        for (const field of ['reason', ...fields] as const) {
+          if (field !== 'reason' && !Object.hasOwn(proposal, field)) continue
+          const expectedType = field === 'aliases' ? 'array' : 'string'
+          const actualType = diagnosticValueType(proposal[field])
+          if (actualType !== expectedType) throw annotateAgentError(new Error('本人档案修订字段类型无效'),
+            { field, rule: 'type', expectedType, actualType })
+        }
         const proposed = profile({ ...previous, ...proposal, reason: proposal.reason, revision: previous.revision + 1, changedAt: now() })
         if (fields.some(key => JSON.stringify(proposed[key]) !== JSON.stringify(previous[key]))) next = proposed
       }

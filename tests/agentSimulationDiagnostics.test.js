@@ -428,6 +428,24 @@ test('finish preflight reports fixed rejection reasons to QQ and allows a correc
   }
 })
 
+test('simSendMessage reports the invalid value type and accepts the corrected string array', async t => {
+  const diagnostics = spy()
+  const h = fixture({ diagnostics, script(_request, index) {
+    if (index === 0) return tools(toolCall('simSendMessage', { messages: [{ text: 'PRIVATE-TOOL-VALUE' }] }))
+    if (index === 1) return tools(toolCall('simSendMessage', { messages: ['已按数组发送'] }))
+    return tools(toolCall('simFinishTurn', { choice: 'silent', reason: '发送完成' }))
+  } })
+  t.after(() => h.runtime.stop())
+  await h.ingest()
+  await settled(h, 3)
+  const failed = diagnostics.events.find(row => row.operation === 'simSendMessage' && row.code === 'tool_schema_invalid')
+  assert.deepEqual(failed.details, { field: 'messages.items', rule: 'type', expectedType: 'string', actualType: 'object', result: 'not_dispatched', attempt: 1 })
+  assert.doesNotMatch(JSON.stringify(failed), /PRIVATE-TOOL-VALUE/u)
+  assert.match(h.calls[1].messages.find(row => row.role === 'tool').content, /"messages":\["你好"\]/u)
+  assert.equal(h.sent.length, 1)
+  assert.match(JSON.stringify(h.sent[0]), /已按数组发送/u)
+})
+
 test('markRead can finish a directed reply with an earlier unread gap', async t => {
   for (const readInSameBatch of [false, true]) await t.test(readInSameBatch ? 'with a read in the same batch' : 'with only the directed message shown', async t => {
     const diagnostics = spy(), h = fixture({ diagnostics, script(request) {

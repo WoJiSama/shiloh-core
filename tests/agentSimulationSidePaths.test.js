@@ -201,11 +201,13 @@ test('meme output validation retries once with current sources and accounts for 
       assert.equal(requests.length, 2)
       assert.deepEqual(requests[0], requests[1])
       assert.equal(usage.filter(row => row.stage === 'meme-extract').length, 2)
+      assert.ok(events.some(row => row.operation === 'simulation_meme_extract_response' &&
+        row.outcome === 'failed' && row.code === 'meme_output_schema_invalid' && row.details.result === 'retry_scheduled'))
       if (recovers) {
         assert.equal(f.session().memeCursor.seq, 20)
         assert.equal(f.session().memeRetryAt, undefined)
         assert.deepEqual((await f.store(binding).loadMemories(group)).map(row => row.content), ['蓝色星期八'])
-        assert.ok(events.some(row => row.operation === 'simulation_meme_extract_response' && row.outcome === 'failed' && row.code === 'meme_output_schema_recovered'))
+        assert.ok(events.some(row => row.operation === 'simulation_meme_extract_response' && row.outcome === 'succeeded' && row.code === 'meme_output_schema_recovered'))
       } else {
         assert.equal(f.session().memeCursor, undefined)
         assert.equal(f.session().memeRetryAt, at + 600_000)

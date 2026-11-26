@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { types } from 'node:util'
 import { agentJournalWriteSteps, type AgentDiagnosticDetails, type AgentDiagnosticEvent, type AgentDiagnosticScope,
-  type AgentDiagnosticSink, type AgentJournalWriteObserver, type AgentJournalWriteStep } from '../../../contracts/agentDiagnostics.js'
+  type AgentDiagnosticSink, type AgentDiagnosticValueType, type AgentJournalWriteObserver, type AgentJournalWriteStep } from '../../../contracts/agentDiagnostics.js'
 import { agentBindingToken, conversationAddressKey, platformAccountKey } from '../domain/agentBindings.js'
 import { parseAgentDiagnosticDetails } from './agentOperationJournal.js'
 
@@ -37,6 +37,14 @@ export function agentErrorDetails(error: unknown): AgentDiagnosticDetails | unde
     if (cause) return { cause }
     error = Object.getOwnPropertyDescriptor(error, 'cause')?.value
   }
+}
+
+export function diagnosticValueType(value: unknown): AgentDiagnosticValueType {
+  if (value === undefined) return 'missing'
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  const type = typeof value
+  return type === 'object' || type === 'string' || type === 'number' || type === 'boolean' ? type : 'other'
 }
 
 /** Only a leading bracketed label survives from runtime logger messages; bodies stay local. */
@@ -229,6 +237,13 @@ export function createAgentDiagnostics(options: {
     return event
   }
   const emit = (input: AgentDiagnosticInput) => { recordEvent(input) }
+  function emitReceipt(input: AgentDiagnosticInput, receipt: unknown): void {
+    const failure = (input.outcome === 'failed' || input.outcome === 'unknown') && receipt && typeof receipt === 'object' ? receipt : undefined
+    const prior = failure ? receiptEvents.get(failure) : undefined
+    const related = prior && prior.traceId === contexts.getStore()?.traceId && prior.outcome === input.outcome ? prior : undefined
+    const event = recordEvent(related ? { ...input, details: { ...input.details, causeEventId: related.id } } : input, !related)
+    if (failure && !related) receiptEvents.set(failure, event)
+  }
   function emitFailure(input: AgentDiagnosticInput, notifyRelated = false): void {
     const traceId = contexts.getStore()?.traceId
     let error = input.error
@@ -247,7 +262,7 @@ export function createAgentDiagnostics(options: {
     error(message, error) { const sourceTag = sourceTagOf(message); emit({ stage: 'runtime', operation: contexts.getStore()?.operation ?? 'host_log', outcome: 'failed', code: 'runtime_error', ...(sourceTag ? { sourceTag } : {}), ...(error === undefined ? {} : { error }) }) },
   }
   return {
-    emit, emitFailure, logger,
+    emit, emitFailure, emitReceipt, logger,
     traceId: () => contexts.getStore()?.traceId ?? hostTrace,
     scope: (): AgentDiagnosticScope => contexts.getStore()?.scope ?? { kind: 'host' },
     withScope<T>(scope: AgentDiagnosticScope, operation: string, fn: () => T, inheritTrace = false): T {

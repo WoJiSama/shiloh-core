@@ -93,16 +93,16 @@ export function createAgentSemanticMemory(ports: {
         agentBindingToken(selected.binding) === agentBindingToken(binding)
     } catch { return false }
   }
-  async function permitted(binding: AgentBindingSnapshot, rows: readonly AgentSemanticMemoryRow[], signal: AbortSignal, observed = false,
-    intake = false): Promise<AgentSemanticMemoryRow[]> {
+  async function authorizedSources(binding: AgentBindingSnapshot, rows: readonly AgentSemanticMemoryRow[], signal: AbortSignal,
+    observe?: (step: string) => void): Promise<AgentSemanticMemoryRow[]> {
     signal.throwIfAborted()
     if (!rows.length) return []
     const cutoff = now() - retention(), latest = now() + 60_000
     const peer = binding.target.kind === 'private' ? ports.privatePeer(binding.target) : undefined
-    // Observed rows already passed the cleanup fence in the same snapshot.
-    const candidates = (observed ? rows : await store.filterRows(binding, rows, intake)).filter(row => row.at >= cutoff && row.at <= latest &&
+    const candidates = rows.filter(row => row.at >= cutoff && row.at <= latest &&
       (binding.target.kind !== 'private' || peer === row.authorId) && ports.allowsText(row.text))
     signal.throwIfAborted()
+    observe?.('semantic_recall_fence')
     const recalled = ports.recalledMessageIds && candidates.length
       ? await ports.recalledMessageIds(binding.target, candidates.map(row => row.messageId), signal) : undefined
     const sources: AgentSemanticMemoryRow[] = []
@@ -111,6 +111,7 @@ export function createAgentSemanticMemory(ports: {
       if (!(recalled ? recalled.has(row.messageId) : await ports.isRecalled(binding.target, row.messageId))) sources.push(row)
     }
     signal.throwIfAborted()
+    observe?.('semantic_person_privacy')
     const owner = identity(binding)
     const batch = sources.length && ports.memory.getRedactionsBatch
       ? await ports.memory.getRedactionsBatch(owner, sources.map(row => row.authorId), signal) : undefined
@@ -126,7 +127,14 @@ export function createAgentSemanticMemory(ports: {
       if (!isPersonMemoryRedacted(source(binding, row), row.text, snapshot)) result.push(row)
     }
     signal.throwIfAborted()
-    return store.filterRows(binding, result, intake)
+    return result
+  }
+  async function permitted(binding: AgentBindingSnapshot, rows: readonly AgentSemanticMemoryRow[], signal: AbortSignal, observed = false,
+    intake = false): Promise<AgentSemanticMemoryRow[]> {
+    signal.throwIfAborted()
+    const candidates = observed ? rows : await store.filterRows(binding, rows, intake)
+    const allowed = await authorizedSources(binding, candidates, signal)
+    return allowed.length ? store.filterRows(binding, allowed, intake) : []
   }
   const present = (binding: AgentBindingSnapshot, rows: readonly AgentSemanticMemoryRow[], signal: AbortSignal) =>
     rows.length ? store.hasSources(agentSemanticMemoryId(binding), rows, signal) : Promise.resolve(true)
@@ -220,8 +228,8 @@ export function createAgentSemanticMemory(ports: {
       const ensureCurrent = async () => {
         if (sourceChange) throw sourceChange
         await context.ensureCurrent()
-        if (!await present(binding, batch, context.signal) || (await permitted(binding, batch, context.signal, true)).length !== batch.length ||
-            !context.isCurrent()) {
+        if ((await authorizedSources(binding, batch, context.signal)).length !== batch.length ||
+            !await present(binding, batch, context.signal) || !context.isCurrent()) {
           sourceChange = new SemanticSourceChangedError('语义索引来源已失效')
           throw sourceChange
         }
@@ -267,11 +275,13 @@ export function createAgentSemanticMemory(ports: {
     const viewerCurrent = () => guard() && !callerSignal?.aborted
     const started = performance.now()
     let phase: NonNullable<AgentSemanticMemoryTimeoutError['phase']> = 'source_check'
-    let phaseStarted = started
+    let phaseStarted = started, localStarted = started, localStep = 'semantic_acquire'
     const advance = (next: typeof phase) => { phase = next; phaseStarted = performance.now() }
+    const observeSource = (step: string) => { localStep = step; localStarted = performance.now() }
     let fallback: AgentSemanticMemoryRecall | undefined
     return withContext(binding, viewerCurrent, budget, async context => {
         const id = agentSemanticMemoryId(binding)
+        observeSource('semantic_store_observation')
         const observed = await store.observe(id, context.signal)
         const saved = observed.state
         const excluded = new Set(excludeMessageIds)
@@ -288,7 +298,9 @@ export function createAgentSemanticMemory(ports: {
           const scopeId = agentSemanticMemoryId(sourceBinding)
           for (const row of rows) evidence.push({ id: createHash('sha256').update(JSON.stringify([scopeId, row.messageId])).digest('hex'), binding: sourceBinding, row })
         }
-        append(binding, await permitted(binding, (saved?.rows ?? []).filter(row => !excluded.has(row.messageId)), context.signal, true))
+        // observe() already applies the cleanup fence. Check the exact rows
+        // again with a fresh fence before they can leave this operation.
+        append(binding, await authorizedSources(binding, (saved?.rows ?? []).filter(row => !excluded.has(row.messageId)), context.signal, observeSource))
         if (proof && subjectId && ports.authorizePrivateSource) {
           for (const entry of await store.listScopes()) {
             const scope = entry.scope
@@ -296,8 +308,9 @@ export function createAgentSemanticMemory(ports: {
                 platformAccountKey(scope.target.account) !== platformAccountKey(binding.target.account)) continue
             const sourceBinding = ports.resolve(scope.target)?.binding
             if (!sourceBinding || sourceBinding.agentId !== binding.agentId || !current(sourceBinding)) continue
+            observeSource('semantic_store_observation')
             const sourceSnapshot = await store.observe(entry.id, context.signal)
-            const rows = await permitted(sourceBinding, (sourceSnapshot.state?.rows ?? []).filter(row => row.authorId === subjectId), context.signal, true)
+            const rows = await authorizedSources(sourceBinding, (sourceSnapshot.state?.rows ?? []).filter(row => row.authorId === subjectId), context.signal, observeSource)
             if (!rows.length) continue
             await context.ensureCurrent()
             if (!await abortable(ports.authorizePrivateSource(binding, sourceBinding, subjectId, context), context.signal)) continue
@@ -317,6 +330,8 @@ export function createAgentSemanticMemory(ports: {
         let queryEpoch: number | undefined
         let remoteQuery = false
         const ensureEvidence = async (candidates: readonly Evidence[], activeContext = context) => {
+          const observe = activeContext === context ? observeSource : undefined
+          observe?.('semantic_binding_authorization')
           await activeContext.ensureCurrent()
           const groups = new Map<string, { binding: AgentBindingSnapshot; rows: AgentSemanticMemoryRow[] }>()
           for (const item of candidates) {
@@ -327,18 +342,15 @@ export function createAgentSemanticMemory(ports: {
           for (const group of groups.values()) {
             const sourceBinding = group.binding
             if (!current(sourceBinding)) throw new SemanticSourceChangedError('语义召回来源已失效')
-            const [exists, allowed] = await Promise.all([
-              present(sourceBinding, group.rows, activeContext.signal),
-              permitted(sourceBinding, group.rows, activeContext.signal, true),
-            ])
-            if (!exists || allowed.length !== group.rows.length) {
-              throw new SemanticSourceChangedError('语义召回来源已失效')
-            }
+            const allowed = await authorizedSources(sourceBinding, group.rows, activeContext.signal, observe)
+            if (allowed.length !== group.rows.length) throw new SemanticSourceChangedError('语义召回来源已失效')
             if (conversationAddressKey(sourceBinding.target) !== conversationAddressKey(binding.target) &&
                 (!proof || !subjectId || !ports.authorizePrivateSource || group.rows.some(row => row.authorId !== subjectId) ||
                  !await abortable(ports.authorizePrivateSource(binding, sourceBinding, subjectId, activeContext), activeContext.signal))) {
               throw new SemanticSourceChangedError('私聊本人历史来源授权已改变')
             }
+            observe?.('semantic_source_commit_fence')
+            if (!await present(sourceBinding, group.rows, activeContext.signal)) throw new SemanticSourceChangedError('语义召回来源已失效')
           }
           if ((proof && !(await allowsQuery(activeContext))) || !activeContext.isCurrent()) throw new SemanticSourceChangedError('语义查询来源权限已改变')
         }
@@ -408,6 +420,7 @@ export function createAgentSemanticMemory(ports: {
           return queryVector
         }
         const prepareFallback = async () => {
+          observeSource('semantic_keyword_ranking')
           const selected = rank().slice(0, topK).map(hit => rowById.get(hit.chunk.id)!)
           if (!selected.length) return
           await ensureEvidence(selected)
@@ -429,6 +442,7 @@ export function createAgentSemanticMemory(ports: {
           if ('error' in result) throw result.error
           queryVector = result.value
         } else queryVector = await retrieveVector()
+        observeSource('semantic_hybrid_ranking')
         let hits = rank(queryVector)
         const candidates = () => hits.map(hit => rowById.get(hit.chunk.id)!)
         const usesRerank = mode === 'production' || mode === 'hybrid-rerank'
@@ -463,7 +477,8 @@ export function createAgentSemanticMemory(ports: {
         return project(selected, projection)
       }, related, callerSignal, () => phase).catch(error => {
         if (error instanceof AgentSemanticMemoryTimeoutError) annotateAgentError(error, {
-          stepMs: Math.round(performance.now() - phaseStarted),
+          stepMs: Math.round(performance.now() - (error.phase === 'source_check' ? localStarted : phaseStarted)),
+          ...(error.phase === 'source_check' ? { field: localStep } : {}),
         })
         if (!fallback || !(error instanceof AgentSemanticMemoryTimeoutError || error instanceof SemanticProviderError) ||
             !viewerCurrent() || !current(binding)) throw error

@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repo = fileURLToPath(new URL('../', import.meta.url)), release = path.resolve(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo)
 const { createAgentMediaOutbox } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentMediaOutbox.js')).href)
+const { createAgentDiagnostics } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/runtime/infrastructure/agentDiagnostics.js')).href)
 const { agentMediaOutboxId } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/media/infrastructure/agentMediaOutboxLedger.js')).href)
 const { openAgentRedis, connectAgentRedis, agentRedisPrefix } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/runtime/infrastructure/agentRedis.js')).href)
 const { createAgentBindingDirectory, conversationAddressKey } = await import(pathToFileURL(path.join(release, 'dist/backend/modules/runtime/domain/agentBindings.js')).href)
@@ -38,7 +39,7 @@ const gallery = { version: 1, items: [{ parts: [{ kind: 'text', text: '抖音图
 async function bounded(promise, ms = 3000) { let timer; try { return await Promise.race([promise, new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error('outbox fixture hung')), ms) })]) } finally { clearTimeout(timer) } }
 async function waitFor(probe, label, ms = 5000) { const end = Date.now() + ms; while (Date.now() < end) { const value = await probe(); if (value) return value; await delay(10) }; assert.fail(`timed out: ${label}`) }
 
-async function fixture(t) {
+async function fixture(t, diagnostics) {
   const directory = await mkdtemp(path.join(tmpdir(), 'media-outbox-redis-')), socket = path.join(directory, 'redis.sock')
   const server = spawn('redis-server', ['--port', '0', '--unixsocket', socket, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
   const exited = once(server, 'exit').catch(() => {})
@@ -91,7 +92,10 @@ async function fixture(t) {
   }
   const create = () => {
     outbox = createAgentMediaOutbox({ storage, now: () => clock,
-      actions: { send: (action, guard) => send(action, guard, 'text'), sendMediaRelay: (action, guard) => send(action, guard, 'relay') },
+      ...(diagnostics ? { diagnostics, withDiagnosticScope: diagnostics.withScope } : {}),
+      actions: { send: (action, guard) => send(action, guard, 'text'), sendMediaRelay: (action, guard) => diagnostics
+        ? diagnostics.run({ kind: 'conversation', binding: action.binding }, 'send_sendMediaRelay', () => send(action, guard, 'relay'), 'delivery')
+        : send(action, guard, 'relay') },
       provider: { async prepare(share, scope) { const job = byReference.get(referenceKey(share)); preparations.push(job.id); return prepareHook ? prepareHook(job, scope, () => prepared(job)) : prepared(job) } },
       async openContext(record, signal) { opens.push(record.id); return openHook ? openHook(record, signal, () => makeContext(record, signal)) : makeContext(record, signal) } })
     runners.push(outbox); return outbox
@@ -512,6 +516,36 @@ for (const stage of ['forward', 'forwardRetry', 'link']) test(`Bilibili ${stage}
   await f.outbox.start(); const record = await f.finished(job)
   assert.equal(record.state, 'unknown'); assert.deepEqual(f.calls.map(call => call.effect), expected)
   await f.outbox.stop(); const restarted = f.create(); await restarted.start(); await f.idle(); assert.equal(f.calls.length, expected.length)
+})
+
+test('Bilibili retries a proved transport rejection once and records the first failure even if it recovers', redisTest, async t => {
+  for (const retry of ['sent', 'failed', 'unknown']) await t.test(retry, async t => {
+    const events = [], alerts = []
+    const diagnostics = createAgentDiagnostics({ logger: { info() {}, warn() {}, error() {} },
+      sink: { async append(event) { events.push(event); return true } }, onFailure: event => alerts.push(event) })
+    const f = await fixture(t, diagnostics), job = await f.enqueue()
+    const rejected = () => ({ state: 'failed', code: 'media_resource_fetch_closed' })
+    f.setSend(call => call.effect === 'forward' ? rejected() : call.effect === 'forwardRetry'
+      ? retry === 'sent' ? sent('retried-forward') : retry === 'failed' ? rejected() : { state: 'unknown' }
+      : sent('card-receipt'))
+    await f.outbox.start()
+    const record = await f.finished(job)
+    await f.idle(); await diagnostics.flush()
+    assert.deepEqual(f.calls.map(call => call.effect), retry === 'failed' ? ['forward', 'forwardRetry', 'forwardCard'] : ['forward', 'forwardRetry'])
+    assert.deepEqual(f.calls[1].action.plan, f.calls[0].action.plan)
+    assert.equal(record.state, retry === 'unknown' ? 'unknown' : 'completed')
+    if (retry === 'failed') assert.deepEqual(f.calls[2].action.plan.items, [{ parts: [{ kind: 'image', artifact: cover }] }])
+    const first = alerts[0]
+    assert.equal(first.code, 'media_resource_fetch_closed')
+    assert.ok(events.some(event => event.operation === 'media_forward' && event.details?.causeEventId === first.id && event.traceId === first.traceId))
+    assert.equal(alerts.length, retry === 'sent' ? 1 : 2)
+    assert.ok(!events.some(event => event.code === 'close_ledger_failed'))
+    assert.ok(events.some(event => event.operation === 'media_deliver' && event.code === 'workflow_settled' &&
+      event.outcome === (retry === 'unknown' ? 'unknown' : 'succeeded')))
+    await f.outbox.stop(); await f.create().start(); await f.idle()
+    assert.equal(f.calls.length, retry === 'failed' ? 3 : 2)
+    assert.equal((await f.inspect(job)).state, record.state)
+  })
 })
 
 test('a channel thumbnail rejection can deliver the native card while videos stay provider-owned until cleanup', redisTest, async t => {

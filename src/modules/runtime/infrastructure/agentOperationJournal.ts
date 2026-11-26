@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { stderr } from 'node:process'
 import { isProxy } from 'node:util/types'
 import type { AgentBindingSnapshot, PlatformAccountRef } from '../../../contracts/agentBinding.js'
-import { agentDiagnosticResults, agentJournalWriteSteps, type AgentDiagnosticDetails, type AgentDiagnosticEvent, type AgentDiagnosticScope,
+import { agentDiagnosticResults, agentDiagnosticValueTypes, agentJournalWriteSteps, type AgentDiagnosticDetails, type AgentDiagnosticEvent, type AgentDiagnosticScope,
   type AgentJournalWriteObserver, type AgentJournalWriteStep, type AgentOperationJournal } from '../../../contracts/agentDiagnostics.js'
 
 export type { AgentDiagnosticEvent, AgentDiagnosticScope, AgentDiagnosticSink, AgentOperationJournal } from '../../../contracts/agentDiagnostics.js'
@@ -71,18 +71,20 @@ function scope(value: unknown): AgentDiagnosticScope {
   throw failure()
 }
 export function parseAgentDiagnosticDetails(value: unknown): Readonly<AgentDiagnosticDetails> {
-  const row = record(value, ['step', 'cause', 'field', 'rule', 'limit', 'nativeCode', 'dispatched', 'result',
+  const row = record(value, ['step', 'cause', 'field', 'rule', 'expectedType', 'actualType', 'limit', 'nativeCode', 'dispatched', 'result',
     'retryInMs', 'attempt', 'maxAttempts', 'causeEventId', 'queueMs', 'stepMs', 'blockingStep', 'slowestCompletedStep', 'slowestCompletedStepMs',
-    'dispatchTurnPending', 'dispatchTurnMs', 'timeoutOverrunMs', 'outputTokens', 'reasoningTokens', 'requestedSeq', 'firstUnseenSeq'])
+    'dispatchTurnPending', 'dispatchTurnMs', 'loopActiveMs', 'configReadCount', 'configReadMs', 'timeoutOverrunMs', 'outputTokens', 'reasoningTokens', 'requestedSeq', 'firstUnseenSeq', 'bytesWritten', 'bytesExpected'])
   for (const key of ['step', 'cause', 'field', 'rule', 'causeEventId']) if (row[key] !== undefined) token(row[key])
   for (const key of ['limit', 'retryInMs', 'attempt', 'maxAttempts', 'queueMs', 'stepMs', 'slowestCompletedStepMs',
-    'dispatchTurnMs', 'timeoutOverrunMs', 'outputTokens', 'reasoningTokens', 'requestedSeq', 'firstUnseenSeq']) if (row[key] !== undefined &&
+    'dispatchTurnMs', 'loopActiveMs', 'configReadCount', 'configReadMs', 'timeoutOverrunMs', 'outputTokens', 'reasoningTokens', 'requestedSeq', 'firstUnseenSeq', 'bytesWritten', 'bytesExpected']) if (row[key] !== undefined &&
       (!Number.isSafeInteger(row[key]) || Number(row[key]) < 0)) throw failure()
   for (const key of ['blockingStep', 'slowestCompletedStep']) if (row[key] !== undefined &&
       !agentJournalWriteSteps.some(step => step === row[key])) throw failure()
   if (row.nativeCode !== undefined && (!Number.isInteger(row.nativeCode) || Math.abs(Number(row.nativeCode)) > 2_147_483_647)) throw failure()
   for (const key of ['dispatched', 'dispatchTurnPending']) if (row[key] !== undefined && typeof row[key] !== 'boolean') throw failure()
   if (row.result !== undefined && !agentDiagnosticResults.some(item => item === row.result)) throw failure()
+  for (const key of ['expectedType', 'actualType']) if (row[key] !== undefined &&
+      !agentDiagnosticValueTypes.some(type => type === row[key])) throw failure()
   return Object.freeze(row) as AgentDiagnosticDetails
 }
 

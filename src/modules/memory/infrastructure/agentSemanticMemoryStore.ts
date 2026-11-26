@@ -231,7 +231,9 @@ export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) 
       revision: saved.revision,
       vectors: saved.vectors,
       size: (saved.stateRaw?.length ?? 0) + vectorBytes,
-      isUnchanged: () => matches?.call(redis, snapshotKeys(id), digests) ?? Promise.resolve(false),
+      isUnchanged: (includeVectors = true) => matches?.call(redis,
+        includeVectors ? snapshotKeys(id) : snapshotKeys(id).slice(0, 3),
+        includeVectors ? digests : digests.slice(0, 3)) ?? Promise.resolve(false),
     }
   }
   function rememberObservation(id: string, next: ReturnType<typeof observation>) {
@@ -467,7 +469,7 @@ export function createAgentSemanticMemoryStore(redis: AgentSemanticMemoryRedis) 
         signal.throwIfAborted()
         const prior = observations.get(id)
         let state: AgentSemanticMemoryState | undefined
-        if (prior && await prior.isUnchanged()) state = prior.state
+        if (prior && await prior.isUnchanged(false)) state = prior.state
         else {
           signal.throwIfAborted()
           const saved = await sourceSnapshot(id, redis)

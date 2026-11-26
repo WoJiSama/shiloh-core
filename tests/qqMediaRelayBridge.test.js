@@ -251,6 +251,19 @@ test('HTTP streaming cancellation and release interrupt backpressure without del
   assert.deepEqual(await f.copiedFiles(), [])
 })
 
+test('a peer disconnect records the active transfer step and byte count without disclosing the bridge URL', async t => {
+  const failures = [], f = await fixture(t, { diagnostics: { emit: event => failures.push(event) } })
+  const original = await f.video(16 * MiB), lease = await f.bridge.stage(original.artifact, context())
+  await assert.rejects(download(lease.nativeUrl, { onData(_bytes, response) { response.destroy() } }))
+  await waitFor(() => failures.length === 1, 'observe peer closing the socket')
+  assert.equal(failures[0].code, 'media_bridge_peer_closed')
+  assert.equal(failures[0].httpStatus, 200)
+  assert.equal(failures[0].details.bytesExpected, 16 * MiB)
+  assert.ok(failures[0].details.bytesWritten > 0 && failures[0].details.bytesWritten < 16 * MiB)
+  assert.ok(!JSON.stringify(failures[0]).includes(lease.nativeUrl))
+  await lease.release(); await original.release()
+})
+
 test('bridge.close removes only its own copies and listener while preserving host resources and neighbors', async t => {
   const f = await fixture(t), original = await f.image(), lease = await f.bridge.stage(original.artifact, context())
   await writeFile(path.join(f.bridgeDirectory, 'neighbor.txt'), 'retained')

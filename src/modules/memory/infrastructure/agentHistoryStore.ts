@@ -4,6 +4,7 @@ import { agentConversationKey, decodeAgentConversationKey, isConversationAddress
 import type { AgentSourceMemoryCleanupGuard, AgentSourceMemoryPurgeSubject } from '../../../contracts/sourceMemoryCleanup.js'
 import { conversationCleanupCurrent, conversationCleanupMatchesScope, filterConversationCleanupRows, parseConversationCleanup } from './conversationMemoryCleanup.js'
 import { createSubjectMemoryCleanup } from './subjectMemoryCleanup.js'
+import { agentErrorDetails, annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
 
 export interface AgentHistoryRow {
   messageId: string
@@ -53,11 +54,11 @@ local cleanup = redis.call('GET', KEYS[3])
 if (catalog or false) ~= (ARGV[1] == '1' and ARGV[2] or false)
   or (state or false) ~= (ARGV[3] == '1' and ARGV[4] or false)
   or (cleanup or false) ~= (ARGV[5] == '1' and ARGV[6] or false) then return 0 end
-redis.call('SET', KEYS[1], ARGV[7])
+if catalog ~= ARGV[7] then redis.call('SET', KEYS[1], ARGV[7]) end
 if ARGV[8] == '1' then redis.call('SET', KEYS[2], ARGV[9]) else redis.call('DEL', KEYS[2]) end
 return 1`
 
-function fail(): never { throw new Error(FAILURE) }
+function fail(cause?: unknown): never { throw annotateAgentError(new Error(FAILURE), agentErrorDetails(cause) ?? {}) }
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -124,10 +125,15 @@ function sameSource(left: AgentHistoryRow, right: AgentHistoryRow): boolean {
     left.at === right.at && left.peerId === right.peerId
 }
 
+type HistoryWriteStep = 'history_store_read' | 'history_store_decode' | 'history_store_prepare' | 'history_store_commit'
+type ObserveHistoryWrite = (step: HistoryWriteStep) => void
+
 export function createAgentHistoryStore(redis: AgentHistoryRedis) {
   const cleanup = createSubjectMemoryCleanup(redis, CLEANUP_KEY, 'history-records')
-  async function snapshot(id: string) {
+  async function snapshot(id: string, observe?: ObserveHistoryWrite) {
+    observe?.('history_store_read')
     const values = await redis.eval(READ_PAIR, { keys: [CATALOG_KEY, stateKey(id), CLEANUP_KEY], arguments: [] })
+    observe?.('history_store_decode')
     if (!Array.isArray(values) || values.length !== 3) fail()
     const catalogRaw = raw(values[0]), stateRaw = raw(values[1]), cleanupRaw = raw(values[2])
     const catalog = parseCatalog(catalogRaw), state = parseState(stateRaw, id)
@@ -140,13 +146,18 @@ export function createAgentHistoryStore(redis: AgentHistoryRedis) {
     const rows = filterConversationCleanupRows(state.scope, state.rows, fences)
     return rows.length || !fences.entries.some(entry => conversationCleanupMatchesScope(state.scope, entry)) ? { ...state, rows } : undefined
   }
-  async function commit(id: string, saved: Awaited<ReturnType<typeof snapshot>>, next: AgentHistoryState | undefined) {
-    const nextRaw = next ? JSON.stringify(next) : null
+  async function commit(id: string, saved: Awaited<ReturnType<typeof snapshot>>, next: AgentHistoryState | undefined,
+    nextRaw = next ? JSON.stringify(next) : null) {
     const entry = next && { id, scope: next.scope }
-    const entries = entry ? saved.catalog.some(row => row.id === id) ? saved.catalog.map(row => row.id === id ? entry : row) : [...saved.catalog, entry] : saved.catalog.filter(row => row.id !== id)
-    if (entries.length > MAX_STATES) fail()
+    let catalog = saved.catalogRaw
+    if (!entry || !saved.state) {
+      const entries = entry ? [...saved.catalog, entry] : saved.catalog.filter(row => row.id !== id)
+      if (entries.length > MAX_STATES) fail()
+      catalog = JSON.stringify({ version: 1, entries })
+    }
+    if (catalog === null) fail()
     const result = await redis.eval(COMPARE_AND_SET, { keys: [CATALOG_KEY, stateKey(id), CLEANUP_KEY],
-      arguments: [...expected(saved.catalogRaw), ...expected(saved.stateRaw), ...expected(saved.cleanupRaw), JSON.stringify({ version: 1, entries }), ...expected(nextRaw)] })
+      arguments: [...expected(saved.catalogRaw), ...expected(saved.stateRaw), ...expected(saved.cleanupRaw), catalog, ...expected(nextRaw)] })
     if (result !== 0 && result !== 1) fail()
     return result === 1
   }
@@ -162,13 +173,15 @@ export function createAgentHistoryStore(redis: AgentHistoryRedis) {
         return filtered(saved.state, saved.fences)
       } catch { return fail() }
     },
-    async update(id: string, mutate: (state: AgentHistoryState | undefined) => AgentHistoryState | undefined, isCurrent?: () => boolean): Promise<boolean> {
+    async update(id: string, mutate: (state: AgentHistoryState | undefined) => AgentHistoryState | undefined, isCurrent?: () => boolean,
+      observe?: ObserveHistoryWrite): Promise<boolean> {
       try {
         if (!ID_PATTERN.test(id)) fail()
         for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
           if (!current(isCurrent)) return false
-          const saved = await snapshot(id), { stateRaw, state } = saved
+          const saved = await snapshot(id, observe), { stateRaw, state } = saved
           if (!current(isCurrent)) return false
+          observe?.('history_store_prepare')
           const candidate = mutate(structuredClone(filtered(state, saved.fences)))
           const next = filtered(parseState(candidate === undefined ? null : JSON.stringify(candidate), id), saved.fences)
           const nextRaw = next === undefined ? null : JSON.stringify(next)
@@ -182,10 +195,10 @@ export function createAgentHistoryStore(redis: AgentHistoryRedis) {
           }
           if (!current(isCurrent)) return false
           if (nextRaw === stateRaw || !state && !next) return true
-          if (!current(isCurrent)) return false
-          if (await commit(id, saved, next)) return true
+          observe?.('history_store_commit')
+          if (await commit(id, saved, next, nextRaw)) return true
         }
-      } catch { fail() }
+      } catch (error) { fail(error) }
       return fail()
     },
     purgeSubject(input: AgentSourceMemoryPurgeSubject, guard: AgentSourceMemoryCleanupGuard) {

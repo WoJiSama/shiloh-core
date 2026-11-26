@@ -113,6 +113,11 @@ const operationNames = new Map(Object.entries({
   media_prepare: '准备搬运内容',
   media_provider_prepare: '获取搬运内容',
   media_deliver: '搬运内容投递',
+  send_sendMediaRelay: '调用 QQ 媒体投递',
+  media_forward: '发送搬运合并转发',
+  media_forwardRetry: '重试搬运合并转发',
+  media_forwardCard: '仅发送搬运简图',
+  qq_media_bridge: '向 QQ 提供临时媒体资源',
   media_failure_notice: '搬运失败通知',
   bilibili_provider_identify: '解析 B 站链接',
   bilibili_provider_metadata: '请求 B 站资源信息',
@@ -415,6 +420,11 @@ const failureReasons = new Map(Object.entries({
   finish_reply_reference_invalid: 'replyToSeq 没有指向有效的近期消息，本次收尾未提交。',
   effect_rejected: '接收端拒绝了本次投递。',
   effect_unknown: '暂时无法确认内容是否已送达。',
+  media_resource_fetch_closed: 'NapCat 在读取视频资源时连接断开，本次还未向会话发送合并转发。',
+  media_resource_preprocessing_failed: 'NapCat 在准备合并转发资源时失败，本次还未向会话发送。',
+  media_bridge_socket_timeout: '媒体桥接连接长时间未传输数据，服务端已关闭连接。',
+  media_bridge_peer_closed: '媒体桥接响应结束前，接收端关闭了连接。',
+  media_bridge_read_failed: '媒体桥接未能完成临时资源读取或写入。',
   state_or_authority_unconfirmed: '骰子命令未能确认权限或账本状态。',
   state_commit_unconfirmed: '骰子计算结果的账本提交未获确认。',
   effect_claim_unconfirmed: '未能确认取得下一步骰子操作的执行权。',
@@ -518,6 +528,17 @@ const stepNames = new Map(Object.entries({
   provider_request: '请求服务', request_prepare: '准备请求', response_body: '读取响应体', response_validation: '校验响应',
   response_headers: '等待响应头',
   wake_request_authorization: '复核唤醒请求发送权限', wake_response_authorization: '复核唤醒结果使用权限',
+  meme_request_authorization: '复核群梗请求发送权限', meme_response_authorization: '复核群梗结果使用权限',
+  semantic_acquire: '取得语义记忆读取授权', semantic_store_observation: '读取语义原文和向量状态',
+  semantic_recall_fence: '批量检查语义原文是否已撤回', semantic_person_privacy: '批量核对语义原文隐私规则',
+  semantic_binding_authorization: '复核语义原文所属会话授权', semantic_source_commit_fence: '复核原文仍存在且未被清理',
+  semantic_keyword_ranking: '计算关键词排名', semantic_hybrid_ranking: '合并关键词和向量排名',
+  summary_binding_check: '核验摘要任务当前的会话绑定和执行权', summary_privacy_epoch: '核对摘要场景隐私版本',
+  summary_source_records: '复核摘要原文的撤回和个人隐私规则', summary_scene_privacy: '核验场景是否允许生成综合摘要',
+  summary_cleanup_fence: '核对摘要原文清理版本',
+  history_store_read: '从 Redis 读取历史原文账本及清理规则', history_store_decode: '解析历史原文账本',
+  history_store_prepare: '校验并序列化待保存的历史原文', history_store_commit: '提交历史原文并等待 Redis 确认',
+  profile_update: '本人档案更新对象',
   semantic_request_authorization: '复核向量请求发送权限', semantic_response_authorization: '复核向量结果使用权限',
   conversation_recall_read: '读取消息撤回凭据', conversation_person_privacy: '读取发送者隐私规则',
   conversation_admission: '取得会话记忆写入权限', conversation_scene_privacy: '读取会话隐私版本',
@@ -553,12 +574,21 @@ const stepNames = new Map(Object.entries({
   bilibili_output_check: '核验 B 站出站内容', bilibili_card_render: '渲染 B 站简图', bilibili_card_store: '存储 B 站简图',
   bilibili_plan: '校验 B 站合并转发计划', bilibili_prepare_confirmation: '确认 B 站搬运来源仍有效',
   bilibili_url: '核验 B 站地址', bilibili_authorization: '复核 B 站来源权限', bilibili_dns: '解析 B 站服务域名',
+  bridge_request_authorization: '核验桥接资源的访问权限',
+  bridge_open_artifact: '打开桥接临时文件',
+  bridge_read_artifact: '读取和校验桥接文件分块',
+  bridge_write_socket: '向 NapCat 写入响应',
+  bridge_finish: '结束媒体响应',
   bilibili_media_type: '核验 B 站媒体类型', bilibili_artifact_stage: '写入和核验媒体临时文件',
   bilibili_image: '下载和核验 B 站图片',
 }))
 const deliveryNames: Record<NonNullable<AgentDiagnosticEvent['delivery']>['state'], string> = {
   sent: '已发送', uploaded: '已上传', confirmed: '已确认', failed: '失败', unknown: '待确认',
 }
+
+const diagnosticTypeNames = {
+  missing: '缺失', null: 'null', array: '数组', object: '对象', string: '字符串', number: '数字', boolean: '布尔值', other: '其他类型',
+} as const
 
 type DiagnosticDescriptionSource = Pick<AgentDiagnosticEvent, 'stage' | 'operation' | 'outcome' | 'code' | 'details' | 'httpStatus' | 'errorKind' | 'sourceTag'>
 
@@ -589,9 +619,13 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
     code?.includes('timeout') || code === 'semantic_provider_budget_elapsed' || details?.cause === 'semantic_recall_budget_elapsed' ? ' ms' : ''
   const evidence = [!journalReason && location && `环节 ${location}`, details?.field &&
     (stepNames.get(details.field) ?? `字段 ${details.field}`), rule,
+    details?.expectedType && details.actualType && `要求 ${diagnosticTypeNames[details.expectedType]}，收到 ${diagnosticTypeNames[details.actualType]}`,
     details?.limit !== undefined && `界限 ${details.limit}${limitUnit}`, details?.nativeCode !== undefined && `平台返回码 ${details.nativeCode}`,
     details?.dispatched === undefined ? undefined : details.dispatched ? '已发起请求' : '未发起请求',
     details?.dispatchTurnMs !== undefined && `调度探针 ${details.dispatchTurnMs} ms`,
+    details?.loopActiveMs !== undefined && `事件循环活跃 ${details.loopActiveMs} ms`,
+    details?.configReadMs !== undefined && details.configReadCount !== undefined &&
+      `同步配置读取 ${details.configReadCount} 次，共 ${details.configReadMs} ms`,
     details?.timeoutOverrunMs !== undefined && `超时回调延后 ${details.timeoutOverrunMs} ms`,
     details?.outputTokens !== undefined && `输出 ${details.outputTokens} token`,
     details?.reasoningTokens !== undefined && `推理占用 ${details.reasoningTokens} token`,
@@ -600,7 +634,9 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
     details?.queueMs !== undefined && `排队 ${details.queueMs} ms`,
     details?.stepMs !== undefined && details.step !== 'journal_queue' && `当前环节 ${details.stepMs} ms`,
     slowest && details?.slowestCompletedStepMs !== undefined && `前面最慢的环节 ${slowest} ${details.slowestCompletedStepMs} ms`,
-    journal && details?.causeEventId && `关联记录 ${details.causeEventId}`,
+    details?.bytesWritten !== undefined && details.bytesExpected !== undefined &&
+      `已写入发送缓冲区 ${details.bytesWritten}/${details.bytesExpected} 字节`,
+    details?.causeEventId && `关联记录 ${details.causeEventId}`,
     event.sourceTag && `来源 ${event.sourceTag}`, details?.cause && details.cause !== code && `关联原因 ${cause ?? details.cause}`].filter(Boolean).join(' · ')
   const result = details?.result && resultNames[details.result]
   const disposition = [result, details?.retryInMs !== undefined && `${(details.retryInMs / 1000).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} 秒后`,

@@ -32,6 +32,7 @@ interface Entry {
   abortContext?: () => void
   prepared?: Prepared
   readyAt?: number
+  lastDelivery?: DeliveryReceipt
   preparing: boolean
   sending: boolean
   cleanup?: Promise<void>
@@ -46,7 +47,7 @@ const sameSource = (record: AgentMediaOutboxRecord, value: Awaited<ReturnType<Ag
 
 /** Durable scheduling is independent of platform objects and of any model turn. */
 export function createAgentMediaOutbox(options: {
-  readonly diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'> & Partial<Pick<AgentDiagnostics, 'emitFailure'>>
+  readonly diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'> & Partial<Pick<AgentDiagnostics, 'emitFailure' | 'emitReceipt'>>
   withDiagnosticScope?<T>(scope: AgentDiagnosticScope, operation: string, run: () => Promise<T>): Promise<T>
   readonly storage: AgentInboxRedis
   readonly actions: MessageActionPort
@@ -58,11 +59,22 @@ export function createAgentMediaOutbox(options: {
 }) {
   const now = options.now ?? Date.now
   const diagnose = (input: Parameters<AgentDiagnostics['emit']>[0]) => { try { options.diagnostics?.emit(input) } catch { /* Observers cannot change delivery. */ } }
+  const diagnoseReceipt = (input: Parameters<AgentDiagnostics['emit']>[0], receipt?: DeliveryReceipt) => {
+    try {
+      if (options.diagnostics?.emitReceipt) options.diagnostics.emitReceipt(input, receipt)
+      else diagnose(input)
+    } catch { /* Observers cannot change delivery. */ }
+  }
   const inScope = <T>(entry: Entry, operation: string, run: () => Promise<T>) => {
     const record = entry.session.record
     const observed = async () => {
       diagnose({ stage: 'runtime', operation, outcome: 'started' })
-      try { const result = await run(); const state = entry.session.record.state; diagnose({ stage: 'runtime', operation, outcome: state === 'failed' || state === 'unknown' || state === 'cancelled' ? state : 'succeeded', code: 'workflow_settled' }); return result }
+      try {
+        const result = await run(), state = entry.session.record.state
+        const outcome = state === 'failed' || state === 'unknown' || state === 'cancelled' ? state : 'succeeded'
+        diagnoseReceipt({ stage: 'runtime', operation, outcome, code: 'workflow_settled' }, entry.lastDelivery)
+        return result
+      }
       catch (error) { diagnose({ stage: 'runtime', operation, outcome: 'failed', code: 'workflow_threw', error }); throw error }
     }
     return options.withDiagnosticScope ? options.withDiagnosticScope({ kind: 'conversation', binding: record.binding, messageId: record.source.messageId }, operation, observed) : observed()
@@ -211,14 +223,30 @@ export function createAgentMediaOutbox(options: {
     })
   }
   async function effect(entry: Entry, name: MediaOutboxEffect, send: () => Promise<DeliveryReceipt>): Promise<DeliveryReceipt> {
+    delete entry.lastDelivery
     await current(entry, true)
     try { await entry.session.begin(name) } catch (error) { diagnose({ stage: 'delivery', operation: `media_${name}`, outcome: 'unknown', code: 'effect_begin_failed', error }); throw error }
     diagnose({ stage: 'delivery', operation: `media_${name}`, outcome: 'started' })
-    let receipt: DeliveryReceipt
-    try { await current(entry); receipt = normalizeDeliveryReceipt(await send()) } catch (error) { diagnose({ stage: 'delivery', operation: `media_${name}`, outcome: 'unknown', code: 'effect_threw', error }); receipt = { state: 'unknown' } }
-    if (receipt.state === 'sent' && !safeText(receipt.messageId)) receipt = { state: 'unknown' }
+    let observed: DeliveryReceipt, receipt: DeliveryReceipt, sendError: unknown
+    try {
+      await current(entry)
+      observed = await send()
+      receipt = normalizeDeliveryReceipt(observed)
+    } catch (error) {
+      sendError = error
+      observed = receipt = { state: 'unknown' }
+    }
+    if (receipt.state === 'sent' && !safeText(receipt.messageId)) observed = receipt = { state: 'unknown' }
+    if (receipt.state !== 'sent') {
+      entry.lastDelivery = observed
+      diagnoseReceipt({ stage: 'delivery', operation: `media_${name}`, outcome: receipt.state,
+        code: receipt.state === 'unknown' ? sendError === undefined ? 'effect_unknown' : 'effect_threw' : 'effect_rejected',
+        delivery: { state: receipt.state }, ...(sendError === undefined ? {} : { error: sendError }),
+        details: receipt.state === 'unknown' ? { result: 'confirmation_pending' } : { cause: receipt.code ?? 'native_rejected' },
+      }, observed)
+    }
     try { await entry.session.finish(name, receipt) } catch (error) { diagnose({ stage: 'delivery', operation: `media_${name}`, outcome: 'unknown', code: 'effect_ledger_failed', error }); throw error }
-    diagnose({ stage: 'delivery', operation: `media_${name}`, outcome: receipt.state === 'sent' ? 'succeeded' : receipt.state, code: receipt.state === 'unknown' ? 'effect_unknown' : receipt.state === 'failed' ? 'effect_rejected' : 'effect_sent' })
+    if (receipt.state === 'sent') diagnose({ stage: 'delivery', operation: `media_${name}`, outcome: 'succeeded', code: 'effect_sent' })
     if (receipt.state === 'unknown') throw failure()
     await current(entry)
     return receipt
@@ -236,9 +264,9 @@ export function createAgentMediaOutbox(options: {
       try {
         const value = entry.prepared!
         const binding = record.binding
-        const relay = (name: 'forward' | 'forwardRetry' | 'directIntro' | 'directVideo', plan: AgentMediaRelayPlan) => effect(entry, name,
+        const relay = (name: 'forward' | 'forwardRetry' | 'forwardCard' | 'directIntro' | 'directVideo', plan: AgentMediaRelayPlan) => effect(entry, name,
           async () => options.actions.sendMediaRelay ? options.actions.sendMediaRelay({ version: 1, kind: 'media-relay.send',
-            target: binding.target, binding, mode: name === 'forward' || name === 'forwardRetry' ? 'forward' : 'direct-video', plan },
+            target: binding.target, binding, mode: name === 'directIntro' || name === 'directVideo' ? 'direct-video' : 'forward', plan },
           { signal: entry.cancel.signal, isCurrent: () => sendCurrent(entry) }) : { state: 'failed', code: 'media_relay_unavailable' })
         const bilibili = record.source.share.provider === 'bilibili'
         if (value.linkOnly) {
@@ -265,6 +293,8 @@ export function createAgentMediaOutbox(options: {
           await entry.session.close(linked.state === 'sent' ? 'completed' : 'failed'); return
         }
         let result = await relay('forward', value.plan)
+        const retryVideo = bilibili && result.state === 'failed' && result.code === 'media_resource_fetch_closed'
+        if (retryVideo) result = await relay('forwardRetry', value.plan)
         if (result.state === 'failed' && bilibili) {
           // Keep the image-only intro after a confirmed video rejection.
           const textPart = { kind: 'text' as const, text: linkText(value) }
@@ -272,7 +302,7 @@ export function createAgentMediaOutbox(options: {
           const covers = intro.filter(part => part.kind === 'image')
           if (value.plan.items.some(item => item.parts.some(part => part.kind === 'video'))) {
             const parts = covers.length && intro.every(part => part.kind === 'image') ? covers : [textPart, ...covers]
-            result = await relay('forwardRetry', { version: 1, items: [{ parts }] })
+            result = await relay(retryVideo ? 'forwardCard' : 'forwardRetry', { version: 1, items: [{ parts }] })
           } else if (result.code === 'media_resource_preprocessing_failed') {
             result = await relay('forwardRetry', { version: 1, items: [{ parts: [textPart] }] })
           }
@@ -284,6 +314,9 @@ export function createAgentMediaOutbox(options: {
         const linked = await text(entry, 'link', linkText(value))
         await entry.session.close(linked.state === 'sent' ? 'completed' : 'failed')
       } catch (error) {
+        // finish() already durably closed an unknown effect and released its
+        // owner. A second close manufactures a ledger failure.
+        if (entry.session.record.state === 'unknown') return
         diagnose({ stage: 'runtime', operation: 'media_deliver', outcome: 'unknown', code: 'delivery_failed', error })
         if (!stopped) await entry.session.close(entry.session.record.effects.length ? 'unknown' : 'cancelled').catch(error => diagnose({ stage: 'runtime', operation: 'media_cleanup', outcome: 'unknown', code: 'close_ledger_failed', error }))
       } finally {

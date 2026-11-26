@@ -6,7 +6,7 @@ import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js
 import { agentBindingToken, conversationAddressKey, isConversationAddress, isPlatformAccount } from '../../runtime/domain/agentBindings.js'
 import { validateAgentMediaShare } from './agentBilibiliRelayReference.js'
 
-export type MediaOutboxEffect = 'forward' | 'forwardRetry' | 'directIntro' | 'directVideo' | 'link'
+export type MediaOutboxEffect = 'forward' | 'forwardRetry' | 'forwardCard' | 'directIntro' | 'directVideo' | 'link'
 export interface AgentMediaOutboxSource {
   readonly messageId: string
   readonly sender: PlatformUserRef
@@ -70,7 +70,7 @@ const PREFIX = 'agent:media-outbox:v1:', ACTIVE = `${PREFIX}active`, LANES = `${
 export const AGENT_MEDIA_OUTBOX_RETENTION_SECONDS = 7 * 86400
 export const AGENT_MEDIA_OUTBOX_LIFETIME_MS = 24 * 60 * 60 * 1000
 const RETENTION = AGENT_MEDIA_OUTBOX_RETENTION_SECONDS, LIFETIME = AGENT_MEDIA_OUTBOX_LIFETIME_MS, MAX_BYTES = 16384
-const effects = new Set<MediaOutboxEffect>(['forward', 'forwardRetry', 'directIntro', 'directVideo', 'link'])
+const effects = new Set<MediaOutboxEffect>(['forward', 'forwardRetry', 'forwardCard', 'directIntro', 'directVideo', 'link'])
 const terminal = new Set(['completed', 'failed', 'cancelled', 'unknown'])
 const states = new Set(['queued', 'preparing', 'sending', ...terminal])
 const ownership = new WeakMap<AgentInboxRedis, Map<string, string>>()

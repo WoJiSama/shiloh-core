@@ -1,5 +1,6 @@
 import type { ConversationSummaryModel } from '../../../contracts/conversationMemory.js'
 import type { PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
+import { agentErrorDetails, annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { resolveChatCompletionUrl } from '../../models/domain/chatCompletionUrl.js'
 import { glmFlashJsonOptions } from '../../models/domain/modelGateway.js'
 import { safeTruncateUnicode } from '../../models/domain/unicodeText.js'
@@ -188,10 +189,11 @@ export function createAgentConversationSummary(options: AgentConversationSummary
       context.observePhase?.('response_authorization')
       await ensureCurrent(context, signal)
       return summary
-    } catch {
+    } catch (error) {
       if (response && !response.ok) throw new AgentConversationSummaryError(httpCode, response.status)
-      if (signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError') throw new AgentConversationSummaryError('provider_timeout')
-      throw new AgentConversationSummaryError(waitingForHeaders ? 'provider_transport_error' : 'model_response_invalid')
+      const code = signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError' ? 'provider_timeout' :
+        waitingForHeaders ? 'provider_transport_error' : 'model_response_invalid'
+      throw annotateAgentError(new AgentConversationSummaryError(code), agentErrorDetails(error) ?? {})
     }
     finally {
       lifecycle.abort()

@@ -38,7 +38,7 @@ import { createQqVideoCardDeliveryPort, QQ_VIDEO_CARD_SEND_TIMEOUT_MS } from './
 import { createQqAudioFileDeliveryPort, QQ_AUDIO_FILE_SEND_TIMEOUT_MS } from './qqAudioFileDelivery.js'
 import { createQqMusicShareReader } from './qqMusicShare.js'
 import { createQqMediaShareReader, QQ_MEDIA_SHARE_GET_MESSAGE_TIMEOUT_MS } from './qqMediaShare.js'
-import { createQqMediaRelayDeliveryPort } from './qqMediaRelayDelivery.js'
+import { createQqMediaRelayDeliveryPort, qqForwardVideoPreSendFailure } from './qqMediaRelayDelivery.js'
 import type { QqMediaRelayBridge } from './qqMediaRelayBridge.js'
 import { createQqRequesterArchiveDeliveryPort } from './qqRequesterArchiveDelivery.js'
 import type { QqRequesterArchiveBridge } from './qqRequesterArchiveBridge.js'
@@ -421,7 +421,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       callApi: qqActionApi }) : undefined
   }
 
-  async function call(client: WebSocket, action: string, params: Record<string, unknown>, guard?: () => boolean, timeoutMs = 10_000, signal?: AbortSignal, onDispatch?: () => void, observeFailures = true): Promise<unknown> {
+  async function call(client: WebSocket, action: string, params: Record<string, unknown>, guard?: () => boolean, timeoutMs = 10_000, signal?: AbortSignal, onDispatch?: () => void, observeFailures = true, classifyRejection?: (value: unknown) => string | undefined): Promise<unknown> {
     const report = (outcome: 'failed' | 'unknown', code: string, details: AgentDiagnosticDetails = { dispatched: false, result: 'not_dispatched' }) => {
       try { if (observeFailures) options.onApiFailure?.(action, outcome, code, details) } catch { /* Observers do not affect API results. */ }
     }
@@ -475,7 +475,10 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         Math.abs(response.retcode) <= 2_147_483_647 ? response.retcode : undefined
       const details: AgentDiagnosticDetails = { dispatched, ...(nativeCode === undefined ? {} : { nativeCode }) }
       if (response.status === 'async') report('unknown', 'onebot_response_unconfirmed', { ...details, result: 'confirmation_pending' })
-      else if (response.status === 'failed' || Number.isInteger(response.retcode) && response.retcode !== 0) report('failed', 'onebot_rejected', details)
+      else if (response.status === 'failed' || Number.isInteger(response.retcode) && response.retcode !== 0) {
+        // The media delivery receipt records recognized pre-send errors with the same trace.
+        if (!classifyRejection?.(value)) report('failed', 'onebot_rejected', details)
+      }
       else if (response.status !== 'ok' || response.retcode !== 0) report('unknown',
         value === undefined ? 'onebot_transport_unconfirmed' : 'onebot_response_unconfirmed', { ...details, result: 'confirmation_pending' })
     }
@@ -846,8 +849,11 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       // adapter queuing or resource preparation can await/reconnect.
       const isCurrent = () => !guard.signal.aborted && !stopped && verified && socket === client &&
         client.readyState === WebSocket.OPEN && guard.isCurrent() && queuedDeliveryAllowed()
-      const response = await call(client, action, params, isCurrent, guard.timeoutMs, guard.signal)
-      return isCurrent() ? response : { state: 'unknown' }
+      let dispatched = false
+      const response = await call(client, action, params, isCurrent, guard.timeoutMs, guard.signal, () => { dispatched = true }, true,
+        guard.videoForward ? qqForwardVideoPreSendFailure : undefined)
+      return isCurrent() && !(dispatched && Object.hasOwn(record(response), 'state'))
+        ? response : { state: 'unknown' }
     },
   })
   const sendRequesterArchive = options.requesterArchive && createQqRequesterArchiveDeliveryPort({

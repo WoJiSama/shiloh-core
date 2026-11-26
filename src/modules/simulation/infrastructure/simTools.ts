@@ -241,7 +241,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
       this.name = 'simSendMessage'
       this.description = [
         '在当前群发送中途普通聊天。continuation必填chat（普通聊天）或interest_only（仅感兴趣，不承诺后续）。保存记忆、拒绝选择、后续排期或完成说明请用simFinishTurn先保存再发送。',
-        'messages 数组通常只放一条，有独立补话才加第二条。',
+        'messages 是字符串数组，例如 {"continuation":"chat","messages":["你好"]}。通常只放一条，有独立补话才加第二条。',
         '条与条之间系统会自动加间隔，不要自己写停顿标记。',
         '想引用某条消息就传 replyToSeq（视图里的 seq）；想 @ 人就传 atUserIds（消息中的成员 ID）。',
         '发送失败会返回 error，此时可换措辞重试或放弃，不要原样重试超过一次。',

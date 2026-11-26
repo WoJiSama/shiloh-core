@@ -1,7 +1,7 @@
 import type { AgentInteractionPlan, AgentInteractionResult } from '../../../contracts/agentInteraction.js'
 import { normalizeAgentInteractionResult, validateAgentInteractionPlan } from '../../tools/infrastructure/agentInteractions.js'
 import type { AgentDiagnosticDetails, AgentDiagnosticScope } from '../../../contracts/agentDiagnostics.js'
-import { annotateAgentError, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import { agentErrorDetails, annotateAgentError, diagnosticValueType, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { createAgentConversationActivity, type AgentConversationActivityCapture } from '../../runtime/infrastructure/agentConversationActivity.js'
 import { generateAgentFailureNotice } from '../../conversation/infrastructure/agentFailureNotice.js'
 import type { CommitmentRunOptions, CommitmentRunResult } from '../../../contracts/commitments.js'
@@ -58,6 +58,7 @@ import type { AgentQqActionRunner, AgentToolContext, AgentToolMessage, AgentTool
 import type { AgentQzoneOperation, AgentQzoneResult } from '../../../contracts/agentQzone.js'
 import { createAgentQzoneTools } from '../../tools/infrastructure/agentQzoneTools.js'
 import { authorizeAgentToolContext } from '../../tools/infrastructure/agentToolAuthorization.js'
+import { normalizeStringArrayInput } from '../domain/paramTolerance.js'
 import { parseAgentToolArguments, validateAgentToolInput } from '../../tools/infrastructure/agentToolSchema.js'
 import type { ConversationMembersSnapshot } from '../../../contracts/platformConnection.js'
 import type { PersonaScope } from '../../../contracts/persona.js'
@@ -268,7 +269,8 @@ export interface SimulationRuntimePorts {
   recordEpisode?(input: { groupId: string; userId?: string; userName?: string; summary: string; reply: string; source?: PersonaScope;
     binding?: AgentBindingSnapshot; at?: number; messageIds?: string[]; replyIds?: string[]; isCurrent?: () => boolean }): void | Promise<void>
   /** 本群专属梗提取（侧路小模型，返回原始模型文本；runtime 负责容错解析） */
-  memeExtract?(messages: { name: string; text: string }[], isCurrent?: () => boolean, context?: PersonProfileExtractionContext): Promise<string>
+  memeExtract?(messages: { name: string; text: string }[], isCurrent?: () => boolean, context?: PersonProfileExtractionContext,
+    onPhase?: (phase: AgentSimulationWakePhase) => void): Promise<string>
   /** 令牌账本：仿真回合/梗提取的归组记录 */
   recordTokens?(input: { scope: string; stage: string; model?: string; usage?: unknown; ms?: number }): void
   /** 只读观察实际工具协议回复；返回值不参与执行，观察失败不影响业务。 */
@@ -3373,8 +3375,17 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             const input = prepareSimulationToolInput(tool, args, event, invalid => { issue = invalid })
             if (typeof input === 'string') {
               if (tool === finishTool) requiresClosing = true
-              const repair = tool === finishTool && issue?.field === 'choice' && issue.rule === 'required' ? ` ${FINISH_CHOICE_GUIDANCE}` : ''
-              return reject('tool_schema_invalid', `error: ${input}${repair}`, undefined, issue)
+              let repair = tool === finishTool && issue?.field === 'choice' && issue.rule === 'required' ? ` ${FINISH_CHOICE_GUIDANCE}` : ''
+              let details: AgentDiagnosticDetails | undefined = issue
+              if (tool.name === 'simSendMessage' && issue?.field === 'messages' && issue.rule === 'type') {
+                const messages = normalizeStringArrayInput(args.messages)
+                const array = Array.isArray(messages)
+                const rejected = array ? messages.find(value => typeof value !== 'string') : messages
+                details = { ...issue, field: array ? 'messages.items' : 'messages', expectedType: array ? 'string' : 'array',
+                  actualType: diagnosticValueType(rejected) }
+                repair = ' 请把消息正文写成字符串数组，例如 {"continuation":"chat","messages":["你好"]}。'
+              }
+              return reject('tool_schema_invalid', `error: ${input}${repair}`, undefined, details)
             }
             args = input
           }
@@ -4413,7 +4424,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         else await run()
       }
       // 本群专属梗自动提取（独立于唤醒：不产生回合，只沉淀记忆）
-      if (!hasWake && isCurrent() && !running.has(groupId)) await maybeExtractMemes(groupId, state, cfg)
+      if (!hasWake && isCurrent() && !running.has(groupId)) {
+        const run = () => maybeExtractMemes(groupId, state, cfg)
+        if (ports.diagnostics?.withScope) await ports.diagnostics.withScope(binding ? { kind: 'conversation', binding } : { kind: 'account', account: target.account },
+          'simulation_meme_extract', run)
+        else await run()
+      }
       if (!hasWake && isCurrent() && !running.has(groupId)) await maybeExtractPersonProfiles(groupId, state, cfg)
       // 按人挖口头禅（风格个性化）：冷却默认 6h，读归档 → 纯函数挖掘 → Redis
       if (!hasWake && isCurrent() && !running.has(groupId)) await maybeMineUserStyle(groupId, cfg)
@@ -4667,6 +4683,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     let active = true, bindingCurrent = true, revoked = false
     let processed: 'meme_batch_empty' | 'meme_batch_saved' | undefined
     let phase: 'prepare' | 'model' | 'save' = 'prepare'
+    let step: AgentSimulationWakePhase | 'provider_request' = 'provider_request', stepStarted = performance.now(), dispatched = false
     const deadline = AbortSignal.timeout(30_000)
     const signal = AbortSignal.any([controller.signal, extraction.signal, deadline])
     const scopeCurrent = () => {
@@ -4718,6 +4735,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const extract = async () => {
         const started = now()
         let requestFinished = false, usageRecorded = false
+        step = 'provider_request'; stepStarted = performance.now(); dispatched = false
         const context: PersonProfileExtractionContext = { target, ...(resolved.binding ? { binding: resolved.binding } : {}),
           signal: requestSignal, isCurrent, ensureCurrent,
           recordUsage(model, usage) {
@@ -4727,7 +4745,11 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           },
         }
         try {
-          const raw = await awaitSideModel(() => ports.memeExtract!(input, isCurrent, context), requestSignal, isCurrent)
+          const raw = await awaitSideModel(() => ports.memeExtract!(input, isCurrent, context, next => {
+            if (requestFinished || requestSignal.aborted) return
+            step = next; stepStarted = performance.now()
+            if (next === 'response_headers') dispatched = true
+          }), requestSignal, isCurrent)
           if (!usageRecorded) try { ports.recordTokens?.({ scope: groupId, stage: 'meme-extract', ms: now() - started }) } catch { /* 账本不可用 */ }
           return parseMemeCandidates(raw, { requireArray: true })
         } finally { requestFinished = true }
@@ -4736,10 +4758,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       try { candidates = await extract() }
       catch (error) {
         if (!(error instanceof AgentSimulationModelError) || error.code !== 'meme_output_json_invalid' && error.code !== 'meme_output_schema_invalid') throw error
+        diagnose({ stage: 'model', operation: 'simulation_meme_extract_response', outcome: 'failed', code: error.code,
+          details: { step: 'response_validation', result: 'retry_scheduled', attempt: 1, maxAttempts: 2 } })
         await ensureCurrent()
         candidates = await extract()
-        diagnose({ stage: 'model', operation: 'simulation_meme_extract_response', outcome: 'failed',
-          code: error.code === 'meme_output_json_invalid' ? 'meme_output_json_recovered' : 'meme_output_schema_recovered' })
+        diagnose({ stage: 'model', operation: 'simulation_meme_extract_response', outcome: 'succeeded',
+          code: error.code === 'meme_output_json_invalid' ? 'meme_output_json_recovered' : 'meme_output_schema_recovered',
+          details: { result: 'recovered', attempt: 2, maxAttempts: 2 } })
       }
       phase = 'save'
       await ensureCurrent()
@@ -4757,13 +4782,22 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (!authorized()) {
         diagnose({ stage: 'memory', operation: 'simulation_meme_extract', outcome: 'cancelled', code: 'source_revoked' })
       } else {
-        state.memeRetryAt = now() + boundedTimerDelay(cfg.meme.extractCooldownMs, 86_400_000, 60_000)
+        const retryInMs = boundedTimerDelay(cfg.meme.extractCooldownMs, 86_400_000, 60_000)
+        state.memeRetryAt = now() + retryInMs
         const modelError = error instanceof AgentSimulationModelError ? error : undefined
         const code = deadline.aborted ? 'meme_extract_timeout' : modelError?.code ??
           (phase === 'model' ? 'meme_result_failed' : phase === 'save' ? 'meme_save_failed' : 'meme_prepare_failed')
         const httpStatus = modelError?.httpStatus
+        const observed = agentErrorDetails(error)
+        const modelStep = observed?.step ?? step
         diagnose({ stage: phase === 'model' ? 'model' : 'memory', operation: 'simulation_meme_extract', outcome: 'failed', code,
-          ...(httpStatus === undefined ? {} : { httpStatus }), error, durationMs: now() - at })
+          ...(httpStatus === undefined ? {} : { httpStatus }), error, durationMs: now() - at,
+          details: { step: phase !== 'model' ? phase : modelStep === 'wake_request_authorization' ? 'meme_request_authorization' :
+            modelStep === 'wake_response_authorization' ? 'meme_response_authorization' : modelStep,
+            ...(phase === 'model' && (step !== 'provider_request' || observed?.dispatched !== undefined) ? {
+              dispatched: observed?.dispatched ?? dispatched, stepMs: Math.round(performance.now() - stepStarted),
+            } : {}), ...(deadline.aborted ? { limit: 30_000 } : {}),
+            result: 'retry_scheduled', retryInMs } })
         if (!ports.diagnostics) logger.warn(`[仿真] 群 ${groupId} 梗提取未完成，稍后重试`)
       }
     } finally {
