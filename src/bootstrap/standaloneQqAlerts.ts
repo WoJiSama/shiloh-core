@@ -222,6 +222,7 @@ const failureReasons = new Map(Object.entries({
   history_source_write_failed: '本次历史消息来源未能保存。',
   history_source_check_failed: '保存历史原文前未能核验来源权限。',
   history_source_timeout: '保存历史原文未在时限内得到确认。',
+  history_source_retry_cancelled: '重试时来源或执行授权已失效，原文未保存。',
   history_source_registration_failed: '人物记忆的原文引用登记失败。',
   history_cleanup_failed: '历史消息来源的清理任务未能完成。',
   semantic_index_unavailable: '语义记忆索引更新失败，稍后重试。',
@@ -316,6 +317,18 @@ const failureReasons = new Map(Object.entries({
   image_source_has_no_image: '指定的消息及其引用没有可取的附图。',
   image_source_unverified: '平台没有返回可核验的原始图片。',
   image_source_changed: '读取图片期间来源或角色授权发生变化。',
+  image_message_lookup_failed: 'QQ 接口未返回与当前群及消息相符的原始回执。',
+  image_attachment_missing: '原消息回执没有可读取的附图资源。',
+  image_source_mismatch: 'QQ 回查的消息与此前确认的来源身份或时间不一致。',
+  image_source_privacy_denied: '原消息的内容或来源权限不允许用于看图。',
+  image_source_check_failed: '读取附图前未能完成来源或隐私核验。',
+  image_reference_unsupported: 'QQ 回执中的附件引用无法直接读取为图片。',
+  image_url_rejected: '图片地址未通过 QQ CDN 地址核验。',
+  image_dns_failed: 'QQ 图片域名未返回符合要求的公网地址。',
+  image_read_timeout: 'QQ 原消息核验和附图读取未在时限内完成。',
+  image_download_failed: '未能完成 QQ CDN 图片下载。',
+  image_download_http_error: 'QQ CDN 返回非成功状态。',
+  image_bytes_invalid: '附件字节、格式或尺寸未通过图片核验。',
   image_turn_limit: '本轮看图次数已用完。',
   image_read_failed: '未能从平台取回图片。',
   image_read_unavailable: '当前连接无法读取附图。',
@@ -353,6 +366,7 @@ const failureReasons = new Map(Object.entries({
   douyin_page_target_missing: '作品页没有找到与分享链接一致的作品数据。',
   douyin_page_metadata_incomplete: '作品页有目标作品数据，缺少可用的媒体信息。',
   douyin_browser_timeout: '抖音浏览器补查超过本阶段时限。',
+  douyin_browser_navigation_timeout: '抖音作品页未在浏览器导航时限内完成加载，期间未取得可用的目标作品数据。',
   douyin_browser_target_missing: '浏览器未提取到所分享作品的完整媒体信息，已保留作品页面。',
   douyin_browser_failed: '抖音浏览器补查未能完成，已保留作品页面。',
   bilibili_dns_invalid: 'B 站域名未解析出符合要求的公网地址。',
@@ -594,8 +608,12 @@ const stepNames = new Map(Object.entries({
   douyin_http_address_policy: '检查抖音域名解析结果', douyin_http_status: '接收抖音 HTTP 状态',
   douyin_http_response: '核验抖音 HTTP 响应', douyin_browser_queue: '等待匿名浏览器',
   douyin_browser_launch: '启动匿名浏览器', douyin_browser_navigation: '加载官方作品页面',
+  douyin_browser_navigation_timeout: '等待官方作品页面完成导航',
   douyin_browser_extract: '从页面和详情响应中提取原作品信息',
   douyin_browser_detail: '读取作品详情接口中的目标媒体字段',
+  image_message_lookup: '通过 QQ 查询原消息', image_attachment_select: '从原消息定位附图',
+  image_source_authorization: '核验附图来源与隐私权限', image_address_validation: '核验 QQ 图片地址',
+  image_attachment_read: '读取 QQ 原消息和附图', image_download: '下载 QQ 图片', image_bytes_validation: '核验图片字节与尺寸',
   bridge_request_authorization: '核验桥接资源的访问权限',
   bridge_open_artifact: '打开桥接临时文件',
   bridge_read_artifact: '读取和校验桥接文件分块',
@@ -638,7 +656,7 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
     : undefined
   const limitUnit = details?.cause === 'bilibili_size_limit' || details?.cause === 'bilibili_length_mismatch' ? ' 字节' :
     code === 'model_response_truncated' || details?.cause === 'model_response_truncated' ? ' token' :
-    code?.includes('timeout') || code === 'semantic_provider_budget_elapsed' || details?.cause === 'semantic_recall_budget_elapsed' || details?.cause === 'douyin_browser_timeout' ? ' ms' : ''
+    code?.includes('timeout') || code === 'semantic_provider_budget_elapsed' || details?.cause === 'semantic_recall_budget_elapsed' || details?.cause?.startsWith('douyin_browser_') && details.cause.endsWith('timeout') ? ' ms' : ''
   const evidence = [!journalReason && location && `环节 ${location}`, details?.field &&
     (stepNames.get(details.field) ?? `字段 ${details.field}`), rule,
     details?.expectedType && details.actualType && `要求 ${diagnosticTypeNames[details.expectedType]}，收到 ${diagnosticTypeNames[details.actualType]}`,

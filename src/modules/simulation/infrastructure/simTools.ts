@@ -1,6 +1,6 @@
 import type { SimMemoryEntry, SimMessage, SimMoodState, SimSessionState, SimWakeConfig } from '../../../contracts/simulation.js'
 import type { MessageImage } from '../../../contracts/platformConnection.js'
-import { coerceStringArray, looksLikeToolArguments, normalizeStringArrayInput } from '../domain/paramTolerance.js'
+import { coerceStringArray, looksLikeToolArguments, normalizeMessageTextsInput, normalizeStringArrayInput } from '../domain/paramTolerance.js'
 import { stripAIFlavorPhrases } from '../../conversation/domain/replySanitizer.js'
 import { compactSimMessage } from '../domain/messageView.js'
 import { acknowledgeMessages, readThroughSeq, noteModelSeen, unreadSince } from '../domain/watermark.js'
@@ -47,7 +47,7 @@ export interface SimToolContext {
   /** 好感度表 */
   getAffinity(): Record<string, ReturnType<typeof defaultAffinityEntry>>
   saveAffinity(affinity: Record<string, ReturnType<typeof defaultAffinityEntry>>): void | Promise<void>
-  getMessageImages?(seq: number): Promise<{ seq: number; images?: readonly MessageImage[]; description?: string; error?: string; code?: string }>
+  getMessageImages?(seq: number): Promise<{ seq: number; images?: readonly MessageImage[]; description?: string; error?: string; code?: string; httpStatus?: number }>
   /** 戳群成员（带频率护栏：每群每小时 ≤6 次） */
   pokeMember?(userId: string): Promise<SimPokeResult>
   /** 当前机器人/人设的跨群熟悉度底分；具体理由仅留在源群。 */
@@ -241,7 +241,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
       this.name = 'simSendMessage'
       this.description = [
         '在当前群发送中途普通聊天。continuation必填chat（普通聊天）或interest_only（仅感兴趣，不承诺后续）。保存记忆、拒绝选择、后续排期或完成说明请用simFinishTurn先保存再发送。',
-        'messages 是字符串数组，例如 {"continuation":"chat","messages":["你好"]}。通常只放一条，有独立补话才加第二条。',
+        'messages 是一层正文字符串数组，例如 {"continuation":"chat","messages":["你好"]}。每项直接写正文，不加子数组或对象。通常只放一条。',
         '条与条之间系统会自动加间隔，不要自己写停顿标记。',
         '想引用某条消息就传 replyToSeq（视图里的 seq）；想 @ 人就传 atUserIds（消息中的成员 ID）。',
         '发送失败会返回 error，此时可换措辞重试或放弃，不要原样重试超过一次。',
@@ -261,7 +261,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
 
     override normalizeParameters(params: unknown) {
       const input = super.normalizeParameters(params)
-      if (Object.hasOwn(input, 'messages')) input.messages = normalizeStringArrayInput(input.messages)
+      if (Object.hasOwn(input, 'messages')) input.messages = normalizeMessageTextsInput(input.messages)
       return input
     }
 
@@ -635,7 +635,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
       }
       if (!ctx.getMessageImages) return JSON.stringify({ code: 'image_read_unavailable', error: '图片读取不可用' })
       const result = await ctx.getMessageImages(seq)
-      return result.error ? JSON.stringify({ seq, error: result.error, code: result.code ?? 'image_read_failed' }) : JSON.stringify(result)
+      return result.error ? JSON.stringify({ seq, error: result.error, code: result.code ?? 'image_read_failed', httpStatus: result.httpStatus }) : JSON.stringify(result)
     }
   }
 

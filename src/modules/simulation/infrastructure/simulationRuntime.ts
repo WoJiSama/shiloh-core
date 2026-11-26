@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks'
 import type { AgentInteractionPlan, AgentInteractionResult } from '../../../contracts/agentInteraction.js'
 import { normalizeAgentInteractionResult, validateAgentInteractionPlan } from '../../tools/infrastructure/agentInteractions.js'
 import type { AgentDiagnosticDetails, AgentDiagnosticScope } from '../../../contracts/agentDiagnostics.js'
@@ -51,14 +52,15 @@ import type { PersonMemorySource } from '../../../contracts/personMemory.js'
 import type { PersonProfileExtractor, PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
 import { PersonProfileExtractionError } from '../../memory/infrastructure/agentPersonExtractor.js'
 import type { AgentBindingSnapshot, AgentBindingTurn, AgentConversationScope, ConversationAddress, PlatformAccountRef, PlatformUserRef } from '../../../contracts/agentBinding.js'
-import type { ForwardContent, ForwardReference, MessageImage, MessageImageReadOptions, PlatformNudgeEvent } from '../../../contracts/platformConnection.js'
+import { messageImageReadSteps, type ForwardContent, type ForwardReference, type MessageImage, type MessageImageReadFailure,
+  type MessageImageReadOptions, type PlatformNudgeEvent } from '../../../contracts/platformConnection.js'
 import type { IncomingMessage, MessageActionOptions, MessageActionPort, MessagePart, OutgoingPart, MessageBundleItem, MessageBundlePart } from '../../../contracts/platformMessage.js'
 import type { DeliveryReceipt } from '../../../contracts/delivery.js'
 import type { AgentQqActionRunner, AgentToolContext, AgentToolMessage, AgentToolRequest } from '../../../contracts/agentTool.js'
 import type { AgentQzoneOperation, AgentQzoneResult } from '../../../contracts/agentQzone.js'
 import { createAgentQzoneTools } from '../../tools/infrastructure/agentQzoneTools.js'
 import { authorizeAgentToolContext } from '../../tools/infrastructure/agentToolAuthorization.js'
-import { normalizeStringArrayInput } from '../domain/paramTolerance.js'
+import { normalizeMessageTextsInput } from '../domain/paramTolerance.js'
 import { parseAgentToolArguments, validateAgentToolInput } from '../../tools/infrastructure/agentToolSchema.js'
 import type { ConversationMembersSnapshot } from '../../../contracts/platformConnection.js'
 import type { PersonaScope } from '../../../contracts/persona.js'
@@ -86,7 +88,7 @@ import { checkHealth, formatAlerts, type HealthAlert } from '../domain/healthSen
 import { buildChatRequestData } from '../../models/domain/modelGateway.js'
 import { safeTruncateUnicode } from '../../models/domain/unicodeText.js'
 import { createSimSessionStore, simulationSessionKey, type SimGroupOverrides, type SimSessionStore } from './simSessionStore.js'
-import { AgentSimulationModelError, type AgentSimulationWakeInput, type AgentSimulationWakePhase, type AgentSimulationWakeVerdict } from './agentSimulationModels.js'
+import { AgentSimulationModelError, wakeGateChecksSources, type AgentSimulationWakeInput, type AgentSimulationWakePhase, type AgentSimulationWakeVerdict } from './agentSimulationModels.js'
 import { createInitialPromptStore } from './simInitialPrompt.js'
 import { resolveSimulationGroupConfig, seedSimulationOverrides, simulationGroupOverride } from './simulationGroupPolicy.js'
 import { decodeSimulationAddressKey, isQqSimulationAddress, qqSimulationAddress, simulationAddressKey } from './simulationAddress.js'
@@ -246,7 +248,7 @@ export interface SimulationRuntimePorts {
   executeQzone?(operation: AgentQzoneOperation, context: AgentToolContext): Promise<AgentQzoneResult>
   /** Core resolves the conversational target here. Legacy hosts may continue when the judge is unavailable. */
   wakeGateJudge?(input: AgentSimulationWakeInput, isCurrent?: ExecutionOptions['isCurrent'],
-    context?: PersonProfileExtractionContext, onPhase?: (phase: AgentSimulationWakePhase) => void): Promise<AgentSimulationWakeVerdict | null>
+    context?: PersonProfileExtractionContext, onPhase?: (phase: AgentSimulationWakePhase, httpStatus?: number) => void): Promise<AgentSimulationWakeVerdict | null>
   /** QQ空间互动：看指定成员的最近说说 / 点赞 / 评论（凭据由装配层处理；内容已在上层脱敏） */
   qzoneInteract?(input: { action: 'visit' | 'like' | 'comment'; userId?: string; tid?: string; text?: string }, target: ConversationAddress, options?: SimSendOptions): Promise<{ ok: boolean; error?: string; feeds?: { tid: string; time: string; text: string; likes: number }[] }>
   /** 人物核心档案提取（侧路小模型）：近期消息 → 跨群身份级事实补丁 */
@@ -715,20 +717,25 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         ? reported ?? (confirmedReadResult(tool.name, text) ? 'succeeded' : 'unknown') : classified
       if (!tool.agentDiagnosesExecution) {
         let code: string | undefined
+        let httpStatus: number | undefined
         if (status !== 'succeeded' && ['simGetMessageImages', 'simGetForward', 'simSendPoke'].includes(tool.name)) {
           try {
-            const resultCode = record(JSON.parse(text)).code
+            const { code: resultCode, httpStatus: resultStatus } = record(JSON.parse(text))
             if (typeof resultCode === 'string' && /^(?:image|forward|poke)_[a-z_]{1,52}$/u.test(resultCode)) code = resultCode
+            if (tool.name === 'simGetMessageImages' && code === 'image_download_http_error' && typeof resultStatus === 'number') httpStatus = resultStatus
           } catch { /* Legacy result prose stays in the tool response. */ }
         }
+        const imageStep = tool.name === 'simGetMessageImages' && code && Object.hasOwn(messageImageReadSteps, code)
+          ? messageImageReadSteps[code as keyof typeof messageImageReadSteps] : undefined
         const details: AgentDiagnosticDetails | undefined = invalid ? { ...invalid, result: 'not_dispatched' } :
           status === 'unknown' ? { result: 'confirmation_pending' } :
           code === 'image_turn_limit' ? { limit: 2, result: 'not_dispatched' } :
           code === 'poke_rate_limit' ? { limit: 6, result: 'not_dispatched' } :
+          imageStep ? { step: imageStep, result: 'discarded' } :
           code === 'image_description_unavailable' ? { step: 'response_validation', result: 'discarded' } : undefined
         diagnose({ stage: 'tool', operation, outcome: status, code: invalid ? 'tool_schema_invalid' : status === 'succeeded' ? 'completed' :
           code ?? (error === undefined ? `returned_${status}` : 'tool_threw'),
-          durationMs: Date.now() - started, ...(error === undefined ? {} : { error }),
+          durationMs: Date.now() - started, ...(error === undefined ? {} : { error }), ...(httpStatus === undefined ? {} : { httpStatus }),
           ...(details ? { details } : {}) })
       }
       if (observed && status !== 'succeeded') observed.failureReported = true
@@ -1852,13 +1859,18 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             ...previous.flatMap(({ reply }) => [reply.replyId, ...(reply.evidenceIds ?? [])])]
           let sourceFailure: 'wake_gate_source_changed' | 'wake_gate_source_check_failed' | undefined
           let gateUsageRecorded = false, gateActive = true
-          const gateTimeoutMs = 8_000, gateStarted = now()
-          let gateStep: AgentSimulationWakePhase | 'provider_request' = 'wake_request_authorization'
-          let gateStepStarted = gateStarted, gateDispatched = false
-          const gatePhase = (step: typeof gateStep) => {
-            gateStep = step
-            gateStepStarted = now()
+          const gateTimeoutMs = 8_000, gateStarted = performance.now(), gateLoop = performance.eventLoopUtilization()
+          const providerChecksSources = wakeGateChecksSources(judgeWake)
+          type GateStep = AgentSimulationWakePhase | 'provider_request'
+          let gateStep: GateStep = 'wake_request_authorization'
+          let gateStepStarted = gateStarted, gateDispatched = false, gateHttpStatus: number | undefined
+          let slowest: { step: GateStep; ms: number } | undefined
+          const gatePhase = (step: GateStep, status?: number) => {
+            const at = performance.now(), ms = Math.round(at - gateStepStarted)
+            if (!slowest || ms > slowest.ms) slowest = { step: gateStep, ms }
+            gateStep = step; gateStepStarted = at
             if (step === 'response_headers') gateDispatched = true
+            if (status !== undefined) gateHttpStatus = status
           }
           const gateSignal = AbortSignal.any([turnSignal, AbortSignal.timeout(gateTimeoutMs)])
           const gateAuthorized = () => gateActive && !sourceFailure && canCallModel() && witnesses.every(source => turnState.recent.some(message =>
@@ -1891,16 +1903,18 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               if (!gateCurrent() || !gateSources.length) return null
               const started = now()
               if (durableWake) { recordWakeStart(); noteProactiveCheck?.() }
-              await awaitSideModel(() => gateContext.ensureCurrent(), gateSignal, gateCurrent)
+              if (!providerChecksSources) await awaitSideModel(() => gateContext.ensureCurrent(), gateSignal, gateCurrent)
               gatePhase('provider_request')
               const verdict = await awaitSideModel(() => judgeWake({
                 reason: formatWakeReason(reason),
                 messages: gateSources
                   .map(m => ({ name: String(m.name || ''), text: String(m.text || '').slice(0, 80), atSelf: Boolean(m.atSelf || m.quoteToSelf) })),
                 ...(routing ? { routing } : {}),
-              }, gateCurrent, gateContext, phase => { if (gateCurrent()) gatePhase(phase) }), gateSignal, gateCurrent)
-              gatePhase('wake_response_authorization')
-              await awaitSideModel(() => gateContext.ensureCurrent(), gateSignal, gateCurrent)
+              }, gateCurrent, gateContext, (phase, status) => { if (!gateSignal.aborted) gatePhase(phase, status) }), gateSignal, gateCurrent)
+              if (!providerChecksSources) {
+                gatePhase('wake_response_authorization')
+                await awaitSideModel(() => gateContext.ensureCurrent(), gateSignal, gateCurrent)
+              }
               if (verdict === null) diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'failed', code: 'wake_gate_unavailable',
                 durationMs: now() - started, details: { step: 'response_validation', result: 'discarded' } })
               else diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'succeeded', durationMs: now() - started })
@@ -1911,17 +1925,21 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             const cancelled = sourceFailure === 'wake_gate_source_changed' || turnSignal.aborted && gateSignal.reason === turnSignal.reason
             const timedOut = gateSignal.aborted && gateSignal.reason instanceof DOMException && gateSignal.reason.name === 'TimeoutError'
             const failure = error instanceof AgentSimulationModelError ? error : undefined
-            const httpStatus = failure?.httpStatus
+            const httpStatus = failure?.httpStatus ?? gateHttpStatus
+            const durationMs = performance.now() - gateStarted, stepMs = Math.round(performance.now() - gateStepStarted)
             const useBackoff = !cancelled && (timedOut || failure?.code === 'provider_timeout' || failure?.code === 'provider_transport_error' ||
                 httpStatus === 429 || httpStatus !== undefined && httpStatus >= 500)
             const retryInMs = 60_000
             if (useBackoff) wakeGateRetryAt = now() + retryInMs
             diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: cancelled ? 'cancelled' : 'failed',
               code: sourceFailure ?? (cancelled ? 'wake_gate_cancelled' : timedOut ? 'wake_gate_timeout' : failure?.code ?? 'wake_gate_unavailable'),
-              ...(httpStatus === undefined ? {} : { httpStatus }), error, durationMs: now() - gateStarted,
-              details: { step: gateStep, stepMs: Math.max(0, now() - gateStepStarted),
+              ...(httpStatus === undefined ? {} : { httpStatus }), error, durationMs,
+              details: { step: gateStep, stepMs,
+                ...(slowest && slowest.ms > stepMs ? { slowestCompletedStep: slowest.step, slowestCompletedStepMs: slowest.ms } : {}),
                 ...(gateStep === 'provider_request' ? {} : { dispatched: gateDispatched }), result: gateDispatched || gateStep === 'provider_request' ? 'discarded' : 'not_dispatched',
-                ...(useBackoff ? { retryInMs } : {}), ...(timedOut ? { limit: gateTimeoutMs } : {}) } })
+                ...(useBackoff ? { retryInMs } : {}), ...(timedOut ? { limit: gateTimeoutMs,
+                  timeoutOverrunMs: Math.max(0, Math.round(durationMs - gateTimeoutMs)),
+                  loopActiveMs: Math.round(performance.eventLoopUtilization(gateLoop).active) } : {}) } })
             return null
           })
           const gate = durableWake ? await beginWake(runGate) : { result: runGate() }
@@ -2576,7 +2594,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             },
             readMessageVideo: ports.readMessageVideo,
           }) : undefined
-        const readAgentToolImages = async (seq: number, toolCurrent?: () => boolean, toolSignal?: AbortSignal): Promise<readonly MessageImage[]> => {
+        const readAgentToolImages = async (seq: number, toolCurrent?: () => boolean, toolSignal?: AbortSignal,
+          reportFailure?: MessageImageReadOptions['reportFailure']): Promise<readonly MessageImage[]> => {
           const signals = [toolSignal, memoryTurn?.signal].filter((value): value is AbortSignal => !!value)
           const signal = signals.length ? AbortSignal.any(signals) : undefined
           if (!Number.isSafeInteger(seq) || seq < 1) throw new Error('请使用本轮可见的附图消息正整数序号')
@@ -2599,6 +2618,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             await ensureExecution()
             if (!isCurrent() || await ports.isMessageRecalled?.(target, messageId) ||
                 originalId !== messageId && await ports.isMessageRecalled?.(target, originalId) || !isCurrent()) {
+              reportFailure?.({ code: 'image_source_changed' })
               throw new Error('附图消息来源或工具权限已失效')
             }
           }
@@ -2606,15 +2626,24 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           const images = await ports.readMessageImages(target, { messageId, ...(quote ? { quotedMessageId: originalId } : {}) }, {
             isCurrent,
             ...(signal ? { signal } : {}),
+            ...(reportFailure ? { reportFailure } : {}),
             async allowsSource(original) {
               if (original.messageId !== originalId || conversationAddressKey(original.conversation) !== conversationAddressKey(target) ||
                   original.sender.id !== authorId || original.sender.platform !== target.account.platform ||
-                  original.sender.namespace !== target.account.namespace || original.occurredAt !== occurredAt) return false
+                  original.sender.namespace !== target.account.namespace || original.occurredAt !== occurredAt) {
+                reportFailure?.({ code: 'image_source_mismatch' }); return false
+              }
               const excerpt = original.text || '[图片]'
-              const redactions = await personMemory.getRedactions({ identity: characterScope, subjectId: authorId })
-              if (isPersonMemoryRedacted({ scene: memoryScene, messageId: originalId, authorId, at: occurredAt, excerpt }, excerpt, redactions)) return false
-              await ensureReadCurrent()
-              return isCurrent()
+              try {
+                const redactions = await personMemory.getRedactions({ identity: characterScope, subjectId: authorId })
+                if (isPersonMemoryRedacted({ scene: memoryScene, messageId: originalId, authorId, at: occurredAt, excerpt }, excerpt, redactions)) {
+                  reportFailure?.({ code: 'image_source_privacy_denied' }); return false
+                }
+                await ensureReadCurrent()
+                return isCurrent()
+              } catch (error) {
+                reportFailure?.({ code: 'image_source_check_failed' }); throw error
+              }
             },
           })
           await ensureReadCurrent()
@@ -2665,12 +2694,18 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (visionAttempts >= 2) return { seq, code: 'image_turn_limit', error: '已达本轮看图次数上限' }
             visionAttempts++
             const isCurrent = () => canRunTurn() && visibleMessage() === message
+            let firstFailure: MessageImageReadFailure | undefined
             let images: readonly MessageImage[] | undefined
-            try { images = await readAgentToolImages(seq) } catch (error) {
+            try { images = await readAgentToolImages(seq, undefined, undefined, failure => { firstFailure ??= failure }) } catch (error) {
+              if (firstFailure) return { ...refused, ...firstFailure }
               diagnose({ stage: 'runtime', operation: 'simulation_image_read', outcome: 'failed', code: 'image_read_failed', error })
               return { ...refused, code: 'image_read_failed' }
             }
-            if (!images?.length || !isCurrent()) return refused
+            if (!isCurrent()) return { ...refused, code: 'image_source_changed' }
+            if (!images?.length) return { ...refused, ...firstFailure }
+            if (firstFailure) diagnose({ stage: 'runtime', operation: 'simulation_image_read', outcome: 'failed',
+              code: firstFailure.code, ...(firstFailure.httpStatus === undefined ? {} : { httpStatus: firstFailure.httpStatus }),
+              details: { step: messageImageReadSteps[firstFailure.code], result: 'fallback_used' } })
             await ensureExecution()
             await assertTriggerCurrent()
             if (!isCurrent()) return refused
@@ -3531,7 +3566,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               let repair = tool === finishTool && issue?.field === 'choice' && issue.rule === 'required' ? ` ${FINISH_CHOICE_GUIDANCE}` : ''
               let details: AgentDiagnosticDetails | undefined = issue
               if ((tool === finishTool || tool.name === 'simSendMessage') && issue?.field === 'messages' && issue.rule === 'type') {
-                const messages = normalizeStringArrayInput(args.messages)
+                const messages = normalizeMessageTextsInput(args.messages)
                 const array = Array.isArray(messages)
                 const rejected = array ? messages.find(value => typeof value !== 'string') : messages
                 details = { ...issue, field: array ? 'messages.items' : 'messages', expectedType: array ? 'string' : 'array',

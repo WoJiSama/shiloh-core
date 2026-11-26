@@ -1925,16 +1925,27 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         !textInboxFor(target) && guard.isCurrent?.() !== false)
       const canRead = async () => isCurrent() && await inbox.canReply(target, source.messageId) &&
         !(source.quotedMessageId && await inbox.isRecalled(target, source.quotedMessageId)) && isCurrent()
-      if (!await canRead()) return undefined
+      const reportFailure = guard.reportFailure
+      if (!await canRead()) { reportFailure?.({ code: 'image_source_changed' }); return undefined }
       const images = await adapter.readMessageImages(target, originalId, {
         isCurrent,
         ...(guard.signal ? { signal: guard.signal } : {}),
+        ...(reportFailure ? { reportFailure } : {}),
         async allowsSource(original) {
-          return original.messageId === originalId && conversationAddressKey(original.conversation) === conversationAddressKey(target) &&
-            options.allowsText?.(original.text, 'incoming') !== false && allowsFileNames(original) && await guard.allowsSource(original) && await canRead()
+          if (original.messageId !== originalId || conversationAddressKey(original.conversation) !== conversationAddressKey(target)) {
+            reportFailure?.({ code: 'image_source_mismatch' }); return false
+          }
+          if (options.allowsText?.(original.text, 'incoming') === false || !allowsFileNames(original)) {
+            reportFailure?.({ code: 'image_source_privacy_denied' }); return false
+          }
+          if (!await guard.allowsSource(original)) return false
+          if (await canRead()) return true
+          reportFailure?.({ code: 'image_source_changed' }); return false
         },
       })
-      return images && await canRead() ? images : undefined
+      if (!images) return undefined
+      if (await canRead()) return images
+      reportFailure?.({ code: 'image_source_changed' }); return undefined
     },
     async readMessageFile(target, source, fileIndex, guard) {
       const adapter = adapterFor(target)

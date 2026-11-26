@@ -303,6 +303,7 @@ export async function main(argv: string[]): Promise<void> {
     }
     return true
   } }, logger,
+    sampleConfigReadWork: standaloneConfigReadWork,
     ...(alerts ? { onFailure: alerts.report } : {}),
     allowsLabel: label => allowsAlertLabel?.(label) !== false,
     configurationRevision: config.sourceSnapshot.revision })

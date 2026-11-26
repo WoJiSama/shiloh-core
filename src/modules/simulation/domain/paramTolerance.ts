@@ -30,6 +30,13 @@ export function normalizeStringArrayInput(value: unknown): unknown {
   return candidate
 }
 
+/** A single enclosing array can be removed without changing message boundaries. */
+export function normalizeMessageTextsInput(value: unknown): unknown {
+  const list = normalizeStringArrayInput(value)
+  return Array.isArray(list) && list.length === 1 && Array.isArray(list[0]) &&
+    list[0].every(text => typeof text === 'string') ? list[0] : list
+}
+
 /** 宽容地把 unknown 归一成 string[]：单字符串、JSON 数组字符串、真数组都接受；全不合法返回 null。 */
 export function coerceStringArray(value: unknown, opts: { maxLength: number; itemMaxChars: number }): string[] | null {
   const list = normalizeStringArrayInput(value)

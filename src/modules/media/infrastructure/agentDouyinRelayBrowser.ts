@@ -7,6 +7,8 @@ import type { createDouyinHttp } from './agentDouyinRelayHttp.js'
 import { douyinCanonicalPage, douyinDisplay, douyinDocumentMetadata, douyinMetadata, hasDouyinMedia } from './agentDouyinRelayMetadata.js'
 import type { AgentDouyinResolvedMedia } from './agentDouyinRelayMetadata.js'
 
+export const DOUYIN_BROWSER_NAVIGATION_MS = 15_000
+
 export interface AgentDouyinBrowserInput {
   readonly id: string
   readonly kind: 'video' | 'note'
@@ -69,13 +71,6 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
   const guard = douyinGuard(context, 25_000)
   let session: Awaited<ReturnType<typeof openAgentDouyinBrowserSession>> | undefined, matched: AgentDouyinResolvedMedia | undefined, total = 0, requests = 0
   const work = new Set<Promise<void>>()
-  let signalMediaReady!: () => void
-  const mediaReady = new Promise<void>(resolve => { signalMediaReady = resolve })
-  const capture = (candidate: AgentDouyinResolvedMedia | undefined) => {
-    if (!candidate || hasDouyinMedia(matched)) return
-    matched = candidate
-    if (hasDouyinMedia(candidate)) signalMediaReady()
-  }
   let navigationFailure: DouyinHttpError | undefined, detailFailure: DouyinHttpError | undefined
   let active = 0
   const waiting: (() => void)[] = []
@@ -86,6 +81,16 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
     input.observeStep?.('douyin_browser_launch')
     session = await openAgentDouyinBrowserSession(guard, input.directory)
     const page = await guard.wait(session.browser.newPage(), late => late.close())
+    const onTargetPage = () => page.url().split('?')[0] === douyinCanonicalPage(input.id, input.kind)
+    let signalMediaReady!: () => void
+    const mediaReady = new Promise<void>(resolve => { signalMediaReady = resolve })
+    const observeMedia = () => { if (onTargetPage() && hasDouyinMedia(matched)) signalMediaReady() }
+    page.on('framenavigated', frame => { if (frame === page.mainFrame()) observeMedia() })
+    const capture = (candidate: AgentDouyinResolvedMedia | undefined) => {
+      if (!candidate || hasDouyinMedia(matched)) return
+      matched = candidate
+      observeMedia()
+    }
     await guard.wait(page.setBypassServiceWorker(true))
     await guard.wait(page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'))
     await guard.wait(page.evaluateOnNewDocument(() => {
@@ -164,7 +169,12 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
       const task = handle(request); work.add(task); void task.finally(() => work.delete(task)).catch(() => {})
     })
     input.observeStep?.('douyin_browser_navigation')
-    await guard.wait(page.goto(input.pageUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 }))
+    // Verified target media can arrive while an unrelated script still blocks DOMContentLoaded.
+    const navigation = page.goto(input.pageUrl, { waitUntil: 'domcontentloaded', timeout: DOUYIN_BROWSER_NAVIGATION_MS }).catch(error => {
+      if (error instanceof Error && error.name === 'TimeoutError') navigationFailure ??= new DouyinHttpError('douyin_browser_navigation_timeout')
+      throw error
+    })
+    await guard.wait(Promise.race([navigation, mediaReady]))
     input.observeStep?.('douyin_browser_extract')
     if (!hasDouyinMedia(matched)) await guard.wait(Promise.race([mediaReady, page.waitForFunction((id, kind) => {
       const nodes = document.querySelectorAll('[data-aweme-id], [data-video-id]')
@@ -172,7 +182,7 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
       return Boolean(scope && (kind === 'note' ? scope.querySelector('img') : scope.querySelector('video')?.src))
     }, { timeout: 8000, polling: 150 }, input.id, input.kind).then(handle => handle.dispose()).catch(() => undefined)]))
     await guard.ensure()
-    if (page.url().split('?')[0] !== douyinCanonicalPage(input.id, input.kind)) throw douyinFailure()
+    if (!onTargetPage()) throw douyinFailure()
     if (hasDouyinMedia(matched)) return matched
     const dom = await guard.wait(page.evaluate((id, kind) => {
       const nodes = document.querySelectorAll('[data-aweme-id], [data-video-id]')
@@ -193,7 +203,7 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
       music: matched?.music || '', stats: matched?.stats || {},
     }
     await guard.ensure()
-    if (page.url().split('?')[0] !== douyinCanonicalPage(input.id, input.kind)) throw douyinFailure()
+    if (!onTargetPage()) throw douyinFailure()
     if (!hasDouyinMedia(matched) && detailFailure) input.observeStep?.(detailFailure.step, detailFailure.httpStatus)
     return matched
   } catch {

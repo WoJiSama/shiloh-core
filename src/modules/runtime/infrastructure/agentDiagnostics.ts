@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
+import { performance } from 'node:perf_hooks'
 import { types } from 'node:util'
 import { agentJournalWriteSteps, type AgentDiagnosticDetails, type AgentDiagnosticEvent, type AgentDiagnosticScope,
   type AgentDiagnosticSink, type AgentDiagnosticValueType, type AgentJournalWriteObserver, type AgentJournalWriteStep } from '../../../contracts/agentDiagnostics.js'
@@ -109,6 +110,7 @@ export function createAgentDiagnostics(options: {
   sink?: AgentDiagnosticSink; logger?: Logger; now?: () => number; configurationRevision?: string
   allowsLabel?: (label: string) => boolean
   onFailure?: (event: AgentDiagnosticEvent) => void
+  sampleConfigReadWork?(): { configReadCount: number; configReadMs: number }
 } = {}) {
   type Context = { scope: AgentDiagnosticScope; traceId: string; operation: string }
   const contexts = new AsyncLocalStorage<Context>()
@@ -118,6 +120,7 @@ export function createAgentDiagnostics(options: {
   const pending = new Set<Promise<unknown>>()
   const now = options.now ?? Date.now
   const terminal = options.logger ?? { info: console.info, warn: console.warn, error: console.error }
+  const configWork = () => { try { return options.sampleConfigReadWork?.() } catch { return undefined } }
   const allowed = (value: string) => { try { return options.allowsLabel?.(value) !== false } catch { return false } }
   const token = (value: string) => /^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$/u.test(value) && allowed(value) ? value : 'unclassified'
   const configurationRevision = typeof options.configurationRevision === 'string' && options.configurationRevision.length > 0 &&
@@ -143,7 +146,7 @@ export function createAgentDiagnostics(options: {
       journalFailure(event, line, 'diagnostic_queue_overflow')
       return
     }
-    const startedAt = performance.now()
+    const startedAt = performance.now(), loop = performance.eventLoopUtilization(), configBefore = configWork()
     const elapsed = (at: number) => Math.round(performance.now() - at)
     let step: AgentJournalWriteStep | undefined, stepAt = startedAt, queueMs: number | undefined
     let slowest: { step: AgentJournalWriteStep; ms: number } | undefined
@@ -182,8 +185,13 @@ export function createAgentDiagnostics(options: {
           const active = readBlockingStep?.()
           if (active && agentJournalWriteSteps.includes(active)) blockingStep = active
         } catch { /* The active writer can be unavailable. */ }
-        journalFailure(event, line, timeoutCode, 'unknown', elapsed(startedAt), {
+        const duration = elapsed(startedAt), configAfter = configWork()
+        journalFailure(event, line, timeoutCode, 'unknown', duration, {
           limit: journalConfirmationMs, result: 'confirmation_pending',
+          timeoutOverrunMs: Math.max(0, duration - journalConfirmationMs),
+          loopActiveMs: Math.round(performance.eventLoopUtilization(loop).active),
+          ...(configBefore && configAfter ? { configReadCount: configAfter.configReadCount - configBefore.configReadCount,
+            configReadMs: Math.round(configAfter.configReadMs - configBefore.configReadMs) } : {}),
           ...(step === undefined ? {} : { step, stepMs }),
           ...(queued === undefined ? {} : { queueMs: queued }),
           ...(blockingStep === undefined ? {} : { blockingStep }),

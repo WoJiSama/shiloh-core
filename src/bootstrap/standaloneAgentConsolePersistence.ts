@@ -163,7 +163,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
     isCurrent() {
       if (retired) return false
       if (!hostCurrent()) { retire('uncertain'); return false }
-      if (!isStandaloneAgentSourceSnapshotCurrent(loaded)) { retire('restart-required'); return false }
+      if (!isStandaloneAgentSourceSnapshotCurrent(loaded, 'execution')) { retire('restart-required'); return false }
       return true
     },
     observeCurrent(check: () => boolean): boolean {
@@ -173,7 +173,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
         if (!execution.isCurrent()) return false
         const accepted = check()
         return accepted === true ? execution.isCurrent() : accepted
-      })
+      }, 'execution')
       if (!result.current) retire('restart-required')
       return !retired && result.accepted
     },

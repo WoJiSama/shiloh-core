@@ -3,7 +3,7 @@ import { lookup } from 'node:dns/promises'
 import type { IncomingMessage } from 'node:http'
 import { request } from 'node:https'
 import { isIP } from 'node:net'
-import type { MessageImage } from '../contracts/platformConnection.js'
+import type { MessageImage, MessageImageReadOptions } from '../contracts/platformConnection.js'
 import type { MessageResource } from '../contracts/platformMessage.js'
 import { readImageDimensions } from '../modules/image/domain/imageDimensions.js'
 import { sniffImageMime } from '../modules/image/infrastructure/imageResource.js'
@@ -38,7 +38,7 @@ async function readWhileActive<T>(signal: AbortSignal, read: () => Promise<T>): 
   } finally { if (abort) signal.removeEventListener('abort', abort) }
 }
 
-async function fetchImage(url: URL, address: LookupAddress, signal: AbortSignal): Promise<Buffer | undefined> {
+async function fetchImage(url: URL, address: LookupAddress, signal: AbortSignal, reportFailure?: MessageImageReadOptions['reportFailure']): Promise<Buffer | undefined> {
   const response = await new Promise<IncomingMessage>((resolve, reject) => {
     const req = request(url, {
       method: 'GET', agent: false, family: address.family, signal,
@@ -49,9 +49,10 @@ async function fetchImage(url: URL, address: LookupAddress, signal: AbortSignal)
     req.end()
   })
   const encoding = response.headers['content-encoding']
-  if (response.statusCode !== 200 || (encoding && encoding !== 'identity') ||
-      Number(response.headers['content-length']) > MAX_BYTES) {
+  if (response.statusCode !== 200 || (encoding && encoding !== 'identity') || Number(response.headers['content-length']) > MAX_BYTES) {
     response.destroy()
+    reportFailure?.(response.statusCode !== 200 ? { code: 'image_download_http_error',
+      ...(response.statusCode === undefined ? {} : { httpStatus: response.statusCode }) } : { code: 'image_bytes_invalid' })
     return undefined
   }
   const chunks: Buffer[] = []
@@ -62,7 +63,7 @@ async function fetchImage(url: URL, address: LookupAddress, signal: AbortSignal)
   try {
     for await (const chunk of response) {
       size += chunk.length
-      if (size > MAX_BYTES) return undefined
+      if (size > MAX_BYTES) { reportFailure?.({ code: 'image_bytes_invalid' }); return undefined }
       chunks.push(chunk)
     }
     return signal.aborted ? undefined : Buffer.concat(chunks, size)
@@ -73,6 +74,7 @@ interface ImageReadGuard {
   signal: AbortSignal
   isCurrent(): boolean
   authorize(): Promise<boolean>
+  reportFailure?: MessageImageReadOptions['reportFailure']
 }
 
 /** Resolve one attachment from the verified get_msg result, never from a tool argument. */
@@ -81,26 +83,40 @@ export async function readQqMessageImage(resource: MessageResource, guard: Image
   request?: typeof fetchImage
 } = {}): Promise<MessageImage | undefined> {
   const { signal, isCurrent, authorize } = guard
+  const report = guard.reportFailure
+  const current = () => !signal.aborted && isCurrent()
   if (signal.aborted || !isCurrent()) return undefined
   let bytes: Buffer | undefined
   if (resource.kind === 'reference') {
     const encoded = resource.value.startsWith('base64://') ? resource.value.slice(9) : undefined
     if (!encoded || encoded.length > Math.ceil(MAX_BYTES / 3) * 4 || encoded.length % 4 !== 0 ||
-        !/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded) || !await readWhileActive(signal, authorize) || signal.aborted || !isCurrent()) return undefined
+        !/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded)) { report?.({ code: 'image_reference_unsupported' }); return undefined }
+    if (!await readWhileActive(signal, authorize) || !current()) return undefined
     bytes = Buffer.from(encoded, 'base64')
   } else {
     const url = qqImageUrl(resource.value)
-    if (!url) return undefined
-    const addresses = await readWhileActive(signal, () => (dependencies.lookup ?? (host => lookup(host, { all: true })))(url.hostname))
-    if (!addresses.length || addresses.some(({address, family}) => isIP(address) !== family || !isPublicAddress(address))) return undefined
+    if (!url) { report?.({ code: 'image_url_rejected' }); return undefined }
+    const addresses = await readWhileActive(signal, () => (dependencies.lookup ?? (host => lookup(host, { all: true })))(url.hostname)).catch(error => {
+      if (current()) report?.({ code: 'image_dns_failed' })
+      throw error
+    })
+    if (!addresses.length || addresses.some(({address, family}) => isIP(address) !== family || !isPublicAddress(address))) {
+      report?.({ code: 'image_dns_failed' }); return undefined
+    }
     const address = addresses.find(item => item.family === 4) ?? addresses[0]!
-    if (!await readWhileActive(signal, authorize) || signal.aborted || !isCurrent()) return undefined
-    bytes = await (dependencies.request ?? fetchImage)(url, address, signal)
+    if (!await readWhileActive(signal, authorize) || !current()) return undefined
+    bytes = await (dependencies.request ?? fetchImage)(url, address, signal, report).catch(error => {
+      if (current()) report?.({ code: 'image_download_failed' })
+      throw error
+    })
   }
-  if (!bytes || bytes.length > MAX_BYTES || signal.aborted || !isCurrent()) return undefined
+  if (!bytes || !current()) return undefined
+  if (bytes.length > MAX_BYTES) { report?.({ code: 'image_bytes_invalid' }); return undefined }
   const dimensions = readImageDimensions(bytes)
   const mime = sniffImageMime(bytes)
   if (!dimensions || dimensions.width > 8192 || dimensions.height > 8192 ||
-      dimensions.width * dimensions.height > MAX_PIXELS || mime === 'application/octet-stream') return undefined
+      dimensions.width * dimensions.height > MAX_PIXELS || mime === 'application/octet-stream') {
+    report?.({ code: 'image_bytes_invalid' }); return undefined
+  }
   return { mime, base64: bytes.toString('base64') }
 }

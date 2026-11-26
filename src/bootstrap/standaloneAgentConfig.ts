@@ -807,7 +807,7 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
   let liveBindings: ReturnType<typeof createAgentBindingDirectory> | undefined
   const isConfigCurrent = () => {
     try {
-      const current = inspectStandaloneAgentSourceSnapshot(sourceSnapshot)
+      const current = inspectStandaloneAgentSourceSnapshot(sourceSnapshot, 'execution')
       return current.fence === sourceSnapshot.fence && current.versions.host === sourceSnapshot.versions.host && current.versions.personas === sourceSnapshot.versions.personas
     } catch { return false }
   }
@@ -815,7 +815,7 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
     bindingRevision: sourceSnapshot.versions.bindings, hostVersion: sourceSnapshot.versions.host, isConfigCurrent,
     readBindings(initial) {
       try {
-        const current = inspectStandaloneAgentSourceSnapshot(sourceSnapshot)
+        const current = inspectStandaloneAgentSourceSnapshot(sourceSnapshot, 'execution')
         if (current.fence !== sourceSnapshot.fence || current.versions.host !== sourceSnapshot.versions.host || current.versions.personas !== sourceSnapshot.versions.personas) return undefined
         // Preserve the initial directory identity used by checkBindings while its revision is unchanged.
         if (current.versions.bindings === sourceSnapshot.versions.bindings) return initial
@@ -829,7 +829,7 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
   if (inspectStandaloneAgentSourceSnapshot(sourceSnapshot).revision !== sourceSnapshot.revision) throw new Error('检查期间宿主配置已改变，请重试')
   return { ...config, sourceSnapshot,
     observeConfigCurrent(check: () => boolean): boolean {
-      const result = observeStandaloneAgentSourceSnapshot(sourceSnapshot, check)
+      const result = observeStandaloneAgentSourceSnapshot(sourceSnapshot, check, 'execution')
       return result.current && result.accepted
     },
   }

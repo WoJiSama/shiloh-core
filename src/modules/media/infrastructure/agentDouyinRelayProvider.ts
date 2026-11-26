@@ -11,7 +11,7 @@ import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
 import { agentMediaSharePageUrl, validateAgentMediaShare } from './agentMediaRelayReference.js'
 import { createDouyinHttp, DouyinHttpError, douyinBody, douyinFailure, douyinGuard } from './agentDouyinRelayHttp.js'
 import type { AgentDouyinLookup, AgentDouyinRequest, DouyinRequestKind } from './agentDouyinRelayHttp.js'
-import { nativeAgentDouyinBrowser } from './agentDouyinRelayBrowser.js'
+import { DOUYIN_BROWSER_NAVIGATION_MS, nativeAgentDouyinBrowser } from './agentDouyinRelayBrowser.js'
 import type { AgentDouyinBrowser } from './agentDouyinRelayBrowser.js'
 import { douyinCanonicalPage, douyinDocumentMetadata, douyinPageIdentity, hasDouyinMedia } from './agentDouyinRelayMetadata.js'
 import type { AgentDouyinResolvedMedia } from './agentDouyinRelayMetadata.js'
@@ -228,9 +228,9 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
           durationMs: performance.now() - pageStarted,
           ...(degradation === 'metadata_unavailable' ? { ...(browserStatus === undefined ? {} : { httpStatus: browserStatus }),
             details: { step: browserStep, queueMs: Math.round(queueMs), result: 'fallback_used',
-              cause: browserTimedOut ? 'douyin_browser_timeout' : browserStep === 'douyin_browser_extract'
-                ? 'douyin_browser_target_missing' : 'douyin_browser_failed',
-              ...(browserTimedOut ? { limit: browserLimit } : {}) } } : {}) })
+              cause: browserTimedOut ? 'douyin_browser_timeout' : browserStep === 'douyin_browser_navigation_timeout' ? browserStep
+                : browserStep === 'douyin_browser_extract' ? 'douyin_browser_target_missing' : 'douyin_browser_failed',
+              ...(browserTimedOut ? { limit: browserLimit } : browserStep === 'douyin_browser_navigation_timeout' ? { limit: DOUYIN_BROWSER_NAVIGATION_MS } : {}) } } : {}) })
       }
       return { status: items.length ? 'ready' : 'metadata-only', pageUrl, infoText, plan, release } satisfies AgentPreparedMediaRelay
     } catch { throw douyinFailure() }

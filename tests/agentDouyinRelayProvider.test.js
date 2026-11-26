@@ -346,10 +346,11 @@ test('real isolated Chrome keeps anonymous first-party challenge cookies, uses p
   t.after(() => { if (previousChrome === undefined) delete process.env.PUPPETEER_EXECUTABLE_PATH; else process.env.PUPPETEER_EXECUTABLE_PATH = previousChrome })
   const cookie = 'ANONYMOUS_BROWSER_SESSION_12345', jsCookie = 'ANONYMOUS_BROWSER_JS_TOKEN_12345', observations = []
   let pages = 0, detailCookies = '', inFlight = 0, maximum = 0, detailedAt = 0
+  const stalledStylesheet = Promise.withResolvers()
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'douyin-browser-test-'))), artifacts = await createAgentMediaArtifactStore({ directory })
   let prepared
   t.after(async () => { await prepared?.release(); await artifacts.close(); assert.deepEqual(await readdir(directory), []); await rm(directory, { recursive: true, force: true }) })
-  const server = http.createServer((request, output) => {
+  const server = http.createServer(async (request, output) => {
     observations.push({ path: request.url, cookie: request.headers.cookie }); inFlight++; maximum = Math.max(maximum, inFlight); output.on('close', () => inFlight--)
     if (request.url.startsWith(`/note/${ID}`)) {
       output.setHeader('content-type', 'text/html'); if (++pages === 1) { output.end('<html><body>Static data unavailable</body></html>'); return }
@@ -360,8 +361,11 @@ test('real isolated Chrome keeps anonymous first-party challenge cookies, uses p
         fetch('http://127.0.0.1:${server.address().port}/forbidden').catch(()=>{});
         fetch('https://evil.test/forbidden').catch(()=>{});
         fetch('https://lf-private.bytegoofy.com/private').catch(()=>{});
-      </script></body></html>`)
+      </script><link rel="stylesheet" href="https://lf3.bytegoofy.com/slow.css"><script>window.afterStyle=true</script></body></html>`)
+    } else if (request.url === '/slow.css') {
+      stalledStylesheet.resolve()
     } else if (request.url.startsWith('/aweme/v1/web/aweme/detail/')) {
+      await stalledStylesheet.promise
       detailCookies = request.headers.cookie || ''; output.setHeader('content-type', 'application/json')
       detailedAt = performance.now()
       output.end(JSON.stringify({ recommended: [gallery(1, { aweme_id: OTHER })], aweme_detail: gallery(2) }))
@@ -381,7 +385,7 @@ test('real isolated Chrome keeps anonymous first-party challenge cookies, uses p
     }) })
   prepared = await provider.prepare(share('note'), scope())
   assert.equal(prepared.status, 'ready'); assert.equal(prepared.plan.items.length, 3); assert.equal(pages, 2)
-  assert.ok(detailedAt && performance.now() - detailedAt < 7500, 'the matching detail response must not wait for an absent DOM node')
+  assert.ok(detailedAt && performance.now() - detailedAt < 7500, 'the matching detail response finishes while an unrelated stylesheet still blocks page loading')
   assert.ok(detailCookies.includes(`ttwid=${cookie}`)); assert.ok(detailCookies.includes(`msToken=${jsCookie}`))
   assert.ok(maximum <= 4, `browser transport concurrency ${maximum}`)
   assert.equal(observations.some(value => value.path.includes('forbidden') || value.path.includes('private')), false)

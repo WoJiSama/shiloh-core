@@ -71,7 +71,7 @@ function assertScope(context: PersonProfileExtractionContext | undefined): asser
 function assertCurrent(context: PersonProfileExtractionContext, signal: AbortSignal, isCurrent?: () => boolean): void {
   signal.throwIfAborted()
   assertScope(context)
-  if (context.isCurrent() !== true || isCurrent?.() === false) throw new Error(FAILURE)
+  if (context.isCurrent() !== true || isCurrent !== context.isCurrent && isCurrent?.() === false) throw new Error(FAILURE)
 }
 async function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   return await new Promise<T>((resolve, reject) => {
@@ -134,7 +134,7 @@ function client(options: AgentSimulationModelOptions, { deadlineMs, temperature,
   const secrets = [...new Set([options.apiKey, ...(options.secrets ?? [])].filter(value => typeof value === 'string' && !!value))]
   const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Math.min(deadlineMs, Math.floor(options.timeoutMs!))) : deadlineMs
   return async (input: unknown, prompt: () => readonly { role: string; content: string }[], context: PersonProfileExtractionContext | undefined,
-    isCurrent?: () => boolean, onPhase?: (phase: AgentSimulationWakePhase) => void) => {
+    isCurrent?: () => boolean, onPhase?: (phase: AgentSimulationWakePhase, httpStatus?: number) => void) => {
     const lifecycle = new AbortController()
     let response: Response | undefined
     let signal: AbortSignal | undefined
@@ -166,10 +166,10 @@ function client(options: AgentSimulationModelOptions, { deadlineMs, temperature,
       }), signal)
       waitingForHeaders = false
       response = received
+      if (received.ok) onPhase?.('response_body', received.status)
       assertCurrent(context, signal, isCurrent)
       if (!received.ok) throw new AgentSimulationModelError('http_error', received.status)
       if (received.redirected) throw new AgentSimulationModelError('model_response_envelope_invalid')
-      onPhase?.('response_body')
       const result = await readResponse(received, signal).catch(() => {
         requestSignal.throwIfAborted()
         throw new AgentSimulationModelError('model_response_body_invalid')
@@ -205,11 +205,14 @@ function client(options: AgentSimulationModelOptions, { deadlineMs, temperature,
   }
 }
 
-/** Low-signal wake screening; unavailable or malformed verdicts preserve fail-open behavior. */
+const wakeGatesWithSourceChecks = new WeakSet<object>()
+export function wakeGateChecksSources(judge: object): boolean { return wakeGatesWithSourceChecks.has(judge) }
+
+/** Low-signal wake screening; the provider verifies sources at dispatch and response. */
 export function createAgentSimulationWakeGate(options: AgentSimulationModelOptions & { readonly throwOnFailure?: boolean }) {
   const run = client(options, { deadlineMs: 8_000, temperature: 0.1 })
-  return async (input: AgentSimulationWakeInput, isCurrent?: () => boolean, context?: PersonProfileExtractionContext,
-    onPhase?: (phase: AgentSimulationWakePhase) => void): Promise<AgentSimulationWakeVerdict | null> => {
+  const judge = async (input: AgentSimulationWakeInput, isCurrent?: () => boolean, context?: PersonProfileExtractionContext,
+    onPhase?: (phase: AgentSimulationWakePhase, httpStatus?: number) => void): Promise<AgentSimulationWakeVerdict | null> => {
     try {
       const raw = await run(input, () => {
         if (!input || typeof input.reason !== 'string' || input.reason.length > 4000 || !Array.isArray(input.messages) || input.messages.length > 40 ||
@@ -234,6 +237,8 @@ export function createAgentSimulationWakeGate(options: AgentSimulationModelOptio
       return null
     }
   }
+  wakeGatesWithSourceChecks.add(judge)
+  return judge
 }
 
 /** Returns bounded candidate JSON; the runtime owns permissions and persistence. */
