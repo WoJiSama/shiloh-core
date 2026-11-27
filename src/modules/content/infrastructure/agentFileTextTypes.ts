@@ -58,12 +58,12 @@ export function pagination(input: { readonly offset?: number; readonly limit?: n
       !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_FILE_TEXT_PAGE) throw new AgentFileTextError()
   return { offset, limit }
 }
-export function fileTextInput(raw: Record<string, unknown>): AgentFileTextInput {
+export function fileTextInput(raw: Record<string, unknown>): AgentFileTextInput & { readonly offset: number; readonly limit: number } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw)) ||
       Reflect.ownKeys(raw).some(key => typeof key !== 'string' || !['sourceSeq', 'fileIndex', 'fileName', 'folderPath', 'fileUrl', 'archiveEntry', 'offset', 'limit'].includes(key) || !Object.hasOwn(Object.getOwnPropertyDescriptor(raw, key)!, 'value'))) throw new AgentFileTextError()
   const { archiveEntry: requestedEntry, offset, limit, ...selection } = raw
   const archiveEntry = fileTextArchiveEntry(requestedEntry)
-  const page = pagination({ ...(offset === undefined ? {} : { offset: offset as number }), ...(limit === undefined ? {} : { limit: limit as number }) })
+  const page = pagination({ ...(offset === undefined ? {} : { offset: offset as number }), limit: limit === undefined ? 4_000 : limit as number })
   return Object.freeze({ ...snapshotAgentFileRequest(selection), ...(archiveEntry === undefined ? {} : { archiveEntry }), ...page })
 }
 export function nativeFormats(input: readonly FileTextNativeFormat[] = []): readonly FileTextNativeFormat[] {

@@ -15,7 +15,6 @@ export interface AgentFileTextToolOptions {
   readonly allowsText?: (text: string) => boolean
   readonly nativeFormats?: readonly FileTextNativeFormat[]
 }
-const defaultTextPage = 4_000
 const failureMessages: Record<FileTextFailureCode, string> = {
   file_text_selection_invalid: '文件选择参数无效，请使用本轮文件序号、准确文件名或核验后的来源。',
   file_text_source_unavailable: '未能定位或取得文件。请引用上传消息，或提供准确文件名和目录。',
@@ -62,7 +61,7 @@ export function createAgentFileTextTool(options: AgentFileTextToolOptions = {}):
     async execute(raw, context) {
       let failure: FileTextFailureCode = 'file_text_selection_invalid'
       try {
-        const input = fileTextInput(raw), { archiveEntry, offset = 0, limit = defaultTextPage, ...source } = input
+        const input = fileTextInput(raw), { archiveEntry, offset, limit, ...source } = input
         if (!safe(JSON.stringify(input))) return failed(failure)
         failure = 'file_text_source_changed'
         if (context.actor.kind !== 'user' || !context.actor.user || !context.request?.messageId || !context.readFile) return failed(failure)
