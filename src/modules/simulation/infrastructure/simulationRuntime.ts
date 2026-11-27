@@ -2122,7 +2122,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           ...(anchor ? { anchor } : {}), ...(relatedMessages ? { relatedMessages } : {}),
           ...(groupSelection ? { mode: groupSelection.mode } : {}) })
         const snapshotSeqs = snapshot.includedSeqs
-        const snapshotIds = state.recent.filter(message => snapshotSeqs.includes(message.seq)).flatMap(message => message.messageId == null ? [] : [String(message.messageId)])
+        const snapshotIds = [...new Set([...state.recent, ...state.unread]
+          .filter(message => snapshotSeqs.includes(message.seq)).flatMap(message => message.messageId == null ? [] : [String(message.messageId)]))]
         if (routedGroup && anchor) for (const message of state.recent.filter(item => snapshotSeqs.includes(item.seq) && item.seq !== anchor.seq)) {
           if (message.messageId != null) attachmentSourceIds.add(String(message.messageId))
           const quoteId = message.quoteSource?.messageId ?? message.replyMessageId
