@@ -261,6 +261,26 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 describe('standalone observation page', () => {
+  it('displays measured and estimated context use, phase latency and priced-sample coverage', async () => {
+    const sample = { requests: 1, inputTokens: { p50: 100, p95: 200 }, estimatedInputTokens: null,
+      latencyMs: { p50: 25, p95: 70 }, requestBytes: { p50: 400, p95: 500 },
+      systemBytes: { p50: 50, p95: 80 }, toolSchemaBytes: { p50: 40, p95: 60 } }
+    const metric = { platform: 'dingtalk', scene: 'group', purpose: 'text', model: 'fixture-model', route: 'chat',
+      first: sample, followup: { ...sample, inputTokens: null, estimatedInputTokens: { p50: 130, p95: 190 } },
+      turns: { count: 1, inputTokens: null, estimatedInputTokens: { p50: 200, p95: 300 }, latencyMs: { p50: 50, p95: 140 } },
+      savedBytes: 300, overflow: 1, repeatedReads: 2, cachePercent: 60, pricedCostMicroCny: 12500, priced: 1 }
+    vi.mocked(api).mockResolvedValue({ ...summary(), contextMetrics: [metric] })
+    const wrapper = await page()
+    const result = wrapper.findAll('tr').find(row => row.text().includes('fixture-model'))?.text()
+    expect(result).toContain('100 / 200 token')
+    expect(result).toContain('130 / 190（估算） token')
+    expect(result).toContain('25 / 70 ms')
+    expect(result).toContain('50 / 140 ms')
+    expect(result).toContain('超限 1 · 重读 2')
+    expect(result).toContain('缓存 60%')
+    expect(result).toContain('¥0.0125（1 次）')
+    expect(() => parseStandaloneObserve({ ...summary(), contextMetrics: [{ ...metric, cachePercent: 101 }] })).toThrow()
+  })
   it('looks up an exact query reference beyond the default list without claiming a complete history', async () => {
     const traceId = 'older-trace.42:check'
     const older = { ...event('older-event'), traceId }

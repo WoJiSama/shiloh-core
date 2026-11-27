@@ -378,15 +378,16 @@ function detail(event: DiagnosticEvent) {
           </div>
           <div class="table-scroll">
             <table class="events-table">
-              <thead><tr><th>场景 / 模型</th><th>首轮输入 token</th><th>后续输入 token</th><th>回合累计输入 token</th><th>回合推理耗时 ms</th><th>首轮提示词 / 工具字节 P95</th><th>裁剪与缓存</th></tr></thead>
+              <thead><tr><th>场景 / 模型</th><th>首轮</th><th>后续</th><th>回合累计</th><th>首轮请求体 / 提示词 / 工具字节 P95</th><th>裁剪与缓存</th></tr></thead>
               <tbody>
                 <tr v-for="metric in resource.data.value.contextMetrics" :key="`${metric.platform}/${metric.scene}/${metric.purpose}/${metric.model}/${metric.route}`">
                   <td>{{ metric.platform }} · {{ metric.scene }} · {{ metric.purpose }}<br />{{ metric.model }} · {{ metric.route }}</td>
-                  <td>{{ contextTokenLabel(metric.first) }}</td>
-                  <td>{{ contextTokenLabel(metric.followup) }}</td>
-                  <td>{{ contextTokenLabel(metric.turns) }}</td>
-                  <td>{{ percentileLabel(metric.turns.latencyMs) }}</td>
-                  <td>{{ count(metric.first.systemBytes?.p95 ?? 0) }} / {{ count(metric.first.toolSchemaBytes?.p95 ?? 0) }}</td>
+                  <td>{{ contextTokenLabel(metric.first) }} token<br />{{ percentileLabel(metric.first.latencyMs) }} ms</td>
+                  <td>{{ contextTokenLabel(metric.followup) }} token<br />{{ percentileLabel(metric.followup.latencyMs) }} ms</td>
+                  <td>{{ contextTokenLabel(metric.turns) }} token<br />{{ percentileLabel(metric.turns.latencyMs) }} ms</td>
+                  <td>{{ metric.first.requestBytes ? count(metric.first.requestBytes.p95) : '—' }} /
+                    {{ metric.first.systemBytes ? count(metric.first.systemBytes.p95) : '—' }} /
+                    {{ metric.first.toolSchemaBytes ? count(metric.first.toolSchemaBytes.p95) : '—' }}</td>
                   <td>{{ count(metric.savedBytes) }} B · 超限 {{ count(metric.overflow) }} · 重读 {{ count(metric.repeatedReads) }}<br />缓存 {{ metric.cachePercent === null ? '—' : `${metric.cachePercent}%` }}<br />
                     <span v-if="metric.pricedCostMicroCny !== null">价目估算 ¥{{ (metric.pricedCostMicroCny / 1000000).toFixed(4) }}（{{ count(metric.priced) }} 次）</span></td>
                 </tr>
