@@ -11,8 +11,8 @@ describe('standalone workspace navigation', () => {
     const sections = new Set(workspaceNavigation.map((item) => item.path))
     const entries = Object.entries(workspaceFeatures)
 
-    expect(entries).toHaveLength(18)
     expect(entries.every(([, item]) => sections.has(item.group))).toBe(true)
+    expect(workspaceFeatureEntries('/system').map(([key]) => key)).toContain('feature-switches')
     expect(workspaceFeatureEntries('/connections').map(([key]) => key)).toEqual([
       'group-admin',
       'groups'

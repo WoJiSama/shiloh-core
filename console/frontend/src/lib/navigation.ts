@@ -175,6 +175,13 @@ export const workspaceFeatures = {
     hint: '骰子规则与参与边界，保存后重启生效',
     keywords: '命令 骰子 规则'
   },
+  'feature-switches': {
+    label: '工具与功能开关',
+    group: '/system',
+    operation: 'config.read',
+    hint: '全局或按群设置自动搬运、指令和模型工具',
+    keywords: '工具 功能 开关 启用 禁用 视频 搬运 MCP'
+  },
   conversation: {
     label: '对话配置',
     group: '/system',

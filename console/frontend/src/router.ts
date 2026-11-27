@@ -108,6 +108,11 @@ export const router = createRouter({
       props: { feature: 'commands' }
     },
     {
+      path: '/feature-switches',
+      component: () => import('./pages/ConsoleFeaturePage.vue'),
+      props: { feature: 'feature-switches' }
+    },
+    {
       path: '/semantic',
       component: () => import('./pages/ConsoleFeaturePage.vue'),
       props: { feature: 'semantic' }

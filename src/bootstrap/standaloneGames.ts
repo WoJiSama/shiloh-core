@@ -23,7 +23,7 @@ export interface StandaloneGroupGamesOptions {
   readonly execute: (request: ChatRequestData, execution: ExecutionConfig, options: ExecutionOptions) => Promise<ChatResponse | undefined>
   /** Raw ledger port: this factory records both global/api and the complete conversation scope. */
   readonly recordTokens?: (input: { scope: string; stage: string; model?: string; usage?: unknown; ms?: number }) => void
-  readonly authorizeBackground?: (origin: { source: IncomingMessage; binding: AgentBindingSnapshot }) => Promise<AgentGroupGameContext | undefined>
+  readonly authorizeBackground?: (origin: { source: IncomingMessage; binding: AgentBindingSnapshot }, game: AgentGroupGameHandler['id']) => Promise<AgentGroupGameContext | undefined>
   readonly logger?: TurtleSoupLogger
 }
 
@@ -105,9 +105,9 @@ export function createStandaloneGroupGames(options: StandaloneGroupGamesOptions)
       sendPrivate: async (userId, text, guard) => { const selected = guardFor(guard); await selected.ensureCurrent(); await context.sendPrivate(userId, text, selected) },
     }
   }
-  const authorizeBackground: NonNullable<StandaloneGroupGamesOptions['authorizeBackground']> = async origin => {
+  const authorizeBackground: NonNullable<StandaloneGroupGamesOptions['authorizeBackground']> = async (origin, game) => {
     if (!isCurrent()) return undefined
-    const context = await options.authorizeBackground?.(origin)
+    const context = await options.authorizeBackground?.(origin, game)
     if (!context || !isCurrent()) return undefined
     const selected = guarded(context)
     await selected.ensureCurrent()
@@ -116,11 +116,13 @@ export function createStandaloneGroupGames(options: StandaloneGroupGamesOptions)
   const handlers: AgentGroupGameHandler[] = []
   if (options.config.turtleSoup?.enabled) {
     const config = options.config.turtleSoup
-    handlers.push(createAgentTurtleSoup({ dataDir, config: () => config, callModel: createStandaloneTurtleSoupModel(options), authorizeBackground,
+    handlers.push(createAgentTurtleSoup({ dataDir, config: () => config, callModel: createStandaloneTurtleSoupModel(options),
+      authorizeBackground: origin => authorizeBackground(origin, 'turtle-soup'),
       ...(options.logger ? { logger: options.logger } : {}) }))
   }
   if (options.config.umaRace?.enabled) {
-    handlers.push(createAgentUmaRaceHandler({ dataDir, config: options.config.umaRace, authorizeBackground,
+    handlers.push(createAgentUmaRaceHandler({ dataDir, config: options.config.umaRace,
+      authorizeBackground: origin => authorizeBackground(origin, 'uma-race'),
       canAdjustPoints: context => context.source.sender.platform === 'qq' && context.source.sender.namespace === 'global' &&
         context.binding.target.account.platform === 'qq' && context.binding.target.account.namespace === 'global' &&
         context.member.id === context.source.sender.id && operators.has(context.source.sender.id),

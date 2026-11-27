@@ -12,12 +12,15 @@ import { agentBindingToken, agentConversationKey, createAgentBindingDirectory } 
 import { validateQqBindingAddress } from '../adapters/qqIdentity.js'
 import { normalizePersonaEntry, PERSONA_ENTRY_FIELDS } from '../modules/conversation/infrastructure/personaLibrary.js'
 import { createPersonaReplyGuard } from '../modules/conversation/domain/personaReplyGuard.js'
+import { normalizeAgentFeatureSwitches, type AgentFeatureSwitches } from '../modules/tools/domain/agentFeatureSwitches.js'
 import { describeStandaloneAgentTopology, prepareStandaloneAgentTopologyChange } from './standaloneAgentConsoleTopology.js'
+import { describeFeatureSwitches, writeFeatureSwitches } from './standaloneAgentFeatureSwitches.js'
 
 export type ConsoleModelSlot = 'model' | 'vision' | 'personMemoryExtraction' | 'midtermSummary' | 'groupMemoryExtraction' | 'textTriggerModel'
 export interface ConsoleModelView { readonly baseUrl: string; readonly name: string; readonly apiKeyEnv: string; readonly apiKeyConfigured: boolean }
 export interface ValidatedConsoleCandidate {
   readonly dice: Readonly<{ enabled: boolean; maxDiceCount: number; maxDiceSides: number; maxRounds: number }>
+  readonly featureSwitches: Required<AgentFeatureSwitches>
   readonly persona: Readonly<Record<string, AgentConsoleJson>>
   readonly personaGuard: Readonly<Record<string, AgentConsoleJson>>
   readonly models: Readonly<Partial<Record<ConsoleModelSlot, ConsoleModelView>>>
@@ -29,6 +32,7 @@ export interface StandaloneConsolePersistenceOptions {
   readonly authority: { readonly signal: AbortSignal; isCurrent(): boolean }
   isStartupReady?(): boolean
   onCommitted?(revision: string): void
+  listToolNames?(): readonly string[]
   validateCandidate(sources: ConfigSources): ValidatedConsoleCandidate
 }
 type Data = Record<string, unknown>
@@ -176,6 +180,13 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
   function version(snapshot: SourceSnapshot, scope: string) { return createHash('sha256').update(JSON.stringify([snapshot.root, snapshot.revision, scope])).digest('hex') }
   const base = (snapshot: SourceSnapshot, scope: string) => ({ mode: 'standalone', revision: version(snapshot, scope), processEpoch, configRevision: snapshot.revision,
     capabilities: { requiresRestart: true, atomicMultiFile: true } })
+  function featureSwitchView(snapshot: SourceSnapshot, candidate: ValidatedConsoleCandidate, names: readonly string[]): Data {
+    const { directory } = parsed(snapshot.sources, snapshot.versions.bindings)
+    const groups = new Set(directory.listBindings().filter(binding => binding.target.account.platform === 'qq' && binding.target.kind === 'group')
+      .map(binding => binding.target.id))
+    return { ...base(snapshot, 'config:feature-switches'), policy: candidate.featureSwitches,
+      items: describeFeatureSwitches(candidate.featureSwitches, names), groups: [...groups].sort() }
+  }
   function schema(snapshot: SourceSnapshot, candidate: ValidatedConsoleCandidate, kind: string): Data {
     let selected: Field[]
     if (kind === 'dice') selected = [field('dice.enabled', '启用骰子指令', 'Switch', candidate.dice.enabled),
@@ -271,10 +282,22 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
     }, project)
   }
   const config: StandaloneAgentConsoleConfigPort = {
-    read(kind, context) { ensure(context); return schema(loaded, loadedCandidate, kind) },
+    read(kind, context) {
+      ensure(context)
+      return kind === 'feature-switches' ? featureSwitchView(loaded, loadedCandidate, options.listToolNames?.() ?? []) : schema(loaded, loadedCandidate, kind)
+    },
     write(kind, payload, context) {
       fields(payload as Data, ['revision', 'values', 'secrets'])
       if (Object.keys(record(payload.secrets ?? {})).length) return fail()
+      if (kind === 'feature-switches') {
+        let policy: Required<AgentFeatureSwitches>
+        try { policy = normalizeAgentFeatureSwitches(record(payload.values)) } catch { return fail() }
+        const names = options.listToolNames?.() ?? []
+        return save(context, payload, 'config.write', 'config:feature-switches', 'host', (state, candidate) => {
+          const changed = writeFeatureSwitches(state.host, candidate.featureSwitches, policy)
+          return { source: changed ? state.host.toString() : loaded.sources.host, changed }
+        }, (snapshot, candidate) => featureSwitchView(snapshot, candidate, names))
+      }
       const values = record(payload.values ?? {})
       const view = schema(loaded, loadedCandidate, kind), defined = ((view.groups as Data[])[0]!.fields as Field[])
       if (Object.keys(values).some(key => !defined.some(item => item.field === key))) return fail()

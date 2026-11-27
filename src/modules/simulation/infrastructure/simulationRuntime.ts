@@ -189,6 +189,7 @@ export interface SimulationRuntimePorts {
   isMessageRecalled?(target: ConversationAddress, messageId: string): Promise<boolean>
   /** 仿真回合额外放通的既有工具（toolPolicy 解析出的实际放通名清单；从 localToolRegistry 取实例） */
   getExtraTools?(names: string[]): import('../../toolSupport/infrastructure/AbstractTool.js').AbstractTool[]
+  isToolEnabled?(name: string, target: ConversationAddress): boolean
   /** Only hosts whose registry uses the neutral AgentTool contract may opt in. */
   extraToolsPlatformNeutral?: boolean
   isExtraToolAutonomous?(name: string): boolean
@@ -467,7 +468,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const current = () => {
       try { return !stopped && !lifetime.signal.aborted && !signal?.aborted && outerCurrent() &&
         runtimeConfig().enabled && groupActive(runtimeConfig(), groupId) && runtimeConfig(groupId).lifeThreads.enabled &&
-        ports.isLifeThreadsCurrent?.() !== false && ports.isMemoryInputAvailable?.(target.account) !== false &&
+        ports.isToolEnabled?.('simLifeThread', target) !== false && ports.isLifeThreadsCurrent?.() !== false && ports.isMemoryInputAvailable?.(target.account) !== false &&
         allowsConversationAI(target) && agentBindingToken(personaFor(target).binding!) === token }
       catch { return false }
     }
@@ -822,6 +823,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const target = decodeSimulationAddressKey(groupId)
     if (target && !isQqSimulationAddress(target) && !ports.extraToolsPlatformNeutral) return []
     const available = (names: string[]) => names.filter(name =>
+      (!target || ports.isToolEnabled?.(name, target) !== false) &&
       (!['qqZoneTool', 'sendGiftTool', 'grabRedBagTool', 'simQzoneInteract'].includes(name) ||
         !!target && (ports.supportsQqAction?.(target, name) === true || name === 'simQzoneInteract' && isQqSimulationAddress(target) && typeof ports.qzoneInteract === 'function')) &&
       (!target || !(ports.supportsInteractions?.(target) === false && ['pokeTool', 'likeTool', 'reactionTool', 'recallTool', 'jinyanTool', 'changeCardTool'].includes(name)) &&
@@ -2935,11 +2937,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           simulationReportOutcome: undefined,
           reply: toolReply,
         })
-        const allowedTool = (name: string) => actor.kind === 'user' || (
+        const toolEnabled = (name: string) => ports.isToolEnabled?.(name, target) !== false
+        const allowedTool = (name: string) => toolEnabled(name) && (actor.kind === 'user' || (
           (!AUTONOMOUS_DENIED_SIM_TOOLS.includes(name) || actor.kind === 'autonomous' && name === 'simSendPoke' && scopedInteractions()) && (simulationTools.some(tool => tool.name === name) || characterTools.some(tool => tool.name === name) || name === finishTool.name || activityTools.some(tool => tool.name === name) ||
             (ports.isExtraToolAutonomous?.(name) !== false && isAutonomousExtraToolAllowed(name, ports.getSection().autonomousTools) &&
               resolveExtraToolNames(runtimeConfig(), groupId).includes(name)))
-        )
+        ))
         const ensureExecution = async (permit?: AnnouncementPermit) => {
           if (turnClosed && !permit) throw new Error('回合已结束，未执行')
           if (stopped) throw new Error('仿真运行时已停止')
@@ -3001,6 +3004,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             const id = randomUUID()
             let pending: CharacterReceipt | undefined
             try {
+              if (!toolEnabled('simSendMessage')) throw new Error('本会话已关闭仿真发言')
               if (uncertainAction || memoryBox.deliveryUnknown) throw new Error('前序外部动作结果未知，已保存收尾状态；核实前不再发送公告')
               const sender = simulationTools.find(tool => tool.name === 'simSendMessage')!
               const event = makeToolEvent()
@@ -3083,6 +3087,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         }
         const executeTool = async (tool: AbstractTool, args: Record<string, unknown> | undefined, textOutsideTool = false, observed?: { terminalText?: string }) => {
           if (turnClosed) return 'error: 回合已结束，未执行'
+          if (!toolEnabled(tool.name)) return 'error: 本会话已关闭此工具，未执行'
           if (requiresClosing && tool !== finishTool) return 'error: 已进入收尾阶段，仅允许 simFinishTurn，未执行'
           if (!args) {
             if (tool === finishTool) requiresClosing = true
@@ -3119,6 +3124,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             args = input
           }
           if (tool === finishTool) {
+            if (args.messages !== undefined && !toolEnabled('simSendMessage')) return 'error: 本会话已关闭仿真发言，可安静收尾'
             if (textOutsideTool && args.choice === 'chat' && args.messages === undefined && actor.kind === 'user' &&
                 isDirectAddressKind(reason.kind) && sends === 0 && !nudgedForUnsent && rounds < cfg.turn.maxToolRounds) {
               nudgedForUnsent = true
@@ -3238,7 +3244,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         }
         const executionConfig = ports.getExecutionConfig()
         const providerConfig = record(executionConfig) as Parameters<typeof buildChatRequestData>[0]
-        const systemPrompt = buildSimSystemPrompt({ persona: persona.persona, systemContent: persona.systemContent, selfName, hasExtraTools: extraTools.length > 0, extraToolNames, hasEmojiTool: extraToolNames.includes('sendLocalEmojiTool'), hasMoodTool: cfg.mood.enabled, availableToolNames: tools.filter(tool => allowedTool(tool.name)).map(tool => tool.name) })
+        const systemPrompt = buildSimSystemPrompt({ persona: persona.persona, systemContent: persona.systemContent, selfName, hasExtraTools: extraTools.length > 0, extraToolNames, hasEmojiTool: extraToolNames.includes('sendLocalEmojiTool'), hasMoodTool: cfg.mood.enabled && toolEnabled('simSetMood'), availableToolNames: tools.filter(tool => allowedTool(tool.name)).map(tool => tool.name) })
 
         const history: SimHistoryMessage[] = [...projectedHistory, wakeMessage, ...(groupMemoryContext ? [{ role: 'user' as const, content: groupMemoryContext }] : [])]
         const firstCurrentMessage = projectedHistory.length
@@ -3260,7 +3266,11 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         while (rounds < cfg.turn.maxToolRounds) {
           rounds += 1
           const closing = requiresClosing || rounds > cfg.turn.maxToolRounds - 2
-          const roundTools = closing ? [finishTool] : tools.filter(tool => allowedTool(tool.name))
+          const roundTools = (closing ? [finishTool] : tools).filter(tool => allowedTool(tool.name))
+          if (!roundTools.length) {
+            if (durableWake && rounds === 1) { await discardWake(); return }
+            break
+          }
           const context = buildCharacterTurnContext({ phase: closing ? 'closing' : 'acting', remainingToolRounds: cfg.turn.maxToolRounds - rounds + 1, ...(focusedGoalId ? { focusedGoalId } : {}), visibleEvidenceRefs: visibleEvidenceRefs() }) +
             (anchor ? `\n当前只回应 #${anchor.seq} 的话题；同一人的前文也仅在有关时用。throughSeq 当前上限是 ${readThroughSeq(durableWake && rounds === 1 ? projectedWatermark : state)}，可省略。` : '') +
             (reviewer ? `\n本轮剩余提交检查次数：${Math.max(0, 3 - reviewer.stats().checks)}。将需要保存的观点、目标和最终消息合并进 simFinishTurn；检查退回后自行修正或安静放弃，检查提示不发到群里。` : '')
@@ -3369,7 +3379,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             // 兜底：写了像"要说的话"的文本但本回合一条都没发过 → 提醒一次（模型惯性问题，实测高发）。
             // 沉默声明（「旁听，结束回合。」「无需发送，结束回合。」）除外：那是模型在宣布不说话，
             // 提醒/直发都会把元话术漏进群里——按其意愿安静结束。
-            if (!decision && text.length >= 6 && sends === 0 && !/^\[(?:不发了|SILENT|沉默)\]$/.test(text) && !isSilentDeclaration(text)) {
+            if (toolEnabled('simSendMessage') && !decision && text.length >= 6 && sends === 0 && !/^\[(?:不发了|SILENT|沉默)\]$/.test(text) && !isSilentDeclaration(text)) {
               if (!nudgedForUnsent) {
                 nudgedForUnsent = true
                 logger.info(`[仿真] 群 ${groupId} 检测到未外发文本（${text.length} 字，本回合 0 发送），已提醒模型用 simSendMessage 发出`)
@@ -3486,7 +3496,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         }
         if (failureStage && !turnClosed) {
           const failureCurrent = async () => {
-            if (actor.kind !== 'user' || !actor.userId || !triggerMessage?.messageId || triggerMessage.userId !== actor.userId ||
+            if (!toolEnabled('simFinishTurn') || !toolEnabled('simSendMessage') || actor.kind !== 'user' || !actor.userId || !triggerMessage?.messageId || triggerMessage.userId !== actor.userId ||
                 sends > 0 || confirmedActions > 0 || uncertainAction || memoryBox.deliveryUnknown || decision === 'silent' || decision === 'deferred' ||
                 ephemeralRead || historyRead || semanticRecall || usedImageDescription || usedInitialPrompt || attachmentSourceIds.size > 0 || turnClosed || requiresClosing) return false
             try { await ensureExecution(); return canCallModel() } catch { return false }
@@ -4112,7 +4122,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (!hasWake && isCurrent() && !running.has(groupId)) await maybeExtractPersonProfiles(groupId, state, cfg)
       // 按人挖口头禅（风格个性化）：冷却默认 6h，读归档 → 纯函数挖掘 → Redis
       if (!hasWake && isCurrent() && !running.has(groupId)) await maybeMineUserStyle(groupId, cfg)
-      if (!hasWake && !running.has(groupId) && isCurrent()) {
+      if (!hasWake && !running.has(groupId) && isCurrent() && ports.isToolEnabled?.('simLifeThread', target) !== false) {
         if (lifeThreads && binding) {
           const threadStore = scopedStore(characterScopeFor(target, agentPersonaScopeId(binding.agentId)), binding)
           if (cfg.lifeThreads.enabled && await lifeThreads.hasDueSync(cfg.lifeThreads.syncIntervalMs, threadStore)) {
@@ -4178,27 +4188,34 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       sources = new Set(characterMemoryVisibility(await characters.load(scope), memoryInvalidatedAt).memories.map(m => m.id))
       await guard()
       if (!(await checkGroupWakeBudget(state, runtimeConfig(groupId), groupId)).allowed) return
-      const subscriptions = subscriptionsFor(scope)
-      const dueSubscriptions = (await subscriptions.list()).some(item => item.status === 'active' && item.nextPollAt <= now())
-      const pollReceiptId = dueSubscriptions ? randomUUID() : undefined
-      if (pollReceiptId) await characters.update(scope, current => recordCharacterReceipt(current, { id: pollReceiptId, toolName: 'simSubscriptionPoll', status: 'pending', summary: '等待公开订阅抓取回执', at: now() }, now()))
-      let update: Awaited<ReturnType<typeof subscriptions.poll>>
-      try {
-        update = await subscriptions.poll(guard)
-        if (pollReceiptId) await characters.update(scope, current => recordCharacterReceipt(current, {
-          id: pollReceiptId, toolName: 'simSubscriptionPoll', status: update.unknowns ? 'unknown' : update.failures && !update.updates.length ? 'failed' : 'succeeded',
-          summary: (update.updates.length ? `取得公开订阅资料（未经事实核实）：${update.updates.slice(0,3).map(item => item.title).join('；')}${update.failures ? `；另有${update.failures}个订阅未取得结果` : ''}` : update.unknowns ? `${update.unknowns}个订阅超时，结果未知，未取得新资料` : update.failures ? `${update.failures}个订阅抓取失败，未取得新资料` : '订阅检查完成，没有新资料').slice(0,500), at: now(),
-        }, now()))
-      } catch (error) {
-        if (pollReceiptId) await characters.update(scope, current => recordCharacterReceipt(current, { id: pollReceiptId, toolName: 'simSubscriptionPoll', status: 'unknown', summary: '订阅检查中断，结果未知', at: now() }, now()))
-        throw error
+      let hasUpdates = false
+      if (ports.isToolEnabled?.('simSubscription', target) !== false) {
+        const subscriptions = subscriptionsFor(scope)
+        const dueSubscriptions = (await subscriptions.list()).some(item => item.status === 'active' && item.nextPollAt <= now())
+        const pollReceiptId = dueSubscriptions ? randomUUID() : undefined
+        if (pollReceiptId) await characters.update(scope, current => recordCharacterReceipt(current, { id: pollReceiptId, toolName: 'simSubscriptionPoll', status: 'pending', summary: '等待公开订阅抓取回执', at: now() }, now()))
+        let update: Awaited<ReturnType<typeof subscriptions.poll>>
+        try {
+          update = await subscriptions.poll(async () => {
+            await guard()
+            if (ports.isToolEnabled?.('simSubscription', target) === false) throw new Error('本群已关闭公开订阅')
+          })
+          if (pollReceiptId) await characters.update(scope, current => recordCharacterReceipt(current, {
+            id: pollReceiptId, toolName: 'simSubscriptionPoll', status: update.unknowns ? 'unknown' : update.failures && !update.updates.length ? 'failed' : 'succeeded',
+            summary: (update.updates.length ? `取得公开订阅资料（未经事实核实）：${update.updates.slice(0,3).map(item => item.title).join('；')}${update.failures ? `；另有${update.failures}个订阅未取得结果` : ''}` : update.unknowns ? `${update.unknowns}个订阅超时，结果未知，未取得新资料` : update.failures ? `${update.failures}个订阅抓取失败，未取得新资料` : '订阅检查完成，没有新资料').slice(0,500), at: now(),
+          }, now()))
+        } catch (error) {
+          if (pollReceiptId) await characters.update(scope, current => recordCharacterReceipt(current, { id: pollReceiptId, toolName: 'simSubscriptionPoll', status: 'unknown', summary: '订阅检查中断，结果未知', at: now() }, now()))
+          throw error
+        }
+        await guard()
+        hasUpdates = update.updates.length > 0
+        if (hasUpdates) {
+          state.pendingWakeReasons = pushPendingReason(state.pendingWakeReasons, { kind: 'interestUpdate', detail: update.updates.slice(0,2).map(item => item.title).join('；').slice(0,200) })
+          await store.save(groupId, state)
+        }
       }
-      await guard()
-      if (update.updates.length) {
-        state.pendingWakeReasons = pushPendingReason(state.pendingWakeReasons, { kind: 'interestUpdate', detail: update.updates.slice(0,2).map(item => item.title).join('；').slice(0,200) })
-        await store.save(groupId, state)
-      }
-      if (!update.updates.length && ports.reflectCharacter && ports.getSection().reflection?.enabled !== false) {
+      if (!hasUpdates && ports.reflectCharacter && ports.getSection().reflection?.enabled !== false) {
         const reflection = reflectionFor(scope)
         if (binding && ports.projectCognition) await ports.projectCognition({ agentId: binding.agentId, conversation: target,
           character: await characters.load(scope), messageRefs: [...state.recent, ...state.unread].filter(message => message.messageId != null).map(message => ({ seq: message.seq, messageId: String(message.messageId) })), expressions: [],

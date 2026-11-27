@@ -103,7 +103,7 @@ export interface StandaloneAgentConsoleServicesPorts {
 }
 
 const fail = (code: ConstructorParameters<typeof AgentConsoleError>[0]): never => { throw new AgentConsoleError(code) }
-const schemas = new Set(['groupAdmin', 'dice', 'tracking', 'memory', 'conversation', 'reasoning', 'persona', 'pipeline', 'riskControl', 'turtleSoup', 'umaRace', 'deltaForce'])
+const schemas = new Set(['groupAdmin', 'dice', 'tracking', 'memory', 'conversation', 'reasoning', 'persona', 'pipeline', 'riskControl', 'turtleSoup', 'umaRace', 'deltaForce', 'feature-switches'])
 const activityOperations = new Set(['work-archive', 'work-restore', 'work-delete', 'subscription-pause', 'subscription-resume', 'subscription-remove', 'shared-approve', 'shared-delete', 'reflection-reset'])
 const characterOperations = new Set(['pause', 'resume', 'cancel-goal', 'pause-goal', 'resume-goal', 'delete-memory'])
 function data(value: unknown): Data {

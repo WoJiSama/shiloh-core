@@ -33,7 +33,8 @@ function fixture(t, options = {}) {
     },
     actions: { async send(action, guard) { assert.equal(guard.isCurrent(), true); sends.push(action); return { state: 'sent', messageId: 'reply' } } },
     personMemory: { async getSceneRedactions() { return { invalidatedAt: 0 } }, async query() { return { items: [] } } },
-    bindingToken: () => 'binding-token', groupToolNames: () => [], groupTools: { definitions: () => [], async execute() { assert.fail('derived write must not reach group tools') } },
+    bindingToken: () => 'binding-token', groupToolNames: () => [], isToolEnabled: options.isToolEnabled,
+    groupTools: { definitions: () => [], async execute() { assert.fail('derived write must not reach group tools') } },
     isPrivatePeer: () => true, allowsText: () => true, async reserveGroupTurn() { return true }, now: () => now,
     async learnConfirmed() { learned.push(incoming.text) }, async recordEpisode(value) { episodes.push(value) }, async recordGroupReply(value) { groups.push(value) },
     async readHistory(message, input, guard, signal) {
@@ -62,6 +63,15 @@ for (const group of [false, true]) test(`text history pages use revocable epheme
   assert.ok(f.permissions.checks >= 6)
   assert.deepEqual(f.saved[0].turns, []); assert.deepEqual(f.episodes, []); assert.deepEqual(f.groups, [])
   assert.ok(!JSON.stringify(f.saved).includes(original)); assert.ok(!JSON.stringify(f.saved).includes(derived))
+})
+
+test('text history switch removes the tool and rejects a model call despite the available provider', async t => {
+  const f = fixture(t, { isToolEnabled: name => name !== 'chatHistoryTool' })
+  await f.reply()
+  assert.equal(f.requests.length, 1)
+  assert.equal(f.requests[0].tools?.some(row => row.function.name === 'chatHistoryTool') ?? false, false)
+  assert.deepEqual(f.reads, [])
+  assert.deepEqual(f.sends, [])
 })
 
 test('text history rechecks source before a model compatibility retry and blocks delivery', async t => {

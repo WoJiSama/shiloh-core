@@ -47,8 +47,9 @@ async function fixture(t, settings = {}) {
   reader = await connectAgentRedis(`unix://${socket}`)
   connection = await openAgentRedis({ url: `unix://${socket}`, instance: 'media-runtime', onLost() {} })
   const prefix = agentRedisPrefix('media-runtime'), { storage } = connection, now = Date.now()
-  const accounts = ['robot-a', 'robot-b'].map((id, index) => ({ platform: 'fixture', namespace: settings.siblings ? 'same' : `ns-${index}`, id }))
-  const targets = accounts.map(account => ({ account, kind: 'group', id: 'room' }))
+  const accounts = settings.groupIds ? ['923001', '923002'].map(id => ({ platform: 'qq', namespace: 'global', id }))
+    : ['robot-a', 'robot-b'].map((id, index) => ({ platform: 'fixture', namespace: settings.siblings ? 'same' : `ns-${index}`, id }))
+  const targets = accounts.map((account, index) => ({ account, kind: 'group', id: settings.groupIds?.[index] ?? 'room' }))
   const sender = { ...accounts[0], id: 'human' }, privateTarget = { account: accounts[0], kind: 'private', id: sender.id }
   const target = settings.private ? privateTarget : targets[0]
   const config = { version: 1, agents: [{ id: 'role', personaId: 'default' }, { id: 'replacement', personaId: 'default' }],
@@ -85,6 +86,7 @@ async function fixture(t, settings = {}) {
   }
   function makeHost() {
     return createAgentRuntime({ storage, adapters, now: () => now, isExecutionCurrent: () => connection.isCurrent() && current,
+      featureSwitches: settings.featureSwitches,
       privateChatEnabled: true, useTextGroup: () => settings.mode === 'text', history: { enabled: true, retentionDays: 30, maxMessagesPerConversation: 1000 },
       mediaRelay: { enabled: settings.enabled !== false, ...(settings.providers ? { providers: settings.providers } : {}) }, isMediaRelayCurrent: () => enabled,
       mediaRelayProvider: { async prepare(selected, context) {
@@ -149,6 +151,32 @@ for (const mode of ['simulation', 'text']) test(`Core ${mode} group relay persis
   await waitFor(() => f.releases === 1, 'prepared lease released'); await f.assertPrivate()
   await f.emit(); await f.drain(); await f.restart(); await f.emit(); await f.drain()
   assert.equal(f.preparations.length, 1); assert.equal(f.calls.length, 1)
+})
+
+test('group-only relay skips new events and restarts cancel queued work in a disabled group', {
+  timeout: 20000, skip: spawnSync('redis-server', ['--version'], { stdio: 'ignore' }).status !== 0,
+}, async t => {
+  const groupIds = ['318001', '318002']
+  const settings = { groupIds, featureSwitches: { features: { mediaRelay: { mode: 'groups', groups: [groupIds[0]] } } } }
+  const f = await fixture(t, settings)
+  const blocked = f.targets[1], sender = { ...blocked.account, id: f.sender.id }
+  await f.emit(f.message({ conversation: blocked, sender, messageId: 'blocked' })); await f.drain()
+  assert.equal(f.reads.length, 0)
+  assert.equal(await f.record('blocked', f.binding(blocked)), undefined)
+  await f.emit(); await f.drain()
+  assert.equal((await f.terminal()).state, 'completed')
+  assert.deepEqual(f.calls.map(row => row.action.target), [f.target])
+
+  const pending = f.store(f.message({ messageId: 'pending' }))
+  f.ready.delete(f.target.account.id)
+  await f.ledger.enqueue({ binding: f.binding(), source: { messageId: pending.messageId, sender: pending.sender, occurredAt: pending.occurredAt, share } })
+  const reads = f.reads.length
+  settings.featureSwitches = { default: 'off' }
+  await f.restart()
+  assert.equal((await f.terminal(pending.messageId)).state, 'cancelled')
+  assert.equal(f.reads.length, reads)
+  assert.equal(f.preparations.length, 1)
+  assert.equal(f.calls.length, 1)
 })
 
 test('Core unknown native receipt survives duplicate input and host restart without another effect', { timeout: 20000 }, async t => {

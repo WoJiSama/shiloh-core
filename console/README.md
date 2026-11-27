@@ -18,6 +18,8 @@
 
 ## 独立 Agent 的配置变更与恢复
 
+在 **系统 → 工具与功能开关** 配置全局或按群的使用范围。控制台列出自动搬运等独立功能、内置工具和已注册的 MCP 工具。保存使用宿主的配置版本校验，重启后生效。 [宿主配置示例](../docs/architecture/agent-bindings.md#工具与功能开关)
+
 在机器人页创建本人时，可复用已有模板，也可连同新模板一起创建；经历和成长仍按本人隔离。在连接页可为既有本人新增 QQ，只绑定明确填写的群和好友，不复制旧账号权限。
 
 流程依次使用 `GET /api/configuration/catalog`、`POST /api/configuration/preview` 和 `POST /api/configuration/commit`。预览展示字段差异、受影响本人、连接、完整会话及权限变化，完整候选保留在服务端；提交只携带 `previewId`、`revision`、`candidateDigest` 和包含 host/personas/bindings 的完整 `readSet`。候选过期、身份撤销或配置变化后须重新预览，不能用旧预览覆盖新配置。

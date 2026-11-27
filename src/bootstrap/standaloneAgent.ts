@@ -351,6 +351,7 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
             stop()
           })
         } } : {}),
+        listToolNames: () => host?.listRegisteredToolNames() ?? [],
         validateCandidate: createStandaloneAgentCandidateValidator(config.sourceSnapshot.hostFile, process.env, { sourceSnapshot: config.sourceSnapshot }) })
       const execution = consolePersistence.execution
       // Every existing model/tool/sending fence also observes this irreversible process-local retirement.
@@ -679,6 +680,7 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
     host = createAgentRuntime({
       storage: storage.storage, adapters, logger: safeLogger, diagnostics,
       managementBindings,
+      featureSwitches: config.featureSwitches,
       toolRegistry: {
         // Removing a definition also fences its pending HTTP, queued send and late result.
         get builtIn() { return config.isConfigCurrent() ? builtInTools : builtInTools.filter(tool => !pixivTools.includes(tool) && !videoTools.includes(tool) && !videoSearchTools.includes(tool) && !magnetSearchTools.includes(tool) && !imageSearchTools.includes(tool) && !localEmojiTools.includes(tool)) },

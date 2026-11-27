@@ -27,6 +27,7 @@ import { readStandaloneGamesConfig } from './standaloneGamesConfig.js'
 import type { PersonaGuardConfig } from '../contracts/persona.js'
 import type { AgentMusicConfig } from '../modules/media/infrastructure/agentMusicProvider.js'
 import { validateMusicExtractionConfig } from '../modules/media/domain/musicExtractionConfig.js'
+import { normalizeAgentFeatureSwitches } from '../modules/tools/domain/agentFeatureSwitches.js'
 import { readStandaloneMediaRelayConfig } from './standaloneMediaRelay.js'
 import { readStandaloneTorrentConfig } from './standaloneTorrent.js'
 import { readStandaloneGroupLogConfig } from './standaloneGroupLog.js'
@@ -518,6 +519,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
 }) {
   const directory = path.dirname(file)
   const raw = parseSource(input.sources.host, path.basename(file))
+  const featureSwitches = normalizeAgentFeatureSwitches(raw.featureSwitches)
   if (raw.version !== 1 || typeof raw.instance !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(raw.instance)) throw new Error('独立宿主配置需要 version: 1 和有效的 instance')
   const instance = raw.instance
   const dataDir = path.resolve(directory, typeof raw.dataDir === 'string' && raw.dataDir ? raw.dataDir : `data/${instance}`)
@@ -707,7 +709,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     ['midtermSummary', midtermSummary], ['groupMemoryExtraction', groupMemoryExtraction], ['textTriggerModel', textTriggerModel]] as const) {
     if (selected) models[slot] = Object.freeze({ baseUrl: selected.apiUrl, name: selected.model, apiKeyEnv: selected.apiKeyEnv, apiKeyConfigured: !!selected.apiKey })
   }
-  const candidate: ValidatedConsoleCandidate = Object.freeze({ dice, persona: safeJsonObject(normalizePersonaEntry(hostConfig.persona ?? {})),
+  const candidate: ValidatedConsoleCandidate = Object.freeze({ dice, featureSwitches, persona: safeJsonObject(normalizePersonaEntry(hostConfig.persona ?? {})),
     personaGuard: safeJsonObject(personaGuard ?? {}), models: Object.freeze(models) })
   const workspaceAgents = Object.freeze((rawBindings.agents as unknown[]).map(value => {
     const entry = object(value), id = String(entry.id), personaId = String(entry.personaId)
@@ -716,7 +718,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     return Object.freeze({ id, name: personaName, personaId, personaName })
   }))
   return { candidate, config: {
-    instance, dataDir, games, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, cognition: { enabled: cognition.enabled }, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords,
+    instance, dataDir, games, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, cognition: { enabled: cognition.enabled }, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords, featureSwitches,
     workspaceAgents,
     loadedBindings: Object.freeze([...bindings.listBindings()]),
     listBindings: () => readBindings()?.listBindings() ?? [],

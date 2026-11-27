@@ -69,6 +69,30 @@ test('configured wake gate carries its exact scope; rejection preserves a new di
   } finally { await open.runtime.stop(); await open.runtime.drain() }
 })
 
+test('simulation tool switches filter definitions and block forged calls and text fallback', { timeout: 10000 }, async () => {
+  const { createAgentFeatureSwitches } = await load('modules/tools/domain/agentFeatureSwitches.js')
+  const policy = createAgentFeatureSwitches({ tools: { simSendMessage: { mode: 'off' }, simFinishTurn: { mode: 'off' } } })
+  const requests = [], sends = []
+  const f = fixture({ isToolEnabled: policy.tool, getExecutionConfig: () => ({ providers: 'openai', useTools: true }),
+    sendGroupMessage: async (...args) => { sends.push(args); return { ok: true, messageId: 'sent' } },
+    async YTapi(request) {
+      requests.push(request)
+      if (requests.length === 1) return { choices: [{ message: { content: '', tool_calls: [{ id: 'blocked-send', type: 'function',
+        function: { name: 'simSendMessage', arguments: JSON.stringify({ continuation: 'chat', messages: ['这条群消息不会投递'] }) } }] } }] }
+      return { choices: [{ message: { content: '这段普通正文也不会投递。' } }] }
+    },
+  })
+  try {
+    await f.emit('switch-regression', true)
+    await until(() => requests.length >= 2)
+    await f.runtime.drain()
+    assert.ok(requests[0].tools.some(row => row.function.name === 'simGetState'))
+    assert.ok(requests.every(request => request.tools.every(row => !['simSendMessage', 'simFinishTurn'].includes(row.function.name))))
+    assert.ok(requests[1].messages.some(row => row.role === 'tool' && row.content.includes('已关闭此工具')))
+    assert.deepEqual(sends, [])
+  } finally { await f.runtime.stop(); await f.runtime.drain() }
+})
+
 test('a provider failure is recorded once and subsequent wakes bypass screening until the provider can recover', { timeout: 15000 }, async () => {
   const diagnostics = []
   let requests = 0

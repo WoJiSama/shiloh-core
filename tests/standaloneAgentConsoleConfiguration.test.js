@@ -89,6 +89,7 @@ async function fixture(t, options = {}) {
   const control = { session: true, lease: true, filter: true, forbidden: new Set(), authorizations: [], beforeAuthorize: undefined }
   const authority = { signal: lifetime.signal, isCurrent: () => control.lease }
   const persistence = createStandaloneAgentConsolePersistence({ enabled: true, hostFile, loaded: loadedConfig.sourceSnapshot,
+    listToolNames: () => options.toolNames ?? [],
     authority, validateCandidate: createStandaloneAgentCandidateValidator(hostFile, env, { sourceSnapshot: loadedConfig.sourceSnapshot }) })
   const bindings = { list: () => loadedConfig.listBindings(), resolve: selected => loadedConfig.resolvePersona(selected)?.binding }
   const authorize = async (principal, operation, binding, guard) => {
@@ -112,7 +113,7 @@ async function fixture(t, options = {}) {
     async run() { return { username: 'admin' } },
   }
   if (options.realAuth) t.after(() => auth.close())
-  let services = createStandaloneAgentConsoleServices({ bindings, auth, configuration: persistence.configuration,
+  let services = createStandaloneAgentConsoleServices({ bindings, auth, configuration: persistence.configuration, config: persistence.config,
     configState: persistence.state, commits: persistence.commits })
   if (options.wrapServices) services = options.wrapServices(services, { persistence, control, root, hostFile })
   const privateValues = [...Object.values(tokens), ...Object.values(env), 'HOST_PRIVATE_EXTENSION_2964', 'LIBRARY_PRIVATE_EXTENSION_2964']
@@ -139,6 +140,32 @@ async function fixture(t, options = {}) {
   return { root, hostFile, bindingFile, personaFile, loadedConfig, persistence, control, lifetime, app, request, files, preview, authEnv,
     privateValues, retainedDirectory, tree: () => diskTree(root), growth: () => diskTree(retainedDirectory) }
 }
+
+test('feature switches list bound groups and live tools and atomically persist only the host policy', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t, { toolNames: ['mcp_fixture_catalog'] })
+  const route = '/api/config/feature-switches', before = await f.files()
+  const view = await f.request(route)
+  assert.equal(view.status, 200, view.text)
+  assert.deepEqual(view.data.groups, [target.id])
+  assert.deepEqual(view.data.policy, { default: 'all', features: {}, tools: {} })
+  assert.ok(view.data.items.some(item => item.kind === 'tools' && item.name === 'mcp_fixture_catalog'))
+  const put = (values, revision = view.data.revision) => f.request(route, { method: 'PUT', body: { revision, values } })
+  assert.equal((await put({ features: { mediaRelay: { mode: 'groups', groups: [Number(target.id)] } } })).status, 400)
+  const values = { default: 'off', features: { mediaRelay: { mode: 'groups', groups: [target.id] } }, tools: { mcp_fixture_catalog: { mode: 'all' } } }
+  assert.equal((await put(values, '0'.repeat(64))).status, 409)
+  assert.deepEqual(await f.files(), before)
+  const saved = await put(values)
+  assert.equal(saved.status, 200, saved.text)
+  assert.equal(saved.data.requiresRestart, true)
+  assert.deepEqual(saved.data.view.policy, values)
+  assert.equal(f.persistence.execution.isCurrent(), false)
+  const after = await f.files()
+  assert.equal(after['agent-bindings.yaml'], before['agent-bindings.yaml'])
+  assert.equal(after['persona-library.yaml'], before['persona-library.yaml'])
+  assert.match(after['agent-host.yaml'], /^# keep host comment/u)
+  assert.deepEqual(YAML.parse(after['agent-host.yaml']), { ...YAML.parse(before['agent-host.yaml']), featureSwitches: values })
+  assert.deepEqual(JSON.parse(JSON.stringify(readStandaloneAgentConfig(f.hostFile, env).featureSwitches)), values)
+})
 
 test('real token auth keeps preview ownership across HTTP requests through a complete second QQ commit', async t => {
   const f = await fixture(t, { realAuth: true }), growth = f.growth(), preview = await f.preview()

@@ -350,6 +350,11 @@
 - 三角洲默认不装配，须显式 tools.deltaForce 六字段（enabled/apiBaseUrl/apiKeyEnv/timeoutMs/objectCacheEnabled/objectCacheRefreshMinutes）。凭据只从引用环境变量解析并登记 hostSecrets，生产接续用 BL_AGENT_DELTAFORCE_API_KEY；没有 cwd 配置、旧插件文件或主模型凭据回退。只查询固定管理员 API 的七类既有只读操作，模型不能改 endpoint、凭据、路径或发送目标，不自动向服务附加账号、人设、群号、消息或历史。
 - 三角洲每次 GET 前后等待来源/活动授权，禁重定向、HTTP 自动重试和远端错误正文回显；单响应 1 MiB、单回合总响应 4 MiB、总期限 90 秒，API 单请求期限 1–60 秒。物品名称只在受限内存缓存中按触发查询更新，不写文件或启动后台刷新。输入、完整响应及报表可见内容检查已知秘密，绘制前应用宿主出站词策略。原报表/价格曲线复用，离线 Chromium 禁 JS、ServiceWorker 和全部网络请求，5 秒/1100×8192 上限；渲染失败只在发送前退回文字，发送 attempted 后 unknown 不另发或重试。专项使用注入 HTTP/renderer/平台回执，真实第三方与 QQ 显示待验收。
 
+### 独立宿主工具与功能开关
+
+- `featureSwitches` 的默认值沿用原有工具和功能权限。模型工具的名单与执行权限同时受开关约束，开启仍要求原有提供器、绑定、来源、执行主体与工具授权。仅指定群的规则只匹配 QQ 群聊及所列群号。
+- 自动搬运、磁链下载等持久任务在恢复来源及准备投递时重新检查原会话的开关。群聊指令、游戏背景执行和自动动作使用对应会话的规则。配置写入复用认证、revision 比对和配置事务，旧执行实例在事务写入前退休。标准启动器只在确认提交完成、控制台应答有界排空并释放旧 Redis 租约后重建宿主，复核磁盘版本，重新取得租约和验证 QQ 身份。原执行权限和回执不跨实例复用。
+
 ### 持久清理与故障恢复（2026-11-19 局部更新）
 
 - 本人清理以完整账号、Agent、subject、target 和原 cutoff 定位；group-memory 原 records 精确清作者与时间，job/aggregate 按可能污染保守失效，共享教学核对记录原来源角色。普通 update、staging 与 CAS 同时遵守持久水位，不按单 Agent 整键删除共享的其他人物/角色资料。最多4096 selectors/2 MiB，物理原 JSON 复核后才 completed；读写或结算无法确认保留 unknown。

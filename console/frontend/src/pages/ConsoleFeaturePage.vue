@@ -25,6 +25,7 @@ const components = {
   style: defineAsyncComponent(() => import('./StylePage.vue')),
   semantic: defineAsyncComponent(() => import('./SemanticPage.vue')),
   commands: defineAsyncComponent(() => import('./CommandsPage.vue')),
+  'feature-switches': defineAsyncComponent(() => import('./FeatureSwitchesPage.vue')),
   conversation: defineAsyncComponent(() => import('./ConversationPage.vue')),
   risk: defineAsyncComponent(() => import('./SchemaPage.vue')),
   'group-admin': defineAsyncComponent(() => import('./GroupAdminPage.vue')),

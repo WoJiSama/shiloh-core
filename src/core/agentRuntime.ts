@@ -42,6 +42,7 @@ import { createAgentQqActions, type AgentQqActionsConfig } from '../modules/runt
 import { validateAgentRedPacketSnapshot } from '../modules/runtime/infrastructure/agentRedPacketValidation.js'
 import { defaultSimRuntimeConfig } from '../modules/simulation/domain/simConfig.js'
 import { normalizeSimToolPolicy, resolveSimToolSurface } from '../modules/simulation/domain/toolPolicy.js'
+import { createAgentFeatureSwitches, type AgentFeatureSwitches } from '../modules/tools/domain/agentFeatureSwitches.js'
 import { isAutonomousExtraToolAllowed } from '../modules/simulation/domain/executionActor.js'
 import { validateAgentMedia } from '../modules/media/infrastructure/agentMediaBytes.js'
 import { validateAgentFileUpload, normalizeFileDeliveryReceipt, agentFileUploadText } from '../modules/messaging/infrastructure/agentFileDelivery.js'
@@ -169,9 +170,10 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   textTriggerModel?: Parameters<typeof createAgentTextTriggerModels>[0]['model']
   groupTextTools?(target: ConversationAddress): readonly GroupTextToolName[]
   toolRegistry?: AgentToolRegistry
+  featureSwitches?: AgentFeatureSwitches
   /** Trusted group-game factories receive only Core-authorized source contexts. */
   createGroupGames?(ports: {
-    authorizeBackground(input: { source: IncomingMessage; binding: AgentBindingSnapshot }): Promise<AgentGroupGameContext | undefined>
+    authorizeBackground(input: { source: IncomingMessage; binding: AgentBindingSnapshot }, game?: AgentGroupGameHandler['id']): Promise<AgentGroupGameContext | undefined>
   }): readonly AgentGroupGameHandler[]
   /** Independent bounded collection of verified human ingress images. */
   autoCollectLocalEmoji?: boolean
@@ -282,6 +284,7 @@ const privacyCommandMaxAgeMs = textConversationSeconds * 1000
 const privacyCommandClockSkewMs = 60_000
 
 export function createAgentRuntime(options: AgentRuntimeOptions) {
+  const switches = createAgentFeatureSwitches(options.featureSwitches)
   const checkToolCurrent = (check: () => boolean): boolean => {
     const observed = () => observeCurrent(check)
     return options.checkToolCurrent ? options.checkToolCurrent(observed) : observed()
@@ -365,6 +368,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   const activity = createAgentConversationActivity()
   const groupLogs = createAgentGroupLogStore(storage)
   const groupLogEnabled = options.groupLog?.enabled === true
+  const groupLogCurrent = (target: ConversationAddress) => groupLogEnabled && switches.feature('groupLog', target)
   let activityHydrated = !groupLogEnabled
   const activityStates = new Map<string, { target: ConversationAddress; allowed: boolean }>()
   const silenceReservations = new Map<string, { target: ConversationAddress; messages: Set<string>; admitting: Set<string> }>()
@@ -440,14 +444,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   function conversationEnabled(target: ConversationAddress): boolean {
     return options.getSection().enabled !== false && (target.kind !== 'private' || options.privateChatEnabled === true)
   }
-  function diceCurrent(): boolean {
-    try { return isRunning() && (diceConfig.enabled || options.diceEngine?.enabled === true) && options.isDiceCurrent?.() !== false &&
+  function diceCurrent(target: ConversationAddress): boolean {
+    try { return switches.feature('dice', target) && isRunning() && (diceConfig.enabled || options.diceEngine?.enabled === true) && options.isDiceCurrent?.() !== false &&
       JSON.stringify(resolveAgentDiceConfig(options.dice)) === diceConfigKey && JSON.stringify(options.diceEngine ?? null) === diceEngineConfigKey }
     catch { return false }
   }
   function allowsConversationAI(target: ConversationAddress): boolean {
     const binding = bindingFor(target)?.binding
-    return activityHydrated && activity.allows(target) && (!binding || !gameHandlers.some(handler => handler.isActive?.(binding)))
+    return activityHydrated && activity.allows(target) && (!binding || !gameHandlers.some(handler =>
+      switches.feature(handler.id, target) && handler.isActive?.(binding)))
   }
   function setConversationAI(target: ConversationAddress, allowed: boolean): void {
     const key = conversationAddressKey(target)
@@ -642,13 +647,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
     async sendRequesterBilibiliAuth(action, guard) {
       const target = action.source?.target
-      if (!bilibiliQualityCurrent() || action.version !== 1 || action.kind !== 'bilibili-auth.notify' || !isConversationAddress(target) ||
+      if (action.version !== 1 || action.kind !== 'bilibili-auth.notify' || !isConversationAddress(target) || !bilibiliQualityCurrent(target) ||
           !['private', 'group'].includes(target.kind)) return { state: 'failed', code: 'invalid_bilibili_auth_notice' }
       const live = bindingFor(target), adapter = adapterFor(target)
       if (!live || !adapter?.actions.sendRequesterBilibiliAuth || !isSameBinding(action.binding, live.binding)) return { state: 'failed', code: 'bilibili_auth_unavailable' }
       if (action.content.kind === 'text' && options.allowsText?.(action.content.text, 'outgoing') === false) return { state: 'failed', code: 'forbidden_text' }
       const token = agentBindingToken(live.binding)
-      const pending = guardPendingSend(conversationAddressKey(target), () => bilibiliQualityCurrent() && adapter.isReady() && adapterFor(target) === adapter &&
+      const pending = guardPendingSend(conversationAddressKey(target), () => bilibiliQualityCurrent(target) && adapter.isReady() && adapterFor(target) === adapter &&
         !guard?.signal?.aborted && guard?.isCurrent?.() === true && conversationEnabled(target) && bindingIsCurrent(target, token))
       try {
         if (!pending.isCurrent()) return { state: 'failed', code: 'binding_changed' }
@@ -659,13 +664,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     async sendDicePrivate(request, guard) {
       const target = request.binding?.target, adapter = isConversationAddress(target) ? adapterFor(target) : undefined
       const live = isConversationAddress(target) ? bindingFor(target)?.binding : undefined
-      if (!controlActions.has(request) || !diceCurrent() || !live || target.kind !== 'group' || !adapter?.actions.sendDicePrivate ||
+      if (!controlActions.has(request) || !diceCurrent(target) || !live || target.kind !== 'group' || !adapter?.actions.sendDicePrivate ||
           !isSameBinding(live, request.binding) || !isSameBinding(live, request.origin.binding) ||
           options.allowsText?.(request.text, 'outgoing') === false || options.allowsToolInput?.(request.text) === false) {
         return { state: 'failed', code: 'dice_private_unavailable' }
       }
       const token = agentBindingToken(live)
-      const pending = guardPendingSend(conversationAddressKey(target), () => diceCurrent() && adapterFor(target) === adapter && adapter.isReady() &&
+      const pending = guardPendingSend(conversationAddressKey(target), () => diceCurrent(target) && adapterFor(target) === adapter && adapter.isReady() &&
         !guard.signal.aborted && guard.isCurrent() && conversationEnabled(target) && bindingIsCurrent(target, token))
       const ensureCurrent = async () => {
         if (!pending.isCurrent()) throw new Error('骰子私聊来源已失效')
@@ -719,7 +724,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
     async sendGroupLog(action, guard) {
       const target = action.target
-      if (!groupLogEnabled || action.version !== 1 || action.kind !== 'group-log.upload' || !isConversationAddress(target) || target.kind !== 'group') return { state: 'failed', code: 'invalid_group_log' }
+      if (action.version !== 1 || action.kind !== 'group-log.upload' || !isConversationAddress(target) || target.kind !== 'group' || !groupLogCurrent(target)) return { state: 'failed', code: 'invalid_group_log' }
       let log: ReturnType<typeof validateAgentGroupLogArtifact>
       try { log = validateAgentGroupLogArtifact(action.log) } catch { return { state: 'failed', code: 'invalid_group_log' } }
       const adapter = adapterFor(target), live = bindingFor(target), source = action.source
@@ -727,7 +732,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           !isMessageId(source?.messageId) || !isPlatformAccount(source?.sender) || !samePlatformNamespace(source.sender, target.account) ||
           !Number.isSafeInteger(source.occurredAt) || source.occurredAt <= 0 || !/^[a-f\d]{64}$/u.test(source.textSha256)) return { state: 'failed', code: 'group_log_unavailable' }
       const binding = live.binding, token = agentBindingToken(binding)
-      const send = guardPendingSend(conversationAddressKey(target), () => isRunning() && groupLogEnabled && adapter.isReady() &&
+      const send = guardPendingSend(conversationAddressKey(target), () => isRunning() && groupLogCurrent(target) && adapter.isReady() &&
         adapterFor(target) === adapter && !guard?.signal?.aborted && guard?.isCurrent?.() !== false && bindingIsCurrent(target, token))
       try {
         if (!send.isCurrent() || !await inbox.canReply(target, source.messageId)) return { state: 'failed', code: 'source_unavailable' }
@@ -1019,26 +1024,29 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   // Only the deterministic control workflow receives this closure; it is never exposed to tools.
   const controlMessageActions = instrumentActions(false)
   const gameHandlers: readonly AgentGroupGameHandler[] = Object.freeze([...(options.createGroupGames?.({
-    async authorizeBackground(input) {
-      try { return await authorizeGame(input.source, input.binding) } catch { return undefined }
+    async authorizeBackground(input, game) {
+      try { return await authorizeGame(input.source, input.binding, game) } catch { return undefined }
     },
   }) ?? [])])
   if (new Set(gameHandlers.map(handler => handler.id)).size !== gameHandlers.length || gameHandlers.length > 2) throw new Error('重复或无效的群游戏入口')
   const gameHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
-  function gameCandidate(source: IncomingMessage): boolean {
-    const binding = source.conversation.kind === 'group' ? bindingFor(source.conversation)?.binding : undefined
-    return !!binding && gameHandlers.some(handler => handler.isCandidate(source, binding))
+  function gameCandidate(source: IncomingMessage, selected?: AgentBindingSnapshot): boolean {
+    if (source.conversation.kind !== 'group') return false
+    const binding = selected ?? bindingFor(source.conversation)?.binding
+    return !!binding && gameHandlers.some(handler =>
+      switches.feature(handler.id, binding.target) && handler.isCandidate(source, binding))
   }
-  async function authorizeGame(original: IncomingMessage, owner: AgentBindingSnapshot): Promise<AgentGroupGameContext | undefined> {
+  async function authorizeGame(original: IncomingMessage, owner: AgentBindingSnapshot, game?: AgentGroupGameHandler['id']): Promise<AgentGroupGameContext | undefined> {
     const source = structuredClone(original), binding = structuredClone(owner), target = binding.target
+    const gameAllowed = () => game ? switches.feature(game, target) : gameHandlers.every(handler => switches.feature(handler.id, target))
     const adapter = adapterFor(target), token = agentBindingToken(binding)
     const live = bindingFor(target)?.binding
     if (target.kind !== 'group' || !adapter?.readMessage || !live || !isMessageId(source.messageId) || source.sender.id === adapter.botUserId ||
         !hasValidInboundEvent({ kind: 'message', message: source }, adapter) || !isSameBinding(live, binding) ||
-        conversationAddressKey(source.conversation) !== conversationAddressKey(target)) return undefined
+        conversationAddressKey(source.conversation) !== conversationAddressKey(target) || !gameAllowed()) return undefined
     const signal = AbortSignal.any([toolCancellation.signal, ...(options.signal ? [options.signal] : [])])
     const fingerprint = agentDiceSourceFingerprint(source), operationId = gameHash(['group-game', agentConversationKey(binding), source.messageId])
-    const current = () => observeCurrent(() => !signal.aborted && isRunning() &&
+    const current = () => observeCurrent(() => !signal.aborted && isRunning() && gameAllowed() &&
       adapterFor(target) === adapter && adapter.isReady() && bindingIsCurrent(target, token) && !privacyBlocked(platformAccountKey(target.account)))
     let role: 'owner' | 'admin' | 'member' | undefined, name = ''
     const ensureCurrent = async () => {
@@ -1109,9 +1117,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   async function handleGames(source: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
     if (binding.target.kind !== 'group') return false
     for (const handler of gameHandlers) {
-      if (!handler.isCandidate(source, binding)) continue
+      if (!switches.feature(handler.id, binding.target) || !handler.isCandidate(source, binding)) continue
       try {
-        const context = await authorizeGame(source, binding)
+        const context = await authorizeGame(source, binding, handler.id)
         if (!context) return true
         await context.ensureCurrent()
         const key = 'agent:game:action:' + gameHash([handler.id, agentConversationKey(binding), source.messageId])
@@ -1142,7 +1150,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     }),
   }
   async function groupLogAuthorized(message: IncomingMessage, binding: AgentBindingSnapshot, signal: AbortSignal, guard: () => boolean): Promise<boolean> {
-    if (!guard() || signal.aborted || !bindingIsCurrent(binding.target, agentBindingToken(binding))) return false
+    if (!groupLogCurrent(binding.target) || !guard() || signal.aborted || !bindingIsCurrent(binding.target, agentBindingToken(binding))) return false
     if (options.groupLog?.masters?.some(user => platformAccountKey(user) === platformAccountKey(message.sender))) return true
     const observed = await readGroupMember(binding.target, message.sender.id, signal, guard)
     return guard() && !signal.aborted && !!observed && (observed.member.role === 'owner' || observed.member.role === 'admin')
@@ -1151,7 +1159,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     store: groupLogs, render: createAgentGroupLogRenderer({ ...(options.groupLog?.maxBytes ? { maxBytes: options.groupLog.maxBytes } : {}),
       allowsText: text => options.allowsText?.(text, 'outgoing') !== false }),
     diagnostics, isRunning, resolveBinding: target => bindingFor(target)?.binding,
-    isBindingCurrent: binding => !privacyBlocked(platformAccountKey(binding.target.account)) && bindingIsCurrent(binding.target, agentBindingToken(binding)),
+    isBindingCurrent: binding => groupLogCurrent(binding.target) && !privacyBlocked(platformAccountKey(binding.target.account)) && bindingIsCurrent(binding.target, agentBindingToken(binding)),
     authorized: groupLogAuthorized, canReply: inbox.canReply,
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
     async sourceAllowed(row, owner) {
@@ -1186,15 +1194,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
     async readMembers({ binding }, guard) {
       await guard.ensureCurrent?.()
-      return readGroupMembers(binding.target, guard.signal, () => diceCurrent() && guard.isCurrent() && bindingIsCurrent(binding.target, agentBindingToken(binding)))
+      return readGroupMembers(binding.target, guard.signal, () => diceCurrent(binding.target) && guard.isCurrent() && bindingIsCurrent(binding.target, agentBindingToken(binding)))
     },
     async sourceAllowed({ binding, source }, guard) {
-      if (!guard.isCurrent() || !diceCurrent() || !source.messageId || !bindingIsCurrent(binding.target, agentBindingToken(binding)) ||
+      if (!guard.isCurrent() || !diceCurrent(binding.target) || !source.messageId || !bindingIsCurrent(binding.target, agentBindingToken(binding)) ||
           options.allowsText?.(source.text, 'incoming') === false || options.allowsToolInput?.(source.text) === false ||
           !await inbox.canReply(binding.target, source.messageId) || await inbox.isRecalled(binding.target, source.messageId)) return false
       const { botId, scene } = personMemoryAddress(binding.target)
       const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: source.sender.id })
-      return guard.isCurrent() && diceCurrent() && !isPersonMemoryRedacted({ scene, messageId: source.messageId,
+      return guard.isCurrent() && diceCurrent(binding.target) && !isPersonMemoryRedacted({ scene, messageId: source.messageId,
         authorId: source.sender.id, at: source.occurredAt, excerpt: source.text.slice(0, 4000) }, source.text, redactions)
     },
     async sendPublic({ binding, source, text }, guard) {
@@ -1212,7 +1220,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     async setGroupCard({ binding, source, subject, name }, guard) {
       const target = binding.target, adapter = adapterFor(target), token = agentBindingToken(binding)
       if (!adapter?.actions.interact || options.allowsText?.(name, 'outgoing') === false || options.allowsToolInput?.(name) === false) return { state: 'failed' }
-      const pending = guardPendingSend(conversationAddressKey(target), () => diceCurrent() && guard.isCurrent() && !guard.signal.aborted &&
+      const pending = guardPendingSend(conversationAddressKey(target), () => diceCurrent(target) && guard.isCurrent() && !guard.signal.aborted &&
         adapterFor(target) === adapter && adapter.isReady() && conversationEnabled(target) && bindingIsCurrent(target, token))
       const ensureCurrent = async () => {
         if (!pending.isCurrent()) throw new Error('骰子群名片来源已失效')
@@ -1230,18 +1238,18 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       finally { pending.release() }
     },
     async controlLog({ binding, source, operation, ownershipId, title, operationId, index }, guard) {
-      if (!groupLogEnabled || !source.messageId || title !== undefined &&
+      if (!groupLogCurrent(binding.target) || !source.messageId || title !== undefined &&
           (options.allowsText?.(title, 'outgoing') === false || options.allowsToolInput?.(title) === false)) return { state: 'failed' }
       await guard.ensureCurrent?.()
       const epochs = await groupLogs.capture({ target: binding.target, agentId: binding.agentId }, source.sender.id)
       await guard.ensureCurrent?.()
-      if (!guard.isCurrent() || !diceCurrent()) return { state: 'failed' }
+      if (!guard.isCurrent() || !diceCurrent(binding.target)) return { state: 'failed' }
       const receipt = await groupLogs.controlDiceLog({ target: binding.target, agentId: binding.agentId }, {
         sourceMessageId: source.messageId, subjectId: source.sender.id, operation, ownershipId, operationId, index,
         ...(title === undefined ? {} : { title }),
       }, options.now?.() ?? Date.now(), epochs)
       await guard.ensureCurrent?.()
-      if (!guard.isCurrent() || !diceCurrent()) return { state: 'unknown' }
+      if (!guard.isCurrent() || !diceCurrent(binding.target)) return { state: 'unknown' }
       await groupLogWorkflow.restore(binding.target, binding)
       await guard.ensureCurrent?.()
       return guard.isCurrent() ? { state: receipt.state } : { state: 'unknown' }
@@ -1249,14 +1257,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     ...(options.now ? { now: options.now } : {}),
   }) : undefined
   const dicePolicy = createHash('sha256').update(JSON.stringify([diceConfigKey, diceBridge?.definitionId ?? null])).digest('hex')
-  const diceCandidate = (message: IncomingMessage) => diceBridge ? diceBridge.isCandidate(message) : diceWorkflow.isCandidate(message)
+  const diceCandidate = (message: IncomingMessage) => switches.feature('dice', message.conversation) &&
+    (diceBridge ? diceBridge.isCandidate(message) : diceWorkflow.isCandidate(message))
   async function handleDice(incoming: IncomingMessage, binding: AgentBindingSnapshot,
     epochs: import('../modules/dice/infrastructure/agentGroupLogStore.js').AgentGroupLogEpochs): Promise<boolean> {
     if (!diceCandidate(incoming)) return false
     const target = binding.target, adapter = adapterFor(target), token = agentBindingToken(binding)
     if (!incoming.messageId || !adapter?.readMessage) return true
     const memoryTurn = await beginMemoryTurn(binding, false)
-    const current = () => diceCurrent() && memoryTurn.isCurrent() && conversationEnabled(target) &&
+    const current = () => diceCurrent(target) && memoryTurn.isCurrent() && conversationEnabled(target) &&
       adapterFor(target) === adapter && adapter.isReady() && bindingIsCurrent(target, token)
     const ensureAdmission = async () => {
       const latest = await groupLogs.capture({ target, agentId: binding.agentId }, incoming.sender.id)
@@ -1282,7 +1291,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     }
     try {
       const context: AgentDiceEngineContext = { signal: memoryTurn.signal, isCurrent: current, ensureCurrent: ensure }
-      if (groupLogEnabled) {
+      if (groupLogCurrent(target)) {
         const owner = { target, agentId: binding.agentId }
         const log = diceBridge ? await groupLogs.read(owner) : undefined
         if (log) await ensure()
@@ -1316,8 +1325,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         (diceBridge ?? diceWorkflow).handle(incoming, binding, context), 'runtime')
     } finally { memoryTurn.release() }
   }
-  function bilibiliQualityCurrent(): boolean {
-    try { return options.bilibiliQuality?.enabled === true && options.isBilibiliQualityCurrent?.() !== false && isRunning() }
+  function bilibiliQualityCurrent(target: ConversationAddress): boolean {
+    try { return switches.feature('bilibiliQuality', target) && options.bilibiliQuality?.enabled === true && options.isBilibiliQualityCurrent?.() !== false && isRunning() }
     catch { return false }
   }
   const bilibiliQuality = options.bilibiliQuality?.enabled && options.bilibiliAuthService ? createAgentBilibiliQualityWorkflow(options.bilibiliQuality, {
@@ -1443,7 +1452,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     ...(options.qqActions ? { config: options.qqActions } : {}), storage, adapterFor, isCurrent: qqActionsCurrent, checkCurrent: checkToolCurrent,
     ...(options.observeExecutionCurrent ? { observeCurrent } : {}),
     authorize(name, binding, actor) {
-      if (!qqActionsCurrent(binding) || actor.kind === 'commitment') return false
+      if (!switches.tool(name, binding.target) || !qqActionsCurrent(binding) || actor.kind === 'commitment') return false
       const config = defaultSimRuntimeConfig(options.getSection())
       if (textInboxFor(binding.target)) return actor.kind === 'user' && (options.groupTextTools?.(binding.target) ?? []).some(tool => String(tool) === name)
       return resolveSimToolSurface({ policy: config.toolPolicy, builtInNames: [name], extraTools: config.extraTools, groupId: binding.target.id }).includes(name)
@@ -1469,6 +1478,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     diagnostics, ...(options.now ? { now: options.now } : {}),
   })
   const supportsQqAction = (target: ConversationAddress, name: string): boolean => checkToolCurrent(() => {
+    if (!switches.tool(name, target)) return false
     const adapter = adapterFor(target), binding = bindingFor(target)?.binding
     if (!binding || !qqActionsCurrent(binding)) return false
     if (name === 'sendGiftTool') return options.qqActions?.gift?.enabled === true && !!adapter?.gift
@@ -1496,7 +1506,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     getConfig: () => deferredHostCurrent() ? options.deferredActions : undefined,
     resolveDefinition: deferredExecutor.resolve, mode: deferredMode,
     isToolAllowed(request) {
-      if (!deferredHostCurrent() || !allowsConversationAI(request.binding.target)) return false
+      if (!switches.tool('reminderTool', request.binding.target) || !switches.tool(request.action.tool, request.binding.target) ||
+          !deferredHostCurrent() || !allowsConversationAI(request.binding.target)) return false
       const config = defaultSimRuntimeConfig(options.getSection())
       return resolveSimToolSurface({ policy: config.toolPolicy, builtInNames: ['pokeTool', ...(options.toolRegistry?.builtIn ?? []).map(tool => tool.name)],
         extraTools: config.extraTools, groupId: request.binding.target.id }).includes(request.action.tool)
@@ -1597,7 +1608,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const expected = agentBindingToken(binding)
       const isCurrent = () => checkToolCurrent(() => {
         try {
-          if (!isRunning() || !allowsConversationAI(target) || adapterFor(target)?.isReady() !== true || !conversationEnabled(target) ||
+          if (!switches.tool(name, target) || !isRunning() || !allowsConversationAI(target) || adapterFor(target)?.isReady() !== true || !conversationEnabled(target) ||
               textInboxFor(target) || incoming._isAgentBindingCurrent?.() !== true || !bindingIsCurrent(target, expected)) return false
           const section = options.getSection()
           if (actor.kind !== 'user' && (origin !== 'builtin' || !isAutonomousExtraToolAllowed(name, section.autonomousTools))) return false
@@ -1736,6 +1747,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     redis: storage,
     durableIngress: true,
     ...registeredTools,
+    isToolEnabled: switches.tool,
     extraToolsPlatformNeutral: true,
     messageActions,
     ...(options.interactions?.enabled === true ? { performInteractions,
@@ -1953,7 +1965,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     handlesTarget: target => isRunning() && !!target && adapterFor(target)?.isReady() === true && conversationEnabled(target),
     resolveBinding: target => bindingFor(target)?.binding,
     resolvePrivatePeer: privatePeerFor,
-    allowsExecution: allowsConversationAI,
+    allowsExecution: target => switches.tool('commitmentTool', target) && allowsConversationAI(target),
     captureExecution: target => activity.capture(target),
     isSimulationGroup: (_id, target) => target ? runtime.isConversationActive(target) : false,
     waitForSimulation: true,
@@ -2313,6 +2325,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     bindingToken: textBindingToken,
     groupToolNames: target => options.groupTextTools?.(target) ?? [],
     privateToolNames: options.privateTextTools ?? [],
+    isToolEnabled: switches.tool,
     registryTools(target) {
       if (!adapterFor(target)?.readMessage) return []
       const config = defaultSimRuntimeConfig(options.getSection())
@@ -2335,7 +2348,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const matches = (tool: AgentTool) => toolName === undefined || tool.name === toolName
       const group = target.kind === 'group'
       const builtIn = group ? (options.toolRegistry?.builtIn ?? []).filter(matches) : []
-      const magnet = builtIn.filter(tool => tool.name === 'searchMagnetTool' && magnetSearchCurrent())
+      const magnet = builtIn.filter(tool => tool.name === 'searchMagnetTool' && magnetSearchCurrent(target))
       const qq = group ? qqActions.builtIn.filter(tool => matches(tool) && supportsQqAction(target, tool.name)) : []
       const video = builtIn.filter(tool => groupTextVideoToolNames.some(name => name === tool.name) &&
         (tool.name === 'searchVideoTool' || tool.name === 'videoShareTool' && !!adapter.actions.sendVideoCard ||
@@ -2634,12 +2647,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     allowsText: text => options.allowsToolInput?.(text) !== false && options.allowsText?.(text, 'incoming') !== false,
   }) : undefined
   function enqueueLocalEmoji(source: IncomingMessage, binding: AgentBindingSnapshot, adapter: PlatformConnectionAdapter): void {
-    if (!localEmojiIngress || !source.messageId || !source.parts.some(part => part.kind === 'image') || source.sender.id === binding.target.account.id ||
+    if (!localEmojiIngress || !switches.feature('localEmojiCollection', binding.target) || !source.messageId || !source.parts.some(part => part.kind === 'image') || source.sender.id === binding.target.account.id ||
         !adapter.readMessageImages || options.autoCollectLocalEmoji !== true) return
     const target = binding.target, token = agentBindingToken(binding), lifetime = new AbortController()
     let memory: Awaited<ReturnType<typeof beginMemoryTurn>> | undefined
     const current = () => observeCurrent(() => !lifetime.signal.aborted && memory?.isCurrent() !== false && isRunning() &&
-      options.isLocalEmojiCurrent?.() !== false && adapterFor(target) === adapter && adapter.isReady() &&
+      switches.feature('localEmojiCollection', target) && options.isLocalEmojiCurrent?.() !== false && adapterFor(target) === adapter && adapter.isReady() &&
       conversationEnabled(target) && allowsConversationAI(target) && bindingIsCurrent(target, token))
     const ensureCurrent = async () => {
       if (!current()) throw new Error('自动收藏所属会话已失效')
@@ -2682,7 +2695,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     // cannot overtake an on/off/export command from this receiving account.
     const key = platformAccountKey(adapter.account)
     const ordered = event.kind === 'message' && event.message.conversation.kind === 'group' && !personMemoryCommand(event.message) &&
-      (groupLogEnabled || diceCandidate(event.message) || gameCandidate(event.message))
+      (groupLogCurrent(event.message.conversation) || diceCandidate(event.message) || gameCandidate(event.message))
     const previous = ordered ? admissions.get(key) ?? Promise.resolve() : undefined
     const task = (previous ? previous.catch(() => {}).then(() => acceptEvent(adapter, event)) : acceptEvent(adapter, event)).catch(error => {
       diagnostics.emit({ stage: 'inbox', operation: 'admit_event', outcome: 'failed', code: 'admission_not_confirmed', error })
@@ -2700,12 +2713,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     const privateChat = target.kind === 'private'
     if (event.kind === 'red-packet') {
       const binding = bindingFor(target)?.binding
-      if (!binding || !adapter.redPackets || !qqActionsCurrent(binding) || !options.qqActions?.redPackets?.automatic?.enabled) return
+      if (!switches.feature('automaticRedPackets', target) || !binding || !adapter.redPackets || !qqActionsCurrent(binding) || !options.qqActions?.redPackets?.automatic?.enabled) return
       const epochs = await groupLogs.capture({ target, agentId: binding.agentId }, event.packet.source.author.id)
       const memory = await beginMemoryTurn(binding), key = conversationAddressKey(target), packet = structuredClone(event.packet)
       const previous = automaticQqWork.get(key) ?? Promise.resolve()
       const work = previous.catch(() => {}).then(async () => {
-        const current = () => observeCurrent(() => memory.isCurrent() && qqActionsCurrent(binding) && adapterFor(target) === adapter)
+        const current = () => observeCurrent(() => switches.feature('automaticRedPackets', target) && memory.isCurrent() && qqActionsCurrent(binding) && adapterFor(target) === adapter)
         const guard: AgentQqActionGuard = { signal: memory.signal, isCurrent: current, async ensureCurrent() {
           if (!current() || await inbox.isRecalled(target, packet.source.messageId)) throw new Error('红包来源已失效')
           const latest = await groupLogs.capture({ target, agentId: binding.agentId }, packet.source.author.id)
@@ -2763,7 +2776,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       return
     }
     if (event.kind === 'message') {
-      if (target.kind === 'group' && event.message.messageId && (!diceCurrent() || !diceCandidate(event.message)) &&
+      if (target.kind === 'group' && event.message.messageId && (!diceCurrent(target) || !diceCandidate(event.message)) &&
           (diceRevocationCandidate(event.message) || await diceState.hasSourceByTarget(target, event.message.messageId))) {
         await revokeDiceSource(target, event.message.messageId)
       }
@@ -2799,14 +2812,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         return
       }
     }
-    if (target.kind === 'group' && event.kind === 'message' && (groupLogEnabled || diceCandidate(event.message) || gameCandidate(event.message))) {
+    if (target.kind === 'group' && event.kind === 'message' && (groupLogCurrent(target) || diceCandidate(event.message) || gameCandidate(event.message))) {
       const persona = bindingFor(target), message = event.message
       if (!persona || !message.messageId || message.binding && !isSameBinding(message.binding, persona.binding) ||
           options.allowsText?.(message.text, 'incoming') === false || !allowsFileNames(message)) return
       const command = parseAgentGroupLogCommand(message.text)
       const standalone = !message.quote && !message.mentions.length && message.parts.length > 0 &&
         message.parts.every(part => part.kind === 'text') && message.parts.map(part => part.kind === 'text' ? part.text : '').join('') === message.text
-      if (groupLogEnabled && standalone && (command?.kind === 'start' || command?.kind === 'ai' && command.enabled === false)) {
+      if (groupLogCurrent(target) && standalone && (command?.kind === 'start' || command?.kind === 'ai' && command.enabled === false)) {
         const controller = new AbortController(), token = agentBindingToken(persona.binding)
         try {
           if (await groupLogAuthorized(message, persona.binding, controller.signal, () => isRunning() && bindingIsCurrent(target, token))) {
@@ -2849,9 +2862,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const { sender, occurredAt, messageId, quote, directedToAccount } = event.message
       if (privateChat && sender.id !== privatePeerFor(target, adapter)) return
       const text = event.message.text.trim()
-      const qualityCommand = bilibiliQualityCurrent() && isAgentBilibiliQualityCommand(event.message)
-      const magnetCommand = magnetSearchCurrent() && !!parseAgentMagnetSearchCommand(event.message.text)
-      const extractionCandidate = extraction.isCandidate(event.message), extractionCommand = extraction.isCommand(event.message)
+      const qualityCommand = bilibiliQualityCurrent(target) && isAgentBilibiliQualityCommand(event.message)
+      const magnetCommand = magnetSearchCurrent(target) && !!parseAgentMagnetSearchCommand(event.message.text)
+      const extractionCandidate = isMusicExtractionCandidate(event.message)
+      const extractionCommand = switches.feature('musicExtraction', target) && extraction.isCommand(event.message)
       const mediaCandidate = isMediaRelayCandidate(event.message)
       if (!text && !extractionCandidate && !mediaCandidate || text.startsWith('#') || (text && !privateChat && '.\\/'.includes(text.charAt(0)) && !extractionCommand && !qualityCommand && !magnetCommand)) return
       const quoteId = isMessageId(quote?.messageId) ? quote.messageId : undefined
@@ -2861,7 +2875,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         ...(event.message.senderName ? { senderName: event.message.senderName } : {}),
         mentions: event.message.mentions, directedToAccount: privateChat || directedToAccount,
         ...(qualityCommand && quote ? { quote: { ...(quoteId ? { messageId: quoteId } : {}), parts: [] } }
-          : (!privateChat || extractionCommand || interactionsCurrent() && options.privateTextTools?.includes('recallTool')) && quoteId
+          : (!privateChat || extractionCommand || switches.tool('recallTool', target) && interactionsCurrent() && options.privateTextTools?.includes('recallTool')) && quoteId
             ? { quote: { messageId: quoteId, parts: [] } } : {}),
       }
       // Explicit commands retain their complete neutral source. Its original
@@ -2984,14 +2998,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
   async function torrentSourceAllowed(message: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
     const target = binding.target
-    if (!torrentCurrent() || !message.messageId || options.allowsText?.(message.text, 'incoming') === false || !allowsFileNames(message) ||
+    if (!switches.feature('torrentDownload', target) || !torrentCurrent() || !message.messageId || options.allowsText?.(message.text, 'incoming') === false || !allowsFileNames(message) ||
       !await inbox.canReply(target, message.messageId) || await inbox.isRecalled(target, message.messageId)) return false
     const { botId, scene } = personMemoryAddress(target), excerpt = message.text || '[磁链下载]'
     const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(binding.agentId) }, subjectId: message.sender.id })
     return !isPersonMemoryRedacted({ scene, messageId: message.messageId, authorId: message.sender.id, at: message.occurredAt, excerpt }, excerpt, redactions)
   }
   function torrentResponsible(source: IncomingMessage): boolean {
-    if (!torrentCurrent() || source.conversation.kind !== 'group') return false
+    if (!switches.feature('torrentDownload', source.conversation) || !torrentCurrent() || source.conversation.kind !== 'group') return false
     try {
       const siblings = [...adapters.values()].filter(adapter => samePlatformNamespace(adapter.account, source.conversation.account))
       if (siblings.some(adapter => [adapter.account.id, adapter.botUserId].includes(source.sender.id))) return false
@@ -3011,7 +3025,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   async function openTorrentContext(record: { readonly binding: AgentBindingSnapshot; readonly source: AgentTorrentSource;
     readonly trigger: AgentTorrentSource; readonly expiresAt: number }, externalSignal: AbortSignal): Promise<AgentTorrentWorkflowContext | 'wait' | undefined> {
     const binding = record.binding, target = binding.target, token = agentBindingToken(binding)
-    if (!torrentCurrent() || target.kind !== 'group' || !conversationEnabled(target) || !bindingIsCurrent(target, token)) return undefined
+    if (!switches.feature('torrentDownload', target) || !torrentCurrent() || target.kind !== 'group' || !conversationEnabled(target) || !bindingIsCurrent(target, token)) return undefined
     const adapter = adapterFor(target)
     if (!adapter?.readMessage || !adapter.actions.sendRequesterArchive) return undefined
     if (!adapter.isReady()) return 'wait'
@@ -3020,7 +3034,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     try { signal = AbortSignal.any([cancel.signal, memoryTurn.signal, toolCancellation.signal, externalSignal,
       AbortSignal.timeout(Math.max(1, Math.min(2_700_000, record.expiresAt - (options.now?.() ?? Date.now())))), ...(options.signal ? [options.signal] : [])]) }
     catch { memoryTurn.release(); return undefined }
-    const pending = guardPendingSend(conversationAddressKey(target), () => !signal.aborted && torrentCurrent() &&
+    const pending = guardPendingSend(conversationAddressKey(target), () => !signal.aborted && switches.feature('torrentDownload', target) && torrentCurrent() &&
       adapter.isReady() && adapterFor(target) === adapter && conversationEnabled(target) && memoryTurn.isCurrent() && bindingIsCurrent(target, token))
     const isCurrent = () => !signal.aborted && pending.isCurrent(), observed = new Map<string, IncomingMessage>()
     const ensureCurrent = async () => {
@@ -3045,15 +3059,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       release() { clearInterval(timer); cancel.abort(); pending.release(); memoryTurn.release() },
     }
   }
+  const isTorrentCandidate = (incoming: IncomingMessage) => switches.feature('torrentDownload', incoming.conversation) && torrent.isCandidate(incoming)
   async function handleTorrent(incoming: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
-    if (!torrent.isCandidate(incoming)) return false
+    if (!isTorrentCandidate(incoming)) return false
     const age = (options.now?.() ?? Date.now()) - incoming.occurredAt
     if (age < -privacyCommandClockSkewMs || age >= textConversationSeconds * 1000) return true
     return await torrent.handle(incoming, binding)
   }
 
-  function mediaRelayCurrent(): boolean {
-    try { return mediaRelayConfig.enabled && options.mediaRelay?.enabled === true && options.isMediaRelayCurrent?.() !== false && isRunning() }
+  function mediaRelayCurrent(target: ConversationAddress): boolean {
+    try { return switches.feature('mediaRelay', target) && mediaRelayConfig.enabled && options.mediaRelay?.enabled === true && options.isMediaRelayCurrent?.() !== false && isRunning() }
     catch { return false }
   }
   function mediaProviderEnabled(provider: AgentMediaShare['provider']): boolean {
@@ -3062,7 +3077,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     catch { return false }
   }
   function isMediaRelayCandidate(source: IncomingMessage): boolean {
-    return mediaRelayCurrent() && source.conversation.kind === 'group' && !!source.messageId &&
+    return mediaRelayCurrent(source.conversation) && source.conversation.kind === 'group' && !!source.messageId &&
       (source.parts.some(part => part.kind === 'extension' && (part.type === 'json' ||
         part.type === 'bilibili' && mediaProviderEnabled('bilibili') || part.type === 'douyin' && mediaProviderEnabled('douyin') ||
         part.type === 'xiaohongshu' && mediaProviderEnabled('xiaohongshu') || part.type === 'youtube' && mediaProviderEnabled('youtube') ||
@@ -3074,7 +3089,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         mediaProviderEnabled('pixiv') && /pixiv\.net/iu.test(source.text))
   }
   function mediaResponsible(source: IncomingMessage): boolean {
-    if (source.conversation.kind !== 'group' || !mediaRelayCurrent()) return false
+    if (source.conversation.kind !== 'group' || !mediaRelayCurrent(source.conversation)) return false
     try {
       const siblings = [...adapters.values()].filter(adapter => samePlatformNamespace(adapter.account, source.conversation.account))
       if (siblings.some(adapter => source.sender.id === adapter.account.id || source.sender.id === adapter.botUserId)) return false
@@ -3094,7 +3109,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     readonly source: Pick<AgentMediaOutboxRecord['source'], 'messageId' | 'sender' | 'occurredAt'> & { readonly share?: AgentMediaShare }
   }, externalSignal: AbortSignal): Promise<AgentMediaOutboxContext | 'wait' | undefined> {
     const binding = record.binding, target = binding.target, source = record.source
-    if (!mediaRelayCurrent() || source.share && !mediaProviderEnabled(source.share.provider) || target.kind !== 'group' || !conversationEnabled(target) ||
+    if (!mediaRelayCurrent(target) || source.share && !mediaProviderEnabled(source.share.provider) || target.kind !== 'group' || !conversationEnabled(target) ||
         !bindingIsCurrent(target, agentBindingToken(binding))) return undefined
     const adapter = adapterFor(target)
     if (!adapter?.readMediaShare || !adapter.actions.sendMediaRelay) return undefined
@@ -3106,7 +3121,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     catch { memoryTurn.release(); return undefined }
     let observed: IncomingMessage | undefined
     const expected = agentBindingToken(binding)
-    const pending = guardPendingSend(conversationAddressKey(target), () => !signal.aborted && mediaRelayCurrent() &&
+    const pending = guardPendingSend(conversationAddressKey(target), () => !signal.aborted && mediaRelayCurrent(target) &&
       adapter.isReady() && adapterFor(target) === adapter && conversationEnabled(target) && memoryTurn.isCurrent() &&
       bindingIsCurrent(target, expected) && (!observed || mediaResponsible(observed)))
     const isCurrent = () => !signal.aborted && observeCurrent(() => pending.isCurrent() && (!source.share || mediaProviderEnabled(source.share.provider)))
@@ -3164,12 +3179,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     } finally { context.release() }
   }
   async function handleBilibiliQuality(incoming: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
-    if (!bilibiliQualityCurrent() || !bilibiliQuality || !isAgentBilibiliQualityCommand(incoming)) return false
-    const target = binding.target, adapter = adapterFor(target), age = (options.now?.() ?? Date.now()) - incoming.occurredAt
+    const target = binding.target
+    if (!bilibiliQualityCurrent(target) || !bilibiliQuality || !isAgentBilibiliQualityCommand(incoming)) return false
+    const adapter = adapterFor(target), age = (options.now?.() ?? Date.now()) - incoming.occurredAt
     if (!adapter?.readMessage || !adapter.isReady() || !incoming.messageId || age < -privacyCommandClockSkewMs || age >= textConversationSeconds * 1000) return true
     const memory = await beginMemoryTurn(binding, false), cancel = new AbortController(), token = agentBindingToken(binding)
     const signal = AbortSignal.any([cancel.signal, memory.signal, toolCancellation.signal, AbortSignal.timeout(16 * 60_000), ...(options.signal ? [options.signal] : [])])
-    const pending = guardPendingSend(conversationAddressKey(target), () => bilibiliQualityCurrent() && !signal.aborted && memory.isCurrent() &&
+    const pending = guardPendingSend(conversationAddressKey(target), () => bilibiliQualityCurrent(target) && !signal.aborted && memory.isCurrent() &&
       adapterFor(target) === adapter && adapter.isReady() && conversationEnabled(target) && bindingIsCurrent(target, token), false)
     const current = () => !signal.aborted && pending.isCurrent()
     let released = false
@@ -3194,19 +3210,20 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       return result.consumed
     } catch (error) { release(); diagnostics.emit({ stage: 'runtime', operation: 'bilibili_quality', outcome: 'failed', code: 'workflow_failed', error }); return true }
   }
-  function magnetSearchCurrent(): boolean {
-    try { return options.magnetSearch?.enabled === true && options.isMagnetSearchCurrent?.() !== false && isRunning() }
+  function magnetSearchCurrent(target: ConversationAddress): boolean {
+    try { return switches.tool('searchMagnetTool', target) && options.magnetSearch?.enabled === true && options.isMagnetSearchCurrent?.() !== false && isRunning() }
     catch { return false }
   }
   async function handleMagnetSearch(incoming: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
     const command = parseAgentMagnetSearchCommand(incoming.text)
-    if (!command || !magnetSearchCurrent()) return false
-    const target = binding.target, adapter = adapterFor(target), token = agentBindingToken(binding), sourceId = incoming.messageId
+    const target = binding.target
+    if (!command || !magnetSearchCurrent(target)) return false
+    const adapter = adapterFor(target), token = agentBindingToken(binding), sourceId = incoming.messageId
     const age = (options.now?.() ?? Date.now()) - incoming.occurredAt
     if (!sourceId || !adapter?.readMessage || !adapter.isReady() || age >= textConversationSeconds * 1000 || age < -privacyCommandClockSkewMs) return true
     const memory = await beginMemoryTurn(binding, false), cancel = new AbortController()
     const signal = AbortSignal.any([cancel.signal, memory.signal, toolCancellation.signal, AbortSignal.timeout(65_000), ...(options.signal ? [options.signal] : [])])
-    const pending = guardPendingSend(conversationAddressKey(target), () => !signal.aborted && magnetSearchCurrent() && memory.isCurrent() &&
+    const pending = guardPendingSend(conversationAddressKey(target), () => !signal.aborted && magnetSearchCurrent(target) && memory.isCurrent() &&
       adapterFor(target) === adapter && adapter.isReady() && conversationEnabled(target) && bindingIsCurrent(target, token))
     const current = () => !signal.aborted && pending.isCurrent()
     const { botId, scene } = personMemoryAddress(target), identity = { botId, personaId: agentPersonaScopeId(binding.agentId) }
@@ -3237,8 +3254,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     finally { clearInterval(timer); cancel.abort(); pending.release(); memory.release() }
     return true
   }
+  const isMusicExtractionCandidate = (incoming: IncomingMessage) => switches.feature('musicExtraction', incoming.conversation) && extraction.isCandidate(incoming)
   async function handleMusicExtraction(incoming: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
-    if (!extraction.isCandidate(incoming)) return false
+    if (!isMusicExtractionCandidate(incoming)) return false
     const target = binding.target, adapter = adapterFor(target), token = agentBindingToken(binding)
     const age = (options.now?.() ?? Date.now()) - incoming.occurredAt
     if (!adapter || !incoming.messageId || age >= textConversationSeconds * 1000 || age < -privacyCommandClockSkewMs) return true
@@ -3246,7 +3264,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     const cancel = new AbortController()
     const signal = AbortSignal.any([cancel.signal, memoryTurn.signal, toolCancellation.signal, AbortSignal.timeout(360_000),
       ...(options.signal ? [options.signal] : [])])
-    const sendGuard = guardPendingSend(conversationAddressKey(target), () => !signal.aborted && isRunning() && memoryTurn.isCurrent() && options.isMusicExtractionCurrent?.() !== false &&
+    const sendGuard = guardPendingSend(conversationAddressKey(target), () => !signal.aborted && isRunning() && switches.feature('musicExtraction', target) && memoryTurn.isCurrent() && options.isMusicExtractionCurrent?.() !== false &&
       adapter.isReady() && adapterFor(target) === adapter && conversationEnabled(target) && bindingIsCurrent(target, token))
     const isCurrent = () => !signal.aborted && sendGuard.isCurrent()
     const sources = new Map<string, IncomingMessage>()
@@ -3281,11 +3299,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   function groupLogForwardMessage(incoming: IncomingMessage, adapter: PlatformConnectionAdapter): IncomingMessage | undefined {
     const { binding: _binding, quote, ...message } = incoming
     if (textInboxFor(message.conversation)) {
-      if (magnetSearchCurrent() && parseAgentMagnetSearchCommand(message.text)) return { ...message, ...quoteReference(quote) }
-      const text = message.text.trim(), extractionCandidate = extraction.isCandidate(message), extractionCommand = extraction.isCommand(message)
+      if (magnetSearchCurrent(message.conversation) && parseAgentMagnetSearchCommand(message.text)) return { ...message, ...quoteReference(quote) }
+      const text = message.text.trim(), extractionCandidate = isMusicExtractionCandidate(message)
+      const extractionCommand = switches.feature('musicExtraction', message.conversation) && extraction.isCommand(message)
       const mediaCandidate = isMediaRelayCandidate(message)
       if (!text && !extractionCandidate && !mediaCandidate || text.startsWith('#') ||
-          text && '.\\/'.includes(text.charAt(0)) && !extractionCommand && !(magnetSearchCurrent() && parseAgentMagnetSearchCommand(message.text))) return undefined
+          text && '.\\/'.includes(text.charAt(0)) && !extractionCommand) return undefined
       return { ...message, text, parts: message.parts.filter(part => part.kind === 'text' || part.kind === 'forward' || part.kind === 'file' ||
         (extractionCandidate || mediaCandidate) && part.kind === 'extension'), ...quoteReference(quote) }
     }
@@ -3373,7 +3392,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
             if (reservation.messages.size) continue
             silenceReservations.delete(key)
             const binding = bindingFor(reservation.target)?.binding
-            if (binding) await groupLogWorkflow.restore(reservation.target, binding)
+            if (binding && groupLogCurrent(reservation.target)) await groupLogWorkflow.restore(reservation.target, binding)
             else setConversationAI(reservation.target, true)
           }
         }
@@ -3402,20 +3421,20 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           const diceSource = event.kind === 'message' && (diceRevocationCandidate(event.message) || !!capture && 'dicePolicy' in capture ||
             !!event.message.messageId && await diceState.hasSourceByTarget(target, event.message.messageId))
           const diceAdmitted = !!capture && 'dicePolicy' in capture && capture.dicePolicy === dicePolicy
-          const diceRevoked = diceSource && (!diceCurrent() || !diceAdmitted || !selected || capture?.agentId !== selected.binding.agentId ||
+          const diceRevoked = diceSource && (!diceCurrent(target) || !diceAdmitted || !selected || capture?.agentId !== selected.binding.agentId ||
             bindingToken !== agentBindingToken(selected.binding))
           if (diceRevoked && event.kind === 'message' && event.message.messageId) await revokeDiceSource(target, event.message.messageId)
           if (event.kind === 'message' && event.message.messageId && capture && selected && capture.agentId === selected.binding.agentId &&
               bindingToken === agentBindingToken(selected.binding)) {
             if (!adapter.isReady()) return
             const incoming = event.message
-            const outcome = groupLogEnabled ? await diagnostics.run({ kind: 'conversation', binding: selected.binding, messageId: incoming.messageId! }, 'group_log',
+            const outcome = groupLogCurrent(target) ? await diagnostics.run({ kind: 'conversation', binding: selected.binding, messageId: incoming.messageId! }, 'group_log',
               () => groupLogWorkflow.handle(incoming, selected.binding, capture), 'runtime') : { consumed: false, aiAllowed: allowsConversationAI(target) }
             const gameHandled = !outcome.consumed && await handleGames(incoming, selected.binding)
             const diceHandled = gameHandled || diceRevoked || await handleDice(incoming, selected.binding, capture)
             releaseSilence(target, event.message.messageId)
-            if (groupLogEnabled) await groupLogWorkflow.restore(target, selected.binding)
-            const qualityHandled = !diceHandled && bilibiliQualityCurrent() && isAgentBilibiliQualityCommand(incoming)
+            if (groupLogCurrent(target)) await groupLogWorkflow.restore(target, selected.binding)
+            const qualityHandled = !diceHandled && bilibiliQualityCurrent(target) && isAgentBilibiliQualityCommand(incoming)
               ? await handleBilibiliQuality(incoming, selected.binding) : false
             // Recording silence consumes ordinary AI messages as well as log
             // commands. Explicit searches retain their independent command path.
@@ -3440,11 +3459,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           const expectedQueue = textInboxFor(target)?.kind ?? 'simulation'
           const selectedPersona = conversationEnabled(target) && expectedQueue === queue.kind ? bindingFor(target) : undefined
           const gameMessage = event.kind === 'message' ? event.message : undefined
-          const gameCandidate = selectedPersona && gameMessage && gameHandlers.some(handler => handler.isCandidate(gameMessage, selectedPersona.binding))
-          const persona = selectedPersona && (allowsConversationAI(target) || gameCandidate) ? selectedPersona : undefined
+          const persona = selectedPersona && (allowsConversationAI(target) || gameMessage && gameCandidate(gameMessage, selectedPersona.binding)) ? selectedPersona : undefined
           if (persona && (queue.kind === 'simulation' ? agentBindingToken(persona.binding) : textBindingToken(persona.binding)) === bindingToken &&
               (event.kind !== 'message' || !event.message.binding || isSameBinding(event.message.binding, persona.binding))) {
-            if (event.kind === 'message' && (extraction.isCandidate(event.message) || isMediaRelayCandidate(event.message) || torrent.isCandidate(event.message) || magnetSearchCurrent() && parseAgentMagnetSearchCommand(event.message.text)) && !adapter.isReady()) return
+            if (event.kind === 'message' && (isMusicExtractionCandidate(event.message) || isMediaRelayCandidate(event.message) || isTorrentCandidate(event.message) || magnetSearchCurrent(target) && parseAgentMagnetSearchCommand(event.message.text)) && !adapter.isReady()) return
             const handled = event.kind === 'message' && await inboxDispatch.dispatch(event.message, persona.binding)
             // Claimed commands and media shares stay out of the model and history.
             if (!handled) {
@@ -3592,7 +3610,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         await groupLogs.recover(accounts)
         for (const owner of await groupLogs.listOwners(accounts)) {
           const current = bindingFor(owner.target)?.binding
-          if (current?.agentId === owner.agentId) await groupLogWorkflow.restore(owner.target, current)
+          if (current?.agentId === owner.agentId && groupLogCurrent(owner.target)) await groupLogWorkflow.restore(owner.target, current)
         }
       }
       if (!isRunning()) { await stop(); return }
@@ -3610,7 +3628,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         for (const adapter of options.adapters) if (await inbox.next({ account: adapter.account, kind: 'group-log' })) throw new Error('团录恢复尚未完成，AI保持静默')
         for (const owner of await groupLogs.listOwners(options.adapters.map(adapter => adapter.account))) {
           const current = bindingFor(owner.target)?.binding
-          if (current?.agentId === owner.agentId) await groupLogWorkflow.restore(owner.target, current)
+          if (current?.agentId === owner.agentId && groupLogCurrent(owner.target)) await groupLogWorkflow.restore(owner.target, current)
         }
       }
       activityHydrated = true
@@ -3671,6 +3689,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   return {
     runtime,
     management,
+    listRegisteredToolNames: () => registeredTools.listRegistryToolNames().all,
     /** Trusted host cleanup only; never installed as a model tool. */
     semanticMemoryCleanup,
     conversationMemoryCleanup,

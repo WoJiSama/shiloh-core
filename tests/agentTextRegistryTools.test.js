@@ -58,7 +58,7 @@ async function fixture(t, options = {}) {
   const makeHost = () => createAgentRuntime({ storage: redis.storage, adapters: [adapter], now: () => now,
     logger: { info() {}, warn() {}, error() {} }, isExecutionCurrent: () => live && redis.isCurrent(),
     privateChatEnabled: true, privateTextTools: state.names, groupTextTools: () => state.names, useTextGroup: target => target.kind === 'group',
-    toolRegistry: state.registry, memorySystem: { enabled: false }, midtermMemory: { enabled: false }, episodicMemory: { enabled: true },
+    toolRegistry: state.registry, featureSwitches: options.featureSwitches, memorySystem: { enabled: false }, midtermMemory: { enabled: false }, episodicMemory: { enabled: true },
     semanticMemory: { enabled: false }, groupMemory: { enabled: false }, groupLog: { enabled: false },
     getSection: () => ({ enabled: true, allGroups: true, toolPolicy: state.policy, extraTools: state.extraTools,
       reflection: { enabled: false }, rhythm: { enabled: false }, mood: { enabled: false }, personProfile: { enabled: false },
@@ -123,6 +123,20 @@ test('registry tools need text authorization, obey global/group deny and custom 
   assert.equal(calls, 0)
   const f = await fixture(t, { registry: { custom: [custom] }, names: ['mcp_custom'], policy: { mode: 'open', allowTools: ['mcp_custom'] } })
   await f.send(friend); assert.equal(calls, 1); assert.match(JSON.stringify(f.requests.at(-1).messages), new RegExp(RESULT))
+})
+
+test('text registry tool enabled for one group rejects a forged call in private chat', settings, async t => {
+  const executions = [], builtIn = tool('webParserTool', async (_input, context) => {
+    executions.push(context.binding.target)
+    return { status: 'succeeded', content: RESULT }
+  })
+  const f = await fixture(t, { registry: { builtIn: [builtIn] },
+    featureSwitches: { tools: { webParserTool: { mode: 'groups', groups: [group.id] } } } })
+  await f.send(group)
+  assert.deepEqual(executions, [group])
+  await f.send(friend)
+  assert.equal(f.requests.at(-1).tools?.some(row => row.function.name === 'webParserTool') ?? false, false)
+  assert.deepEqual(executions, [group])
 })
 
 test('schema and host-secret validation reject model-selected target or raw secret before execution', settings, async t => {

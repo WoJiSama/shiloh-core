@@ -58,6 +58,7 @@ export function createTextConversation(ports: {
   bindingToken(binding: AgentBindingSnapshot): string
   groupToolNames(target: ConversationAddress): readonly GroupTextToolName[]
   privateToolNames?: readonly string[]
+  isToolEnabled?(name: string, target: ConversationAddress): boolean
   groupTools: ReturnType<typeof createGroupTextTools>
   checkToolCurrent?(check: () => boolean): boolean
   scopedTools?(target: ConversationAddress, name?: string): readonly AgentTool[]
@@ -191,20 +192,21 @@ export function createTextConversation(ports: {
         return
       }
     }
-    const allowedToolNames = (): readonly GroupTextToolName[] => isPrivateChat
-      ? ['commitmentTool', ...(ports.privateToolNames ?? [])] : ports.groupToolNames(target)
+    const toolEnabled = (name: string) => ports.isToolEnabled?.(name, target) !== false
+    const allowedToolNames = (): readonly GroupTextToolName[] => (isPrivateChat
+      ? ['commitmentTool', ...(ports.privateToolNames ?? [])] : ports.groupToolNames(target)).filter(toolEnabled)
     const allowed = [...allowedToolNames()]
     const requestContext: AgentToolContext = {
       binding, actor: { kind: 'user', user: incoming.sender }, signal: signal ?? new AbortController().signal,
       request: { messageId, text: incoming.text, mentions: incoming.mentions, occurredAt: incoming.occurredAt }, isCurrent,
     }
-    const historyTool = ports.readHistory ? createAgentHistoryTool() : undefined
+    const historyTool = ports.readHistory && toolEnabled('chatHistoryTool') ? createAgentHistoryTool() : undefined
     const historyDefinition = historyTool && { type: 'function', function: { name: historyTool.name, description: historyTool.description, parameters: historyTool.parameters } }
     const scopedTools = ports.scopedContext ? (ports.scopedTools?.(target) ?? []).filter(tool =>
       groupTextScopedToolNames.some(name => name === tool.name) && allowed.some(name => name === tool.name) &&
       (!groupTextQqActionToolNames.some(name => name === tool.name) || !isPrivateChat && !isToolActionDenied(user, tool.name))) : []
     const scopedDefinitions = scopedTools.map(tool => ({ type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters } }))
-    const registryAvailable = (tool: AgentTool) => (ports.registryTools?.(target) ?? []).includes(tool) &&
+    const registryAvailable = (tool: AgentTool) => toolEnabled(tool.name) && (ports.registryTools?.(target) ?? []).includes(tool) &&
       (isPrivateChat ? ports.privateToolNames ?? [] : ports.groupToolNames(target)).includes(tool.name) &&
       !groupTextScopedToolNames.some(name => name === tool.name)
     const registryTools = ports.scopedContext ? (ports.registryTools?.(target) ?? []).filter(registryAvailable) : []
@@ -365,7 +367,7 @@ export function createTextConversation(ports: {
         log('tool', 'text_history', 'failed', 'invalid_tool_arguments')
         await reportFailure('tool', 'failed', '历史查询参数无效，本次没有查询。'); return
       }
-      const historyCurrent = () => isCurrent() && ports.readHistory === readHistory
+      const historyCurrent = () => isCurrent() && toolEnabled(historyTool.name) && ports.readHistory === readHistory
       const context = authorizeAgentToolContext(historyTool, input, {
         ...requestContext, isCurrent: historyCurrent,
         ensureCurrent: async () => { if (!await modelContextCurrent() || !historyCurrent()) throw new Error('历史查询来源已改变') },
