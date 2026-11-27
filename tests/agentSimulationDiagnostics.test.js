@@ -396,12 +396,13 @@ test('a group correction survives long tools and provider overflow, then reconci
   const outbound = []
   const response = (request, round) => {
       let message
-      if (round === 0) message = tools(toolCall('simGetRecentMessages', { limit: 5 }), toolCall('searchInformationTool', { query: '活动的签到地点' }))
+      if (round === 0) message = tools(toolCall('simGetRecentMessages', { limit: 6 }), toolCall('searchInformationTool', { query: '活动的签到地点' }))
       else if (round === 1) {
         const history = JSON.parse(request.messages.find(row => row.name === 'simGetRecentMessages').content)
         const reading = request.messages.find(row => row.name === 'searchInformationTool').content
         assert.ok(history.messages.some(row => /小满.*转发.*22:00/u.test(row)))
         assert.ok(history.messages.some(row => /阿岚.*20:00/u.test(row)))
+        assert.ok(history.messages.some(row => /阿岚.*改到 20:30/u.test(row)))
         const correction = history.messages.find(row => /阿岚.*我们改到 \d\d:00/u.test(row))
         const hour = /我们改到 (\d\d):00/u.exec(correction)[1]
         assert.match(reading, /来源：https:\/\/example\.com\/agenda/u)
@@ -438,6 +439,7 @@ test('a group correction survives long tools and provider overflow, then reconci
   })
   t.after(() => h.runtime.stop())
   await h.ingest('本群活动原定周五 20:00 集合。', '40000', { at: false, name: '阿岚' })
+  await h.ingest('我们先改到 20:30 集合。', '40000', { at: false, name: '阿岚' })
   await h.ingest('我转发的是另一个群的公告，他们 22:00 集合。', '40001', { at: false, name: '小满' })
   await h.ingest('我们改到 21:00 集合。', '40000', { at: false, name: '阿岚' })
   await h.ingest(requestText, '40000', { name: '阿岚' })
@@ -532,6 +534,7 @@ test('multiple searches compact older successful results while keeping evidence,
     const previous = { ...final, messages: final.messages.map(row => row.role === 'tool' ? { ...row, content: original.get(row.tool_call_id) } : row) }
     const saved = Buffer.byteLength(JSON.stringify(previous)) - Buffer.byteLength(JSON.stringify(final))
     assert.ok(saved > 4_000)
+    t.diagnostic('final request bytes, original and compacted: ' + Buffer.byteLength(JSON.stringify(previous)) + ', ' + Buffer.byteLength(JSON.stringify(final)))
     const lastMeasurement = rows.filter(row => row.operation === 'simulation_main' && row.outcome === 'succeeded').at(-1)
     assert.equal(lastMeasurement.details.savedToolResultBytes, saved)
     assert.equal(lastMeasurement.details.compactedToolResults, compacted.length)
@@ -570,6 +573,9 @@ test('simple group greetings use a small stable surface while reminder and read 
   assert.ok(action.tools.some(tool => tool.function.name === 'searchInformationTool'))
   assert.ok(action.tools.some(tool => tool.function.name === 'simGetRecentMessages'))
   assert.ok(Buffer.byteLength(JSON.stringify(hello)) < Buffer.byteLength(JSON.stringify(action)) / 2)
+  assert.match(JSON.stringify(hello.messages), /你好！/u)
+  assert.doesNotMatch(JSON.stringify(hello.messages), /simRemember|simWaitForMessages/u)
+  t.diagnostic('greeting and tool task first request bytes: ' + Buffer.byteLength(JSON.stringify(hello)) + ', ' + Buffer.byteLength(JSON.stringify(action)))
 })
 
 test('a failed follow-up request leaves newly retrieved unread rows outside the modeled watermark', async t => {

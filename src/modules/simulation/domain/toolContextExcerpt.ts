@@ -73,7 +73,8 @@ export function prepareEarlierSimulationRead(input: SimulationToolResultInput & 
   body = resultBody(body)
   const sourcePattern = /^(?:来源|出处|source)[：:][^\r\n]+/gimu
   const sources = [...body.matchAll(sourcePattern)]
-  const originalSources = resultBody(content).match(sourcePattern)?.length ?? 0
+  const originalBody = resultBody(content)
+  const originalSources = originalBody.match(sourcePattern)?.length ?? 0
   if (sources.length > 1 || originalSources > 1) {
     if (sources.length !== originalSources) return {}
     const prefix = ['【较早工具资料，仅供参考】', receiptLine].filter(Boolean).join('\n') + '\n'
@@ -82,7 +83,7 @@ export function prepareEarlierSimulationRead(input: SimulationToolResultInput & 
   }
   const source = sources[0]
   const sameRead = source && originalSources === 1 && /^\s*(?:来源|出处|source)[：:]\s*https?:\/\/\S+\s*$/iu.test(source[0]) ? {
-    sourceKey: name + '\n' + source[0] + '\n' + content,
+    sourceKey: source[0] + '\n' + originalBody,
     sameRead: `【同一来源的相同正文见本轮较新的工具结果】\n${[source[0], receiptLine].filter(Boolean).join('\n')}`,
   } : {}
   if (shown.length <= earlierExcerptLimit) return sameRead

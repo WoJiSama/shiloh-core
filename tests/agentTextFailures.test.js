@@ -17,7 +17,7 @@ const unknownNotice = '刚才的操作可能已经生效，我先停下，核实
 const privateError = 'PRIVATE_PROVIDER_BODY https://internal.invalid/?token=SECRET'
 
 function fixture(options = {}) {
-  const account = { platform: 'fixture', namespace: 'text-failures', id: 'bot' }
+  const account = { platform: options.platform ?? 'fixture', namespace: 'text-failures', id: 'bot' }
   const target = { account, kind: options.privateChat ? 'private' : 'group', id: 'room' }, sender = { ...account, id: 'human' }
   const binding = { source: 'configured', id: 'binding', revision: 'revision', personaId: 'default', agentId: 'role', connectionId: 'connection', target }
   const now = Date.now(), controller = new AbortController(), diagnostics = [], requests = [], sends = [], history = [], historyReads = [], episodes = [], learning = [], actions = []
@@ -47,7 +47,11 @@ function fixture(options = {}) {
       async confirmTextReply() { if (options.postSendThrows) throw Error(privateError); receipt = 'confirmed'; return true },
       async saveTextHistory(_target, _version, entry) { if (options.postSendThrows) throw Error(privateError); history.push(entry) },
     },
-    actions: { async send(action) { sends.push(action); if (options.sendThrows) throw Error(privateError); return options.sendReceipt ?? { state: 'sent', messageId: 'reply' } } },
+    actions: { async send(action, guard) {
+      await options.beforeDispatch?.()
+      await guard.ensureCurrent?.()
+      sends.push(action); if (options.sendThrows) throw Error(privateError); return options.sendReceipt ?? { state: 'sent', messageId: 'reply' }
+    } },
     personMemory: { async getSceneRedactions() { await options.onRedactions?.(); return { invalidatedAt } }, async query() { return { items: [] } } },
     bindingToken: () => 'text-binding', groupToolNames: () => options.tools ?? ['commitmentTool'],
     groupTools: options.groupTools ?? { definitions: () => [{ type: 'function', function: { name: 'commitmentTool', parameters: { type: 'object', properties: {}, required: [] } } }],
@@ -59,6 +63,8 @@ function fixture(options = {}) {
     async recordGroupReply() { if (options.postSendThrows) throw Error(privateError) },
     async recordEpisode(value) { if (options.postSendThrows) throw Error(privateError); episodes.push(value) },
     async learnConfirmed() { learning.push(true) },
+    ...(options.topic ? { readTopicContext: options.topic } : {}),
+    ...(options.semantic ? { readSemanticMemory: options.semantic } : {}),
     ...(options.history ? { async readHistory(_incoming, input) { historyReads.push(input); return { text: '本轮允许查看的历史证据', async isCurrent() { return current } } } } : {}),
     async model(request, _target, _signal, guard, ensure) {
       assert.equal(guard(), true); await ensure?.(); requests.push(request)
@@ -88,6 +94,54 @@ test('history-followup model failure explains once without repeating the history
   assert.deepEqual(f.historyReads, [{ question: '历史', source: 'recent' }])
   assert.deepEqual(f.history, []); assert.deepEqual(f.episodes, [])
   assert.ok(f.diagnostics.some(event => event.operation === 'text_history_model' && event.outcome === 'failed'))
+})
+
+test('private QQ and group DingTalk share the budget and recheck recalled topic evidence at dispatch', async () => {
+  const { modelContextMetadata } = await load('modules/models/domain/requestContext.js')
+  for (const [platform, privateChat] of [['qq', true], ['dingtalk', false]]) {
+    for (const revokeAt of ['model', 'delivery', 'none']) {
+      let valid = true, checked = 0
+      const f = fixture({
+        platform, privateChat,
+        async topic(binding, authorId, messageId) {
+          assert.equal(binding.target.account.platform, platform)
+          assert.equal(authorId, 'human')
+          assert.equal(messageId, 'trigger')
+          return { text: '阿岚昨天确认改到 21:00。', messageIds: ['correction-1'],
+            async isCurrent() { checked++; return valid } }
+        },
+        async semantic(_incoming, _guard, _signal, exclude) { assert.deepEqual(exclude, ['correction-1']) },
+        async model(request) {
+          assert.equal(modelContextMetadata(request).purpose, 'text')
+          assert.match(JSON.stringify(request.messages), /昨天确认改到 21:00/u)
+          if (revokeAt === 'model') valid = false
+          return answer('改到 21:00 集合。')
+        },
+        beforeDispatch() { if (revokeAt === 'delivery') valid = false },
+      })
+      await f.reply()
+      assert.equal(f.sends.length, revokeAt === 'none' ? 1 : 0)
+      assert.equal(f.requests.length, 1)
+      assert.ok(checked >= 2)
+      assert.deepEqual(f.episodes, [])
+      assert.ok(f.history.every(history => history.turns.length === 0))
+      if (platform === 'dingtalk' && revokeAt === 'none') assert.equal(f.sends[0].replyTo, 'trigger')
+    }
+  }
+})
+
+test('a receipt carrying revoked topic evidence cannot be replayed after a confirmed tool action', async () => {
+  let valid = true
+  const f = fixture({ attempted: true,
+    async topic() { return { text: '需复核的本群原话', messageIds: ['past-confirmation'], isCurrent: async () => valid } },
+    model() { return call('commitmentTool') },
+    toolResult: { text: '已完成原有操作。', attempted: true },
+    beforeDispatch() { valid = false },
+  })
+  await f.reply(); await f.reply()
+  assert.equal(f.toolCalls, 1)
+  assert.deepEqual(f.actions, ['claimed'])
+  assert.deepEqual(f.sends, [])
 })
 
 test('history schema and host credential checks block both group and private reader dispatch', async () => {
