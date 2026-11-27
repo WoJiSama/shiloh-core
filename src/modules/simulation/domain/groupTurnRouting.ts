@@ -101,19 +101,44 @@ export function buildGroupWakeRouting(sources: SimMessage[], replies: ReturnType
     allowJoin: messages.some(message => message.joinable), messages, previous }
 }
 
-export function validateGroupWakeSelection(value: unknown, frame: GroupWakeRouting): GroupWakeSelection | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return
+type GroupWakeSelectionFailure = {
+  field: 'selection' | 'selection.mode' | 'selection.seq' | 'selection.previousSeq' | 'selection.contextSeqs'
+  cause: 'wake_selection_object_invalid' | 'wake_selection_fields_invalid' | 'wake_selection_mode_invalid' |
+    'wake_selection_message_invalid' | 'wake_selection_reply_ineligible' | 'wake_selection_join_ineligible' |
+    'wake_selection_previous_required' | 'wake_selection_previous_invalid' | 'wake_selection_context_invalid'
+}
+
+export function inspectGroupWakeSelection(value: unknown, frame: GroupWakeRouting): { selection: GroupWakeSelection } | GroupWakeSelectionFailure {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { field: 'selection', cause: 'wake_selection_object_invalid' }
   const row = value as Record<string, unknown>
-  const { mode, seq, previousSeq, contextSeqs } = row
-  if (Object.keys(row).some(key => !['mode', 'seq', 'previousSeq', 'contextSeqs'].includes(key)) ||
-      typeof seq !== 'number' || !frame.messages.some(message => message.seq === seq)) return
+  const { mode, seq } = row, previousSeq = row.previousSeq ?? undefined, contextSeqs = row.contextSeqs ?? undefined
+  if (Object.keys(row).some(key => !['mode', 'seq', 'previousSeq', 'contextSeqs'].includes(key))) {
+    return { field: 'selection', cause: 'wake_selection_fields_invalid' }
+  }
+  if (mode !== 'reply' && mode !== 'join') return { field: 'selection.mode', cause: 'wake_selection_mode_invalid' }
+  const selected = typeof seq === 'number' ? frame.messages.find(message => message.seq === seq) : undefined
+  if (typeof seq !== 'number' || !selected) return { field: 'selection.seq', cause: 'wake_selection_message_invalid' }
   if (mode === 'reply') {
-    if (frame.reply === 'none' || seq !== frame.triggerSeq ||
-        (previousSeq === undefined ? frame.reply === 'continuation' : !frame.previous.some(reply => reply.sourceSeq === previousSeq))) return
-  } else if (mode !== 'join' || !frame.allowJoin || previousSeq !== undefined ||
-      !frame.messages.some(message => message.seq === seq && message.joinable)) return
+    if (frame.reply === 'none' || seq !== frame.triggerSeq) return { field: 'selection.seq', cause: 'wake_selection_reply_ineligible' }
+    if (previousSeq === undefined && frame.reply === 'continuation') {
+      return { field: 'selection.previousSeq', cause: 'wake_selection_previous_required' }
+    }
+    if (previousSeq !== undefined && !frame.previous.some(reply => reply.sourceSeq === previousSeq)) {
+      return { field: 'selection.previousSeq', cause: 'wake_selection_previous_invalid' }
+    }
+  } else {
+    if (!frame.allowJoin || !selected.joinable) return { field: 'selection.seq', cause: 'wake_selection_join_ineligible' }
+    if (previousSeq !== undefined) return { field: 'selection.previousSeq', cause: 'wake_selection_previous_invalid' }
+  }
   if (contextSeqs !== undefined && (!Array.isArray(contextSeqs) || contextSeqs.length > 3 ||
-      contextSeqs.some(id => !frame.messages.some(message => message.seq === id)))) return
+      contextSeqs.some(id => !frame.messages.some(message => message.seq === id)))) {
+    return { field: 'selection.contextSeqs', cause: 'wake_selection_context_invalid' }
+  }
   const related = Array.isArray(contextSeqs) ? [...new Set(contextSeqs)].filter(id => id !== seq) : []
-  return { mode, seq, ...(typeof previousSeq === 'number' ? { previousSeq } : {}), ...(related.length ? { contextSeqs: related } : {}) }
+  return { selection: { mode, seq, ...(typeof previousSeq === 'number' ? { previousSeq } : {}), ...(related.length ? { contextSeqs: related } : {}) } }
+}
+
+export function validateGroupWakeSelection(value: unknown, frame: GroupWakeRouting): GroupWakeSelection | undefined {
+  const result = inspectGroupWakeSelection(value, frame)
+  return 'selection' in result ? result.selection : undefined
 }

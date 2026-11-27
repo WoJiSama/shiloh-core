@@ -14,7 +14,7 @@ const { createAgentDouyinRelayProvider } = await moduleAt('agentDouyinRelayProvi
 const { createAgentMediaArtifactStore } = await moduleAt('agentMediaArtifactStore')
 const { createDouyinHttp, douyinBody, douyinGuard, douyinOfficialUrl, nativeAgentDouyinRequest } = await moduleAt('agentDouyinRelayHttp')
 const { nativeAgentDouyinCommand } = await moduleAt('agentDouyinRelayNative')
-const { douyinDocumentMetadata, douyinMetadata } = await moduleAt('agentDouyinRelayMetadata')
+const { douyinDocumentMetadata, douyinMetadata, inspectDouyinDocument } = await moduleAt('agentDouyinRelayMetadata')
 const MiB = 1024 * 1024, ID = '7651971027728274617', OTHER = '7651971027728274618'
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6d8AAAAASUVORK5CYII=', 'base64')
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0])
@@ -174,6 +174,56 @@ test('static JSON with a literal percent sign does not unnecessarily launch the 
   assert.equal(result.status, 'ready')
   assert.match(result.infoText, /进度到 100%/u)
   assert.equal(f.browsers.length, 0)
+})
+
+function desktopPage(...props) {
+  const element = values => ['$', 'div', null, { children: values.map(value => ['$', 'main', null, { children: ['$', '$L1', null, value] }]) }]
+  const text = '中文首段\n0:' + JSON.stringify(element([{ awemeId: ID, statusCode: 999, aweme: null }]))
+  const records = '1:T' + Buffer.byteLength(text).toString(16) + ',' + text + '2:' + JSON.stringify(element(props)) + '\n'
+  const split = records.lastIndexOf('awemeId') + 2
+  return '<script id="RENDER_DATA">' + encodeURIComponent(JSON.stringify({ app: { isLogin: false } })) + '</script>' +
+    [records.slice(0, split), records.slice(split)].map(part => '<script>self.__pace_f.push(' + JSON.stringify([1, part]) + ')</script>').join('')
+}
+
+test('desktop streamed work data keeps the exact work, skips unrelated rows and prepares a card plus its video', async t => {
+  const authorized = { awemeId: ID, description: '桌面作品', author: { nickname: '源作者' },
+    video: { duration: 16_000, playAddr: { urlList: ['https://v3.douyinvod.com/video.mp4'] } } }
+  const page = desktopPage({ awemeId: OTHER, statusCode: 0, aweme: { ...authorized, awemeId: OTHER } },
+    { awemeId: ID, statusCode: 0, aweme: { ...authorized, awemeId: OTHER } }, { awemeId: ID, statusCode: 0, aweme: authorized })
+  const f = await fixture(t, { respond: url => url.hostname === 'www.douyin.com' ? response(page) : undefined })
+  const result = await f.prepare()
+  assert.equal(result.status, 'ready')
+  assert.deepEqual(result.plan.items.map(item => item.parts.map(part => part.kind)), [['image'], ['video']])
+  assert.match(result.infoText, /桌面作品.+源作者/su)
+  assert.equal(f.browsers.length, 0)
+  assert.deepEqual(inspectDouyinDocument(desktopPage({ awemeId: OTHER, statusCode: 0, aweme: authorized }), ID, 'video'),
+    { issue: 'douyin_page_target_missing' })
+})
+
+test('HTTP 200 verification and an empty target work remain distinguishable when only the card can be delivered', async t => {
+  const diagnostics = []
+  const verification = '<script>document.cookie; __ac_nonce; window.location.reload()</script>'
+  const empty = desktopPage({ awemeId: ID, statusCode: 0, aweme: null })
+  const f = await fixture(t, {
+    respond: url => url.hostname === 'www.douyin.com' ? response(verification) : undefined,
+    browser: async input => {
+      const { issue, nativeCode } = inspectDouyinDocument(empty, input.id, input.kind)
+      input.observeStep('douyin_browser_document', 200, { cause: issue, nativeCode })
+    },
+    options: { diagnostics: { emit(event) { diagnostics.push(event) } } },
+  })
+  const result = await f.prepare()
+  assert.equal(result.status, 'metadata-only')
+  assert.deepEqual(result.plan.items.map(item => item.parts.map(part => part.kind)), [['image']])
+  assert.match(result.infoText, /抖音网页未提供原作品媒体/u)
+  assert.deepEqual(diagnostics.map(({ operation, code, httpStatus, details }) => [operation, code, httpStatus, details.step]), [
+    ['douyin_metadata_page', 'douyin_page_verification_required', 200, 'douyin_page_parse'],
+    ['douyin_provider_prepare', 'metadata_unavailable', 200, 'douyin_browser_document'],
+  ])
+  assert.equal(diagnostics[1].details.cause, 'douyin_page_work_empty')
+  assert.equal(diagnostics[1].details.nativeCode, 0)
+  assert.equal(diagnostics[1].details.result, 'fallback_used')
+  assert.doesNotMatch(JSON.stringify(diagnostics), /__ac_nonce|7651971027728274617/u)
 })
 
 test('a first HTTP failure is recorded even when the browser supplies a full result', async t => {

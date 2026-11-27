@@ -4,18 +4,19 @@ import path from 'node:path'
 import type { AgentMediaResourceContext } from '../../../contracts/agentMediaRelay.js'
 import { DouyinHttpError, douyinFailure, douyinGuard, douyinOfficialUrl } from './agentDouyinRelayHttp.js'
 import type { createDouyinHttp } from './agentDouyinRelayHttp.js'
-import { douyinCanonicalPage, douyinDisplay, douyinDocumentMetadata, douyinMetadata, hasDouyinMedia } from './agentDouyinRelayMetadata.js'
-import type { AgentDouyinResolvedMedia } from './agentDouyinRelayMetadata.js'
+import { douyinCanonicalPage, douyinDisplay, douyinMetadata, douyinPageIdentity, hasDouyinMedia, inspectDouyinDocument } from './agentDouyinRelayMetadata.js'
+import type { AgentDouyinResolvedMedia, DouyinDocumentIssue } from './agentDouyinRelayMetadata.js'
 
 export const DOUYIN_BROWSER_NAVIGATION_MS = 15_000
 
+export interface DouyinBrowserDocumentEvidence { readonly cause: DouyinDocumentIssue; readonly nativeCode?: number }
 export interface AgentDouyinBrowserInput {
   readonly id: string
   readonly kind: 'video' | 'note'
   readonly pageUrl: string
   /** Core-created private job directory; never a model-supplied path. */
   readonly directory: string
-  readonly observeStep?: (step: string, httpStatus?: number) => void
+  readonly observeStep?: (step: string, httpStatus?: number, evidence?: DouyinBrowserDocumentEvidence) => void
 }
 export type AgentDouyinBrowserRead = ReturnType<typeof createDouyinHttp>
 /** Host-only testing hook. Production always uses a fresh anonymous browser and the supplied pinned HTTP port. */
@@ -72,6 +73,10 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
   let session: Awaited<ReturnType<typeof openAgentDouyinBrowserSession>> | undefined, matched: AgentDouyinResolvedMedia | undefined, total = 0, requests = 0
   const work = new Set<Promise<void>>()
   let navigationFailure: DouyinHttpError | undefined, detailFailure: DouyinHttpError | undefined
+  let documentEvidence: { status: number; details: DouyinBrowserDocumentEvidence } | undefined
+  const reportIncompleteDocument = () => {
+    if (documentEvidence) input.observeStep?.('douyin_browser_document', documentEvidence.status, documentEvidence.details)
+  }
   let active = 0
   const waiting: (() => void)[] = []
   try {
@@ -111,7 +116,8 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
       try {
         if (requests >= 128 || request.method() !== 'GET' || ['media', 'font', 'websocket', 'eventsource', 'other'].includes(request.resourceType())) throw douyinFailure()
         const url = douyinOfficialUrl(request.url(), 'browser')
-        detail = url.hostname === 'www.douyin.com' && url.pathname === '/aweme/v1/web/aweme/detail/'
+        const targetIds = url.searchParams.getAll('aweme_id')
+        detail = url.hostname === 'www.douyin.com' && url.pathname === '/aweme/v1/web/aweme/detail/' && targetIds.length === 1 && targetIds[0] === input.id
         if (/\/(?:log|collect|beacon|applog|webmssdk|slardar|mcs|tnc)(?:\/|\?|$)/iu.test(url.pathname)) throw douyinFailure()
         // Image src attributes are enough for scoped gallery extraction; never spend the
         // browser's memory on decoded source images or media streams.
@@ -148,8 +154,10 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
             if (!hasDouyinMedia(candidate)) detailFailure = new DouyinHttpError('douyin_browser_detail', response.status)
           } catch { detailFailure = new DouyinHttpError('douyin_browser_detail', response.status) }
         }
-        if (request.isNavigationRequest()) {
-          capture(douyinDocumentMetadata(body.toString('utf8'), input.id, input.kind))
+        if (request.isNavigationRequest() && request.frame() === page.mainFrame() && douyinPageIdentity(response.url)?.id === input.id) {
+          const { metadata, issue, nativeCode } = inspectDouyinDocument(body.toString('utf8'), input.id, input.kind)
+          documentEvidence = issue ? { status: response.status, details: { cause: issue, ...(nativeCode === undefined ? {} : { nativeCode }) } } : undefined
+          capture(metadata)
         }
         await guard.ensure()
         await request.respond({ status: 200, contentType: response.mime || 'application/octet-stream', body, headers: {
@@ -204,11 +212,15 @@ export const nativeAgentDouyinBrowser: AgentDouyinBrowser = async (input, contex
     }
     await guard.ensure()
     if (!onTargetPage()) throw douyinFailure()
-    if (!hasDouyinMedia(matched) && detailFailure) input.observeStep?.(detailFailure.step, detailFailure.httpStatus)
+    if (!hasDouyinMedia(matched)) {
+      if (detailFailure) input.observeStep?.(detailFailure.step, detailFailure.httpStatus)
+      else reportIncompleteDocument()
+    }
     return matched
   } catch {
     const failure = navigationFailure ?? detailFailure
     if (failure) input.observeStep?.(failure.step, failure.httpStatus)
+    else reportIncompleteDocument()
     await guard.ensure()
     return undefined
   }

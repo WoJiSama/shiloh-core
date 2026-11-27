@@ -75,10 +75,12 @@ for (const scenario of [{ kind: 'video', unknown: false }, { kind: 'note', unkno
         : [{ type: 'json', data: { data: JSON.stringify({ app: 'com.tencent.miniapp_01', meta: { detail_1: {
           title: '抖音', desc: 'native metadata must not be trusted', qqdocurl: `${pageUrl}?share_source=qq`, host: { uin: '999999' },
         } } }) } }], raw_message: '' }
-    const item = scenario.kind === 'video' ? { aweme_id: workId, desc: 'CLI合成视频', author: { nickname: '合成作者' }, duration: 16,
-      video: { play_addr: { url_list: [upstream] }, cover: { url_list: ['https://p3.douyinpic.com/cover.png'] } } }
+    const item = scenario.kind === 'video' ? { awemeId: workId, desc: 'CLI合成视频', author: { nickname: '合成作者' },
+      video: { duration: 16_000, playAddr: { urlList: [upstream] }, cover: { urlList: ['https://p3.douyinpic.com/cover.png'] } } }
       : { aweme_id: workId, desc: 'CLI纯图集', author: { nickname: '合成作者' }, images: images.map((_bytes, index) => ({ url_list: [`https://p3.douyinpic.com/${index + 1}.png`] })) }
-    const html = `<script>window._ROUTER_DATA = ${JSON.stringify({ loaderData: { 'video_(id)/page': { videoInfoRes: { item_list: [item] } } } })}</script>`
+    const workData = ['$', '$L1', null, { awemeId: workId, statusCode: 0, aweme: item }]
+    const html = scenario.kind === 'video' ? `<script>self.__pace_f.push(${JSON.stringify([1, '2:' + JSON.stringify(workData) + '\n'])})</script>`
+      : `<script>window._ROUTER_DATA = ${JSON.stringify({ loaderData: { 'note_(id)/page': { videoInfoRes: { item_list: [item] } } } })}</script>`
     const server = createServer(async (req, res) => {
       try {
         if (req.url === '/audit/native') {
@@ -116,17 +118,23 @@ for (const scenario of [{ kind: 'video', unknown: false }, { kind: 'note', unkno
           else if (action === 'get_msg') { assert.equal(Number(params.message_id), source.message_id); data = source }
           else if (action === 'send_group_forward_msg') {
             deliveries.push({ action, params }); assert.equal(String(params.group_id), String(groupId))
-            assert.equal(params.messages.length, scenario.kind === 'video' ? 2 : 4)
+            assert.deepEqual(params.messages.map(node => node.data.content.map(part => part.type)), scenario.kind === 'video'
+              ? [['image'], ['video']] : [['image'], ['image'], ['image'], ['image']])
             for (const [index, node] of params.messages.entries()) {
               assert.equal(node.type, 'node'); assert.equal(String(node.data.uin), String(botId))
-              if (index === 0) assert.ok(node.data.content.some(segment => segment.type === 'text' && segment.data.text.includes(pageUrl)))
               for (const segment of node.data.content) {
                 if (segment.type !== 'image' && segment.type !== 'video') { assert.equal(segment.type, 'text'); continue }
                 capabilities.push(segment.data.file)
                 assert.match(segment.data.file, /^http:\/\/127\.0\.0\.1:\d+\/agent-media-relay\/[a-f\d]{64}$/u)
                 const response = await fetch(segment.data.file); assert.equal(response.status, 200)
                 const bytes = Buffer.from(await response.arrayBuffer())
-                const expected = scenario.kind === 'video' ? segment.type === 'video' ? MP4 : cover : images[index - 1]
+                if (index === 0) {
+                  assert.equal(response.headers.get('content-type'), 'image/png')
+                  assert.equal(bytes.readUInt32BE(16), 920)
+                  resources.push({ type: 'card' })
+                  continue
+                }
+                const expected = scenario.kind === 'video' ? MP4 : images[index - 1]
                 assert.deepEqual(bytes, expected); assert.equal(Number(response.headers.get('content-length')), expected.length)
                 resources.push({ type: segment.type, sha256: sha(bytes), bytes: bytes.length })
                 if (segment.type === 'video') {
@@ -184,9 +192,9 @@ for (const scenario of [{ kind: 'video', unknown: false }, { kind: 'note', unkno
     const records = async () => Promise.all((await reader.keys(`${prefix}agent:media-outbox:v1:job:*`)).map(async key => JSON.parse(await reader.get(key))))
     await waitFor(async () => (await records()).some(record => record.state === (scenario.unknown ? 'unknown' : 'completed')), 'terminal media outbox')
     assert.deepEqual(errors, []); assert.equal(deliveries.length, 1)
-    const expected = scenario.kind === 'video' ? [{ type: 'image', sha256: sha(cover), bytes: cover.length }, { type: 'video', sha256: sha(MP4), bytes: MP4.length },
+    const expected = scenario.kind === 'video' ? [{ type: 'video', sha256: sha(MP4), bytes: MP4.length },
       { type: 'thumbnail', sha256: sha(JPEG), bytes: JPEG.length }] : images.map(bytes => ({ type: 'image', sha256: sha(bytes), bytes: bytes.length }))
-    assert.deepEqual(resources, expected)
+    assert.deepEqual(resources, [{ type: 'card' }, ...expected])
     assert.deepEqual((await records())[0].effects.map(row => [row.effect, row.state]), [['forward', scenario.unknown ? 'unknown' : 'sent']])
     assert.ok(requests.filter(row => row.action === 'get_msg').length >= 2, 'Core rereads the original source before delivery')
     const sendAt = events.indexOf('send_group_forward_msg'), downloadAt = events.indexOf('download')
