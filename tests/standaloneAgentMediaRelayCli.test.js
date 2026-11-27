@@ -10,13 +10,15 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createClient } from '@redis/client'
 import { WebSocketServer } from 'ws'
+import sharp from 'sharp'
 
 const repo = fileURLToPath(new URL('../', import.meta.url)), release = path.resolve(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo)
 const entry = path.join(release, 'scripts/start-agent.mjs'), preload = fileURLToPath(new URL('./helpers/mediaRelayPreload.mjs', import.meta.url))
 const botId = 19000931, userId = 330931, groupId = 319301, BV = 'BV1H7Gq6zEiC'
 const modelKey = 'media-cli-model-private-key', qqToken = 'media-cli-onebot-private-token', biliCookie = 'SESSDATA=MEDIA_CLI_PRIVATE_SESSION; bili_jct=MEDIA_CLI_PRIVATE_JCT'
-const upstream = 'https://cn-media.bilivideo.com/synthetic.mp4?token=MEDIA_UPSTREAM_PRIVATE'
+const DOUYIN_ID = '7651971027728274617'
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6d8AAAAASUVORK5CYII=', 'base64')
+const coverColor = { r: 41, g: 148, b: 184 }
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0])
 const MP4 = Buffer.alloc(128, 0x21); MP4.writeUInt32BE(24); MP4.write('ftyp', 4); MP4.write('isom', 8); MP4.write('isom', 16); MP4.write('isom', 20)
 async function waitFor(probe, description, timeout = 15_000) {
@@ -45,8 +47,11 @@ async function redisContents(reader, prefix) {
   return values.join('\n')
 }
 
-test('actual CLI checks read-only, then relays a real QQ JSON event through provider, owned store, bridge HTTP and confirmed native forward', { timeout: 45_000 }, async t => {
+for (const provider of ['bilibili', 'douyin']) test(`actual CLI relays ${provider} through the owned store, bridge HTTP and one native image-first forward`, { timeout: 45_000 }, async t => {
   assert.equal(spawnSync('redis-server', ['--version'], { stdio: 'ignore' }).status, 0, 'media CLI acceptance requires real Redis')
+  const bili = provider === 'bilibili'
+  const upstream = `https://${bili ? 'cn-media.bilivideo.com' : 'v3.douyinvod.com'}/synthetic.mp4?token=MEDIA_UPSTREAM_PRIVATE`
+  const cover = await sharp({ create: { width: bili ? 1200 : 640, height: bili ? 640 : 1200, channels: 3, background: coverColor } }).png().toBuffer()
   const directory = await mkdtemp(path.join(tmpdir(), 'standalone-media-cli-')), socketPath = path.join(directory, 'redis.sock')
   const redis = spawn('redis-server', ['--port', '0', '--unixsocket', socketPath, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
   const redisExit = once(redis, 'exit'), sockets = new WebSocketServer({ noServer: true })
@@ -55,9 +60,9 @@ test('actual CLI checks read-only, then relays a real QQ JSON event through prov
   const now = Math.floor(Date.now() / 1000), instance = 'media-cli', prefix = `bl-agent:${instance}:`
   const source = { post_type: 'message', message_type: 'group', self_id: botId, group_id: groupId, user_id: userId,
     sender: { user_id: userId, nickname: '媒体合成验收员' }, message_id: 93101, time: now,
-    message: [{ type: 'json', data: { data: JSON.stringify({ app: 'com.tencent.miniapp_01', meta: { detail_1: {
+    message: bili ? [{ type: 'json', data: { data: JSON.stringify({ app: 'com.tencent.miniapp_01', meta: { detail_1: {
       title: '哔哩哔哩', desc: '合成视频', qqdocurl: `https://www.bilibili.com/video/${BV}?share_source=qq`, host: { uin: '999999' },
-    } } }) } }], raw_message: '' }
+    } } }) } }] : [{ type: 'text', data: { text: `https://www.douyin.com/video/${DOUYIN_ID}` } }], raw_message: '' }
   const server = createServer(async (req, res) => {
     try {
       if (req.url !== '/bili-audit') { modelRequests++; res.writeHead(500).end('{}'); return }
@@ -80,8 +85,13 @@ test('actual CLI checks read-only, then relays a real QQ JSON event through prov
         assert.equal(url.searchParams.get('qn'), '6'); assert.equal(url.searchParams.get('fnval'), '0')
         body = { code: 0, data: { quality: 6, support_formats: [{ quality: 6, new_description: '240P' }],
           durl: [{ url: upstream, length: 60000, size: MP4.length }] } }
-      } else if (url.hostname.endsWith('.hdslb.com')) { body = PNG; mime = 'image/png' }
-      else if (url.hostname.endsWith('.bilivideo.com')) { assert.equal(url.href, upstream); body = MP4; mime = 'video/mp4' }
+      } else if (url.hostname === 'www.douyin.com') {
+        assert.equal(url.pathname, `/video/${DOUYIN_ID}`)
+        const data = { items: [{ aweme_id: DOUYIN_ID, desc: 'CLI合成抖音视频', duration: 60, author: { nickname: '合成作者' },
+          video: { play_addr: { url_list: [upstream] }, cover: { url_list: ['https://p3.douyinpic.com/cover.png'] } } }] }
+        body = Buffer.from(`<script>window._ROUTER_DATA = ${JSON.stringify(data)}</script>`); mime = 'text/html'
+      } else if (url.hostname.endsWith('.hdslb.com') || url.hostname.endsWith('.douyinpic.com')) { body = cover; mime = 'image/png' }
+      else if (url.hostname.endsWith('.bilivideo.com') || url.hostname.endsWith('.douyinvod.com')) { assert.equal(url.href, upstream); body = MP4; mime = 'video/mp4' }
       else assert.fail(`unexpected official endpoint: ${url.hostname}${url.pathname}`)
       const bytes = Buffer.isBuffer(body) ? body : Buffer.from(JSON.stringify(body))
       res.writeHead(200, { 'Content-Type': mime, 'Content-Length': String(bytes.length) }); res.end(bytes)
@@ -117,7 +127,9 @@ test('actual CLI checks read-only, then relays a real QQ JSON event through prov
                 if (segment.type === 'video') assert.deepEqual(bytes, MP4)
                 else {
                   assert.deepEqual(bytes.subarray(0, 8), PNG.subarray(0, 8))
-                  assert.ok(bytes.readUInt32BE(16) > 100, 'the first node contains a rendered card')
+                  assert.equal(bytes.readUInt32BE(16), 920, 'the first node contains a rendered card')
+                  const pixel = await sharp(bytes).extract({ left: 460, top: 210, width: 1, height: 1 }).removeAlpha().raw().toBuffer()
+                  assert.deepEqual([...pixel], Object.values(coverColor), 'the first node embeds the actual official cover')
                 }
                 resources.push({ type: segment.type, bytes: bytes.length })
                 if (segment.type === 'video') {
@@ -153,7 +165,7 @@ test('actual CLI checks read-only, then relays a real QQ JSON event through prov
   const configText = JSON.stringify({ version: 1, instance, dataDir,
     model: { baseUrl: `http://127.0.0.1:${apiPort}/model/v1`, name: 'media-fixture', apiKeyEnv: 'MEDIA_MODEL_KEY' },
     connections: [{ id: 'main', url: `ws://127.0.0.1:${apiPort}/onebot`, accessTokenEnv: 'MEDIA_QQ_TOKEN' }],
-    mediaRelay: { enabled: true, bilibili: { cookieEnv: 'MEDIA_BILI_COOKIE', autoAuthorizedRetry: true }, bridges: [{ connectionId: 'main',
+    mediaRelay: { enabled: true, bilibili: { cookieEnv: 'MEDIA_BILI_COOKIE', autoAuthorizedRetry: true }, douyin: { enabled: !bili }, bridges: [{ connectionId: 'main',
       listen: { host: '127.0.0.1', port: bridgePort }, advertisedOrigin: `http://127.0.0.1:${bridgePort}`, allowedPeers: ['127.0.0.1'] }] },
     memorySystem: { enabled: false }, midtermMemory: { enabled: false }, episodicMemory: { enabled: false }, groupMemory: { enabled: false },
     simulation: { wake: { batchWindowMs: 1000, proactiveProbability: 0, probability: 0 }, rhythm: { enabled: false }, reflection: { enabled: false } } })
@@ -185,7 +197,9 @@ test('actual CLI checks read-only, then relays a real QQ JSON event through prov
   assert.deepEqual(resources.map(resource => resource.type), ['image', 'video', 'thumbnail'])
   assert.deepEqual((await records())[0].effects.map(row => [row.effect, row.state]), [['forward', 'sent']])
   assert.equal(modelRequests, 0)
-  assert.deepEqual(downloads.map(item => new URL(item.url).hostname).sort(), ['api.bilibili.com', 'api.bilibili.com', 'api.bilibili.com', 'cn-media.bilivideo.com'])
+  assert.deepEqual(downloads.map(item => new URL(item.url).hostname).sort(), bili
+    ? ['api.bilibili.com', 'api.bilibili.com', 'api.bilibili.com', 'cn-media.bilivideo.com', 'i0.hdslb.com']
+    : ['p3.douyinpic.com', 'v3.douyinvod.com', 'www.douyin.com'])
   websocket.send(JSON.stringify(source)); await delay(1200); assert.equal(deliveries.length, 1)
   child.kill('SIGTERM'); assert.deepEqual(await exited, [0, null], log)
   await assert.rejects(fetch(`http://127.0.0.1:${bridgePort}/missing`))
@@ -195,7 +209,7 @@ test('actual CLI checks read-only, then relays a real QQ JSON event through prov
   assert.equal(await readFile(configFile, 'utf8'), configText)
   assert.equal(await readFile(path.join(directory, 'agent-bindings.yaml'), 'utf8'), bindingsText)
   const surfaces = [log, await redisContents(reader, prefix), await files(dataDir)]
-  for (const content of surfaces) for (const forbidden of [upstream, 'MEDIA_UPSTREAM_PRIVATE', '.bilivideo.com', modelKey, qqToken,
+  for (const content of surfaces) for (const forbidden of [upstream, 'MEDIA_UPSTREAM_PRIVATE', '.bilivideo.com', '.douyinvod.com', modelKey, qqToken,
     biliCookie, 'MEDIA_CLI_PRIVATE_SESSION', 'MEDIA_CLI_PRIVATE_JCT', 'CLI_BUVID_PRIVATE', 'CLI_BUVID4_PRIVATE', MP4.toString('base64'), 'base64://']) {
     assert.equal(content.includes(forbidden), false, 'logs, Redis and persisted files exclude native resources and secrets')
   }

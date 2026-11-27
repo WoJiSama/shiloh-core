@@ -8,6 +8,7 @@ import { sanitizeFinalReplyText } from '../../conversation/domain/replySanitizer
 import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agentSecretText.js'
 import { validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
+import { renderAgentMediaRelayCard } from './agentMediaRelayCard.js'
 import { agentMediaSharePageUrl, validateAgentMediaShare } from './agentMediaRelayReference.js'
 import { createDouyinHttp, DouyinHttpError, douyinBody, douyinFailure, douyinGuard } from './agentDouyinRelayHttp.js'
 import type { AgentDouyinLookup, AgentDouyinRequest, DouyinRequestKind } from './agentDouyinRelayHttp.js'
@@ -178,12 +179,19 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
       if (media && (media.id !== id || !['video', 'note'].includes(media.kind) || !Number.isFinite(media.duration) || media.duration < 0 || !Array.isArray(media.images) || media.images.length > 2000 ||
         ![media.title, media.description, media.author].every(value => typeof value === 'string' && Array.from(value).length <= 1000 && (!value || safeText(value))))) throw douyinFailure()
       if (media) kind = media.kind
-      const pageUrl = douyinCanonicalPage(id, kind), lines = [kind === 'note' ? '抖音图文搬一下' : '抖音视频搬一下', media?.title || '作品详情暂未解析完成', `作品:${id}`], items: AgentMediaRelayItem[] = []
+      const pageUrl = douyinCanonicalPage(id, kind), title = media?.title || '作品详情暂未解析完成'
+      const lines = [kind === 'note' ? '抖音图文搬一下' : '抖音视频搬一下', title, `作品:${id}`], items: AgentMediaRelayItem[] = []
       if (media?.author) lines.push(`作者:${media.author}`)
       if (media?.description && media.description !== media.title) lines.push(`简介:${media.description}`)
-      if (media?.duration) lines.push(`时长:${Math.floor(media.duration / 60)}:${String(Math.floor(media.duration % 60)).padStart(2, '0')}`)
+      const duration = media?.duration ? `${Math.floor(media.duration / 60)}:${String(Math.floor(media.duration % 60)).padStart(2, '0')}` : ''
+      if (duration) lines.push(`时长:${duration}`)
       const labels: Readonly<Record<string, string>> = { play_count: '播放', digg_count: '点赞', comment_count: '评论', share_count: '转发', collect_count: '收藏' }
-      if (media?.stats) { const stats = Object.entries(labels).filter(([key]) => Number.isSafeInteger(media.stats[key]) && media.stats[key]! >= 0).map(([key, label]) => `${label}:${media.stats[key]}`); if (stats.length) lines.push(`数据:${stats.join(' ')}`) }
+      const stats = Object.entries(labels).flatMap(([key, label]) => {
+        const count = media?.stats?.[key]
+        return typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? [[label, count] as const] : []
+      })
+      if (stats.length) lines.push(`数据:${stats.map(([label, count]) => `${label}:${count}`).join(' ')}`)
+      const firstMediaLine = lines.length
       let cover: AgentMediaArtifactLease | undefined
       if (kind === 'video' && media?.cover) {
         try { cover = (await image(media.cover)).lease } catch { await guard.ensure(); degradation ??= 'cover_unavailable'; lines.push('封面暂时获取失败') }
@@ -218,10 +226,31 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
           catch { await guard.ensure(); degradation = 'video_unavailable'; lines.push('视频本体暂时获取失败，已保留作品页面') }
         } else lines.push('视频播放地址暂时获取失败，已保留作品页面')
       } else lines.push('作品详情暂时未解析完成，已保留作品页面')
+      const notice = lines.slice(firstMediaLine).filter(line => !line.startsWith('图集:') && !line.startsWith('封面')).join(' · ')
       lines.push(pageUrl)
       const infoText = lines.join('\n')
       if (!safeText(infoText)) throw douyinFailure()
-      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover.artifact } as const] : [])] }, ...items] }, { allowsText: safeText })
+      const first = items[0]?.parts[0]
+      const mediaCover = first?.kind === 'image' ? first.artifact : first?.kind === 'video' ? first.thumbnail : undefined
+      let intro = cover?.artifact ?? mediaCover, cardStep = 'media_card_render'
+      try {
+        const bytes = await guard.wait(renderAgentMediaRelayCard({
+          platform: 'douyin', kind: kind === 'note' ? '图文' : '视频', title, author: media?.author ?? '',
+          detail: kind === 'note' && media?.images.length ? `${media.images.length} 张图片` : duration,
+          description: media?.description ?? '', stats, notice, pageUrl,
+        }, { covers: [cover?.artifact, mediaCover], resources: options.artifacts, context: guard.context, allowsText: safeText,
+          onCoverError: error => diagnose({ stage: 'runtime', operation: 'douyin_provider_card', outcome: 'failed',
+            code: 'relay_card_cover_failed', details: { step: 'media_card_cover' }, error }),
+        }))
+        cardStep = 'media_card_store'
+        intro = (await addLease(options.artifacts.stage({ kind: 'image', mime: 'image/png',
+          chunks: (async function* () { yield bytes })() }, guard.context))).artifact
+      } catch (error) {
+        await guard.ensure()
+        diagnose({ stage: 'runtime', operation: 'douyin_provider_card', outcome: 'failed',
+          code: 'relay_card_render_failed', details: { step: cardStep }, error })
+      }
+      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [intro ? { kind: 'image', artifact: intro } : { kind: 'text', text: infoText }] }, ...items] }, { allowsText: safeText })
       await guard.ensure(); transferred = true
       if (degradation) {
         diagnose({ stage: 'runtime', operation: 'douyin_provider_prepare', outcome: 'failed', code: degradation,

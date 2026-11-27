@@ -12,7 +12,8 @@ import { syncBuiltinESMExports } from 'node:module'
 
 const pinned = { address: '93.184.216.34', family: 4 }
 const local = host => ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(host)
-const official = host => host === 'api.bilibili.com' || host === 'b23.tv' || host.endsWith('.bilivideo.com') || host.endsWith('.hdslb.com')
+const official = host => ['api.bilibili.com', 'b23.tv', 'www.douyin.com'].includes(host) ||
+  ['.bilivideo.com', '.hdslb.com', '.douyinpic.com', '.douyinvod.com'].some(suffix => host.endsWith(suffix))
 const lookup = dns.lookup
 dns.lookup = async (hostname, options) => {
   if (official(hostname)) return options?.all ? [pinned] : pinned
@@ -22,7 +23,7 @@ dns.lookup = async (hostname, options) => {
 const request = http.request
 https.request = function (input, options, callback) {
   const url = input instanceof URL ? input : typeof input === 'string' ? new URL(input) : undefined
-  assert.ok(url && official(url.hostname), 'only fixed official Bilibili requests use synthetic HTTPS')
+  assert.ok(url && official(url.hostname), 'only fixed official media requests use synthetic HTTPS')
   assert.equal(options.agent, false); assert.equal(options.family, pinned.family)
   assert.equal(options.method, 'GET'); assert.ok(options.signal instanceof AbortSignal)
   assert.equal(options.headers['Accept-Encoding'], 'identity')
@@ -46,7 +47,7 @@ childProcess.execFile = function (file, args, options, callback) {
     assert.equal((await readFile(input)).subarray(4, 8).toString(), 'ftyp')
     await writeFile(output, Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0]))
     callback(null, '', '')
-  }).catch(error => callback(error, '', ''))
+  }).catch(error => callback(error, '', '')).finally(() => child.emit('close'))
   return child
 }
 const fetch = globalThis.fetch
