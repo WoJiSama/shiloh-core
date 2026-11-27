@@ -6,6 +6,8 @@ import { randomUUID } from 'node:crypto'
 import { types } from 'node:util'
 import WebSocket from 'ws'
 import type { ConversationAddress, PlatformConnection, PlatformUserRef } from '../contracts/agentBinding.js'
+import { QQ_OWNER_ALERT_MAX_LENGTH } from '../contracts/agentDiagnostics.js'
+import type { DeliveryReceipt } from '../contracts/delivery.js'
 import type { ConversationMember, ConversationMemberProfile, ConversationMemberReadOptions, ForwardContent, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
 import type { MessageActionOptions } from '../contracts/platformMessage.js'
 import type { FileReadGuard, ConversationFileEntry } from '../contracts/agentFiles.js'
@@ -66,6 +68,7 @@ export type { QqRedPacketApiAction, QqRedPacketApiOptions, QqRedPacketOptions, Q
 
 interface PendingRequest {
   finish(value?: unknown): void
+  ownerAlert: boolean
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -325,10 +328,22 @@ interface OneBotConnectionOptions extends OneBotEndpoint {
   onReconnect(): void
   onError(): void
   onEventError(): void
+  onApiFailure?(action: string, outcome: 'failed' | 'unknown', code: string): void
+  readonly alertOwner?: PlatformUserRef
+}
+
+interface OwnerAlertGuard { readonly signal: AbortSignal; isCurrent(): boolean }
+type OneBotAdapter = PlatformConnectionAdapter & {
+  sendOwnerAlert?(text: string, guard: OwnerAlertGuard): Promise<DeliveryReceipt>
+  beginOwnerAlertDrain?(): (() => void) | undefined
 }
 
 function createOneBotSession(options: OneBotConnectionOptions) {
   const { connection } = options
+  const alertOwner = options.alertOwner
+  const alertTarget = alertOwner?.platform === 'qq' && alertOwner.namespace === 'global'
+    ? captureQqOwnMessageTarget({ account: connection.account, kind: 'private', id: alertOwner.id }) : undefined
+  if (alertOwner && !alertTarget) throw new Error('QQ 告警主人或连接无效')
   if (options.transport !== undefined && !['forward-websocket', 'reverse-websocket'].includes(options.transport)) {
     throw new Error('OneBot transport 无效')
   }
@@ -336,6 +351,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
   const url = reverse ? parseOneBotReverseUrl(options.url) : parseOneBotUrl(options.url)
   if (reverse && !options.accessToken?.trim()) throw new Error('反向 OneBot 连接必须配置 access token')
   let socket: WebSocket | undefined
+  let ownerDrainSocket: WebSocket | undefined
   let listener: { close(): void } | undefined
   let cancelFirstPeer: (() => void) | undefined
   let retry: ReturnType<typeof setTimeout> | undefined
@@ -396,34 +412,85 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       callApi: qqActionApi }) : undefined
   }
 
-  async function call(client: WebSocket, action: string, params: Record<string, unknown>, guard?: () => boolean, timeoutMs = 10_000, signal?: AbortSignal, onDispatch?: () => void): Promise<unknown> {
-    if (socket !== client || client.readyState !== WebSocket.OPEN) return { state: 'failed', code: 'onebot_disconnected' }
+  async function call(client: WebSocket, action: string, params: Record<string, unknown>, guard?: () => boolean, timeoutMs = 10_000, signal?: AbortSignal, onDispatch?: () => void, observeFailures = true): Promise<unknown> {
+    const report = (outcome: 'failed' | 'unknown', code: string) => {
+      try { if (observeFailures) options.onApiFailure?.(action, outcome, code) } catch { /* Observers do not affect API results. */ }
+    }
+    if (socket !== client || client.readyState !== WebSocket.OPEN) {
+      if (!stopped) report('failed', 'onebot_disconnected')
+      return { state: 'failed', code: 'onebot_disconnected' }
+    }
     if (signal?.aborted) return { state: 'unknown' }
     if (guard?.() === false) return { state: 'failed', code: 'binding_changed' }
-    if (pending.size >= 128) return { state: 'failed', code: 'onebot_busy' }
+    if (pending.size >= 128) {
+      report('failed', 'onebot_busy')
+      return { state: 'failed', code: 'onebot_busy' }
+    }
     const echo = randomUUID()
-    return await new Promise(resolve => {
-      let finished = false
-      const finish = (value?: unknown) => {
+    type DispatchFailure = 'onebot_timeout' | 'onebot_transport_unconfirmed'
+    const { value, failure, observeResult } = await new Promise<{ value: unknown; failure: DispatchFailure | undefined; observeResult: boolean }>(resolve => {
+      let finished = false, dispatched = false
+      const finish = (value?: unknown, failure?: DispatchFailure) => {
         if (finished) return
         finished = true
         clearTimeout(timer)
         signal?.removeEventListener('abort', abort)
         pending.delete(echo)
-        resolve(value ?? { state: 'unknown' })
+        resolve({ value, failure, observeResult: dispatched && !stopped && !signal?.aborted })
       }
-      const abort = () => finish()
-      const timer = setTimeout(() => finish(), timeoutMs)
-      pending.set(echo, { finish })
+      const abort = () => finish(undefined, signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError' ? 'onebot_timeout' : undefined)
+      const timer = setTimeout(() => finish(undefined, 'onebot_timeout'), timeoutMs)
+      pending.set(echo, { finish, ownerAlert: !observeFailures })
       signal?.addEventListener('abort', abort, { once: true })
       try {
         if (signal?.aborted) { finish(); return }
         if (guard?.() === false) { finish({ state: 'failed', code: 'binding_changed' }); return }
         onDispatch?.()
-        client.send(JSON.stringify({ action, params, echo }), error => { if (error) finish() })
+        dispatched = true
+        client.send(JSON.stringify({ action, params, echo }), error => { if (error) finish(undefined, 'onebot_transport_unconfirmed') })
       }
-      catch { finish() }
+      catch { finish(undefined, 'onebot_transport_unconfirmed') }
     })
+    // Continue in the caller's trace context after settling the WebSocket callback.
+    if (failure) report('unknown', failure)
+    else if (observeResult) {
+      const response = record(value)
+      if (response.status === 'async') report('unknown', 'onebot_response_unconfirmed')
+      else if (response.status === 'failed' || Number.isInteger(response.retcode) && response.retcode !== 0) report('failed', 'onebot_rejected')
+      else if (response.status !== 'ok' || response.retcode !== 0) report('unknown', value === undefined ? 'onebot_transport_unconfirmed' : 'onebot_response_unconfirmed')
+    }
+    return value ?? { state: 'unknown' }
+  }
+
+  async function sendOwnerAlert(text: string, guard: OwnerAlertGuard): Promise<DeliveryReceipt> {
+    if (!alertTarget || !text || text.length > QQ_OWNER_ALERT_MAX_LENGTH) return { state: 'failed', code: 'owner_alert_invalid' }
+    const client = socket
+    const current = () => {
+      try {
+        return !guard.signal.aborted && socket === client && client?.readyState === WebSocket.OPEN &&
+          (stopped ? ownerDrainSocket === client : verified) && guard.isCurrent()
+      }
+      catch { return false }
+    }
+    if (!client || !current()) return { state: 'failed', code: 'owner_alert_unavailable' }
+    // Reconfirm the fixed recipient on the authenticated socket. Alert transport failures
+    // are recorded by the dispatcher and cannot feed its own queue.
+    const friends = await call(client, 'get_friend_list', {}, current, 4_000, guard.signal, undefined, false)
+    if (!current() || !proveQqFriend(friends, alertTarget)) return { state: 'failed', code: 'owner_friend_unconfirmed' }
+    let dispatched = false
+    try {
+      const numericId = Number(alertTarget.id)
+      const raw = await call(client, 'send_private_msg', { user_id: Number.isSafeInteger(numericId) ? numericId : alertTarget.id,
+        message: [{ type: 'text', data: { text } }] }, current, 7_000, guard.signal, () => { dispatched = true }, false)
+      if (!dispatched) return { state: 'failed', code: 'owner_alert_unavailable' }
+      const response = record(raw), data = record(response.data)
+      if (response.retcode === 400 || response.retcode === 1400) return { state: 'failed', code: 'owner_alert_rejected' }
+      const messageId = opaqueMessageId(data.message_id)
+      if (response.status !== 'ok' || response.retcode !== 0 || !messageId || [response, data].some(row => row.group_id != null ||
+        row.user_id !== undefined && canonicalQqId(row.user_id) !== alertTarget.id ||
+        row.self_id !== undefined && canonicalQqId(row.self_id) !== alertTarget.account.id)) return { state: 'unknown' }
+      return { state: 'sent', messageId }
+    } catch { return dispatched ? { state: 'unknown' } : { state: 'failed', code: 'owner_alert_unavailable' } }
   }
 
   function reconnect(): void {
@@ -572,12 +639,27 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     if (retry) { clearTimeout(retry); retry = undefined }
     if (heartbeat) { clearInterval(heartbeat); heartbeat = undefined }
     const client = socket
-    socket = undefined
-    for (const request of pending.values()) request.finish()
-    client?.terminate()
-    listener?.close()
-    listener = undefined
+    const drainingAlerts = !!client && client === ownerDrainSocket
+    for (const request of pending.values()) if (!drainingAlerts || !request.ownerAlert) request.finish()
+    if (!drainingAlerts) {
+      socket = undefined
+      client?.terminate()
+      listener?.close()
+      listener = undefined
+    }
     conversationFiles.clear()
+  }
+
+  function beginOwnerAlertDrain(): (() => void) | undefined {
+    const client = socket
+    if (!alertTarget || stopped || !verified || client?.readyState !== WebSocket.OPEN) return undefined
+    ownerDrainSocket = client
+    stop()
+    return () => {
+      if (ownerDrainSocket !== client) return
+      ownerDrainSocket = undefined
+      stop()
+    }
   }
 
   const outbound = createQqMessageActionPort({
@@ -913,13 +995,14 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     return typeof url === 'string' ? url : undefined
   }
   async function start(handler?: (event: PlatformConversationEvent) => Promise<void>): Promise<void> {
+    if (ownerDrainSocket) throw new Error('OneBot 告警队列正在退出')
     if (!stopped) return
     stopped = false
     accept = handler
     try { await (reverse ? listen() : connect(true)) } catch (error) { stop(); throw error }
   }
 
-  const adapter: PlatformConnectionAdapter = {
+  const adapter: OneBotAdapter = {
     ...connection,
     ...(nativeGift ? { gift: (action: Parameters<NonNullable<PlatformConnectionAdapter['gift']>>[0], input: AgentQzoneGuard) => {
       const guard = qqActionGuard(input)
@@ -939,6 +1022,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       }
     } } : {}),
     botUserId: connection.account.id,
+    ...(alertTarget ? { sendOwnerAlert, beginOwnerAlertDrain } : {}),
     get botName() { return botName },
     resolvePrivatePeer(target) {
       if (target.kind !== 'private' || !servesAccount(target) || qqId(target.id) !== target.id || target.id === connection.account.id) return undefined
@@ -1233,7 +1317,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
   return { adapter, start }
 }
 
-export function createOneBotConnection(options: OneBotConnectionOptions): PlatformConnectionAdapter {
+export function createOneBotConnection(options: OneBotConnectionOptions): OneBotAdapter {
   return createOneBotSession(options).adapter
 }
 

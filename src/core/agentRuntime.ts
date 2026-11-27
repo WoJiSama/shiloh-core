@@ -3499,6 +3499,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     }
   }
 
+  async function runMaintenance(operation: string, task: () => Promise<unknown>): Promise<void> {
+    try { await task() }
+    catch (error) { diagnostics.emit({ stage: 'runtime', operation, outcome: 'failed', error }) }
+  }
+
   async function start(): Promise<void> {
     if (started || stopping) return
     started = true
@@ -3538,7 +3543,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (mediaRelayConfig.enabled) await mediaOutbox.start()
       if (torrentConfig.enabled) await torrent.start()
       const recovered = kickInboxes()
-      maintenance = setInterval(() => { kickInboxes(); tickCommitments(); if (mediaRelayConfig.enabled) void mediaOutbox.tick().catch(error => diagnostics.emit({ stage: 'runtime', operation: 'media_outbox_tick', outcome: 'failed', error })); if (torrentConfig.enabled) void torrent.tick().catch(error => diagnostics.emit({ stage: 'runtime', operation: 'torrent_tick', outcome: 'failed', error })); void textPersonMemory.tick(); void conversationMemory.tick(); void semanticMemory.tick(); void history.tick(); void groupMemory.tick() }, 1_000)
+      maintenance = setInterval(() => {
+        kickInboxes()
+        tickCommitments()
+        if (mediaRelayConfig.enabled) void runMaintenance('media_outbox_tick', () => mediaOutbox.tick())
+        if (torrentConfig.enabled) void runMaintenance('torrent_tick', () => torrent.tick())
+        void runMaintenance('person_memory_tick', () => textPersonMemory.tick())
+        void runMaintenance('conversation_memory_tick', () => conversationMemory.tick())
+        void runMaintenance('semantic_memory_tick', () => semanticMemory.tick())
+        void runMaintenance('history_tick', () => history.tick())
+        void runMaintenance('group_memory_tick', () => groupMemory.tick())
+      }, 1_000)
       maintenance.unref()
       await Promise.all(recovered)
       if (!isRunning()) return
