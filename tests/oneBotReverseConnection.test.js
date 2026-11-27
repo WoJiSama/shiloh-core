@@ -121,6 +121,44 @@ test('reverse OneBot authenticates upgrades and login before events and shares g
   assert.equal(status, 404)
 })
 
+test('OneBot backpressure preserves ordinary FIFO and admits recall and privacy control during a QQ API read', { timeout: 15_000 }, async t => {
+  const url = await address()
+  const admitted = [], failures = []
+  const first = Promise.withResolvers()
+  let pressures = 0, heldRead
+  const adapter = adapterAt(url, {
+    onAdmissionPressure() { pressures++ },
+    onEventError(error, code) { failures.push({ error, code }) },
+  })
+  t.after(() => { first.resolve(); adapter.stop() })
+  const started = adapter.start(async incoming => {
+    if (incoming.kind === 'recall') { admitted.push('recall'); return }
+    const { messageId, text } = incoming.message
+    if (messageId === '1') await first.promise
+    admitted.push(text === '#禁用我的记忆' ? 'privacy' : messageId)
+  })
+  void started.catch(() => {})
+  const peer = await peerAt(t, url, (client, request) => {
+    if (request.action === 'get_login_info') login(client, request)
+    else heldRead = () => client.send(JSON.stringify({ status: 'ok', retcode: 0, echo: request.echo, data: { message_id: 'sent-during-pressure' } }))
+  })
+  await started
+  for (let id = 1; id <= 350; id++) peer.send(JSON.stringify(event(String(id))))
+  await waitFor(() => pressures > 0, 'backpressure begins while the first message is blocked')
+  const send = adapter.actions.send({ version: 1, kind: 'message.send', target: { account, kind: 'group', id: '315320' }, parts: [{ kind: 'text', text: '测试' }] })
+  await waitFor(() => heldRead, 'outstanding OneBot API request')
+  peer.send(JSON.stringify({ post_type: 'notice', notice_type: 'group_recall', self_id: account.id, group_id: '315320', message_id: '350' }))
+  peer.send(JSON.stringify({ ...event('351'), message: '#禁用我的记忆' }))
+  await waitFor(() => admitted.length === 2 && pressures > 0, 'controls bypass the blocked message lane')
+  assert.deepEqual(admitted, ['recall', 'privacy'])
+  heldRead()
+  assert.equal((await send).state, 'sent')
+  first.resolve()
+  await waitFor(() => admitted.length === 352, 'ordinary backlog drains')
+  assert.deepEqual(admitted.slice(2), Array.from({ length: 350 }, (_, index) => String(index + 1)))
+  assert.deepEqual(failures, [])
+})
+
 test('reverse OneBot reconnect rechecks identity and never replays an uncertain send', { timeout: 15_000 }, async t => {
   const url = await address()
   let disconnected = 0, reconnected = 0, fatal = 0

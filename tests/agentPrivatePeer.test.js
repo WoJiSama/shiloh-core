@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createAgentBindingDirectory, createAgentRuntime } from '../dist/backend/core/index.js'
-import { agentBindingIdentity, agentBindingToken, conversationAddressKey, platformAccountKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
-import { createAgentInbox } from '../dist/backend/modules/runtime/infrastructure/agentInbox.js'
+import { agentBindingIdentity, agentBindingToken, conversationAddressKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
+import { agentInboxQueueKey, createAgentInbox } from '../dist/backend/modules/runtime/infrastructure/agentInbox.js'
 import { createCommitmentStore } from '../dist/backend/modules/commitments/infrastructure/commitmentStore.js'
 import { personMemoryAddress } from '../dist/backend/modules/memory/infrastructure/personMemoryContext.js'
 import { createPersonMemoryStore } from '../dist/backend/modules/memory/infrastructure/personMemoryStore.js'
@@ -42,12 +42,13 @@ test('private conversations verify the current peer independent of the room ID a
   const { reader, storage, prefix, isCurrent } = await createAgentRedisFixture(t, 'private-peer')
   const directory = createDirectory([differentId, anotherRoom])
   const inbox = createAgentInbox(storage)
-  const pendingKey = prefix + `agent:inbox:private:${platformAccountKey(account)}`
+  const pendingKey = target => prefix + agentInboxQueueKey({ kind: 'private', account, conversationId: target.id })
   const historyKey = prefix + `agent:private-history:${conversationAddressKey(differentId)}`
   const peerByRoom = new Map([[differentId.id, owner], [anotherRoom.id, owner]])
   const requests = []
   const deliveries = []
   const gatedModel = Promise.withResolvers()
+  const gatedParallel = Promise.withResolvers()
   let receive
   let ready = false
   const adapter = {
@@ -73,6 +74,7 @@ test('private conversations verify the current peer independent of the room ID a
     YTapi: async request => {
       requests.push(request)
       if (request.messages.at(-1).content === '等待换人') await gatedModel.promise
+      if (request.messages.at(-1).content === '慢会话第一条') await gatedParallel.promise
       return { choices: [{ message: { content: '收到你的回复。' } }] }
     },
   })
@@ -83,7 +85,7 @@ test('private conversations verify the current peer independent of the room ID a
     },
   })
   const hasPrompt = (request, text) => request.messages.some(row => typeof row.content === 'string' && row.content.includes(text))
-  const drained = () => reader.lLen(pendingKey).then(length => length === 0)
+  const drained = async () => (await Promise.all([differentId, anotherRoom].map(target => reader.lLen(pendingKey(target))))).every(length => length === 0)
   const store = createPersonMemoryStore({ redis: storage })
   const { botId, scene } = personMemoryAddress(differentId, owner.id)
   const identity = { botId, personaId: 'agent:role' }
@@ -107,7 +109,7 @@ test('private conversations verify the current peer independent of the room ID a
     await receive(message(differentId, owner, 'unverified-namespace', '解析到其他命名空间'))
     peerByRoom.delete(differentId.id)
     await receive(message(differentId, person(differentId.id), 'unverified-peer', '解析失败时不退回房间号'))
-    assert.equal(await reader.lLen(pendingKey), 0)
+    assert.equal(await drained(), true)
     assert.equal(requests.length, 0)
 
     peerByRoom.set(differentId.id, owner)
@@ -155,8 +157,21 @@ test('private conversations verify the current peer independent of the room ID a
     assert.equal(hasPrompt(requests[4], '原会话撤回后'), false)
     assert.equal(hasPrompt(requests[4], '重新启动前的旧参与者消息'), false)
     assert.equal(JSON.parse(await reader.get(historyKey)).privatePeerId, nextOwner.id)
+
+    await receive(message(differentId, nextOwner, 'parallel-first', '慢会话第一条'))
+    await waitFor(() => requests.length === 6, 'slow conversation enters the model')
+    await receive(message(differentId, nextOwner, 'parallel-second', '慢会话第二条'))
+    await receive(message(anotherRoom, owner, 'parallel-other', '另一个好友可以先收到回复'))
+    await waitFor(() => deliveries.length === 5, 'the unrelated conversation completes while the slow model is pending')
+    assert.deepEqual(deliveries[4].target, anotherRoom)
+    assert.deepEqual(requests.slice(5).map(row => row.messages.at(-1).content), ['慢会话第一条', '另一个好友可以先收到回复'])
+    gatedParallel.resolve()
+    await waitFor(drained, 'same conversation drains in FIFO order')
+    assert.deepEqual(deliveries.slice(5).map(action => action.target), [differentId, differentId])
+    assert.equal(requests.at(-1).messages.at(-1).content, '慢会话第二条')
   } finally {
     gatedModel.resolve()
+    gatedParallel.resolve()
     await host.stop()
   }
 })

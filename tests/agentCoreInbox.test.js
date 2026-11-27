@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createAgentBindingDirectory, createAgentRuntime } from '../dist/backend/core/index.js'
-import { agentBindingToken, platformAccountKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
+import { agentBindingToken, conversationAddressKey, platformAccountKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
 import { createAgentInbox } from '../dist/backend/modules/runtime/infrastructure/agentInbox.js'
+import { createAgentInboxDispatch } from '../dist/backend/modules/runtime/application/agentInboxDispatch.js'
 import { simulationAddressKey } from '../dist/backend/modules/simulation/infrastructure/simulationAddress.js'
 import { simulationSessionKey } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
@@ -39,6 +40,24 @@ async function waitFor(probe, description) {
   }
   assert.fail(`timed out waiting for ${description}`)
 }
+
+test('inbox dispatch stops as soon as a deterministic handler claims the original message', async () => {
+  const order = ['games', 'bilibiliQuality', 'magnetSearch', 'torrent', 'mediaRelay', 'musicExtraction']
+  const incoming = message(first, 'routing-order'), binding = Object.freeze({ target: first })
+  const entered = []
+  let owner = 'torrent'
+  const dispatch = createAgentInboxDispatch(Object.fromEntries(order.map(name => [name, async (passed, selected) => {
+    assert.equal(passed, incoming)
+    assert.equal(selected, binding)
+    entered.push(name)
+    return name === owner
+  }])))
+  assert.equal(await dispatch.dispatch(incoming, binding), true)
+  assert.deepEqual(entered.splice(0), order.slice(0, 4))
+  owner = undefined
+  assert.equal(await dispatch.dispatch(incoming, binding), false)
+  assert.deepEqual(entered, order)
+})
 
 test('legacy inbox moves complete batches and resumes without rewriting rows or receipts', redisTest, async t => {
   const { reader, storage, prefix } = await createAgentRedisFixture(t)
@@ -93,6 +112,40 @@ test('legacy inbox moves complete batches and resumes without rewriting rows or 
   await assert.rejects(migrated.moveLegacySimulationQueue(() => true), /invalid Agent inbox destination/u)
   assert.deepEqual(await reader.lRange(legacyKey, 0, -1), serialized.slice(0, 2))
   assert.equal(await reader.lLen(prefix + simulationKey(second)), otherSize)
+})
+
+test('legacy private inbox migrates exact bytes, conversation order, deadlines and receipts', redisTest, async t => {
+  const { reader, storage, prefix } = await createAgentRedisFixture(t)
+  const inbox = createAgentInbox(storage)
+  const target = { ...first, kind: 'private', id: 'friend-1' }
+  const other = { ...target, id: 'friend-2' }
+  const legacy = `${prefix}agent:inbox:private:${platformAccountKey(target.account)}`
+  const queueKey = address => `${prefix}agent:inbox:private-conversation:${conversationAddressKey(address)}`
+  const entries = Array.from({ length: 70 }, (_, index) => {
+    const address = index % 2 ? target : other
+    return JSON.stringify({ event: { kind: 'message', message: message(address, `legacy-${index}`) }, bindingToken: 'snapshot' }, null, index % 2)
+  })
+  const receipt = `${prefix}agent:inbox:receipt:fixture-private-receipt`
+  await reader.set(receipt, 'attempted')
+  await reader.rPush(legacy, entries)
+  await reader.expire(legacy, 90)
+  let checks = 0
+  await inbox.moveLegacyPrivateQueue(target.account, () => checks++ < 2)
+  assert.deepEqual(await reader.lRange(legacy, 0, -1), entries.slice(32))
+  await inbox.moveLegacyPrivateQueue(target.account, () => true)
+  await inbox.moveLegacyPrivateQueue(target.account, () => true)
+  assert.deepEqual(await reader.lRange(queueKey(target), 0, -1), entries.filter((_row, index) => index % 2))
+  assert.deepEqual(await reader.lRange(queueKey(other), 0, -1), entries.filter((_row, index) => index % 2 === 0))
+  assert.equal(await reader.exists(legacy), 0)
+  assert.equal(await reader.get(receipt), 'attempted')
+  assert.ok(await reader.ttl(queueKey(target)) > 0 && await reader.ttl(queueKey(target)) <= 90)
+  assert.deepEqual((await inbox.listPrivateQueues(target.account)).map(queue => queue.conversationId).sort(), [target.id, other.id].sort())
+
+  const recallId = 'recall-before-admission'
+  assert.equal(await inbox.recallText(target, recallId), true)
+  await inbox.accept({ event: { kind: 'message', message: message(target, recallId) }, bindingToken: 'snapshot' })
+  assert.equal(await reader.lLen(queueKey(target)), 35)
+  assert.equal(await inbox.canReply(target, recallId), false)
 })
 
 test('Core ingests independent accounts while a quoted message stalls another account', redisTest, async t => {

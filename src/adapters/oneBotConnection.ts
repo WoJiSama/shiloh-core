@@ -18,6 +18,7 @@ import { createQqRedPacketPort } from './qqRedPacket.js'
 import type { QqRedPacketPort } from './qqRedPacket.js'
 import { extractForwardIdFromSegment } from '../modules/conversation/domain/messageSegments.js'
 import { conversationAddressKey, platformAccountKey } from '../modules/runtime/domain/agentBindings.js'
+import { personMemoryCommand } from '../modules/memory/domain/personMemoryCommands.js'
 import { safeTruncateUnicode } from '../modules/models/domain/unicodeText.js'
 import { queuedDeliveryAllowed } from '../modules/messaging/infrastructure/deliveryScope.js'
 import { qqId, resolveQqConversationAddress } from './qqIdentity.js'
@@ -323,11 +324,17 @@ interface OneBotEndpoint {
   qzoneOwnPost?: AgentQzoneLedger['readOwnPost']
 }
 
+const admissionHighWater = { count: 256, bytes: 8 * 1024 * 1024 }
+const admissionLowWater = { count: 128, bytes: 4 * 1024 * 1024 }
+const admissionLimit = { count: 1024, bytes: 32 * 1024 * 1024 }
+const controlAdmissionLimit = { count: 128, bytes: 2 * 1024 * 1024 }
+
 interface OneBotConnectionOptions extends OneBotEndpoint {
   onDisconnect(): void
   onReconnect(): void
   onError(): void
-  onEventError(): void
+  onEventError(error?: unknown, code?: 'event_not_queued' | 'onebot_inbox_overflow' | 'onebot_control_inbox_overflow'): void
+  onAdmissionPressure?(): void
   onApiFailure?(action: string, outcome: 'failed' | 'unknown', code: string): void
   readonly alertOwner?: PlatformUserRef
 }
@@ -360,13 +367,48 @@ function createOneBotSession(options: OneBotConnectionOptions) {
   let verified = false
   let botName = connection.account.id
   let accept: ((event: PlatformConversationEvent) => Promise<void>) | undefined
-  let receiveQueue = Promise.resolve()
-  let queued = 0
+  const makeLane = () => ({ tail: Promise.resolve(), count: 0, bytes: 0 })
+  let messages = makeLane(), controls = makeLane()
+  let underPressure = false, pausedSocket: WebSocket | undefined, resumeTimer: ReturnType<typeof setTimeout> | undefined
   const pending = new Map<string, PendingRequest>()
   const qqActions = options.qqActions?.driver === 'napcat' ? options.qqActions : undefined
   let redPacketPort: QqRedPacketPort | undefined
   const recalledWalletSources = new Set<string>()
   const walletSourceKey = (target: ConversationAddress, messageId: string) => JSON.stringify([conversationAddressKey(target), messageId])
+
+  function resumeAdmissions() {
+    clearTimeout(resumeTimer)
+    resumeTimer = undefined
+    const client = pausedSocket
+    pausedSocket = undefined
+    if (client?.readyState === WebSocket.OPEN) client.resume()
+  }
+
+  function updateAdmissionPressure() {
+    if (stopped || !verified || !socket || socket.readyState !== WebSocket.OPEN) return
+    if (!underPressure && (messages.count >= admissionHighWater.count || messages.bytes >= admissionHighWater.bytes || controls.count >= 64)) {
+      underPressure = true
+      try { options.onAdmissionPressure?.() } catch { /* Observers do not affect admission. */ }
+    } else if (underPressure && messages.count <= admissionLowWater.count && messages.bytes <= admissionLowWater.bytes && controls.count <= 32) {
+      underPressure = false
+    }
+    // API echoes and events share a socket. Admission may itself need a QQ API
+    // read, so allow reads while any reply is outstanding, even above the high water mark.
+    if (underPressure && !pending.size && pausedSocket !== socket) {
+      pausedSocket = socket
+      socket.pause()
+      // A closed peer or control frame must eventually be observed even if
+      // local admission is still blocked. Each resumed burst remains bounded.
+      resumeTimer = setTimeout(resumeAdmissions, 100)
+      resumeTimer.unref()
+    } else if ((!underPressure || pending.size) && pausedSocket === socket) {
+      resumeAdmissions()
+    }
+  }
+
+  function reportAdmissionError(error: unknown, code: NonNullable<Parameters<OneBotConnectionOptions['onEventError']>[1]>) {
+    try { options.onEventError(error, code) } catch { /* Observers do not affect admission. */ }
+  }
 
   function qqActionGuard(input: AgentQzoneGuard, extraKeys: string[] = []): AgentQzoneGuard | undefined {
     try {
@@ -436,11 +478,13 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         clearTimeout(timer)
         signal?.removeEventListener('abort', abort)
         pending.delete(echo)
+        updateAdmissionPressure()
         resolve({ value, failure, observeResult: dispatched && !stopped && !signal?.aborted })
       }
       const abort = () => finish(undefined, signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError' ? 'onebot_timeout' : undefined)
       const timer = setTimeout(() => finish(undefined, 'onebot_timeout'), timeoutMs)
       pending.set(echo, { finish, ownerAlert: !observeFailures })
+      updateAdmissionPressure()
       signal?.addEventListener('abort', abort, { once: true })
       try {
         if (signal?.aborted) { finish(); return }
@@ -517,6 +561,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       let alive = true
       const detach = () => {
         if (socket !== client) return
+        if (pausedSocket === client) resumeAdmissions()
         socket = undefined
         verified = false
         redPacketPort?.close()
@@ -548,13 +593,26 @@ function createOneBotSession(options: OneBotConnectionOptions) {
             if (recalledWalletSources.size > 4096) recalledWalletSources.delete(recalledWalletSources.values().next().value!)
           }
         }
-        if (queued >= 256) { options.onEventError(); return }
+        // Recall and explicit privacy commands can fence an in-flight turn
+        // before its ordinary admission finishes. Keep their own order and capacity.
+        const control = event.kind === 'recall' || event.kind === 'message' && personMemoryCommand(event.message)?.standalone === true
+        const lane = control ? controls : messages
+        const limit = control ? controlAdmissionLimit : admissionLimit
+        const bytes = Buffer.isBuffer(frame) ? frame.length : Buffer.byteLength(String(frame))
+        if (lane.count >= limit.count || lane.bytes + bytes > limit.bytes) {
+          reportAdmissionError(undefined, control ? 'onebot_control_inbox_overflow' : 'onebot_inbox_overflow')
+          updateAdmissionPressure()
+          return
+        }
         const handle = accept
-        queued++
+        lane.count++
+        lane.bytes += bytes
+        updateAdmissionPressure()
         const packetPort = redPacketPort
         const wallet = payload.post_type === 'message' && payload.message_type === 'group' &&
           Array.isArray(payload.message) && payload.message.some(value => record(value).type === 'wallet')
-        receiveQueue = receiveQueue.then(async () => {
+        lane.tail = lane.tail.then(async () => {
+          if (accept !== handle || lane !== (control ? controls : messages)) return
           if (wallet && packetPort && event.kind === 'message') {
             const current = () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN && redPacketPort === packetPort &&
               !recalledWalletSources.has(walletSourceKey(event.message.conversation, event.message.messageId!))
@@ -566,7 +624,11 @@ function createOneBotSession(options: OneBotConnectionOptions) {
             return
           }
           await handle(event)
-        }).catch(options.onEventError).finally(() => { queued-- })
+        }).catch(error => reportAdmissionError(error, 'event_not_queued')).finally(() => {
+          lane.count--
+          lane.bytes -= bytes
+          updateAdmissionPressure()
+        })
       })
       const authenticate = () => {
         void (async () => {
@@ -581,8 +643,10 @@ function createOneBotSession(options: OneBotConnectionOptions) {
           authenticated = true
           verified = true
           openRedPackets(client)
+          updateAdmissionPressure()
           botName = typeof identity.nickname === 'string' ? identity.nickname.slice(0, 128) || botName : botName
           heartbeat = setInterval(() => {
+            if (pausedSocket === client) { alive = true; return }
             if (!alive || client.readyState !== WebSocket.OPEN) { client.terminate(); return }
             alive = false
             client.ping()
@@ -632,6 +696,8 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     stopped = true
     accept = undefined
     verified = false
+    resumeAdmissions()
+    messages = makeLane(); controls = makeLane(); underPressure = false
     redPacketPort?.close()
     redPacketPort = undefined
     recalledWalletSources.clear()

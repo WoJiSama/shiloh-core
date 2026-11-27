@@ -170,7 +170,7 @@ async function fixture(t, instance) {
     return await Promise.all(keys.map(async key => JSON.parse(await reader.get(key))))
   }
   async function privateDrained() {
-    const queues = await reader.keys(`${prefix}agent:inbox:private:*`)
+    const queues = await reader.keys(`${prefix}agent:inbox:private-conversation:*`)
     return (await Promise.all(queues.map(key => reader.lLen(key)))).every(length => length === 0)
   }
   async function start() {

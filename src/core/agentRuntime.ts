@@ -109,7 +109,8 @@ import {
   agentBindingToken, agentPersonaScopeId, conversationAddressKey, isConversationAddress, isPlatformAccount,
   isPlatformIdentifier, platformAccountKey, samePlatformNamespace, agentConversationKey,
 } from '../modules/runtime/domain/agentBindings.js'
-import { createAgentInbox, inboxEventTarget, textConversationSeconds, type AgentInboxQueue, type AgentInboxRedis, type TextInbox } from '../modules/runtime/infrastructure/agentInbox.js'
+import { agentInboxQueueKey, createAgentInbox, inboxEventTarget, textConversationSeconds, type AgentInboxQueue, type AgentInboxRedis, type PrivateInbox, type TextInbox } from '../modules/runtime/infrastructure/agentInbox.js'
+import { createAgentInboxDispatch } from '../modules/runtime/application/agentInboxDispatch.js'
 import { createAgentDiagnostics, type AgentDiagnostics } from '../modules/runtime/infrastructure/agentDiagnostics.js'
 import { generateAgentFailureNotice } from '../modules/conversation/infrastructure/agentFailureNotice.js'
 import type { AgentGroupLogConfig } from '../contracts/agentGroupLog.js'
@@ -2666,6 +2667,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   }
   const consumers = new Map<string, Promise<void>>()
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const privateWaiting = new Map<string, Map<string, PrivateInbox>>()
+  const privateActive = new Map<string, number>()
+  const privateDiscovery = new Map<string, Promise<void>>()
+  const privateConcurrencyPerAccount = 4
+  const inboxDispatch = createAgentInboxDispatch({ games: handleGames, bilibiliQuality: handleBilibiliQuality,
+    magnetSearch: handleMagnetSearch, torrent: handleTorrent, mediaRelay: handleMediaRelay, musicExtraction: handleMusicExtraction })
   let maintenance: ReturnType<typeof setInterval> | undefined
   let shuttingDown: Promise<void> | undefined
   let started = false
@@ -2742,7 +2749,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         ...(torrentConfig.enabled ? [torrent.cancelSource(target, event.messageId)] : []),
         (async () => {
           const received = await inbox.canReply(target, event.messageId)
-          const binding = received ? undefined : bindingFor(target)?.binding
+          const binding = bindingFor(target)?.binding
           if (!received && !binding) return
           if ((target.kind === 'group' || privateChat) && await inbox.recallText(target, event.messageId)) textConversation.invalidate(target)
           const queue = privateChat ? undefined : await inbox.accept({ event })
@@ -2779,7 +2786,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
             event: commandEvent, bindingToken: agentBindingToken(persona.binding), privacyCommand: request.command,
             privacyOwner: { agentId: persona.binding.agentId },
           }, undefined, pending => setPrivacyBacklog(accountKey, pending))
-          kickInbox(privacyQueue)
+          if (privacyQueue) kickInbox(privacyQueue)
         } catch (error) {
           // Storage may have accepted the row before losing its reply. Rebuild the fence
           // from the account queue rather than opening it on an uncertain acceptance.
@@ -2824,9 +2831,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const queue = await inbox.accept({ event: queued, bindingToken: agentBindingToken(persona.binding) }, undefined, undefined,
         { kind: 'group-log', groupLog: { agentId: persona.binding.agentId, ...epochs,
           ...(diceCandidate(message) ? { dicePolicy } : {}) } })
-      enqueueLocalEmoji(message, persona.binding, adapter)
+      if (queue) enqueueLocalEmoji(message, persona.binding, adapter)
       silenceReservations.get(conversationAddressKey(target))?.admitting.delete(message.messageId)
-      kickInbox(queue)
+      if (queue) kickInbox(queue)
       } finally { silenceReservations.get(conversationAddressKey(target))?.admitting.delete(message.messageId) }
       return
     }
@@ -2880,7 +2887,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     }
     if (queued.kind === 'message') queued = { ...queued, message: mediaSafeMessage(queued.message) }
     const inboxQueue = await inbox.accept({ event: queued, bindingToken: queue ? textBindingToken(persona.binding) : agentBindingToken(persona.binding) }, queue)
-    kickInbox(inboxQueue)
+    if (inboxQueue) kickInbox(inboxQueue)
   }
 
   async function applyPrivacyCommand(incoming: IncomingMessage, command: PersonMemoryCommand, token: string | undefined,
@@ -3291,7 +3298,69 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     if (reservation && !reservation.messages.size) silenceReservations.delete(key)
   }
 
-  async function consumeInbox(queue: AgentInboxQueue): Promise<void> {
+  async function consumeTextMessage(incoming: IncomingMessage, persona: ResolvePersona, target: ConversationAddress,
+    adapter: PlatformConnectionAdapter, mode: TextInbox['kind']): Promise<boolean> {
+    if (!adapter.isReady()) return false
+    const expected = agentBindingToken(persona.binding)
+    const memoryTurn = await beginMemoryTurn(persona.binding)
+    const isCurrent = () => observeCurrent(() => isRunning() && conversationEnabled(target) && textInboxFor(target)?.kind === mode &&
+      memoryTurn.isCurrent() && bindingIsCurrent(target, expected))
+    let handedToTrigger = false
+    try {
+      if (options.allowsText?.(incoming.text, 'incoming') !== false) {
+        await conversationMemory.capture(incoming, persona.binding, isCurrent)
+        await semanticMemory.capture(incoming, persona.binding, isCurrent)
+        await captureCognition(incoming, persona.binding, isCurrent).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
+        await history.capture(incoming, persona.binding, isCurrent)
+        await groupMemory.capture(incoming, persona.binding, isCurrent)
+        if (target.kind === 'group' && incoming.messageId && options.textTrigger !== undefined) {
+          const recallVersion = await inbox.textRecallVersion(target)
+          const current = () => observeCurrent(() => isCurrent() && options.isTextTriggerCurrent?.() !== false && adapterFor(target) === adapter && adapter.isReady())
+          const sourceCurrent = async () => {
+            if (!current() || !await inbox.canReply(target, incoming.messageId!) || await inbox.textRecallVersion(target) !== recallVersion) return false
+            const { botId, scene } = personMemoryAddress(target), excerpt = incoming.text || '[群聊消息]'
+            const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(persona.binding.agentId) }, subjectId: incoming.sender.id })
+            if (!current() || isPersonMemoryRedacted({ scene, messageId: incoming.messageId!, authorId: incoming.sender.id,
+              at: incoming.occurredAt, excerpt }, excerpt, redactions)) return false
+            const unchanged = await inbox.textRecallVersion(target) === recallVersion
+            return current() && unchanged
+          }
+          const ensureCurrent = async () => {
+            if (!await sourceCurrent()) throw new Error('文字触发来源已失效')
+          }
+          // Known revocation consumes this entry. Storage failures still
+          // escape to the inbox retry path before any external work.
+          if (await sourceCurrent()) {
+            handedToTrigger = true
+            textTrigger.admit({ incoming, selected: persona, isCurrent: current, ensureCurrent, signal: memoryTurn.signal, release: memoryTurn.release })
+          }
+        } else await diagnostics.run({ kind: 'conversation', binding: persona.binding, ...(incoming.messageId ? { messageId: incoming.messageId } : {}) }, 'text_turn',
+          () => textConversation.reply(incoming, persona, isCurrent, memoryTurn.signal), 'inbox')
+      }
+    } finally {
+      if (!handedToTrigger) memoryTurn.release()
+    }
+    return true
+  }
+
+  async function consumeSimulationEvent(event: PlatformConversationEvent, persona: ResolvePersona, target: ConversationAddress,
+    ingressId: string | undefined): Promise<void> {
+    if (event.kind === 'nudge' && isMessageId(ingressId)) {
+      await runtime.ingestNudge(event, { isCurrent: isRunning, binding: persona.binding, ingressId })
+    } else if (event.kind === 'message' && event.message.messageId && options.allowsText?.(event.message.text, 'incoming') !== false &&
+        !await inbox.isRecalled(target, event.message.messageId) && isRunning()) {
+      const { quote, ...incoming } = event.message
+      await conversationMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
+      await semanticMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
+      await captureCognition(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding))).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
+      await history.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
+      await groupMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
+      await diagnostics.run({ kind: 'conversation', binding: persona.binding, ...(incoming.messageId ? { messageId: incoming.messageId } : {}) }, 'simulation_ingest',
+        () => runtime.ingest({ ...incoming, ...quoteReference(quote), binding: persona.binding }, { isCurrent: isRunning }), 'inbox')
+    }
+  }
+
+  async function consumeInbox(queue: AgentInboxQueue): Promise<boolean | void> {
     const accountKey = platformAccountKey(queue.account)
     const setPrivacyPending = queue.kind === 'privacy' ? (pending: boolean) => setPrivacyBacklog(accountKey, pending) : undefined
     while (isRunning()) {
@@ -3316,9 +3385,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       // from a recovered entry into a new model/history record.
       let event = originalEvent
       const target = inboxEventTarget(event)
-      const adapter = isConversationAddress(target) && platformAccountKey(target.account) === accountKey ? adapterFor(target) : undefined
+      const adapter = isConversationAddress(target) && platformAccountKey(target.account) === accountKey &&
+        (!('conversationId' in queue) || target.kind === 'private' && target.id === queue.conversationId) ? adapterFor(target) : undefined
       if (event && target && adapter && hasValidInboundEvent(event, adapter) &&
         (event.kind !== 'message' || options.allowsText?.(event.message.text, 'incoming') !== false && allowsFileNames(event.message))) {
+        if ('conversationId' in queue && !adapter.isReady()) return
         if (event.kind === 'message') event = { ...event, message: mediaSafeMessage(event.message) }
         const request = event.kind === 'message' ? personMemoryCommand(event.message) : undefined
         if (queue.kind === 'privacy') {
@@ -3374,95 +3445,97 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           if (persona && (queue.kind === 'simulation' ? agentBindingToken(persona.binding) : textBindingToken(persona.binding)) === bindingToken &&
               (event.kind !== 'message' || !event.message.binding || isSameBinding(event.message.binding, persona.binding))) {
             if (event.kind === 'message' && (extraction.isCandidate(event.message) || isMediaRelayCandidate(event.message) || torrent.isCandidate(event.message) || magnetSearchCurrent() && parseAgentMagnetSearchCommand(event.message.text)) && !adapter.isReady()) return
-            const gameHandled = event.kind === 'message' && await handleGames(event.message, persona.binding)
-            const qualityHandled = !gameHandled && event.kind === 'message' && await handleBilibiliQuality(event.message, persona.binding)
-            const magnetHandled = !gameHandled && !qualityHandled && event.kind === 'message' && await handleMagnetSearch(event.message, persona.binding)
-            const torrentHandled = !gameHandled && !qualityHandled && !magnetHandled && event.kind === 'message' && await handleTorrent(event.message, persona.binding)
-            const mediaHandled = !gameHandled && !qualityHandled && !magnetHandled && !torrentHandled && event.kind === 'message' && await handleMediaRelay(event.message, persona.binding)
-            const musicHandled = !gameHandled && !qualityHandled && !magnetHandled && !torrentHandled && !mediaHandled && event.kind === 'message' && await handleMusicExtraction(event.message, persona.binding)
-            if (gameHandled || qualityHandled || magnetHandled || torrentHandled || mediaHandled || musicHandled) {
-              // Deterministic relay commands and accepted shares never become model prompts.
-            } else if (queue.kind !== 'simulation' && event.kind === 'message') {
-              if (!adapter.isReady()) return
-              const expected = agentBindingToken(persona.binding)
-              const incoming = event.message
-              const memoryTurn = await beginMemoryTurn(persona.binding)
-              const isCurrent = () => observeCurrent(() => isRunning() && conversationEnabled(target) && textInboxFor(target)?.kind === queue.kind &&
-                memoryTurn.isCurrent() && bindingIsCurrent(target, expected))
-              let handedToTrigger = false
-              try {
-                if (options.allowsText?.(incoming.text, 'incoming') !== false) {
-                  await conversationMemory.capture(incoming, persona.binding, isCurrent)
-                  await semanticMemory.capture(incoming, persona.binding, isCurrent)
-                  await captureCognition(incoming, persona.binding, isCurrent).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
-                  await history.capture(incoming, persona.binding, isCurrent)
-                  await groupMemory.capture(incoming, persona.binding, isCurrent)
-                  if (target.kind === 'group' && incoming.messageId && options.textTrigger !== undefined) {
-                    const recallVersion = await inbox.textRecallVersion(target)
-                    const current = () => observeCurrent(() => isCurrent() && options.isTextTriggerCurrent?.() !== false && adapterFor(target) === adapter && adapter.isReady())
-                    const sourceCurrent = async () => {
-                      if (!current() || !await inbox.canReply(target, incoming.messageId!) || await inbox.textRecallVersion(target) !== recallVersion) return false
-                      const { botId, scene } = personMemoryAddress(target), excerpt = incoming.text || '[群聊消息]'
-                      const redactions = await personMemory.getRedactions({ identity: { botId, personaId: agentPersonaScopeId(persona.binding.agentId) }, subjectId: incoming.sender.id })
-                      if (!current() || isPersonMemoryRedacted({ scene, messageId: incoming.messageId!, authorId: incoming.sender.id,
-                        at: incoming.occurredAt, excerpt }, excerpt, redactions)) return false
-                      const unchanged = await inbox.textRecallVersion(target) === recallVersion
-                      return current() && unchanged
-                    }
-                    const ensureCurrent = async () => {
-                      if (!await sourceCurrent()) throw new Error('文字触发来源已失效')
-                    }
-                    // Known revocation consumes this entry. Storage failures still
-                    // escape to the inbox retry path before any external work.
-                    if (await sourceCurrent()) {
-                      handedToTrigger = true
-                      textTrigger.admit({ incoming, selected: persona, isCurrent: current, ensureCurrent, signal: memoryTurn.signal, release: memoryTurn.release })
-                    }
-                  } else await diagnostics.run({ kind: 'conversation', binding: persona.binding, ...(incoming.messageId ? { messageId: incoming.messageId } : {}) }, 'text_turn',
-                    () => textConversation.reply(incoming, persona, isCurrent, memoryTurn.signal), 'inbox')
-                }
-              } finally {
-                if (!handedToTrigger) memoryTurn.release()
-              }
-            } else if (queue.kind === 'simulation' && event.kind === 'nudge' &&
-                'ingressId' in item.entry && isMessageId(item.entry.ingressId)) {
-              await runtime.ingestNudge(event, { isCurrent: isRunning, binding: persona.binding, ingressId: item.entry.ingressId })
-            } else if (event.kind === 'message' && event.message.messageId && options.allowsText?.(event.message.text, 'incoming') !== false &&
-                !await inbox.isRecalled(target, event.message.messageId) && isRunning()) {
-              const { quote, ...incoming } = event.message
-              await conversationMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
-              await semanticMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
-              await captureCognition(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding))).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
-              await history.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
-              await groupMemory.capture(incoming, persona.binding, () => isRunning() && bindingIsCurrent(target, agentBindingToken(persona.binding)))
-              await diagnostics.run({ kind: 'conversation', binding: persona.binding, ...(incoming.messageId ? { messageId: incoming.messageId } : {}) }, 'simulation_ingest',
-                () => runtime.ingest({ ...incoming, ...quoteReference(quote), binding: persona.binding }, { isCurrent: isRunning }), 'inbox')
+            const handled = event.kind === 'message' && await inboxDispatch.dispatch(event.message, persona.binding)
+            // Claimed commands and media shares stay out of the model and history.
+            if (!handled) {
+              if (queue.kind !== 'simulation' && event.kind === 'message') {
+                if (!await consumeTextMessage(event.message, persona, target, adapter, queue.kind)) return
+              } else if (queue.kind === 'simulation') await consumeSimulationEvent(event, persona, target,
+                'ingressId' in item.entry ? item.entry.ingressId : undefined)
             }
           }
         }
       }
       if (!isRunning()) return
-      await inbox.acknowledge(item.raw, queue, setPrivacyPending)
+      const remaining = await inbox.acknowledge(item.raw, queue, setPrivacyPending)
       if (queue.kind === 'private' || queue.kind === 'group') void textPersonMemory.tick()
       void conversationMemory.tick()
       void semanticMemory.tick()
       void history.tick()
       void groupMemory.tick()
+      // Yield a private slot after one message so a continuously busy chat
+      // cannot monopolize it while other conversations are waiting.
+      if ('conversationId' in queue) return remaining > 0
     }
   }
 
   function kickInbox(queue: AgentInboxQueue): Promise<void> | undefined {
-    const key = JSON.stringify([queue.kind, platformAccountKey(queue.account)])
+    if ('conversationId' in queue) {
+      if (!isRunning() || !options.privateChatEnabled) return undefined
+      const account = platformAccountKey(queue.account), key = agentInboxQueueKey(queue)
+      const waiting = privateWaiting.get(account) ?? new Map<string, PrivateInbox>()
+      waiting.set(key, queue)
+      privateWaiting.set(account, waiting)
+      pumpPrivateInboxes(account)
+      return consumers.get(key)
+    }
+    return startInbox(queue)
+  }
+
+  function pumpPrivateInboxes(account: string) {
+    const waiting = privateWaiting.get(account)
+    if (!waiting || !isRunning() || !options.privateChatEnabled) return
+    for (const [key, queue] of waiting) {
+      const active = privateActive.get(account) ?? 0
+      if (active >= privateConcurrencyPerAccount) break
+      if (consumers.has(key) || retryTimers.has(key) || !adapterFor({ account: queue.account, kind: 'private', id: queue.conversationId })?.isReady()) continue
+      waiting.delete(key)
+      privateActive.set(account, active + 1)
+      startInbox(queue)
+    }
+    if (!waiting.size) privateWaiting.delete(account)
+  }
+
+  function recoverPrivateInboxes(account: PlatformAccountRef) {
+    if (!options.privateChatEnabled || !isRunning() || !adapters.get(platformAccountKey(account))?.isReady()) return
+    const key = platformAccountKey(account)
+    if (privateDiscovery.has(key)) return
+    const recovery = runMaintenance('private_inbox_discovery', async () => {
+      for (const queue of await inbox.listPrivateQueues(account)) {
+        // Active queues reschedule from the atomic acknowledgement. Admissions
+        // that happen after that acknowledgement still kick their own queue.
+        if (!consumers.has(agentInboxQueueKey(queue))) kickInbox(queue)
+      }
+    }).finally(() => { privateDiscovery.delete(key) })
+    privateDiscovery.set(key, recovery)
+    pumpPrivateInboxes(key)
+  }
+
+  function startInbox(queue: AgentInboxQueue): Promise<void> | undefined {
+    const key = agentInboxQueueKey(queue)
     if (!isRunning() || retryTimers.has(key)) return undefined
     const current = consumers.get(key)
     if (current) return current
-    const consumer = consumeInbox(queue).catch(error => {
+    let more = false
+    const consumer = consumeInbox(queue).then(result => { more = result === true }).catch(error => {
       void diagnostics.run({ kind: 'account', account: queue.account }, `consume_${queue.kind}`, async () => {
         diagnostics.emit({ stage: 'inbox', operation: `consume_${queue.kind}`, outcome: 'failed', code: 'inbox_retry_pending', error })
       }, 'inbox')
       logger.warn('[Agent] 收件处理失败，保留队列并等待重试')
       if (isRunning()) retryTimers.set(key, setTimeout(() => { retryTimers.delete(key); kickInbox(queue) }, 1_000))
-    }).finally(() => { consumers.delete(key) })
+    }).finally(() => {
+      consumers.delete(key)
+      if ('conversationId' in queue) {
+        const account = platformAccountKey(queue.account), active = (privateActive.get(account) ?? 1) - 1
+        if (active > 0) privateActive.set(account, active)
+        else privateActive.delete(account)
+        if (more) {
+          privateWaiting.get(account)?.delete(key)
+          kickInbox(queue)
+        }
+        else pumpPrivateInboxes(account)
+      }
+    })
     consumers.set(key, consumer)
     return consumer
   }
@@ -3475,7 +3548,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       const simulation = kickInbox({ account, kind: 'simulation' })
       if (privacy) recovery.push(privacy)
       if (simulation) recovery.push(simulation)
-      if (options.privateChatEnabled) kickInbox({ account, kind: 'private' })
+      recoverPrivateInboxes(account)
       kickInbox({ account, kind: 'group' })
     }
     return recovery
@@ -3508,6 +3581,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     try {
       options.signal?.throwIfAborted()
       await inbox.moveLegacySimulationQueue(isRunning)
+      if (options.privateChatEnabled) {
+        await Promise.all(options.adapters.map(({ account }) => inbox.moveLegacyPrivateQueue(account, isRunning)))
+      }
       if (!isRunning()) { await stop(); return }
       const pending = await inbox.accountsWithPrivacyWork(options.adapters.map(adapter => adapter.account))
       for (const account of pending) setPrivacyBacklog(platformAccountKey(account), true)
@@ -3578,11 +3654,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     toolCancellation.abort()
     if (maintenance) clearInterval(maintenance)
     for (const retryTimer of retryTimers.values()) clearTimeout(retryTimer)
+    privateWaiting.clear()
     for (const waiter of privacyWaiters.values()) waiter.resolve()
     privacyWaiters.clear()
     for (const adapter of adapters.values()) adapter.stop()
     runtime.stop()
-    shuttingDown = Promise.allSettled([textDrained, deferredDrained, localEmojiIngress?.stop(), ...commitmentTasks.values(), ...pendingAdmissions, ...automaticQqWork.values(), ...gameHandlers.map(handler => Promise.resolve().then(() => handler.stop())), ...consumers.values(), ...(bilibiliQuality ? [bilibiliQuality.stop()] : []), torrent.stop(), mediaOutbox.stop(), commitments.drainCommitmentTicks(), runtime.drain(), textPersonMemory.stop(), conversationMemory.stop(), semanticMemory.stop(), history.stop(), groupMemory.stop()]).then(async results => {
+    shuttingDown = Promise.allSettled([textDrained, deferredDrained, localEmojiIngress?.stop(), ...commitmentTasks.values(), ...pendingAdmissions, ...automaticQqWork.values(), ...gameHandlers.map(handler => Promise.resolve().then(() => handler.stop())), ...consumers.values(), ...privateDiscovery.values(), ...(bilibiliQuality ? [bilibiliQuality.stop()] : []), torrent.stop(), mediaOutbox.stop(), commitments.drainCommitmentTicks(), runtime.drain(), textPersonMemory.stop(), conversationMemory.stop(), semanticMemory.stop(), history.stop(), groupMemory.stop()]).then(async results => {
       for (const result of results) if (result.status === 'rejected') diagnostics.emit({ stage: 'runtime', operation: 'shutdown', outcome: 'failed', error: result.reason })
       await diagnostics.flush()
     })

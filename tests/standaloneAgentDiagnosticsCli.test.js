@@ -30,7 +30,7 @@ async function fixture(t, mode) {
   assert.equal(spawnSync('redis-server', ['--version'], { stdio: 'ignore' }).status, 0, 'diagnostics CLI verification requires real Redis')
   const directory = await mkdtemp(path.join(tmpdir(), 'agent-diagnostics-cli-')), socketPath = path.join(directory, 'redis.sock')
   const dataDir = path.join(directory, 'data'), instance = 'diagnostics-cli', prefix = `bl-agent:${instance}:`
-  const queueKey = `${prefix}agent:inbox:private:${JSON.stringify(['qq', 'global', String(BOT)])}`
+  const queueKey = `${prefix}agent:inbox:private-conversation:${JSON.stringify(['qq', 'global', String(BOT), 'private', String(USER)])}`
   const redis = spawn('redis-server', ['--port', '0', '--unixsocket', socketPath, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
   const redisExit = once(redis, 'exit'), sockets = new WebSocketServer({ noServer: true })
   const models = [], deliveries = [], actions = [], errors = [], children = []

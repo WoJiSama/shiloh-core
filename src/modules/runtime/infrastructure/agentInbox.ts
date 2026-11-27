@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { ConversationAddress, PlatformAccountRef } from '../../../contracts/agentBinding.js'
 import type { PlatformConversationEvent, PlatformNudgeEvent } from '../../../contracts/platformConnection.js'
 import type { PersonMemoryCommand } from '../../memory/domain/personMemoryCommands.js'
-import { conversationAddressKey, isConversationAddress, isPlatformAccount, platformAccountKey } from '../domain/agentBindings.js'
+import { conversationAddressKey, decodeConversationAddressKey, isConversationAddress, isPlatformAccount, platformAccountKey } from '../domain/agentBindings.js'
 
 export interface AgentInboxGroupLog {
   readonly agentId: string
@@ -43,7 +43,12 @@ export interface TextInbox {
   readonly kind: 'private' | 'group'
 }
 
-export type AgentInboxQueue = TextInbox | { readonly account: PlatformAccountRef; readonly kind: 'simulation' | 'privacy' | 'group-log' }
+export interface PrivateInbox extends TextInbox {
+  readonly conversationId: string
+  readonly kind: 'private'
+}
+
+export type AgentInboxQueue = PrivateInbox | { readonly account: PlatformAccountRef; readonly kind: TextInbox['kind'] | 'simulation' | 'privacy' | 'group-log' }
 
 export interface AgentInboxObservation {
   readonly id: string
@@ -55,8 +60,30 @@ export interface AgentInboxObservation {
 }
 
 function queueKey(queue: AgentInboxQueue): string {
+  if ('conversationId' in queue) return 'agent:inbox:private-conversation:' + privateQueueMember(queue)
   const kind = queue.kind === 'group' ? 'group-text' : queue.kind
   return `agent:inbox:${kind}:${platformAccountKey(queue.account)}`
+}
+export { queueKey as agentInboxQueueKey }
+const privateQueueMember = (queue: PrivateInbox) => conversationAddressKey({ account: queue.account, kind: 'private', id: queue.conversationId })
+const privateQueueIndex = (account: PlatformAccountRef) => `agent:inbox:private-active:${platformAccountKey(account)}`
+const readPrivateQueueIndex = `return redis.call('ZRANGEBYSCORE', KEYS[1], '(' .. redis.call('TIME')[1], '+inf', 'LIMIT', 0, ARGV[1])`
+const maxPrivateQueues = 10_000
+
+function privateQueueFor(target: ConversationAddress): PrivateInbox {
+  return { account: target.account, kind: 'private', conversationId: target.id }
+}
+
+async function listPrivateQueues(client: Pick<AgentInboxRedis, 'eval'>, account: PlatformAccountRef, limit: number): Promise<PrivateInbox[]> {
+  const members: unknown = await client.eval(readPrivateQueueIndex, { keys: [privateQueueIndex(account)], arguments: [String(limit)] })
+  if (!Array.isArray(members)) throw new Error('平台私聊队列索引暂时无法读取')
+  return members.map((member: unknown) => {
+    const address = typeof member === 'string' ? decodeConversationAddressKey(member) : null
+    if (!address || address.kind !== 'private' || platformAccountKey(address.account) !== platformAccountKey(account)) {
+      throw new Error('平台私聊队列索引归属无效')
+    }
+    return privateQueueFor(address)
+  })
 }
 const legacySimulationQueue = 'agent:inbox'
 const legacyBatchSize = 32
@@ -73,6 +100,31 @@ for i, row in ipairs(rows) do
 end
 for i, row in ipairs(rows) do redis.call('RPUSH', KEYS[i + 1], row) end
 redis.call('LTRIM', KEYS[1], #rows, -1)
+return 1`
+const moveLegacyPrivateBatch = `
+local count = #KEYS - 2
+local rows = redis.call('LRANGE', KEYS[1], 0, count - 1)
+if #rows ~= count then return 0 end
+local indexType = redis.call('TYPE', KEYS[2]).ok
+if indexType ~= 'none' and indexType ~= 'zset' then return redis.error_reply('invalid Agent private inbox index') end
+for i, row in ipairs(rows) do
+  if row ~= ARGV[i] then return 0 end
+  local destinationType = redis.call('TYPE', KEYS[i + 2]).ok
+  if destinationType ~= 'none' and destinationType ~= 'list' then return redis.error_reply('invalid Agent private inbox destination') end
+end
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 0 then ttl = tonumber(ARGV[count * 2 + 1]) end
+ttl = math.max(1, math.min(ttl, tonumber(ARGV[count * 2 + 1])))
+local now = tonumber(redis.call('TIME')[1])
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+for i, row in ipairs(rows) do
+  local target = KEYS[i + 2]
+  redis.call('RPUSH', target, row)
+  redis.call('EXPIRE', target, math.max(ttl, redis.call('TTL', target)))
+  redis.call('ZADD', KEYS[2], now + redis.call('TTL', target) + 1, ARGV[count + i])
+end
+redis.call('EXPIRE', KEYS[2], ARGV[count * 2 + 1])
+redis.call('LTRIM', KEYS[1], count, -1)
 return 1`
 
 export function inboxEventTarget(event: PlatformConversationEvent | undefined): ConversationAddress | undefined {
@@ -94,18 +146,37 @@ function legacyDestination(raw: string): string {
 }
 
 const enqueue = `
+if KEYS[3] and redis.call('EXISTS', KEYS[3]) == 1 then return -2 end
 if KEYS[2] and redis.call('EXISTS', KEYS[2]) == 1 then return redis.call('LLEN', KEYS[1]) end
 if redis.call('LLEN', KEYS[1]) >= tonumber(ARGV[2]) then return -1 end
+local now
+if KEYS[4] then
+  local indexType = redis.call('TYPE', KEYS[4]).ok
+  if indexType ~= 'none' and indexType ~= 'zset' then return redis.error_reply('invalid Agent private inbox index') end
+  now = tonumber(redis.call('TIME')[1])
+  redis.call('ZREMRANGEBYSCORE', KEYS[4], '-inf', now)
+  if not redis.call('ZSCORE', KEYS[4], ARGV[6]) and redis.call('ZCARD', KEYS[4]) >= tonumber(ARGV[7]) then return -1 end
+end
 redis.call('RPUSH', KEYS[1], ARGV[1])
 if KEYS[2] then redis.call('SET', KEYS[2], ARGV[5], 'EX', ARGV[3]) end
 if ARGV[4] ~= '' then redis.call('EXPIRE', KEYS[1], ARGV[4]) end
+if KEYS[4] then
+  redis.call('ZADD', KEYS[4], now + tonumber(ARGV[4]) + 1, ARGV[6])
+  redis.call('EXPIRE', KEYS[4], ARGV[4])
+end
 return redis.call('LLEN', KEYS[1])`
 const head = `return redis.call('LINDEX', KEYS[1], 0)`
 const length = `return redis.call('LLEN', KEYS[1])`
 const acknowledge = `
 if redis.call('LINDEX', KEYS[1], 0) ~= ARGV[1] then return -1 end
+if KEYS[2] then
+  local indexType = redis.call('TYPE', KEYS[2]).ok
+  if indexType ~= 'none' and indexType ~= 'zset' then return redis.error_reply('invalid Agent private inbox index') end
+end
 redis.call('LPOP', KEYS[1])
-return redis.call('LLEN', KEYS[1])`
+local remaining = redis.call('LLEN', KEYS[1])
+if remaining == 0 and KEYS[2] then redis.call('ZREM', KEYS[2], ARGV[2]) end
+return remaining`
 const forward = `
 if redis.call('LINDEX', KEYS[1], 0) ~= ARGV[1] then return -1 end
 local destinationType = redis.call('TYPE', KEYS[2]).ok
@@ -223,9 +294,17 @@ export function createAgentInboxReader(client: Pick<AgentInboxRedis, 'eval'>) {
       guard.ensureCurrent()
       if (accounts.length > 256 || accounts.some(account => !isPlatformAccount(account))) throw new Error('平台收件查询账号无效')
       const unique = [...new Map(accounts.map(account => [platformAccountKey(account), account])).values()]
-      const queues = unique.flatMap(account => (['private', 'group', 'simulation', 'privacy', 'group-log'] as const).map(kind => ({ account, kind })))
+      const queues: AgentInboxQueue[] = []
+      let scanTruncated = false
+      for (const account of unique) {
+        if (queues.length >= 100) { scanTruncated = true; break }
+        queues.push(...(['private', 'group', 'simulation', 'privacy', 'group-log'] as const).map(kind => ({ account, kind })))
+        guard.ensureCurrent()
+        queues.push(...await listPrivateQueues(client, account, Math.max(0, 101 - queues.length)))
+      }
       const records: AgentInboxObservation[] = [], seen = new Set<string>()
-      let scanned = 0, bytes = 0, scanTruncated = queues.length > 100
+      let scanned = 0, bytes = 0
+      scanTruncated ||= queues.length > 100
       for (const queue of queues.slice(0, 100)) {
         guard.ensureCurrent()
         const remaining = Math.min(200, 1000 - scanned)
@@ -243,6 +322,7 @@ export function createAgentInboxReader(client: Pick<AgentInboxRedis, 'eval'>) {
             const entry = JSON.parse(raw) as AgentInboxEntry, event = entry?.event, target = inboxEventTarget(event)
             if (!isConversationAddress(target) || platformAccountKey(target.account) !== platformAccountKey(queue.account) ||
                 !validBindingToken(entry.bindingToken) || !['message', 'recall', 'nudge'].includes(event?.kind) ||
+                'conversationId' in queue && target.id !== queue.conversationId ||
                 queue.kind === 'private' && target.kind !== 'private' || queue.kind === 'group' && target.kind !== 'group' ||
                 ['simulation', 'group-log'].includes(queue.kind) && target.kind === 'private') { scanTruncated = true; continue }
             const id = createHash('sha256').update(JSON.stringify([queueKey(queue), raw])).digest('hex')
@@ -262,7 +342,7 @@ export function createAgentInboxReader(client: Pick<AgentInboxRedis, 'eval'>) {
   }
 }
 
-/** One consumer per account and mode acknowledges after persisting the event's effects. */
+/** Consumers acknowledge queue heads after persisting the event's effects. */
 export function createAgentInbox(client: AgentInboxRedis) {
   async function isRecalled(target: ConversationAddress, messageId: string): Promise<boolean> {
     return await client.get(eventKey('recall', target, messageId)) === '1'
@@ -286,6 +366,30 @@ export function createAgentInbox(client: AgentInboxRedis) {
         if (Number(moved) !== 1) throw new Error('原仿真收件队列顺序已改变')
       }
     },
+    async moveLegacyPrivateQueue(account: PlatformAccountRef, isCurrent: () => boolean): Promise<void> {
+      const source = queueKey({ account, kind: 'private' })
+      while (isCurrent()) {
+        const batch: unknown = await client.eval(readLegacyBatch, { keys: [source], arguments: [String(legacyBatchSize)] })
+        if (!Array.isArray(batch) || batch.some(row => typeof row !== 'string')) throw new Error('原私聊队列暂时无法读取')
+        if (!batch.length || !isCurrent()) return
+        const destinations = batch.map((raw: string) => {
+          try {
+            const entry = JSON.parse(raw) as AgentInboxEntry | null
+            const target = inboxEventTarget(entry?.event)
+            if (isConversationAddress(target) && target.kind === 'private' && platformAccountKey(target.account) === platformAccountKey(account)) {
+              return privateQueueFor(target)
+            }
+          } catch { /* Do not partially migrate a batch with an invalid row. */ }
+          throw new Error('原私聊队列存在无法识别的会话地址')
+        })
+        const moved = await client.eval(moveLegacyPrivateBatch, {
+          keys: [source, privateQueueIndex(account), ...destinations.map(queueKey)],
+          arguments: [...batch, ...destinations.map(privateQueueMember), String(textConversationSeconds)],
+        })
+        if (Number(moved) !== 1) throw new Error('原私聊队列顺序已改变')
+      }
+    },
+    listPrivateQueues: (account: PlatformAccountRef) => listPrivateQueues(client, account, maxPrivateQueues),
     async accountsWithPrivacyWork(accounts: readonly PlatformAccountRef[]): Promise<PlatformAccountRef[]> {
       const pending = await Promise.all(accounts.map(async account => {
         const remaining = Number(await client.eval(length, { keys: [queueKey({ account, kind: 'privacy' })], arguments: [] }))
@@ -295,7 +399,7 @@ export function createAgentInbox(client: AgentInboxRedis) {
       return accounts.filter((_account, index) => pending[index])
     },
     async accept(entry: { event: PlatformConversationEvent; bindingToken?: string; privacyCommand?: PersonMemoryCommand; privacyOwner?: AgentInboxPrivacyOwner }, text?: TextInbox,
-      setPrivacyPending?: (pending: boolean) => void, ingress?: AgentInboxGroupLogIngress): Promise<AgentInboxQueue> {
+      setPrivacyPending?: (pending: boolean) => void, ingress?: AgentInboxGroupLogIngress): Promise<AgentInboxQueue | undefined> {
       const { event } = entry
       if (event.kind === 'red-packet') throw new Error('红包凭证不能进入普通消息收件队列')
       const target = inboxEventTarget(event)
@@ -318,7 +422,9 @@ export function createAgentInbox(client: AgentInboxRedis) {
       if (privacyOwner && (event.kind !== 'message' || !validBindingToken(entry.bindingToken) || (target.kind !== 'group' && target.kind !== 'private'))) {
         throw new Error('平台隐私收件缺少有效会话归属')
       }
-      const queue: AgentInboxQueue = { account: target.account, kind: privacyCommand ? 'privacy' : groupLog ? 'group-log' : target.kind === 'private' ? 'private' : text?.kind ?? 'simulation' }
+      const queue: AgentInboxQueue = target.kind === 'private' && !privacyCommand && event.kind === 'message'
+        ? privateQueueFor(target)
+        : { account: target.account, kind: privacyCommand ? 'privacy' : groupLog ? 'group-log' : target.kind === 'private' ? 'private' : text?.kind ?? 'simulation' }
       const keys = [queueKey(queue)]
       let stored: AgentInboxEntry
       if (event.kind === 'nudge') {
@@ -330,16 +436,21 @@ export function createAgentInbox(client: AgentInboxRedis) {
         const messageId = event.kind === 'message' ? event.message.messageId : event.messageId
         if (!messageId) throw new Error('平台事件缺少消息标识')
         keys.push(eventKey(event.kind, target, messageId))
+        if (event.kind === 'message') keys.push(recalledTextMessage(target, messageId))
         stored = { event, ...(entry.bindingToken ? { bindingToken: entry.bindingToken } : {}), ...(privacyCommand ? { privacyCommand } : {}),
           ...(groupLog ? { groupLog } : {}), ...(privacyOwner ? { privacyOwner } : {}) }
       }
       const payload = JSON.stringify(stored)
       if (Buffer.byteLength(payload) > 64 * 1024) throw new Error('平台事件超出收件大小限制')
+      const privateQueue = 'conversationId' in queue ? queue : undefined
+      if (privateQueue) keys.push(privateQueueIndex(queue.account))
       const result = Number(await client.eval(enqueue, {
         keys,
         arguments: [payload, String(maxQueuedEvents), String(receiptSeconds),
-          queue.kind === 'private' || queue.kind === 'group' ? String(textConversationSeconds) : '', privacyCommand ? privacyReceipt('pending', payload) : '1'],
+          queue.kind === 'private' || queue.kind === 'group' ? String(textConversationSeconds) : '', privacyCommand ? privacyReceipt('pending', payload) : '1',
+          ...(privateQueue ? [privateQueueMember(privateQueue), String(maxPrivateQueues)] : [])],
       }))
+      if (result === -2) return undefined
       if (!Number.isSafeInteger(result) || result < 0) throw new Error('平台收件队列暂时无法接收消息')
       if (privacyCommand) setPrivacyPending?.(result > 0)
       return queue
@@ -380,10 +491,14 @@ export function createAgentInbox(client: AgentInboxRedis) {
       const entry: AgentInboxEntry = JSON.parse(raw)
       return { raw, entry }
     },
-    async acknowledge(raw: string, queue: AgentInboxQueue, setPrivacyPending?: (pending: boolean) => void): Promise<void> {
-      const remaining = Number(await client.eval(acknowledge, { keys: [queueKey(queue)], arguments: [raw] }))
+    async acknowledge(raw: string, queue: AgentInboxQueue, setPrivacyPending?: (pending: boolean) => void): Promise<number> {
+      const remaining = Number(await client.eval(acknowledge, {
+        keys: [queueKey(queue), ...('conversationId' in queue ? [privateQueueIndex(queue.account)] : [])],
+        arguments: [raw, ...('conversationId' in queue ? [privateQueueMember(queue)] : [])],
+      }))
       if (!Number.isSafeInteger(remaining) || remaining < 0) throw new Error('平台收件队列顺序已改变')
       if (queue.kind === 'privacy') setPrivacyPending?.(remaining > 0)
+      return remaining
     },
     async privacyCommandState(target: ConversationAddress, messageId: string, entry: string) {
       const state = await client.get(eventKey('message', target, messageId))

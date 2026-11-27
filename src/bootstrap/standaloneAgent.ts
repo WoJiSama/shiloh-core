@@ -493,7 +493,8 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
           diagnostics.emit({ stage: 'host', operation: 'onebot_recovery', outcome: 'succeeded' })
           void host?.resumePendingWork().catch(error => diagnostics.emit({ stage: 'host', operation: 'onebot_recovery', outcome: 'failed', error }))
         },
-        onEventError: () => diagnostics.emit({ stage: 'inbox', operation: 'onebot_admission', outcome: 'failed', code: 'event_not_queued' }),
+        onAdmissionPressure: () => diagnostics.emit({ stage: 'inbox', operation: 'onebot_admission', outcome: 'started', code: 'onebot_inbox_backpressure' }),
+        onEventError: (_error, code) => diagnostics.emit({ stage: 'inbox', operation: 'onebot_admission', outcome: 'failed', code: code ?? 'event_not_queued' }),
         onApiFailure: (action, outcome, code) => diagnostics.emit({ stage: 'host', operation: `onebot.${action}`, outcome, code }),
       })
       if (alertOwner) qqAlertAdapter = adapter

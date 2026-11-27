@@ -500,7 +500,7 @@ describe('standalone QQ recovery and migration checkpoints', { skip: redisAvaila
     })
     const recall = (message_id, overrides = {}) => ({ post_type: 'notice', notice_type: 'friend_recall', self_id: BOT, user_id: USER, message_id, ...overrides })
     const privateAddress = JSON.stringify(['qq', 'global', String(BOT), 'private', String(USER)])
-    const privateQueue = prefix + `agent:inbox:private:${JSON.stringify(['qq', 'global', String(BOT)])}`
+    const privateQueue = prefix + `agent:inbox:private-conversation:${privateAddress}`
     const privateHistory = prefix + `agent:private-history:${privateAddress}`
     const getPrivateHistory = async () => JSON.parse(await redis.get(privateHistory) ?? 'null')
     const lastPromptContains = text => directRequests.at(-1)?.messages.some(row => row.content.includes(text))
