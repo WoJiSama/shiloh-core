@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, statfs, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
@@ -8,9 +8,10 @@ import { agentHostModuleUrl, importBilibiliHost as load } from './helpers/bilibi
 
 const [{ initializeStandaloneConfigDatabase, nextStandaloneConfigDatabaseContent, openStandaloneConfigDatabase,
   readStandaloneConfigDatabase, writeStandaloneConfigDatabase }, { prepareStandaloneAgentTopologyChange },
-  { createStandaloneAgentCandidateValidator }] = await Promise.all([
+  { createStandaloneAgentCandidateValidator }, { inspectStandaloneAgentSourceSnapshot, isStandaloneAgentSourceSnapshotCurrent,
+    observeStandaloneAgentSourceSnapshot, readStandaloneAgentSourceSnapshot }] = await Promise.all([
   load('bootstrap/standaloneAgentConfigDatabase.js'), load('bootstrap/standaloneAgentConsoleTopology.js'),
-  load('bootstrap/standaloneAgentConfig.js'),
+  load('bootstrap/standaloneAgentConfig.js'), load('bootstrap/standaloneAgentConfigSources.js'),
 ])
 let sqliteAvailable = false
 try { sqliteAvailable = !!process.getBuiltinModule('node:sqlite')?.DatabaseSync } catch { /* Older Node can still run the YAML compatibility tests. */ }
@@ -58,6 +59,60 @@ test('SQLite stores one complete JSON configuration and rolls back an interrupte
     writer.exec('COMMIT')
     assert.deepEqual(read(), next)
   } finally { competitor.close(); writer.close() }
+})
+
+test('SQLite execution reuses verified content and rechecks database changes after authorization', {
+  skip: !sqliteAvailable || process.platform === 'win32',
+}, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'shiloh-config-execution-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const file = path.join(root, 'agent-config.sqlite')
+  const before = nextStandaloneConfigDatabaseContent({ format: 'json', personas: undefined, host: JSON.stringify(host), bindings: JSON.stringify(bindings) })
+  initializeStandaloneConfigDatabase(file, before)
+  await chmod(file, 0o600)
+  const loaded = readStandaloneAgentSourceSnapshot(file)
+  const now = Date.now
+  t.mock.method(Date, 'now', () => now() + 5_000)
+  const inspect = () => inspectStandaloneAgentSourceSnapshot(loaded, 'execution')
+  const observed = inspect()
+  const local = process.platform === 'linux' && [0xef53, 0x01021994, 0x58465342, 0x9123683e].includes((await statfs(root)).type >>> 0)
+  if (local) assert.equal(inspect(), observed, 'an unchanged database reuses the verified row')
+  assert.notEqual(inspectStandaloneAgentSourceSnapshot(loaded), observed, 'administrative reads verify the database row')
+
+  const next = nextStandaloneConfigDatabaseContent({ ...before.sources, host: JSON.stringify({ ...host, extension: { changed: true } }) }, before)
+  const writer = openStandaloneConfigDatabase(file, false)
+  try {
+    writer.exec('BEGIN IMMEDIATE')
+    writeStandaloneConfigDatabase(writer, next)
+    const pending = inspect()
+    assert.equal(pending.revision, loaded.revision)
+    assert.notEqual(pending, observed, 'an in-flight rollback journal requires a full read')
+    writer.exec('ROLLBACK')
+    assert.equal(isStandaloneAgentSourceSnapshotCurrent(loaded, 'execution'), true)
+
+    const checked = observeStandaloneAgentSourceSnapshot(loaded, () => {
+      writer.exec('BEGIN IMMEDIATE')
+      writeStandaloneConfigDatabase(writer, next)
+      writer.exec('COMMIT')
+      return true
+    }, 'execution')
+    assert.deepEqual(checked, { current: false, accepted: false })
+    assert.equal(inspect().sources.host, next.sources.host)
+  } finally { writer.close() }
+
+  const changed = inspect()
+  const wal = file + '-wal'
+  await writeFile(wal, '', { mode: 0o600 })
+  assert.equal(isStandaloneAgentSourceSnapshotCurrent(changed, 'execution'), false)
+  await rm(wal)
+  await chmod(file, 0o644)
+  assert.equal(isStandaloneAgentSourceSnapshotCurrent(changed, 'execution'), false)
+  await chmod(file, 0o600)
+  assert.equal(isStandaloneAgentSourceSnapshotCurrent(changed, 'execution'), true)
+  const replacement = file + '.replacement'
+  await writeFile(replacement, await readFile(file), { mode: 0o600 })
+  await rename(replacement, file)
+  assert.equal(isStandaloneAgentSourceSnapshotCurrent(changed, 'execution'), false)
 })
 
 test('standalone CLI initializes its default database from JSON and exports a versioned draft', {

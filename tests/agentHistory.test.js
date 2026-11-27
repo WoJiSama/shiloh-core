@@ -390,6 +390,33 @@ test('a stalled recall check preserves the first failure and retries the origina
   })
 })
 
+test('a recall cancelling an in-flight capture is distinct from a failure to check recall', redisTest, async t => {
+  const f = await fixture(t), id = 'recalled-during-capture'
+  let entered, finish
+  const reading = new Promise(resolve => { entered = resolve })
+  const pendingRead = new Promise(resolve => { finish = resolve })
+  f.behavior.readRecall = () => { entered(); return pendingRead }
+  const capture = f.capture('保存期间撤回的原文', { messageId: id })
+  await reading
+  f.recall(group, id)
+  f.composer.invalidate(group, id)
+  try {
+    await capture
+    assert.equal(await f.state(), undefined)
+    assert.deepEqual(f.calls.diagnostics.map(event => [event.outcome, event.code, event.details.step]), [
+      ['cancelled', 'history_source_recalled', 'check_recall'],
+    ])
+  } finally { finish() }
+
+  f.behavior.readRecall = () => { throw new Error('recall read unavailable') }
+  await f.capture('来源查询真正失败的原文')
+  assert.equal(await f.state(), undefined)
+  assert.deepEqual(f.calls.diagnostics.map(event => [event.outcome, event.code, event.details.step]), [
+    ['cancelled', 'history_source_recalled', 'check_recall'],
+    ['failed', 'history_source_check_failed', 'check_recall'],
+  ])
+})
+
 test('a timeout reading the archive version retries once before any unconfirmed write', redisTest, async t => {
   const f = await fixture(t, { config: { timeoutMs: 100 } }), id = 'archive-read-stalled'
   f.behavior.afterRead = () => {

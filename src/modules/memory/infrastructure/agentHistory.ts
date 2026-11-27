@@ -19,6 +19,11 @@ type MemoryEvidence = { entry: PersonMemoryEntry; binding?: AgentBindingSnapshot
 class HistoryDeadlineError extends Error {
   constructor(readonly limit: number) { super('历史来源操作超时'); this.name = 'TimeoutError' }
 }
+class HistorySourceChangedError extends Error {
+  constructor(readonly code: 'history_source_recalled' | 'history_scope_invalidated' | 'history_authority_changed') {
+    super('历史来源已失效')
+  }
+}
 export interface AgentHistoryStyleSources {
   messages: { userId: string; text: string }[]
   isCurrent(): Promise<boolean>
@@ -32,9 +37,14 @@ function bounded(value: number | undefined, fallback: number, minimum: number, m
   return typeof value === 'number' && Number.isFinite(value) ? Math.floor(Math.max(minimum, Math.min(maximum, value))) : fallback
 }
 function safeGuard(guard: () => boolean) { try { return guard() } catch { return false } }
+function historyCancellation(signal: AbortSignal) {
+  const reason: unknown = signal.reason
+  return reason instanceof HistoryDeadlineError || reason instanceof HistorySourceChangedError
+    ? reason : new HistorySourceChangedError('history_authority_changed')
+}
 function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason instanceof HistoryDeadlineError ? signal.reason : new Error('历史来源读取已取消'))
+    const abort = () => reject(historyCancellation(signal))
     work.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
     if (signal.aborted) abort()
     else signal.addEventListener('abort', abort, { once: true })
@@ -114,7 +124,7 @@ export function createAgentHistory(ports: {
 }) {
   const store = createAgentHistoryStore(ports.redis), now = ports.now ?? Date.now
   const lifecycle = new AbortController()
-  const requests = new Set<{ target: ConversationAddress; related: AgentBindingSnapshot[]; controller: AbortController }>()
+  const requests = new Set<{ target: ConversationAddress; related: AgentBindingSnapshot[]; controller: AbortController; sourceMessageId?: string }>()
   let sweep: Promise<void> | undefined, nextMaintenance = 0, styleInvalidation = 0
   const enabled = () => !lifecycle.signal.aborted && ports.config()?.enabled === true
   const retention = () => bounded(ports.config()?.retentionDays, 30, 1, 90) * DAY
@@ -130,9 +140,9 @@ export function createAgentHistory(ports: {
     } catch { return false }
   }
   async function withContext<T>(binding: AgentBindingSnapshot, guard: () => boolean, signal: AbortSignal | undefined,
-    work: (context: PersonProfileExtractionContext, related: AgentBindingSnapshot[]) => Promise<T>): Promise<T> {
+    work: (context: PersonProfileExtractionContext, related: AgentBindingSnapshot[]) => Promise<T>, sourceMessageId?: string): Promise<T> {
     const controller = new AbortController(), related: AgentBindingSnapshot[] = []
-    const request = { target: binding.target, related, controller }
+    const request = { target: binding.target, related, controller, ...(sourceMessageId === undefined ? {} : { sourceMessageId }) }
     requests.add(request)
     const baseSignal = AbortSignal.any([lifecycle.signal, controller.signal, ...(signal ? [signal] : [])])
     let turn: MemoryTurn | undefined
@@ -143,17 +153,17 @@ export function createAgentHistory(ports: {
     const deadline = setTimeout(() => controller.abort(new HistoryDeadlineError(budget)), budget)
     poll.unref?.(); deadline.unref?.()
     try {
-      if (!isCurrent()) throw new Error('历史来源已失效')
+      if (!isCurrent()) throw historyCancellation(baseSignal)
       const acquired = await abortable(ports.begin(binding).then(acquired => {
-        if (baseSignal.aborted) { acquired.release(); throw new Error('历史来源读取已取消') }
+        if (baseSignal.aborted) { acquired.release(); throw historyCancellation(baseSignal) }
         return acquired
       }), baseSignal)
       turn = acquired
       const combined = AbortSignal.any([baseSignal, acquired.signal])
       const context: PersonProfileExtractionContext = { target: binding.target, binding, signal: combined, isCurrent,
-        async ensureCurrent() { if (!isCurrent()) throw new Error('历史来源已失效') },
+        async ensureCurrent() { if (!isCurrent()) throw historyCancellation(combined) },
       }
-      if (!isCurrent()) throw new Error('历史来源已失效')
+      if (!isCurrent()) throw historyCancellation(combined)
       return await abortable(work(context, related), combined)
     } finally {
       clearInterval(poll); clearTimeout(deadline); controller.abort(); requests.delete(request); turn?.release()
@@ -225,7 +235,7 @@ export function createAgentHistory(ports: {
             } catch { /* Reporting cannot change a committed write. */ }
           }
           return saved
-        })
+        }, row.messageId)
         if (attempt === 2 && !saved) cancelRetry()
         return
       } catch (error) {
@@ -233,6 +243,13 @@ export function createAgentHistory(ports: {
         const failedAt = performance.now(), durationMs = failedAt - started
         const elapsedLoop = timedOut ? Math.round(performance.eventLoopUtilization(loop).active) : undefined
         confirmationPending = step === 'history_store_commit' && evidence?.dispatched !== false
+        if (error instanceof HistorySourceChangedError && !confirmationPending) {
+          try {
+            ports.diagnostics?.emit({ stage: 'memory', operation: 'history_capture', outcome: 'cancelled', code: error.code, durationMs,
+              details: { step, stepMs: Math.round(failedAt - stepStarted), result: 'not_saved', attempt } })
+          } catch { /* Reporting cannot change a source cancellation. */ }
+          return
+        }
         // These reads cannot leave an unconfirmed archive write. Repeat authorization on a fresh lease.
         const retry = attempt === 1 && (step === 'check_recall' || step === 'authorization' || step === 'history_store_read') &&
           (timedOut || evidence?.cause === 'redis_command_queue_timeout') && safeGuard(guard) && current(binding)
@@ -242,6 +259,7 @@ export function createAgentHistory(ports: {
           outcome: confirmationPending ? 'unknown' : 'failed', durationMs,
           details: { step, stepMs: Math.round(failedAt - stepStarted),
             result: confirmationPending ? 'confirmation_pending' : retry ? 'retry_scheduled' : 'not_saved',
+            ...(error instanceof HistorySourceChangedError ? { cause: error.code } : {}),
             ...(retry || attempt === 2 ? { attempt, maxAttempts: 2 } : {}),
             ...(timedOut ? { limit: error.limit, loopActiveMs: elapsedLoop!,
               timeoutOverrunMs: Math.max(0, Math.round(durationMs - error.limit)) } : {}) }, error },
@@ -482,12 +500,19 @@ export function createAgentHistory(ports: {
       } }
     } catch { return empty(binding, guard, 'unavailable', '历史来源读取超时、被撤销或暂时不可用；本次无法核实，不能认定从未发生。') }
   }
-  function invalidate(target: ConversationAddress) {
+  function invalidate(target: ConversationAddress, messageId?: string) {
     styleInvalidation++
     // Source authorization may still be in flight before a scope is selected.
     // Cancelling an account's private reads is conservative and never grants data.
-    for (const request of requests) if (conversationAddressKey(request.target) === conversationAddressKey(target) || request.related.some(binding => conversationAddressKey(binding.target) === conversationAddressKey(target)) ||
-      request.target.kind === 'private' && platformAccountKey(request.target.account) === platformAccountKey(target.account)) request.controller.abort()
+    const targetKey = conversationAddressKey(target), accountKey = platformAccountKey(target.account)
+    for (const request of requests) {
+      const sameTarget = conversationAddressKey(request.target) === targetKey
+      if (sameTarget || request.related.some(binding => conversationAddressKey(binding.target) === targetKey) ||
+          request.target.kind === 'private' && platformAccountKey(request.target.account) === accountKey) {
+        const exact = sameTarget && messageId !== undefined && request.sourceMessageId === messageId
+        request.controller.abort(new HistorySourceChangedError(exact ? 'history_source_recalled' : 'history_scope_invalidated'))
+      }
+    }
   }
   function tick(): Promise<void> {
     if (!enabled() || !ports.isRunning() || now() < nextMaintenance) return Promise.resolve()

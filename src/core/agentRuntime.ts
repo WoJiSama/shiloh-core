@@ -3380,7 +3380,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       textPersonMemory.invalidate(target)
       conversationMemory.invalidate(target)
       semanticMemory.invalidate(target)
-      history.invalidate(target)
+      history.invalidate(target, event.messageId)
       groupMemory.invalidate(target)
       // A recalled source may have been retrieved by another turn in this account.
       for (const invalidate of memoryTurns.get(platformAccountKey(target.account))?.keys() ?? []) invalidate()

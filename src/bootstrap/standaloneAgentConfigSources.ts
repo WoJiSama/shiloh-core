@@ -32,6 +32,8 @@ const snapshots = new WeakMap<SourceSnapshot, Root>()
 const observations = new WeakMap<Root, SourceSnapshot>()
 type SourceReads = Readonly<Record<ConfigSourceName, FileRead>>
 const verifiedSources = new WeakMap<Root, { reads: SourceReads; snapshot: SourceSnapshot; reusable: boolean }>()
+const verifiedDatabases = new WeakMap<Root, { file: BigIntStats; snapshot: SourceSnapshot }>()
+const localMetadata = new WeakMap<Root, boolean>()
 const executionReaders = new WeakMap<Root, ReturnType<typeof createConfigExecutionTransactionReader> | null>()
 type ObservationMode = 'full' | 'execution'
 const maximum = 2 * 1024 * 1024
@@ -100,47 +102,64 @@ function privateFile(file: BigIntStats, links = 1n): boolean {
   return file.isFile() && file.nlink === links && file.uid === BigInt(process.getuid!()) && (file.mode & 0o077n) === 0n
 }
 
-function databaseFile(root: Root): BigIntStats {
+function databaseFiles(root: Root) {
   checkRoot(root)
-  const current = stat(root.hostFile)
+  const file = stat(root.hostFile)
   const journal = fs.lstatSync(root.hostFile + '-journal', { bigint: true, throwIfNoEntry: false })
-  if (!privateFile(current) || journal && !privateFile(journal) ||
+  if (!privateFile(file) || journal && !privateFile(journal) ||
       ['-wal', '-shm'].some(suffix => fs.lstatSync(root.hostFile + suffix, { throwIfNoEntry: false }))) return fail('unavailable')
-  return current
+  return { file, journal }
 }
 
 function openDatabase(root: Root, readOnly: boolean) {
-  const current = databaseFile(root)
-  const ensureCurrent = () => { if (!identity(current, databaseFile(root))) fail() }
+  const initial = databaseFiles(root)
+  const ensureCurrent = () => {
+    const current = databaseFiles(root)
+    if (!identity(initial.file, current.file)) return fail()
+    return current
+  }
   const db = openStandaloneConfigDatabase(root.hostFile, readOnly)
-  try { ensureCurrent(); return { db, ensureCurrent, identity: current } }
+  try { ensureCurrent(); return { db, ensureCurrent, initial } }
   catch (error) { db.close(); throw error }
 }
 
-function readDatabaseSnapshot(root: Root, opened?: ReturnType<typeof openDatabase>): SourceSnapshot {
+function readDatabaseSnapshot(root: Root, opened?: ReturnType<typeof openDatabase>, reuse = false): SourceSnapshot {
   const session = opened ?? openDatabase(root, true)
   try {
     return measureConfigRead(() => {
-      session.ensureCurrent()
+      const cutoff = reuse ? configMetadataReuseCutoff() : undefined
+      const before = session.ensureCurrent()
       const { sources, versions, generation } = readStandaloneConfigDatabase(session.db)
-      session.ensureCurrent()
+      const after = session.ensureCurrent()
       const fence = digest(JSON.stringify([generation, versions, sources]))
-      const revision = digest(JSON.stringify([root.hostFile, String(session.identity.dev), String(session.identity.ino), fence]))
+      const revision = digest(JSON.stringify([root.hostFile, String(session.initial.file.dev), String(session.initial.file.ino), fence]))
       const snapshot = Object.freeze({ hostFile: root.hostFile, root: root.root, sources, versions, fence, revision })
       snapshots.set(snapshot, root)
+      if (cutoff !== undefined && !session.initial.journal && !before.journal && !after.journal &&
+          sameConfigFileState(session.initial.file, before.file) && sameConfigFileState(before.file, after.file) &&
+          canReuseConfigMetadata(after.file, root.pins[0]!.stat.dev, cutoff)) {
+        verifiedDatabases.set(root, { file: after.file, snapshot })
+      }
       return snapshot
     })
   } finally { if (!opened) session.db.close() }
 }
 
-function executionReader(root: Root) {
-  let read = executionReaders.get(root)
-  if (read !== undefined) return read
+function supportsLocalConfigMetadata(root: Root): boolean {
+  const cached = localMetadata.get(root)
+  if (cached !== undefined) return cached
   // Metadata fast paths require local Linux inode and change-time semantics.
   let local = false
   try { local = process.platform === 'linux' && [0xef53, 0x01021994, 0x58465342, 0x9123683e].includes(fs.statfsSync(root.root).type >>> 0) }
   catch { /* The complete read remains available. */ }
-  read = local ? createConfigExecutionTransactionReader(transactionRoot(root), root.pins[0]!.stat.dev) : null
+  localMetadata.set(root, local)
+  return local
+}
+
+function executionReader(root: Root) {
+  let read = executionReaders.get(root)
+  if (read !== undefined) return read
+  read = supportsLocalConfigMetadata(root) ? createConfigExecutionTransactionReader(transactionRoot(root), root.pins[0]!.stat.dev) : null
   executionReaders.set(root, read)
   return read
 }
@@ -151,7 +170,20 @@ function matchesFiles(files: ReturnType<typeof names>, reads: SourceReads): bool
   })
 }
 function readRoot(root: Root, mode: ObservationMode = 'full'): SourceSnapshot {
-  if (isStandaloneConfigDatabase(root.hostFile)) return readDatabaseSnapshot(root)
+  if (isStandaloneConfigDatabase(root.hostFile)) {
+    const reuse = mode === 'execution' && supportsLocalConfigMetadata(root)
+    const previous = reuse ? verifiedDatabases.get(root) : undefined
+    if (previous) {
+      // Every execution check still fences the pinned path and transaction sidecars.
+      const unchanged = measureConfigRead(() => {
+        const { file, journal } = databaseFiles(root)
+        return !journal && sameConfigFileState(file, previous.file)
+      })
+      if (unchanged) return previous.snapshot
+      verifiedDatabases.delete(root)
+    }
+    return readDatabaseSnapshot(root, undefined, reuse)
+  }
   const previous = verifiedSources.get(root), files = names(root)
   const query = mode === 'execution' ? executionReader(root) : null
   if (query && previous?.reusable) {
@@ -328,7 +360,7 @@ export function observeStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot, c
   try { accepted = evaluate() } finally { observations.delete(root) }
   try {
     if (isStandaloneConfigDatabase(root.hostFile)) {
-      const current = readRoot(root).revision === entry.revision
+      const current = readRoot(root, mode).revision === entry.revision
       return { current, accepted: current && accepted }
     }
     const { reads, reusable } = verifiedSources.get(root)!
