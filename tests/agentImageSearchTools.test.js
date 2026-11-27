@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
+import { keepEventLoopAlive } from './helpers/keepEventLoopAlive.js'
 
 const { createAgentImageSearchTools } = await load('modules/content/infrastructure/agentImageSearchTools.js')
 const { createImageSearchJsonReader } = await load('modules/content/infrastructure/agentImageSearchHttp.js')
@@ -194,7 +195,8 @@ test('binding, complete account and original source mutations across metadata aw
   }
 })
 
-test('cancelled or revoked metadata, DNS and image waits discard late replies and do not escape operation deadlines', async () => {
+test('cancelled or revoked metadata, DNS and image waits discard late replies and do not escape operation deadlines', async t => {
+  keepEventLoopAlive(t)
   let resolveRequest, close = 0
   const f = setup({ options: { timeoutMs: 15 }, metadata() { return new Promise(resolve => { resolveRequest = resolve }) } })
   const result = await f.run(); assert.equal(result.status, 'failed'); assert.equal(f.sends.length, 0)
@@ -210,7 +212,8 @@ test('cancelled or revoked metadata, DNS and image waits discard late replies an
   assert.equal((await revoked.run()).status, 'failed'); assert.equal(revoked.downloads.length, 0)
 })
 
-test('an unbounded asynchronous permission callback is abortable and prevents all external requests', async () => {
+test('an unbounded asynchronous permission callback is abortable and prevents all external requests', async t => {
+  keepEventLoopAlive(t)
   const f = setup({ context: { ensureCurrent: () => new Promise(() => {}) }, options: { timeoutMs: 15 } })
   assert.equal((await f.run()).status, 'failed'); assert.equal(f.queries.length, 0); assert.equal(f.sends.length, 0)
 })

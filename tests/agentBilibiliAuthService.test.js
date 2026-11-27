@@ -7,6 +7,7 @@ import { syncBuiltinESMExports } from 'node:module'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { keepEventLoopAlive } from './helpers/keepEventLoopAlive.js'
 
 const root = fileURLToPath(new URL('../', import.meta.url)), release = path.resolve(process.env.BL_CHAT_AGENT_RELEASE_DIR || root)
 const sourceTest = process.env.BL_CHAT_AGENT_SOURCE_TEST === '1', ts = sourceTest ? (await import('typescript')).default : undefined, urls = new Map()
@@ -96,6 +97,7 @@ test('logout invalidates an in-flight poll and a late successful login cannot re
 })
 
 test('replacement sessions, cancellation, host lease loss and close revoke active operations', async t => {
+  keepEventLoopAlive(t)
   const f = await fixture(t), first = await f.service.start(binding(), context()), second = await f.service.start(binding(), context())
   await assert.rejects(first.poll(context()), /B站授权服务不可用/u); second.cancel(); await assert.rejects(second.poll(context()), /B站授权服务不可用/u)
   for (const revoke of ['lease', 'close']) {
@@ -143,6 +145,7 @@ test('HTTP redirects, oversized streams, decompression, invalid MIME and body mi
 })
 
 test('request and stalled body deadlines cancel the underlying signal without logging response secrets', async t => {
+  keepEventLoopAlive(t)
   for (const stage of ['request', 'body']) {
     const never = deferred(), f = await fixture(t, { options: { timeoutMs: 60 }, respond: async () => stage === 'request' ? never.promise : { status: 200, headers: { 'content-type': 'application/json' }, body: { [Symbol.asyncIterator]() { return { next() { return never.promise }, return: async () => ({ done: true }) } } } } })
     await assert.rejects(f.service.start(binding(), context()), /B站授权服务不可用/u); assert.equal(f.requests[0].signal.aborted, true); assert.deepEqual(await f.files(), [])
@@ -227,6 +230,7 @@ test('session replacement, explicit cancel, logout and service close produce can
 })
 
 test('service deadlines remain failures while external abort, stale callers and failed current checks are cancellations', async t => {
+  keepEventLoopAlive(t)
   const never = deferred(), timed = await fixture(t, { options: { timeoutMs: 35 }, respond: () => never.promise })
   await assert.rejects(timed.service.start(binding(), context()), /B站授权服务不可用/u)
   const timeout = timed.events.find(event => event.code === 'auth_start_timeout')

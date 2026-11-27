@@ -168,7 +168,10 @@ test('DOMException classification bypasses hostile instance name getters and pre
 })
 
 test('stalled sink times out visibly so flush completes without waiting for the underlying sink', async t => {
-  const lines = []; t.mock.method(process.stderr, 'write', line => { lines.push(String(line)); return true })
+  const lines = []
+  t.mock.method(console, 'error', line => {
+    if (typeof line === 'string' && line.startsWith('[Agent] ')) lines.push(line)
+  })
   t.mock.timers.enable({ apis: ['setTimeout'] })
   let calls = 0, flushFinished = false
   const d = createAgentDiagnostics({ logger: quiet, sink: { append() { calls++; return new Promise(() => {}) } } })

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentModrinthTools } from '../dist/backend/modules/tools/infrastructure/agentModrinthTools.js'
+import { keepEventLoopAlive } from './helpers/keepEventLoopAlive.js'
 
 const API = 'https://api.modrinth.com/v2/search'
 const ENDPOINT = 'https://translation.example/v1/chat/completions'
@@ -340,7 +341,8 @@ test('revocation before search, before translation, during rendering or before s
   }
 })
 
-test('caller cancellation and total deadline bound hung fetch, body and authority waits without leaking or sending', async () => {
+test('caller cancellation and total deadline bound hung fetch, body and authority waits without leaking or sending', async t => {
+  keepEventLoopAlive(t)
   for (const phase of ['fetch', 'body', 'authority']) for (const interrupt of ['caller', 'deadline']) {
     const caller = new AbortController()
     let entered, cancelled = false
