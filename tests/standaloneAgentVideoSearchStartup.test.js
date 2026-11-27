@@ -12,7 +12,8 @@ const key = Symbol.for('bl-chat-test.video-attachment-startup')
 const state = 'globalThis[Symbol.for("bl-chat-test.video-attachment-startup")]'
 registerHooks({ load(url, context, next) {
   if (/\/(?:src|dist\/backend)\/core\/index\.(?:ts|js)$/u.test(url)) return { format: 'module', shortCircuit: true,
-    source: `export function createAgentRuntime(options) { const g = ${state}; g.core = options; g.events.push('core_create'); return {
+    source: `export { createLinuxSystemdAgentDiceScriptRunner } from '../modules/dice/infrastructure/agentDiceScriptProcess.js'
+      export function createAgentRuntime(options) { const g = ${state}; g.core = options; g.events.push('core_create'); return {
       async start() { g.events.push('core_start'); await g.onStart(options); process.emit('SIGTERM') }, async stop() { g.events.push('core_stop') } } }` }
   if (/\/modules\/runtime\/infrastructure\/agentRedis\.(?:ts|js)$/u.test(url)) return { format: 'module', shortCircuit: true,
     source: `export function agentRedisPrefix(instance) { return 'bl-agent:' + instance + ':' }
