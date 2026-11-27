@@ -152,6 +152,7 @@ export interface PersonalPorts {
   research?(agentId: string, query: string, signal: AbortSignal, current: () => boolean): Promise<string | undefined>
   coding?: ((agentId: string, task: string, signal: AbortSignal, options: PersonalCodingOptions) => Promise<string | undefined>) & {
     canResume?(agentId: string, jobId: string, task: string): Promise<boolean>
+    clearCheckpoint?(agentId: string, jobId: string, task: string): Promise<void>
   }
   capabilities?: AgentCoreCapabilities
   capabilityOrigin?(agentId: string, key: string): CoreCapabilityOrigin | undefined
@@ -668,6 +669,7 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
         const live = state.goals.find(item => item.id === goal.id)
         if (live?.engineering?.status === 'running') settleEngineering(live, status, result)
       })
+      if (work.mode === 'investigate') await coding.clearCheckpoint?.(id, goal.id, goal.draft).catch(() => {})
     } }
   }
 
