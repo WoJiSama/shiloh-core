@@ -112,6 +112,16 @@ test("首中即停:群主艾特命中后锁死,语义规划器不再发起 LLM �
   assert.equal(ctx.classifierCalls.length, 0, "锁定后语义规划器不应被调用")
 })
 
+test("high-confidence emoji reactions bypass the semantic planner", async () => {
+  const ctx = buildCtx({ ctx: { intentText: "绷不住了哈哈哈哈" } })
+  const route = await resolveToolRoute(ctx)
+
+  assert.equal(route.forcedToolCall.function.name, "sendLocalEmojiTool")
+  assert.equal(route.toolScopeLocked, true)
+  assert.deepEqual(ctx.session.tools.map(tool => tool.function.name), ["sendLocalEmojiTool"])
+  assert.equal(ctx.classifierCalls.length, 0)
+})
+
 test("Excel 开放式任务:无参数时锁定范围但保持 toolChoice=auto,后续 both 守卫规则被跳过", async () => {
   const ctx = buildCtx({ ctx: { excelToolIntent: true, excelToolParams: null } })
   ctx.videos = [{ url: "v" }]

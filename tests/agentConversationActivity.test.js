@@ -1,31 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
-import ts from 'typescript'
 import { commitmentRedis } from './helpers/commitmentRedis.js'
+import { createCommitmentRuntime } from '../dist/backend/modules/commitments/infrastructure/commitmentTool.js'
+import { createAgentConversationActivity } from '../dist/backend/modules/runtime/infrastructure/agentConversationActivity.js'
 import { createDefaultSimSession } from '../dist/backend/modules/simulation/domain/simConfig.js'
+import { createSimulationRuntime } from '../dist/backend/modules/simulation/infrastructure/simulationRuntime.js'
 
-// Exercise these sources without rebuilding shared dist while sibling work is in progress.
-const root = fileURLToPath(new URL('../', import.meta.url)), urls = new Map()
-function sourceUrl(relative) {
-  if (urls.has(relative)) return urls.get(relative)
-  const source = readFileSync(path.join(root, relative), 'utf8')
-  const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
-  const code = compiled.replace(/(\bfrom\s+)(['"])(\.[^'"]+)\2/gu, (_all, from, quote, specifier) => {
-    const dependency = path.relative(root, path.resolve(root, path.dirname(relative), specifier))
-    const url = dependency.endsWith('/agentConversationActivity.js')
-      ? sourceUrl(dependency.replace(/\.js$/u, '.ts'))
-      : pathToFileURL(path.join(root, dependency.replace(/^src\//u, 'dist/backend/'))).href
-    return `${from}${quote}${url}${quote}`
-  })
-  const url = `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
-  urls.set(relative, url); return url
-}
-const { createAgentConversationActivity } = await import(sourceUrl('src/modules/runtime/infrastructure/agentConversationActivity.ts'))
-const { createSimulationRuntime } = await import(sourceUrl('src/modules/simulation/infrastructure/simulationRuntime.ts'))
-const { createCommitmentRuntime } = await import(sourceUrl('src/modules/commitments/infrastructure/commitmentTool.ts'))
 const target = { account: { platform: 'qq', namespace: 'global', id: '200' }, kind: 'group', id: '20' }
 const quietLogger = { info() {}, warn() {}, error() {} }
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done }); return { promise, resolve } }

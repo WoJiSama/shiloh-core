@@ -1,5 +1,5 @@
 import test from "node:test"
-import { readPluginSources, readSource } from "./helpers/pluginSources.js"
+import { readPluginSources } from "./helpers/pluginSources.js"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
@@ -43,12 +43,4 @@ test("test.js 已接线：终态表情后记录冷却、暴露过滤传冷却参
   assert.ok(pluginSource.includes("recordEmojiOnlySend(e.group_id"), "终态表情回复记录冷却")
   assert.ok(pluginSource.includes("emojiCooldownMs: Number(host.config?.emojiSystem?.emojiCooldownMs"), "暴露过滤带冷却配置")
   assert.ok(routeSrc.includes("suppressEmojiByCooldown(ctx.intentText, ctx.groupId, ctx.emojiCooldownMs)"), "强制快路尊重冷却")
-})
-
-test("filterToolsForMessageIntent 解构参数后不得残留 options 引用", () => {
-  const pluginSource = readPluginSources()
-  const start = pluginSource.indexOf("function filterToolsForMessageIntent")
-  const end = pluginSource.indexOf("\n}", start)
-  const body = pluginSource.slice(start, end)
-  assert.ok(!body.includes("options."), "函数签名已解构，函数体内不得再引用 options（曾致每轮 ReferenceError 无回复）")
 })

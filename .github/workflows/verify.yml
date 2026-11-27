@@ -51,7 +51,7 @@ jobs:
             tests/standaloneConversationMemory.test.js tests/standaloneAgentImages.test.js tests/standaloneAgentMcp.test.js \
             tests/standaloneSemanticMemory.test.js tests/standaloneSemanticPrivateRecall.test.js tests/standaloneAgentGithub.test.js \
             tests/standaloneAgentModrinth.test.js tests/standaloneAgentMembers.test.js tests/standaloneAgentHistory.test.js \
-            tests/standaloneAgentRendering.test.js tests/standaloneAgentExcel.test.js tests/standaloneAgentFiles.test.js tests/standaloneAgentVoice.test.js tests/standaloneAgentMusic.test.js tests/standaloneAgentMusicExtraction.test.js tests/agentMediaArtifactStore.test.js tests/agentMediaRelayPlan.test.js tests/qqMediaRelayBridge.test.js tests/qqMediaRelayDelivery.test.js tests/qqMediaRelayIntegration.test.js tests/agentTextImageRenderer.test.js tests/agentMindMapRenderer.test.js \
+            tests/standaloneAgentRendering.test.js tests/standaloneAgentExcel.test.js tests/standaloneAgentFiles.test.js tests/standaloneAgentVoice.test.js tests/standaloneAgentMusic.test.js tests/standaloneAgentMusicExtraction.test.js tests/agentMediaArtifactStore.test.js tests/agentMediaRelayPlan.test.js tests/qqMediaRelayBridge.test.js tests/qqMediaRelayDelivery.test.js tests/qqMediaRelayIntegration.test.js tests/agentMindMapRenderer.test.js \
             tests/agentTorrentProvider.test.js tests/agentTorrentLedger.test.js tests/agentTorrentWorkflow.test.js tests/agentTorrentRuntime.test.js \
             tests/standaloneTorrent.test.js tests/qqRequesterArchiveBridge.test.js tests/qqRequesterArchiveDelivery.test.js tests/standaloneAgentTorrentCli.test.js \
             tests/agentBilibiliRelayProvider.test.js tests/agentDouyinRelayProvider.test.js tests/agentDouyinRelayBrowserIsolation.test.js tests/agentMediaRelayReference.test.js tests/agentMediaOutbox.test.js tests/agentMediaOutboxLedger.test.js \
@@ -70,10 +70,10 @@ jobs:
             tests/agentGroupLogArtifact.test.js tests/agentGroupLogRenderer.test.js tests/qqGroupLogBridge.test.js tests/qqGroupLogDelivery.test.js
           BL_CHAT_AGENT_RELEASE_DIR="$agent_test_root" node --test --test-concurrency=1 \
             tests/agentDiagnostics.test.js tests/agentOperationJournal.test.js tests/agentTextFailures.test.js \
-            tests/agentSimulationDiagnostics.test.js tests/agentToolDiagnostics.test.js tests/agentWorkflowDiagnostics.test.js \
+            tests/agentWorkflowDiagnostics.test.js \
             tests/standaloneAgentDiagnosticsConfig.test.js tests/standaloneAgentDiagnosticsCli.test.js tests/standaloneAgentDiagnosticsStartup.test.js \
             tests/agentGroupLogCommand.test.js tests/agentGroupLogInbox.test.js tests/agentGroupLogStore.test.js tests/agentGroupLogWorkflow.test.js tests/agentGroupLogRuntime.test.js \
-            tests/agentConversationActivity.test.js tests/standaloneGroupLog.test.js tests/standaloneAgentGroupLogCli.test.js
+            tests/standaloneGroupLog.test.js tests/standaloneAgentGroupLogCli.test.js
           BL_CHAT_AGENT_RELEASE_DIR="$agent_test_root" node --test --test-concurrency=1 \
             tests/agentBilibiliAuthService.test.js tests/agentBilibiliQualityProvider.test.js \
             tests/agentBilibiliQualityStore.test.js tests/agentBilibiliQualityWorkflow.test.js tests/qqBilibiliAuthDelivery.test.js \

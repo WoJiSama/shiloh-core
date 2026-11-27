@@ -90,6 +90,17 @@ test('missing-tool repair stays within the selected capability and actual sessio
   assert.equal(api.buildMissingToolCommitmentCall(host, '正在画图。', {...context, authorizedToolNames: ['bananaTool']}), null)
 })
 
+test('emoji-only candidacy skips the semantic planner request', async () => {
+  const {api, host, requests} = fixture()
+  const text = '笑死我了'
+  const emoji = definition('sendLocalEmojiTool')
+  assert.deepEqual(selectToolIntentCandidates(text, [emoji.function.name]), [emoji.function.name])
+
+  const decision = await api.classifySemanticToolIntent(host, {currentIntentText: text, sessionTools: [emoji]})
+  assert.equal(decision, null)
+  assert.equal(requests.length, 0)
+})
+
 test('MCP schema and current-versus-quoted sources reach the real classifier transport', async () => {
   const toolName = 'mcp__fixture__reserve'
   const {api, host, requests} = fixture({intent: 'tool', toolName, params: {slot: {id: 'A'}}, confidence: 0.99, goal: '预留A时段'})
