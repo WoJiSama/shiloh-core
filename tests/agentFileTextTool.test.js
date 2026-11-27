@@ -14,7 +14,12 @@ test('fileTextTool is explicit/ephemeral with closed scoped source and Unicode p
 })
 test('real child tool reads trusted bytes, returns bounded evidence and paginates Unicode past the first page', async () => {
   const tool = createAgentFileTextTool(), long = '前😀'.repeat(7000) + 'END_MARKER'
-  const result = await tool.execute({ offset: 13_998, limit: 20 }, context({ async readFile(input) { assert.deepEqual(input, {}); return { ...file, base64: Buffer.from(long).toString('base64') } } }))
+  const ctx = context({ async readFile(input) { assert.deepEqual(input, {}); return { ...file, base64: Buffer.from(long).toString('base64') } } })
+  const first = await tool.execute({}, ctx)
+  assert.equal(first.status, 'succeeded')
+  assert.match(first.content, /偏移: 0\n继续读取: nextOffset=4000/u)
+  assert.equal([...first.content.split('\n---\n')[1]].length, 4000)
+  const result = await tool.execute({ offset: 13_998, limit: 20 }, ctx)
   assert.equal(result.status, 'succeeded'); assert.match(result.content, /前😀END_MARKER/); assert.match(result.content, /reply/); assert.ok(Array.from(result.content).length <= 12_000)
   assert.doesNotMatch(result.content, new RegExp(file.base64)); assert.match(result.content, /不可信文件资料/)
 })

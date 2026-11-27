@@ -70,6 +70,26 @@ test('real parsing worker preserves names, sheet ordinals, exact formulas, cache
   assert.equal(result.status, 'failed'); assert.match(result.content, /请指定工作表名称.*预算表.*Names/)
 })
 
+test('budgeted Excel ranges keep whole rows with column labels and give an exact continuation row', { timeout: 20_000 }, async () => {
+  const workbook = new ExcelJS.Workbook(), sheet = workbook.addWorksheet('分块')
+  for (let row = 1; row <= 10; row++) {
+    sheet.getCell('A' + row).value = ('工作说明\n\n还有一段 ' + row + '。').repeat(60)
+    sheet.getCell('B' + row).value = '行回执 ' + row
+  }
+  const file = { ...(await filePromise), base64: Buffer.from(await workbook.xlsx.writeBuffer()).toString('base64') }
+  const tool = createAgentExcelTool(), ctx = context({ async readFile() { return file } })
+  const first = await tool.execute({ operation: 'read_range', sheetName: '分块', range: 'A1:B10' }, ctx)
+  assert.equal(first.status, 'succeeded')
+  assert.match(first.content, /列: A、B/u)
+  assert.ok([...first.content].length <= 12_000)
+  const next = Number(first.content.match(/从 A(\d+) 所在行/u)?.[1])
+  assert.ok(next > 1 && next <= 10)
+  for (const column of ['A', 'B']) assert.equal([...first.content.matchAll(new RegExp('单元格: ' + column + '(\\d+)', 'gu'))].length, next - 1)
+  const second = await tool.execute({ operation: 'read_range', sheetName: '分块', range: 'A' + next + ':B' + next }, ctx)
+  assert.equal(second.status, 'succeeded')
+  assert.ok(second.content.includes('行回执 ' + next))
+})
+
 test('real worker retains all find modes, formula selection, neighborhood, range priority and related-term evidence', { timeout: 20_000 }, async () => {
   const tool = createAgentExcelTool(), ctx = context()
   for (const [mode, query] of [['contains', '虹叙'], ['exact', '尚虹叙项目组'], ['starts_with', '尚虹叙'], ['ends_with', '项目组']]) {
