@@ -1,10 +1,10 @@
 # Core 调度与动作执行 V1
 
-2026-11-22 设计定稿，代码基线为主线 `f86dbd9`。[基线提交](https://github.com/WoJiSama/shiloh-plugin/commit/f86dbd9fc9ef129bdb28ada07b200d9f93ab5bc2)
+2026-11-22 设计定稿，代码基线为主线 `f86dbd9`。[基线提交](https://github.com/WoJiSama/shiloh-core/commit/f86dbd9fc9ef129bdb28ada07b200d9f93ab5bc2)
 
 ## 模块职责
 
-在同一个 Core 进程内收拢任务调度和动作执行。调度负责发现到期工作、领取和重启接续。业务模块持有原记录，负责解释什么算完成，以及是否需要安排下一次。动作执行在实际读、写、投递前核验授权，通过宿主端口取得结果，再交业务模块结算。仓库已有承诺领取和 QQ 投递回执，V1 以这两处契约为起点。[承诺账本](https://github.com/WoJiSama/shiloh-plugin/blob/f86dbd9fc9ef129bdb28ada07b200d9f93ab5bc2/src/modules/commitments/infrastructure/commitmentStore.ts#L262) [投递回执](https://github.com/WoJiSama/shiloh-plugin/blob/f86dbd9fc9ef129bdb28ada07b200d9f93ab5bc2/src/contracts/delivery.ts#L1)
+在同一个 Core 进程内收拢任务调度和动作执行。调度负责发现到期工作、领取和重启接续。业务模块持有原记录，负责解释什么算完成，以及是否需要安排下一次。动作执行在实际读、写、投递前核验授权，通过宿主端口取得结果，再交业务模块结算。仓库已有承诺领取和 QQ 投递回执，V1 以这两处契约为起点。[承诺账本](https://github.com/WoJiSama/shiloh-core/blob/f86dbd9fc9ef129bdb28ada07b200d9f93ab5bc2/src/modules/commitments/infrastructure/commitmentStore.ts#L262) [投递回执](https://github.com/WoJiSama/shiloh-core/blob/f86dbd9fc9ef129bdb28ada07b200d9f93ab5bc2/src/contracts/delivery.ts#L1)
 
 ```mermaid
 flowchart LR
@@ -44,7 +44,7 @@ flowchart LR
 
 ## 动作授权和并发
 
-每次动作带上希洛的 `agentId`、回合或任务来源、执行主体和动作类型。涉及会话时，Core 解析完整目标地址及绑定版本；涉及原消息时，带上可复核的来源引用。模型负责提出意图，Core 负责填入可信身份、版本和权限。外发前复核绑定、来源、隐私和配额，并沿用宿主回执。[绑定契约](https://github.com/WoJiSama/shiloh-plugin/blob/f86dbd9fc9ef129bdb28ada07b200d9f93ab5bc2/src/contracts/agentBinding.ts)
+每次动作带上希洛的 `agentId`、回合或任务来源、执行主体和动作类型。涉及会话时，Core 解析完整目标地址及绑定版本；涉及原消息时，带上可复核的来源引用。模型负责提出意图，Core 负责填入可信身份、版本和权限。外发前复核绑定、来源、隐私和配额，并沿用宿主回执。[绑定契约](https://github.com/WoJiSama/shiloh-core/blob/f86dbd9fc9ef129bdb28ada07b200d9f93ab5bc2/src/contracts/agentBinding.ts)
 
 真人 `@` 和点名沿用仿真回合，可以读取同群获准的上下文。自主分享按当前主动接话或好友联系权限执行。已登记的提醒以原承诺授权为依据，关闭主动接话时仍按原排期处理，到期时复核原账号、会话和任务权限。
 
@@ -52,7 +52,7 @@ flowchart LR
 
 ## 首批迁移
 
-1. 公开兴趣检查通过新调度入口领取和续排，继续读取本人现有的跟进记录、条目去重状态和摘要。读取中断可以重试，允许分享的更新走动作入口。[本人跟进与排期](https://github.com/WoJiSama/shiloh-plugin/blob/f86dbd9fc9ef129bdb28ada07b200d9f93ab5bc2/src/modules/simulation/infrastructure/agentPersonalRuntime.ts#L535)
+1. 公开兴趣检查通过新调度入口领取和续排，继续读取本人现有的跟进记录、条目去重状态和摘要。读取中断可以重试，允许分享的更新走动作入口。[本人跟进与排期](https://github.com/WoJiSama/shiloh-core/blob/f86dbd9fc9ef129bdb28ada07b200d9f93ab5bc2/src/modules/simulation/infrastructure/agentPersonalRuntime.ts#L535)
 2. 一次性群提醒接入同一调度入口，复用现有承诺账本的领取、已开始标记和投递回执。以当前实例和任务类型切换领取者。切换或回切前停止原入口领取，核对已领任务和待核实回执，再从原记录接续。
 
 V1 以部署版本 `c7d58d3` 为实现起点，继续使用原 Redis 作用域和索引。群提醒用承诺 ID 表示同一次到期动作，兴趣检查用跟进 ID 和该次到期时间定位。新增来源和派发数据随原记录保存。部署使用同一实例的独占租约，进程切换自然交接领取权。回切到支持 V1 记录的构建可继续核实。回切到旧构建前，须核对 V1 已登记的到期提醒和待核实记录。

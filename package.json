@@ -1,6 +1,6 @@
 {
-  "name": "shiloh-plugin",
-  "description": "测试",
+  "name": "shiloh-core",
+  "description": "希洛的独立运行核心，提供对话、记忆、任务调度和 Web 控制台。",
   "type": "module",
   "version": "0.0.1",
   "main": "index.js",
@@ -30,11 +30,11 @@
   },
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "git+https://github.com/WoJiSama/shiloh-core.git"
   },
   "keywords": [
     "Yunzai-Bot",
-    "shiloh-plugin"
+    "shiloh-core"
   ],
   "author": "test",
   "license": "MIT",
