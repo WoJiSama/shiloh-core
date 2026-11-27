@@ -4,10 +4,11 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 const [{ createAgentBindingDirectory, createAgentRuntime }, { createConversationMemoryStore, conversationMemoryId },
   { personMemoryCommandText: commands }, { agentBindingToken, conversationAddressKey, platformAccountKey },
-  { simulationAddressKey }, { simulationSessionKey }] = await Promise.all([
+  { simulationAddressKey }, { simulationSessionKey }, { agentInboxQueueKey }] = await Promise.all([
   load('core/index.js'), load('modules/memory/infrastructure/conversationMemoryStore.js'),
   load('modules/memory/domain/personMemoryCommands.js'), load('modules/runtime/domain/agentBindings.js'),
   load('modules/simulation/infrastructure/simulationAddress.js'), load('modules/simulation/infrastructure/simSessionStore.js'),
+  load('modules/runtime/infrastructure/agentInbox.js'),
 ])
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
 
@@ -69,8 +70,10 @@ async function withFixture(t, options, run) {
     rebind(revision, replacements) { directory = makeDirectory(revision, replacements) },
     setPeer(target, peer) { peers.set(conversationAddressKey(target), peer) },
     async drained(target, kind) {
-      const mode = kind ?? (target.kind === 'private' ? 'private' : target === simulationGroup ? 'simulation' : 'group-text')
-      await waitFor(() => redis.reader.lLen(redis.prefix + `agent:inbox:${mode}:${platformAccountKey(target.account)}`).then(length => length === 0), `${mode} inbox drained`)
+      const mode = kind ?? (target.kind === 'private' ? 'private' : target === simulationGroup ? 'simulation' : 'group')
+      const queue = mode === 'private' ? { account: target.account, kind: mode, conversationId: target.id }
+        : { account: target.account, kind: mode }
+      await waitFor(() => redis.reader.lLen(redis.prefix + agentInboxQueueKey(queue)).then(length => length === 0), `${mode} inbox drained`)
     },
     event(target, id, text, overrides = {}) {
       return { kind: 'message', message: {

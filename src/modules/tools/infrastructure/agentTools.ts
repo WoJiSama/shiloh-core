@@ -3,7 +3,7 @@ import { normalizeAgentInteractionResult, validateAgentInteractionPlan } from '.
 import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest } from '../../../contracts/agentFiles.js'
 import { snapshotAgentFileRequest, validateAgentFileBytes, validateAgentFileListing } from '../../content/infrastructure/agentFileBytes.js'
-import type { AgentTool, AgentToolContext, AgentToolDeliveryGuard, AgentToolRegistry, AgentToolMessage } from '../../../contracts/agentTool.js'
+import type { AgentTool, AgentToolContext, AgentToolDeliveryGuard, AgentToolRegistry, AgentToolMessage, AgentToolResult } from '../../../contracts/agentTool.js'
 import type { ConversationMemberSnapshot, ConversationMembersSnapshot, MessageImage } from '../../../contracts/platformConnection.js'
 import { isPlatformAccount, isPlatformIdentifier, samePlatformNamespace } from '../../runtime/domain/agentBindings.js'
 import type { DeliveryReceipt } from '../../../contracts/delivery.js'
@@ -61,6 +61,7 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
   diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'>
   /** Dynamic host credential check before any public tool receives model arguments. */
   allowsInput?(input: string): boolean
+  observeWebRead?(result: AgentToolResult, context: Pick<AgentToolContext, 'binding' | 'actor' | 'request' | 'signal' | 'isCurrent'>, turn: AbortSignal): Promise<void>
   context(event: unknown, name: string, origin: 'builtin' | 'custom'): (Omit<AgentToolContext, 'signal' | 'sendImage' | 'sendFile' | 'sendAudio' | 'sendVideo' | 'sendMusic' | 'sendVideoCard' | 'sendMediaRelay' | 'interact' | 'isSourceAvailable' | 'readImages' | 'sendBundle' | 'sendMessage' | 'readMember' | 'listMembers' | 'readHistory' | 'readFile' | 'readVideo' | 'listFiles'> & {
     readFile?(input: AgentFileRequest, isCurrent: () => boolean, signal: AbortSignal): Promise<AgentFileBytes>
     /** The current check lives for the turn; signal ends only this individual call. */
@@ -475,6 +476,11 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
                     ...(listFiles ? { listFiles } : {}),
                   })
                   await ensureCurrent()
+                  if (ports.observeWebRead && origin === 'builtin' && this.name === 'webParserTool' && inherited && result) {
+                    await ports.observeWebRead(result, { binding, actor, signal, isCurrent: () => !signal.aborted && scope.isCurrent(),
+                      ...(request ? { request } : {}) }, inherited)
+                    await ensureCurrent()
+                  }
                   return result
                 }),
                 new Promise<never>((_resolve, reject) => {

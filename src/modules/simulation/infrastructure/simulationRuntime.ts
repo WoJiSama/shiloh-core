@@ -9,6 +9,7 @@ import type { CoreCapabilityToolFactory } from '../../tools/infrastructure/agent
 import type { ChatRequestData, ChatResponse } from '../../../contracts/modelGateway.js'
 import type { ExecutionOptions } from '../../../contracts/modelExecution.js'
 import type { AgentHistoryRecall, AgentHistoryRequestSource } from '../../../contracts/agentHistory.js'
+import type { ConversationTopicRecall } from '../../../contracts/conversationTopic.js'
 import type { CognitionConsolidator, CognitionGuard, CognitionRecall, CognitionTurnProjection } from '../../../contracts/agentCognition.js'
 import { cognitionConsolidationPrompt, parseCognitionProposals } from '../../memory/infrastructure/cognitionConsolidation.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest, ConversationFileCatalog, ConversationFileEntry, ConversationFileReadOptions, FileReadGuard, MessageFileReadOptions } from '../../../contracts/agentFiles.js'
@@ -63,7 +64,7 @@ import { parseAgentToolArguments, validateAgentToolInput } from '../../tools/inf
 import type { ConversationMembersSnapshot } from '../../../contracts/platformConnection.js'
 import type { PersonaScope } from '../../../contracts/persona.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
-import { createDefaultSimSession, isSimulationUserId } from '../domain/simConfig.js'
+import { createDefaultSimSession, dayKey, isSimulationUserId } from '../domain/simConfig.js'
 import { affinityLevel, bumpMemeUsage, defaultAffinityEntry, dueMemories, formatSelfMemorySection, mergeMemeCandidates, normalizeMemoryList, parseMemeCandidates } from '../domain/simMemory.js'
 import { mineUserCatchphrases } from '../domain/userStyle.js'
 import { boundedTimerDelay, safeSetTimeout, isDuplicateMessageId, sanitizeUntrustedText, safeToolErrorText, shouldSendErrorNotice } from '../domain/safety.js'
@@ -74,7 +75,8 @@ import { buildWakeSnapshot, compactSimMessage } from '../domain/messageView.js'
 import { buildSocialPermissionRequest, readSocialVerdict, type SocialAction } from '../domain/socialPermission.js'
 import { computeWaitOutcome, normalizeWaitPlan, type SimWaitPlan } from '../domain/waitGate.js'
 import { checkSendAllowance, checkWakeBudget, describeBudgetLimit, isDirectAddressKind, limitNoticeDue, shouldAnnounceBudgetLimit, invalidatePreSleepWaitByParticipation, markPreSleepSatisfied, recordSend, recordWake, recordWakeTokens, resetPreSleepWait, rollBudgetDay } from '../domain/budget.js'
-import { buildCharacterTurnContext, buildSimSystemPrompt, buildWakePrompt, FINISH_CHOICE_GUIDANCE, trimAgentHistory } from '../domain/promptBuilder.js'
+import { buildCharacterTurnContext, buildSimSystemPrompt, buildWakePrompt, FINISH_CHOICE_GUIDANCE, isSimpleSimulationGreeting, trimAgentHistory } from '../domain/promptBuilder.js'
+import { prepareEarlierSimulationRead, projectSimulationToolResult, type SimulationActionReceipt } from '../domain/toolContextExcerpt.js'
 import { isSilentDeclaration, isWrappedAnnotation, mentionsSilenceVocabulary } from '../domain/silentDeclaration.js'
 import { parsePersonProfilePatches, groundPersonProfileCandidate, interestMatchesTitle, type PersonProfile } from '../domain/personProfile.js'
 import { isSleeping, activityFactor, sleepinessNote, staleMessageNote, type RhythmWindow } from '../domain/rhythm.js'
@@ -82,6 +84,7 @@ import { normalizeLifeThreads, mergeThreadSync, formatLifeThreads, type LifeThre
 import { applyMoodUpdate, formatMoodSection, moodSummaryLine, normalizeSimMood, projectMood, type MoodAxis } from '../domain/mood.js'
 import { checkHealth, formatAlerts, type HealthAlert } from '../domain/healthSentinel.js'
 import { buildChatRequestData } from '../../models/domain/modelGateway.js'
+import { excerptContext, modelContextRequest, optionalContext } from '../../models/domain/requestContext.js'
 import { safeTruncateUnicode } from '../../models/domain/unicodeText.js'
 import { createSimSessionStore, simulationSessionKey, type SimGroupOverrides, type SimSessionStore } from './simSessionStore.js'
 import { AgentSimulationModelError, type AgentSimulationWakePhase } from './agentSimulationModels.js'
@@ -91,6 +94,7 @@ import { decodeSimulationAddressKey, isQqSimulationAddress, qqSimulationAddress,
 import { createPersonMemoryStore } from '../../memory/infrastructure/personMemoryStore.js'
 import { canReadUnattributedMemory, formatPersonMemoryFacts, personMemoryAddress, revokePersonMemorySourceForAccount } from '../../memory/infrastructure/personMemoryContext.js'
 import type { AgentSemanticMemoryRecall } from '../../../contracts/semanticMemory.js'
+import type { WebEvidenceQuestion, WebEvidenceRecall } from '../../../contracts/webEvidence.js'
 import { isPersonMemoryRedacted } from '../../memory/domain/personMemory.js'
 import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { redactInternalStatusLeaks } from '../../conversation/domain/internalStatusLeak.js'
@@ -107,6 +111,7 @@ import { validateAgentToolMessage } from '../../messaging/infrastructure/agentTo
 import { createSimulationAgentFiles, simulationFileMetadata, type SimulationFileProjection, type SimulationMessageFileSource } from './simulationAgentFiles.js'
 import { createSimulationAgentVideo, simulationVideoCount } from './simulationAgentVideo.js'
 import { createSimulationVideoCardLedger } from './simulationVideoCardLedger.js'
+import { createSimulationReadContext } from './simulationReadContext.js'
 
 export const SIM_RECENT_LIMIT = 60
 export const SIM_SWEEP_INTERVAL_MS = 30_000
@@ -211,6 +216,10 @@ export interface SimulationRuntimePorts {
   /** 近两天情节记忆文本（"这两天聊过/做过什么"）；无则空串 */
   getRecentEpisodesText?(groupId: string, options?: { after?: number; viewer?: PersonaScope }): string
   readConversationMemory?(target: ConversationAddress, viewer: PersonaScope, isCurrent?: () => boolean): Promise<{ digest: string; episodes: string }>
+  readTopicContext?(binding: AgentBindingSnapshot, authorId: string, messageId: string, text: string, existing: readonly string[], isCurrent: () => boolean,
+    signal?: AbortSignal): Promise<ConversationTopicRecall | undefined>
+  webEvidenceEnabled?(target: ConversationAddress): boolean
+  readWebEvidence?(binding: AgentBindingSnapshot, question: WebEvidenceQuestion, isCurrent: () => boolean, signal?: AbortSignal): Promise<WebEvidenceRecall | undefined>
   readGroupMemory?(target: ConversationAddress, viewer: PersonaScope, sourceId: string | undefined, isCurrent: () => boolean): Promise<string>
   isGroupMemoryCurrent?(target: ConversationAddress, expected: string, includeWorkflows: boolean, isCurrent: () => boolean): Promise<boolean>
   recordGroupReply?(target: ConversationAddress, isCurrent: () => boolean): Promise<void>
@@ -357,7 +366,7 @@ interface SimTransportReceipt {
   unknown?: boolean
 }
 
-interface SimulationToolObservation { failureReported?: boolean; round?: number }
+interface SimulationToolObservation { failureReported?: boolean; round?: number; receipt?: SimulationActionReceipt }
 
 class CharacterBackgroundRevokedError extends Error {}
 
@@ -638,16 +647,23 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     if (calls !== undefined && (!Array.isArray(calls) || calls.some(call => !namedCall(call)))) return 'malformed_tool_calls'
     return typeof message.content === 'string' && message.content.trim() || Array.isArray(calls) && calls.length ? undefined : 'empty_response'
   }
-  async function invokeSimModel(request: ChatRequestData, config: unknown, signal?: AbortSignal, isCurrent?: ExecutionOptions['isCurrent'], ensureCurrent?: ExecutionOptions['ensureCurrent']): Promise<ChatResponse> {
+  async function invokeSimModel(request: ChatRequestData, config: unknown, signal?: AbortSignal, isCurrent?: ExecutionOptions['isCurrent'],
+    ensureCurrent?: ExecutionOptions['ensureCurrent'], compaction?: Pick<AgentDiagnosticDetails, 'compactedToolResults' | 'savedToolResultBytes'>): Promise<ChatResponse> {
     signal?.throwIfAborted()
     if (isCurrent?.() === false) throw new Error('本会话 AI 活动已暂停')
     const started = Date.now()
-    diagnose({ stage: 'model', operation: 'simulation_main', outcome: 'started' })
+    const requestBytes = Buffer.byteLength(JSON.stringify(request))
+    // A cheap, backend-independent estimate. The provider reports its own tokenizer's count when available.
+    const contextUsage = { requestBytes, estimatedInputTokens: Math.ceil(requestBytes / 3), ...compaction }
+    diagnose({ stage: 'model', operation: 'simulation_main', outcome: 'started', details: contextUsage })
     try {
       const response = await ports.YTapi(request, config, signal, isCurrent, ensureCurrent)
       const code = modelResponseFailure(response)
+      const usage = record(response.usage), inputTokens = usage.prompt_tokens ?? usage.input_tokens
       diagnose({ stage: 'model', operation: 'simulation_main', outcome: code ? 'failed' : 'succeeded',
-        code: code ?? 'completed', durationMs: Date.now() - started })
+        code: code ?? 'completed', durationMs: Date.now() - started, details: {
+          ...contextUsage, ...(typeof inputTokens === 'number' && Number.isSafeInteger(inputTokens) && inputTokens >= 0 ? { inputTokens } : {}),
+        } })
       return response
     } catch (error) {
       diagnose({ stage: 'model', operation: 'simulation_main', outcome: signal?.aborted ? 'cancelled' : 'failed', code: 'model_threw', error, durationMs: Date.now() - started })
@@ -1951,10 +1967,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
 
         const snapshot = buildWakeSnapshot(state, { limit: cfg.turn.wakeMessageLimit, maxChars: cfg.turn.wakeMaxChars, now: now(), ...(anchor ? { anchor } : {}) })
         const snapshotSeqs = snapshot.includedSeqs
+        const snapshotIds = state.recent.filter(message => snapshotSeqs.includes(message.seq)).flatMap(message => message.messageId == null ? [] : [String(message.messageId)])
         const projectedWatermark = { unread: state.unread, modelSeenSeqs: state.modelSeenSeqs, lastReadThroughSeq: state.lastReadThroughSeq }
         noteModelSeen(projectedWatermark, snapshotSeqs)
-        if (!durableWake) state.modelSeenSeqs = projectedWatermark.modelSeenSeqs
         const visibleMessageSeqs = new Set(anchor ? snapshotSeqs : [...projectedWatermark.modelSeenSeqs, ...snapshotSeqs])
+        const stagedMessageSeqs = new Set(snapshotSeqs)
+        const currentToolMessageSeqs = new Set<number>()
         // agent 长期记忆/好感度/近期动态装配（.仿真 重置不清这些）
         const affinityRaw = await selfStore.loadAffinity(groupId)
         const affinity: SimAffinityMap = Object.create(null)
@@ -2054,6 +2072,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         // 长程语义召回：未读末尾消息做查询，检索"两天情节窗之外"的相关片段（1s 预算）。
         // 失败/超时不注入内容，但必须与"检索无结果"区分开——注入未完成提示，防止模型把"没召回到"当"没发生过"。
         const focusedGoal = character.goals.find(goal => goal.id === focusedGoalId)
+        const topic = resolvedPersona.binding && anchor?.messageId && !anchor.textTruncated ? await ports.readTopicContext?.(resolvedPersona.binding,
+          anchor.userId, String(anchor.messageId), anchor.text, snapshotIds, canCallModel, turnSignal).catch(() => undefined) : undefined
         const recallQuery = anchor ? '' : [focusedGoal ? `${focusedGoal.title} ${focusedGoal.nextStep}` : '', ...[...state.unread].sort((a, b) => a.seq - b.seq).slice(-6).map(m => String(m.text || '').trim())].filter(Boolean).join(' ').slice(0, 160)
         let semanticRecall = ''
         let semanticRecallIncomplete = false
@@ -2065,7 +2085,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         if (recallQuery && ports.readSemanticMemory) {
           try {
             semanticProjection = await ports.readSemanticMemory(target, recallQuery, canCallModel, memoryTurn?.signal,
-              state.unread.flatMap(message => message.messageId == null ? [] : [String(message.messageId)]))
+              [...snapshotIds, ...(topic?.messageIds ?? [])])
             semanticRecall = semanticProjection?.text ?? ''
             semanticRecallIncomplete = semanticProjection?.incomplete === true
           } catch (error) {
@@ -2098,15 +2118,24 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             return { digest: '', episodes: '' }
           })
           : undefined
+        const webRetention = actor.kind === 'user' && ports.webEvidenceEnabled?.(target) === true
+        const webEvidence = webRetention && resolvedPersona.binding && triggerSource?.messageId &&
+          triggerSource.userId === actor.userId && !triggerSource.textTruncated
+          ? await ports.readWebEvidence?.(resolvedPersona.binding, { messageId: String(triggerSource.messageId), authorId: triggerSource.userId,
+            at: triggerSource.at, text: triggerSource.text }, canCallModel, turnSignal) : undefined
+        let webRead = !!webEvidence
+        if (webRead) ephemeralRead = unrelatedEphemeralRead = true
         const groupMemoryContext = await ports.readGroupMemory?.(target, persona,
           actor.kind === 'user' && triggerMessage?.messageId != null ? String(triggerMessage.messageId) : undefined, canCallModel).catch(() => {
             diagnose({ stage: 'memory', operation: 'simulation_group_memory_read', outcome: 'failed', code: 'group_memory_unavailable' })
             return ''
           }) ?? ''
         const assertGroupMemoryCurrent = async () => {
+          if (topic && !await topic.isCurrent()) throw new Error('续聊话题原文或承诺状态已改变')
           for (const projection of historyProjections) if (!await projection.isCurrent()) throw new Error('显式历史来源已改变，停止使用旧上下文')
           for (const projection of fileProjections) if (!await projection.isCurrent()) throw new Error('文件资料来源已改变，停止使用旧上下文')
           if (semanticProjection?.text && !await semanticProjection.isCurrent()) throw new Error('语义记忆来源已改变，停止使用旧上下文')
+          if (webEvidence && !await webEvidence.isCurrent()) throw new Error('公开资料来源已改变，停止使用旧上下文')
           if (cognitionProjection?.text && !await cognitionProjection.isCurrent()) throw new Error('统一自我来源已改变，停止使用旧上下文')
           if (ports.isGroupMemoryCurrent && !await ports.isGroupMemoryCurrent(target, groupMemoryContext, actor.kind === 'user', canCallModel)) throw new Error('本群资料来源已改变，停止使用旧上下文')
         }
@@ -2124,6 +2153,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           if (!canCallModel()) throw new Error('模型请求的来源或绑定已改变')
         }
         if (!canCallModel()) return
+        const casual = actor.kind === 'user' && isDirectAddressKind(reason.kind) && !!anchor && !anchor.quoteSource && !anchor.forwardId &&
+          !anchor.imageCount && !anchor.videoCount && !anchor.files?.length && !anchor.textTruncated && !focusedGoalId &&
+          !groupMemoryContext && !webEvidence && !semanticRecall && !topic && !cognitionProjection?.text && isSimpleSimulationGreeting(anchor.text)
         const wakeInput: Parameters<typeof buildWakePrompt>[0] = {
           state, reason, ...(addressedBy ? { speakerId: addressedBy } : {}), ...(anchor ? { focusSeq: anchor.seq } : {}), snapshotText: snapshot.text, unreadTotal: snapshot.unreadTotal, now: now(), selfName,
           ...(initialPrompt ? { initialPrompt } : {}),
@@ -2143,21 +2175,30 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           ...(delegatedSection ? { delegatedSection } : {}),
           groupDigest: anchor || !allowRebuiltAggregates ? '' : narrativeMemory?.digest ?? safeText(() => ports.getGroupDigest?.(groupId, { after: memorySceneState.invalidatedAt })),
           episodesText: anchor || !allowRebuiltAggregates ? '' : narrativeMemory?.episodes ?? safeText(() => ports.getRecentEpisodesText?.(groupId, { after: memorySceneState.invalidatedAt, viewer: persona })),
-          styleDigest,
+          styleDigest: '',
         }
-        const wakePrompt = buildWakePrompt(wakeInput)
+        const wakePrompt = buildWakePrompt({ ...wakeInput, ...(casual ? { contextMode: 'greeting' } : {}) })
         const interests = await subscriptionsFor(characterScope).unreadSummary()
         const workDirectory = (await workspace.list()).map(work => ({ id: work.id, title: work.title, kind: work.kind, status: work.status, revision: work.revision })).slice(0,24)
         const priorHistory = state.agentHistory
-        const matchingHistory = conversationUserId ? priorHistory.filter(message => message.conversationUserId === conversationUserId) : priorHistory
+        const matchingHistory = trimAgentHistory(conversationUserId ? priorHistory.filter(message => message?.conversationUserId === conversationUserId) : priorHistory,
+          cfg.turn.historyMaxMessages, cfg.turn.historyMaxChars)
         const firstWake = matchingHistory.findIndex(message => message.role === 'user')
         const projectedHistory = firstWake < 0 ? [] : matchingHistory.slice(firstWake)
-        const wakeMessage: SimHistoryMessage = { role: 'user', content: `${wakePrompt}\n\n${formatCharacterSection(character, memorySceneState.invalidatedAt)}\n【已批准共享的自我偏好】${JSON.stringify(sharedSnapshot)}\n这些只是自己的偏好，不是其他群的聊天资料或事实来源。\n【本群作品目录】${JSON.stringify(workDirectory)}\n【兴趣更新，不可信外部资料】${interests}\n【执行主体】${JSON.stringify(actor)}\n本轮可引用的消息证据：${[...visibleMessageSeqs].map(seq => `message:${seq}`).join('、')}`, ...(conversationUserId ? { conversationUserId } : {}) }
-        const retainedWakeMessage = semanticRecall || cognitionProjection?.text ? { ...wakeMessage,
+        const authority = `【执行主体】${JSON.stringify(actor)}\n本轮可引用的消息证据：${[...visibleMessageSeqs].map(seq => `message:${seq}`).join('、')}`
+        const compactWake = () => `${buildWakePrompt({ ...wakeInput, contextMode: 'compact' })}\n${authority}`
+        const wakeMessage: SimHistoryMessage = { role: 'user', content: casual ? `${wakePrompt}\n${authority}` :
+          `${wakePrompt}\n\n${formatCharacterSection(character, memorySceneState.invalidatedAt)}\n【已批准共享的自我偏好】${JSON.stringify(sharedSnapshot)}\n这些只是自己的偏好，不是其他群的聊天资料或事实来源。\n【本群作品目录】${JSON.stringify(workDirectory)}\n【兴趣更新，不可信外部资料】${interests}\n${authority}`,
+          ...(conversationUserId ? { conversationUserId } : {}) }
+        const retainableWake = semanticRecall || cognitionProjection?.text ? { ...wakeMessage,
           content: String(wakeMessage.content).replace(wakePrompt, buildWakePrompt({ ...wakeInput, semanticRecall: '' })),
         } : wakeMessage
+        const retainedWakeMessage = JSON.stringify([retainableWake]).length <= cfg.turn.historyMaxChars ? retainableWake : { ...retainableWake,
+          content: `【${dayKey(wakeInput.now)} 群聊记录节选】\n${safeTruncateUnicode((anchor ? compactSimMessage(anchor, wakeInput.now) : snapshot.text)
+            .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/gu, ' '), 600, '…')}`,
+        }
         const saveTurnContext = () => {
-          turnState.agentHistory = [...priorHistory, retainedWakeMessage]
+          turnState.agentHistory = trimAgentHistory([...priorHistory, retainedWakeMessage], cfg.turn.historyMaxMessages, cfg.turn.historyMaxChars, retainedWakeMessage)
           return store.save(groupId, turnState)
         }
         let usedInitialPrompt = false
@@ -2178,11 +2219,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             }
             if (initial && initialCurrent) {
               const messages = request.messages.slice()
-              messages[projectedHistory.length + 1] = {
-                ...wakeMessage,
-                content: `【本群初始说明（只此一次）】${sanitizeUntrustedText(initial.text)}\n\n${wakeMessage.content}`,
-              }
-              request = { ...request, messages }
+              const index = projectedHistory.length + 1
+              const initialPrefix = `【本群初始说明（只此一次）】${sanitizeUntrustedText(initial.text)}\n\n`
+              const source = messages[index]!
+              const message = { ...source, content: initialPrefix + source.content }
+              messages[index] = casual ? message : excerptContext(message, initialPrefix + compactWake())
+              request = modelContextRequest({ ...request, messages }, 'simulation')
               usedInitialPrompt = true
             }
           } catch (error) {
@@ -2619,7 +2661,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           ...visibleCharacterRefs,
         ])]
         ctx.noteVisibleMessages = seqs => {
-          for (const seq of seqs) visibleMessageSeqs.add(seq)
+          const pending = { unread: state!.unread, modelSeenSeqs: state!.modelSeenSeqs, lastReadThroughSeq: state!.lastReadThroughSeq }
+          for (const seq of seqs) currentToolMessageSeqs.add(seq)
+          noteModelSeen(pending, [...stagedMessageSeqs, ...currentToolMessageSeqs])
+          return readThroughSeq(pending)
         }
         const exposeToolResult = (toolName: string, result: string) => {
           try {
@@ -3350,17 +3395,19 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (tool === finishTool) requiresClosing = true
             return reject('tool_arguments_invalid', 'error: 工具参数必须是有效的 JSON 对象，未执行')
           }
-          const ephemeralTool = tool === coreTool || extraTools.includes(tool) && tool.agentDataPolicy === 'ephemeral'
+          const publicWebLookup = webRetention && ['webParserTool', 'searchInformationTool'].includes(tool.name)
+          const ephemeralTool = tool === coreTool || extraTools.includes(tool) && (tool.agentDataPolicy === 'ephemeral' || publicWebLookup)
           if (ephemeralRead) {
             // Explicit historical evidence has a revocable, per-turn grant. Do
             // not turn it (or a model paraphrase) into durable role state/actions.
+            const evidenceKind = historyRead ? '历史' : webRead ? '网页' : '文件'
             if (tool === finishTool) {
               if (args.goal !== undefined || Array.isArray(args.memories) && args.memories.length ||
                   typeof args.choice === 'string' && ['schedule', 'wait', 'complete', 'abandon'].includes(args.choice)) {
-                return reject('tool_ephemeral_context_restricted', `error: 本轮${historyRead ? '历史' : '文件'}资料仅供临时查证，不能保存为记忆、目标或派生作品；请回复或安静收尾`)
+                return reject('tool_ephemeral_context_restricted', `error: 本轮${evidenceKind}资料仅供临时查证，不能保存为记忆、目标或派生作品；请回复或安静收尾`)
               }
             } else if (!ephemeralTool && !['chatHistoryTool', 'excelWorkbookTool', 'simSendMessage', 'simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simMarkRead'].includes(tool.name)) {
-              return reject('tool_ephemeral_context_restricted', `error: 本轮${historyRead ? '历史' : '文件'}资料仅供临时查证，请继续查询或回复，不保存派生状态或执行其他动作`)
+              return reject('tool_ephemeral_context_restricted', `error: 本轮${evidenceKind}资料仅供临时查证，请继续查询或回复，不保存派生状态或执行其他动作`)
             }
           }
           if (!requiresClosing && tool === finishTool && Array.isArray(args.memories) &&
@@ -3466,6 +3513,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             // earlier unrelated ephemeral reads still prevent dispatch.
             if (tool.name !== 'grabRedBagTool') {
               ephemeralRead = true
+              if (publicWebLookup) webRead = true
               if (tool.name !== 'simQzoneInteract') unrelatedEphemeralRead = true
             }
             const result = await runSimTool(tool, args, event, observed)
@@ -3532,15 +3580,22 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             })
           }
           visibleCharacterRefs.add(`receipt:${id}`)
-          if (!ephemeralRead) sourceResults.set(`receipt:${id}`, { toolName: tool.name, content: result.slice(0, 8000), truncated: result.length > 8000 })
-          return `${result}\n【运行时行动回执】${JSON.stringify({ evidenceRef: `receipt:${id}`, status, goalId: focusedGoalId })}`
+          if (observed) observed.receipt = { evidenceRef: `receipt:${id}`, status, ...(focusedGoalId ? { goalId: focusedGoalId } : {}) }
+          return result
         }
         const executionConfig = ports.getExecutionConfig()
         const providerConfig = record(executionConfig) as Parameters<typeof buildChatRequestData>[0]
-        const systemPrompt = buildSimSystemPrompt({ persona: persona.persona, systemContent: persona.systemContent, selfName, hasExtraTools: extraTools.length > 0, extraToolNames, hasEmojiTool: extraToolNames.includes('sendLocalEmojiTool'), hasMoodTool: cfg.mood.enabled && toolEnabled('simSetMood'), availableToolNames: tools.filter(tool => allowedTool(tool.name)).map(tool => tool.name) })
+        const systemPrompt = buildSimSystemPrompt({ persona: persona.persona, systemContent: persona.systemContent, selfName, casual, hasExtraTools: extraTools.length > 0, extraToolNames, hasEmojiTool: extraToolNames.includes('sendLocalEmojiTool'), hasMoodTool: cfg.mood.enabled && toolEnabled('simSetMood'), availableToolNames: tools.filter(tool => allowedTool(tool.name)).map(tool => tool.name) })
 
-        const history: SimHistoryMessage[] = [...projectedHistory, wakeMessage, ...(groupMemoryContext ? [{ role: 'user' as const, content: groupMemoryContext }] : [])]
+        const history: SimHistoryMessage[] = [...projectedHistory, wakeMessage,
+          ...(topic ? [{ role: 'user' as const, content: topic.text }] : []),
+          ...(groupMemoryContext ? [{ role: 'user' as const, content: groupMemoryContext }] : []),
+          ...(webEvidence ? [{ role: 'user' as const, content: webEvidence.text }] : [])]
+        const readContext = createSimulationReadContext(ports.allowsToolInput)
         const firstCurrentMessage = projectedHistory.length
+        const latestPriorWake = projectedHistory.findLastIndex(message => message.role === 'user' && typeof message.content === 'string' &&
+          /^【(?:当前时间|[\d-]+ 群聊记录节选)】/u.test(message.content))
+        const compactWakeText = casual ? '' : compactWake()
         const appendToolReply = (toolCallId: string, name: string, content: string) => {
           history.push({ role: 'tool', tool_call_id: toolCallId, name, content })
           if (ports.recordToolResult && !ephemeralRead) {
@@ -3561,19 +3616,28 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         while (rounds < cfg.turn.maxToolRounds) {
           rounds += 1
           const closing = requiresClosing || rounds > cfg.turn.maxToolRounds - 2
-          const roundTools = (closing ? [finishTool] : tools).filter(tool => allowedTool(tool.name))
+          const roundTools = (closing ? [finishTool] : casual ? tools.filter(tool => ['simSendMessage', finishTool.name].includes(tool.name)) : tools)
+            .filter(tool => allowedTool(tool.name))
           if (!roundTools.length) {
             if (durableWake && rounds === 1) { await discardWake(); return }
             break
           }
-          modelReadThroughSeq = readThroughSeq(durableWake && rounds === 1 ? projectedWatermark : state)
           const context = buildCharacterTurnContext({ phase: closing ? 'closing' : 'acting', remainingToolRounds: cfg.turn.maxToolRounds - rounds + 1, ...(focusedGoalId ? { focusedGoalId } : {}), visibleEvidenceRefs: visibleEvidenceRefs() }) +
             (anchor ? `\n当前只回应 #${anchor.seq} 的话题；同一人的前文也仅在有关时用。` : '') +
             (reviewer ? `\n本轮剩余提交检查次数：${Math.max(0, 3 - reviewer.stats().checks)}。将需要保存的观点、目标和最终消息合并进 simFinishTurn；检查退回后自行修正或安静放弃，检查提示不发到群里。` : '')
-          const requestHistory = history.map(({ conversationUserId: _user, ...message }) => message)
-          const currentContext = personRecall ? `${personRecall}\n\n${context}` : context
-          const roundFunctions = simToolsAsFunctions(roundTools.map(tool => tool === finishTool ? finishToolInfo : tool))
-          const requestData = buildChatRequestData(providerConfig, [{ role: 'system', content: systemPrompt }, ...requestHistory, { role: 'user', content: currentContext }], roundFunctions, closing ? 'required' : 'auto')
+          const { messages: requestHistory, repeatedReads, ...readCompaction } = readContext.project(history)
+          if (compactWakeText) excerptContext(requestHistory[firstCurrentMessage]!, compactWakeText)
+          for (const [index, message] of requestHistory.entries()) {
+            if (index >= firstCurrentMessage) break
+            if (index !== latestPriorWake && !(message.role === 'tool' && typeof message.content === 'string' && message.content.includes('【运行时行动回执】'))) {
+              optionalContext(message, 'history')
+            }
+          }
+          const roundFunctions = simToolsAsFunctions(roundTools.map(tool => tool === finishTool ? finishToolInfo : tool).sort((a, b) => a.name.localeCompare(b.name, 'en')))
+          const styleContext = styleDigest && !casual ? [optionalContext({ role: 'user', content: `【说话风格参考】\n${safeTruncateUnicode(styleDigest, 900)}` }, 'style')] : []
+          const recallContext = personRecall && !casual ? [optionalContext({ role: 'user', content: personRecall }, 'recall')] : []
+          const requestData = modelContextRequest(buildChatRequestData(providerConfig, [{ role: 'system', content: systemPrompt }, ...requestHistory, ...styleContext,
+            ...recallContext, { role: 'user', content: context }], roundFunctions, closing ? 'required' : 'auto'), 'simulation', rounds, repeatedReads, readCompaction.savedToolResultBytes)
           if (closing && (!requestData.tools?.length || !requestData.tool_choice)) {
             diagnose({ stage: 'model', operation: 'simulation_turn', outcome: 'failed', code: 'closing_tools_unavailable' },
               () => logger.warn(`[仿真] 群 ${groupId} 模型配置未提供收尾工具，停止本轮`))
@@ -3596,7 +3660,6 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               const model = await beginWake(async () => {
                 recordWakeStart()
                 noteProactiveCheck?.()
-                noteModelSeen(turnState, snapshotSeqs)
                 const write = saveTurnContext().catch(error => diagnose({ stage: 'runtime', operation: 'simulation_context_save', outcome: 'failed', code: 'turn_context_not_saved', error }))
                 try { return { response: await runFirstWakeModel(requestData) } }
                 catch (error) { return { error } }
@@ -3618,13 +3681,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               commitment.started = true
               if (!canRunTurn()) throw new Error('承诺开始后执行环境已改变')
               recordWakeStart()
-              noteModelSeen(turnState, snapshotSeqs)
               const write = saveTurnContext().catch(error => diagnose({ stage: 'runtime', operation: 'simulation_context_save', outcome: 'failed', code: 'turn_context_not_saved', error }))
               try { response = await invokeSimModel(requestData, executionConfig, turnSignal, canCallModel, ensureModelCurrent) }
               finally { await write }
             } else {
               if (!canRunTurn()) throw new Error('角色绑定或运行状态已改变，本回合停止行动')
-              response = await invokeSimModel(requestData, executionConfig, turnSignal, canCallModel, ensureModelCurrent)
+              response = await invokeSimModel(requestData, executionConfig, turnSignal, canCallModel, ensureModelCurrent,
+                readCompaction.compactedToolResults ? readCompaction : undefined)
             }
           } catch (error) {
             failureStage = 'model'
@@ -3634,6 +3697,11 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             break
           }
           if (modelResponseFailure(response)) { executionError = '模型没有返回有效结果'; failureStage = 'model'; break }
+          await ensureModelCurrent()
+          noteModelSeen(state, [...stagedMessageSeqs])
+          for (const seq of stagedMessageSeqs) visibleMessageSeqs.add(seq)
+          stagedMessageSeqs.clear()
+          modelReadThroughSeq = readThroughSeq(state)
           tokens += Number(record(response.usage).total_tokens) || 0
           try {
             ports.recordTokens?.({ scope: groupId, stage: 'sim', model: String((response as { model?: unknown }).model || ''), usage: record(response.usage), ms: 0 })
@@ -3710,25 +3778,29 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             break
           }
           history.push({ role: 'assistant', content: String(message.content || ''), tool_calls: toolCallsRaw })
+          const visualContext: SimHistoryMessage[] = []
           for (const call of toolCallsRaw) {
             toolCalls += 1
+            currentToolMessageSeqs.clear()
             const callRecord = record(call)
             const fn = record(callRecord.function)
             const name = String(fn.name || '')
             const tool = tools.find(t => t.name === name)
             const observed: SimulationToolObservation = { round: rounds }
             let resultText: string
+            let toolQuery = ''
             if (turnClosed) {
               resultText = rejectToolCall(tool?.name, 'tool_turn_closed', 'error: 回合已结束，未执行', observed)
             } else if (rejectedToolCalls.has(call)) {
               resultText = rejectToolCall(tool?.name, 'tool_content_blocked', 'error: 工具参数包含宿主禁止外发的内容，未执行', observed)
             } else if (closing && name !== finishTool.name) {
               resultText = rejectToolCall(tool?.name, 'tool_closing_only', 'error: 当前仅允许 simFinishTurn 收尾，未执行', observed)
-            } else if (!tool) {
+            } else if (!tool || casual && !roundTools.includes(tool)) {
               resultText = rejectToolCall(undefined, 'tool_not_available', `error: 未知工具 ${name}`, observed)
             } else {
               const maxChars = tool.agentPreflight ? undefined : internalSchemaTools.has(tool) ? SIMULATION_TOOL_INPUT_MAX_CHARS : Infinity
               const args = parseAgentToolArguments(fn.arguments, maxChars)
+              if (typeof args?.query === 'string') toolQuery = args.query.slice(0, 1000)
               if (name === 'sendLocalEmojiTool' && args) {
                 // 仿真回合表情冷却：跨回合短冷却防刷屏（与主链路 postSendCooldownMs 同参）
                 const cooldownMs = safeNumber(() => ports.getEmojiCooldownMs?.()) || 90_000
@@ -3773,20 +3845,33 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                 } catch {
                   diagnose({ stage: 'model', operation: 'simulation_image_description', outcome: 'failed', code: 'image_description_unavailable' })
                 }
-                appendToolReply(String(callRecord.id || ''), name, `已获取 ${images.length} 张图片，视觉侧模型的描述见下一条消息。`)
-                history.push({ role: 'user', content: `${label}\n【视觉模型描述】${described || '（图片描述暂不可用，可请群友用文字说明图片内容）'}` })
+                appendToolReply(String(callRecord.id || ''), name, `已获取 ${images.length} 张图片，视觉侧模型的描述见本批工具结果之后。`)
+                visualContext.push({ role: 'user', content: `${label}\n【视觉模型描述】${described || '（图片描述暂不可用，可请群友用文字说明图片内容）'}` })
                 continue
               }
             }
-            appendToolReply(String(callRecord.id || ''), name, resultText.slice(0, ephemeralRead ? 32_000 : 4000))
+            const toolResult = {
+              name, content: resultText, query: `${toolQuery}\n${triggerMessage?.text ?? ''}`,
+              ...(observed.receipt ? { receipt: observed.receipt } : {}),
+              allowsText: (value: string) => ports.allowsToolInput?.(value) !== false,
+            }
+            const projected = projectSimulationToolResult({ ...toolResult, maxChars: ephemeralRead ? 32_000 : 4_000 })
+            if (!projected.truncated && currentToolMessageSeqs.size && confirmedReadResult(name, resultText)) {
+              for (const seq of currentToolMessageSeqs) stagedMessageSeqs.add(seq)
+            }
+            const earlier = prepareEarlierSimulationRead({ ...toolResult, shown: projected.content })
+            if (earlier) readContext.note(history.length, rounds, projected.content, earlier, String(callRecord.id || ''))
+            if (observed.receipt && !ephemeralRead) sourceResults.set(observed.receipt.evidenceRef, { toolName: name, ...projected })
+            appendToolReply(String(callRecord.id || ''), name, projected.content)
             if (managementTerminal || qqActionTerminal) { turnClosed = true; decision = 'silent'; break }
-            if (resultText.startsWith('error:')) {
+            if (resultText.startsWith('error:') || projected.content.startsWith('error:')) {
               executionError = '回合包含未完成的工具操作'; failureStage = 'tool'
               if (!observed.failureReported) {
                 diagnose({ stage: 'tool', operation: toolOperation(tool?.name), outcome: 'failed', code: 'tool_reply_failed' })
               }
             }
           }
+          history.push(...visualContext)
           if (turnClosed) break
         }
 
@@ -3833,27 +3918,31 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         const attachmentRevoked = attachmentSourceIds.size > 0 &&
           (await Promise.all([...attachmentSourceIds].map(id => ports.isMessageRecalled?.(target, id)))).some(Boolean)
         const semanticRevoked = semanticProjection?.text && !await semanticProjection.isCurrent()
+        const topicRevoked = topic && !await topic.isCurrent()
+        const webEvidenceRevoked = webEvidence && !await webEvidence.isCurrent()
         const cognitionRevoked = cognitionProjection?.text && !await cognitionProjection.isCurrent()
         const historyRevoked = !(await Promise.all(historyProjections.map(projection => projection.isCurrent()))).every(Boolean)
         const filesRevoked = !(await Promise.all(fileProjections.map(projection => projection.isCurrent()))).every(Boolean)
-        const removedSource = attachmentRevoked || semanticRevoked || cognitionRevoked || historyRevoked || filesRevoked || memoryTurn?.isCurrent() === false ||
+        const removedSource = attachmentRevoked || semanticRevoked || topicRevoked || webEvidenceRevoked || cognitionRevoked || historyRevoked || filesRevoked || memoryTurn?.isCurrent() === false ||
           (await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt || revisedSources || [...sourceMemoryIds].some(id => !activeCharacterMemories(latestCharacter).some(memory => memory.id === id)) || await store.loadActivityVersion(groupId) !== activityVersion || await shared.fingerprint() !== sharedFingerprint || !isBindingCurrent()
         // Intermediate model output may echo ephemeral image or initial prompt material.
-        const thisTurn = (semanticRecall || cognitionProjection?.text || ephemeralRead ? [retainedWakeMessage] : usedImageDescription || usedInitialPrompt || groupMemoryContext ? [wakeMessage] : history.slice(firstCurrentMessage)).map(message => {
+        const thisTurn = (semanticRecall || topic || cognitionProjection?.text || ephemeralRead || usedImageDescription || usedInitialPrompt || groupMemoryContext
+          ? [retainedWakeMessage] : [retainedWakeMessage, ...history.slice(firstCurrentMessage + 1)]).map(message => {
           const retained = readForward && message.role === 'tool' && message.name === 'simGetForward'
             ? { ...message, content: '本轮请求查看合并转发，正文需按原消息重新读取' } : message
           return conversationUserId ? { ...retained, conversationUserId } : retained
         })
-        state.agentHistory = removedSource || cognitionProjection?.text ? [] : failureNoticeTurn ? priorHistory : trimAgentHistory([...priorHistory, ...thisTurn], cfg.turn.historyMaxMessages, cfg.turn.historyMaxChars)
+        state.agentHistory = removedSource || cognitionProjection?.text ? [] : failureNoticeTurn ? priorHistory
+          : trimAgentHistory([...priorHistory, ...thisTurn], cfg.turn.historyMaxMessages, cfg.turn.historyMaxChars, thisTurn[0])
         if (!removedSource && resolvedPersona.binding && ports.projectCognition) try {
           await ports.projectCognition({ agentId: resolvedPersona.binding.agentId, conversation: target, character: latestCharacter,
-            messageRefs: cognitionMessageRefs(), expressions: !semanticRecall && !ephemeralRead && !groupMemoryContext && !usedImageDescription && !usedInitialPrompt && !historyProjections.length && !fileProjections.length ? confirmedExpressions.filter(expression => !expression.participantIds.includes('quoted-source')) : [],
+            messageRefs: cognitionMessageRefs(), expressions: !semanticRecall && !topic && !ephemeralRead && !groupMemoryContext && !usedImageDescription && !usedInitialPrompt && !historyProjections.length && !fileProjections.length ? confirmedExpressions.filter(expression => !expression.participantIds.includes('quoted-source')) : [],
             contextNodeIds: cognitionProjection?.nodes.map(node => node.id) ?? [],
           }, { isCurrent: canCallModel, signal: turnSignal })
         } catch (error) { diagnose({ stage: 'memory', operation: 'cognition_project', outcome: 'failed', code: 'cognition_projection_failed', error }) }
         if (removedSource) delete state.lastConfirmedChat
-        if (groupMemoryContext || semanticRecall || cognitionProjection?.text || ephemeralRead) delete state.lastConfirmedChat
-        if (sends > 0 && !failureNoticeTurn && !removedSource && !groupMemoryContext && !semanticRecall && !cognitionProjection?.text && !ephemeralRead && actor.kind === 'user' && actor.userId && memoryBox.sentTexts.length) {
+        if (groupMemoryContext || semanticRecall || topic || cognitionProjection?.text || ephemeralRead) delete state.lastConfirmedChat
+        if (sends > 0 && !failureNoticeTurn && !removedSource && !groupMemoryContext && !semanticRecall && !topic && !cognitionProjection?.text && !ephemeralRead && actor.kind === 'user' && actor.userId && memoryBox.sentTexts.length) {
           state.lastConfirmedChat = { at: now(), userId: actor.userId, text: memoryBox.sentTexts.slice(-2).join('\n').slice(-500) }
         }
         if (sends > qqActionSends && isBindingCurrent()) state.nextReplyCheckAt = now() + cfg.wake.replyCheckMs
@@ -3861,7 +3950,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         if (sends > qqActionSends && !failureNoticeTurn && !removedSource && !semanticRecall && !ephemeralRead) try { await ports.recordGroupReply?.(target, canCallModel) } catch {
           diagnose({ stage: 'memory', operation: 'simulation_group_reply_record', outcome: 'failed', code: 'group_reply_not_recorded' })
         }
-        if (sends > qqActionSends && !failureNoticeTurn && !removedSource && !groupMemoryContext && !semanticRecall && !cognitionProjection?.text && !ephemeralRead) {
+        if (sends > qqActionSends && !failureNoticeTurn && !removedSource && !groupMemoryContext && !semanticRecall && !topic && !cognitionProjection?.text && !ephemeralRead) {
           try {
             const trigger = actor.kind === 'user' ? state.recent.find(message => message.seq === reason.seq) : undefined
             const replyText = memoryBox.sentTexts.slice(0, 2).join(' / ').slice(0, 200)
@@ -4053,8 +4142,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           if (done || at >= deadline) {
             const outcome = computeWaitOutcome(state, plan, arrived, at, lastNewIncomingAt, at >= deadline && !done)
             const seqs = arrived.map(m => m.seq)
-            noteModelSeen(state, seqs)
-            context.noteVisibleMessages?.(seqs)
+            if (!context.noteVisibleMessages) noteModelSeen(state, seqs)
+            const observedThrough = context.noteVisibleMessages?.(seqs) ?? readThroughSeq(state)
             if (outcome.countsAsObservation) markPreSleepSatisfied(state, at)
             await store.save(groupId, state)
             return {
@@ -4062,7 +4151,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               canSleepNow: outcome.canSleepNow,
               newMessagesText: arrived.map(m => compactSimMessage(m, at)).join('\n'),
               newCount: arrived.length,
-              readThroughSeq: Math.max(baselineReadThrough, readThroughSeq(state)),
+              readThroughSeq: Math.max(baselineReadThrough, observedThrough),
               partial: false,
             }
           }

@@ -40,6 +40,7 @@ import { isPersonMemoryRedacted } from '../modules/memory/domain/personMemory.js
 import { validateAgentMusicCard } from '../modules/media/infrastructure/agentMusicCard.js'
 import type { AgentTool, AgentToolContext } from '../contracts/agentTool.js'
 import type { CommitmentSourceMessage } from '../contracts/commitments.js'
+import type { ConversationTopicCommitment } from '../contracts/conversationTopic.js'
 import { coreCapabilityToolName, createAgentCoreCapabilities, type CoreCapabilityOrigin } from '../modules/tools/infrastructure/agentCoreCapabilities.js'
 import type { AgentQqActionRunner, AgentQqActionGuard } from '../contracts/agentTool.js'
 import { createAgentQqActions, type AgentQqActionsConfig } from '../modules/runtime/infrastructure/agentQqActions.js'
@@ -52,6 +53,8 @@ import { validateAgentMedia } from '../modules/media/infrastructure/agentMediaBy
 import { validateAgentFileUpload, normalizeFileDeliveryReceipt, agentFileUploadText } from '../modules/messaging/infrastructure/agentFileDelivery.js'
 import { readAgentPublicFile } from '../modules/tools/infrastructure/agentPublicWeb.js'
 import { abortableAgentWeb } from '../modules/tools/infrastructure/agentPublicWeb.js'
+import { observedPublicWebRead } from '../modules/tools/infrastructure/agentWebTools.js'
+import type { WebEvidenceQuestion } from '../contracts/webEvidence.js'
 import { validateAgentFileBytes } from '../modules/content/infrastructure/agentFileBytes.js'
 import type { AgentBindingSnapshot, ConversationAddress, PlatformAccountRef, PlatformUserRef } from '../contracts/agentBinding.js'
 import type { ConversationMember, ConversationMemberSnapshot, ConversationMembersSnapshot, MessageImage, OwnTextDeliveryProof, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
@@ -91,6 +94,7 @@ import { createAgentTextToolSources } from '../modules/conversation/infrastructu
 import { createDelegateMemoryRuntime } from '../modules/memory/infrastructure/delegateMemoryTool.js'
 import { matchPersonMemoryCommand, personMemoryCommand, personMemoryCommandText, type PersonMemoryCommand } from '../modules/memory/domain/personMemoryCommands.js'
 import { personMemoryAddress, revokePersonMemorySourceForAccount } from '../modules/memory/infrastructure/personMemoryContext.js'
+import { createWebEvidenceMemory } from '../modules/memory/infrastructure/webEvidenceMemory.js'
 import { createPersonMemoryStore } from '../modules/memory/infrastructure/personMemoryStore.js'
 import { createTextPersonMemory } from '../modules/memory/infrastructure/textPersonMemory.js'
 import { createConversationMemory } from '../modules/memory/infrastructure/conversationMemory.js'
@@ -201,6 +205,8 @@ export interface AgentRuntimeOptions extends RuntimePorts {
   summarizeConversation?: ConversationSummaryModel
   groupMemory?: GroupMemoryConfig
   groupMemoryModel?: GroupMemoryModel
+  /** Explicit opt-in for locally retained public-web excerpts in a conversation. */
+  webEvidence?(target: ConversationAddress): boolean
   semanticMemory?: AgentSemanticMemoryConfig
   semanticMemoryBackend?: AgentSemanticMemoryBackend
   cognition?: AgentCognitionConfig
@@ -379,6 +385,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
   const toolLogger = logger
   const memories = createDelegateMemoryRuntime({ redis: storage, logger: toolLogger, diagnostics, loadConfig: () => ({}), ...(options.now ? { now: options.now } : {}) })
   const personMemory = createPersonMemoryStore({ redis: storage, ...(options.now ? { now: options.now } : {}) })
+  const webEvidence = createWebEvidenceMemory({ redis: storage, memory: personMemory, privatePeer: privatePeerFor, isRecalled: inbox.isRecalled,
+    allowsBinding: binding => webEvidenceEnabled(binding.target) && bindingIsCurrent(binding.target, agentBindingToken(binding)),
+    allowsText: text => options.allowsToolInput?.(text) !== false && options.allowsText?.(text, 'outgoing') !== false,
+    ...(options.now ? { now: options.now } : {}),
+  })
   const pendingSends = new Map<string, Set<() => void>>()
   const controlPendingSends = new WeakSet<() => void>()
   const controlDelivery = new AsyncLocalStorage<boolean>()
@@ -474,6 +485,41 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     const binding = bindingFor(target)?.binding
     return activityRecovered(target.account) && activity.allows(target) && (!binding || !gameHandlers.some(handler =>
       switches.feature(handler.id, target) && handler.isActive?.(binding)))
+  }
+  function webEvidenceEnabled(target: ConversationAddress): boolean {
+    if (!options.webEvidence) return false
+    try {
+      return checkToolCurrent(() => {
+        const adapter = adapterFor(target)
+        if (!isRunning() || !options.webEvidence!(target) || !conversationEnabled(target) || !allowsConversationAI(target) ||
+            adapter?.isReady() !== true || privacyBlocked(platformAccountKey(target.account)) ||
+            !switches.tool('webParserTool', target) || !options.toolRegistry?.builtIn?.some(tool => tool.name === 'webParserTool')) return false
+        const text = textInboxFor(target), groupId = target.kind === 'group' ? target.id : '', config = defaultSimRuntimeConfig(options.getSection())
+        if (text && (!(target.kind === 'private' ? options.privateTextTools : options.groupTextTools?.(target))?.includes('webParserTool') ||
+            !adapter.readMessage || config.toolPolicy.denyTools.includes('webParserTool') || config.toolPolicy.groups[groupId]?.includes('webParserTool'))) return false
+        return resolveSimToolSurface({ policy: config.toolPolicy, builtInNames: ['webParserTool'], extraTools: config.extraTools, groupId }).includes('webParserTool')
+      })
+    } catch { return false }
+  }
+  async function observeWebRead(...[result, context, turn]: Parameters<NonNullable<Parameters<typeof createAgentTools>[1]['observeWebRead']>>) {
+    const read = observedPublicWebRead(result), { actor, request, binding } = context
+    if (!read || actor.kind !== 'user' || !actor.user || !request?.occurredAt || !webEvidenceEnabled(binding.target)) return
+    const signal = AbortSignal.any([context.signal, AbortSignal.timeout(500)])
+    const isCurrent = () => !signal.aborted && context.isCurrent()
+    try {
+      await abortableAgentWeb(webEvidence.observe(binding, { messageId: request.messageId, authorId: actor.user.id, at: request.occurredAt,
+        text: request.text }, read, turn, isCurrent), signal)
+    } catch { diagnostics.emit({ stage: 'memory', operation: 'public_web_evidence_write', outcome: 'failed', code: 'web_evidence_unavailable' }) }
+  }
+  async function readWebEvidence(binding: AgentBindingSnapshot, question: WebEvidenceQuestion, current: () => boolean, signal?: AbortSignal) {
+    if (!webEvidenceEnabled(binding.target) || !current()) return
+    const deadline = AbortSignal.any([AbortSignal.timeout(350), ...(signal ? [signal] : [])])
+    try {
+      const hit = await abortableAgentWeb(webEvidence.recall(binding, question, () => !signal?.aborted && current(), deadline), deadline)
+      if (hit) diagnostics.emit({ stage: 'memory', operation: 'public_web_evidence_read', outcome: 'succeeded', code: 'web_evidence_hit' })
+      return hit
+    }
+    catch { diagnostics.emit({ stage: 'memory', operation: 'public_web_evidence_read', outcome: 'failed', code: 'web_evidence_unavailable' }); return }
   }
   function activityRecovered(account: ConversationAddress['account']): boolean {
     return !groupLogEnabled || recoveredAccounts.has(platformAccountKey(account))
@@ -1617,7 +1663,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       ...(options.deferredActions?.enabled === true && deferredHostCurrent() ? [deferredReminderTool] : []), ...(options.toolRegistry?.builtIn ?? [])] },
     get custom() { return options.toolRegistry?.custom ?? [] },
   }, {
-    signal: toolCancellation.signal, diagnostics, checkCurrent: checkToolCurrent,
+    signal: toolCancellation.signal, diagnostics, checkCurrent: checkToolCurrent, ...(options.webEvidence ? { observeWebRead } : {}),
     ...(options.allowsToolInput ? { allowsInput: options.allowsToolInput } : {}),
     onStart(event, cancel) {
       const target = (event as AgentBindingTurn)._agentBinding!.target
@@ -1889,6 +1935,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (!selected || guard?.() === false) return { digest: '', episodes: '' }
       return conversationMemory.read(selected.binding, viewer, () => guard?.() !== false && isRunning(), { simulation: true })
     },
+    readTopicContext,
+    webEvidenceEnabled, readWebEvidence,
     async readGroupMemory(target, _viewer, sourceId, guard) {
       const selected = bindingFor(target)
       if (!selected || !guard()) return ''
@@ -2490,6 +2538,24 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     isRunning, allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsText?.(text, 'outgoing') !== false,
     logger, diagnostics, ...(options.recordTokens ? { recordUsage: options.recordTokens } : {}), ...(options.now ? { now: options.now } : {}),
   })
+  function readTopicContext(binding: AgentBindingSnapshot, authorId: string, messageId: string, text: string, existing: readonly string[],
+    isCurrent: () => boolean, signal?: AbortSignal) {
+    const token = agentBindingToken(binding)
+    const guard = () => {
+      const live = bindingFor(binding.target)
+      return !!live && isCurrent() && isRunning() && !signal?.aborted && agentBindingToken(live.binding) === token
+    }
+    return conversationMemory.readTopic(binding, { query: text, authorId, messageId, existing, isCurrent: guard, ...(signal ? { signal } : {}),
+      ...(/提醒|预约|待办|承诺|托付/u.test(text) ? { async commitments(): Promise<ConversationTopicCommitment[]> {
+        const ensure = async () => { if (!guard()) throw new Error('话题承诺的会话授权已改变') }
+        const rows = await commitments.store.listActiveCommitments(ensure)
+        return rows.filter(task => task.scope?.agentId === binding.agentId && task.creator_id === authorId &&
+          conversationAddressKey(task.scope.target) === conversationAddressKey(binding.target) && task.bindingIdentity === agentBindingIdentity(binding))
+          .map(task => ({ id: task.id, authorId, sourceId: task.groupSource?.messageId ?? task.privateRequest?.messageId ?? '',
+            intent: task.intent, status: task.status, due: task.next_run_at }))
+      } } : {}),
+    })
+  }
   const conversationMemoryCleanup: AgentConversationMemoryCleanup = Object.freeze({
     async purgeSubject(input: AgentConversationMemoryPurgeSubject, authority: AgentConversationMemoryCleanupGuard): Promise<AgentConversationMemoryCleanupReceipt> {
       conversationCleanupSelector(input)
@@ -2534,11 +2600,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     purgeSubject: (input: AgentSourceMemoryPurgeSubject, authority: AgentSourceMemoryCleanupGuard) => runSourceCleanup(input, authority, async (selected, guard) => {
       const results = await Promise.allSettled([
         history.purgeSubject(selected, guard), textPersonMemory.purgeSubject(selected, guard), memories.store.purgeSubject(selected, guard),
-        commitments.store.purgeSubject(selected, guard),
+        commitments.store.purgeSubject(selected, guard), webEvidence.purgeSubject(selected, guard),
       ])
       const rejected = results.find(result => result.status === 'rejected')
       if (rejected?.status === 'rejected') throw rejected.reason
-      return { usage: 'blocked' as const, partitions: results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []) }
+      return { usage: 'blocked' as const, partitions: results.flatMap(result => result.status === 'fulfilled' && result.value ? [result.value] : []) }
     }),
   })
   const groupMemoryCleanup: AgentGroupMemoryCleanup = Object.freeze({
@@ -2675,7 +2741,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     get builtIn() { return (options.toolRegistry?.builtIn ?? []).filter(tool => isTextRegistryToolName(tool.name)) },
     get custom() { return (options.toolRegistry?.custom ?? []).filter(tool => isTextRegistryToolName(tool.name)) },
   }, {
-    signal: toolCancellation.signal, diagnostics, checkCurrent: checkToolCurrent,
+    signal: toolCancellation.signal, diagnostics, checkCurrent: checkToolCurrent, ...(options.webEvidence ? { observeWebRead } : {}),
     ...(options.allowsToolInput ? { allowsInput: options.allowsToolInput } : {}),
     onStart(event, cancel) {
       const target = (event as AgentBindingTurn)._agentBinding!.target, key = conversationAddressKey(target)
@@ -2886,14 +2952,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       if (!selected) return { digest: '', episodes: '' }
       return conversationMemory.read(selected.binding, viewer, isCurrent, { userId: incoming.sender.id, query: incoming.text })
     },
+    readTopicContext,
+    readWebEvidence,
     async readGroupMemory(incoming, _viewer, isCurrent) {
       const selected = bindingFor(incoming.conversation)
       return selected ? groupMemory.prepare(selected.binding, incoming.messageId, isCurrent) : ''
     },
-    async readSemanticMemory(incoming, isCurrent, signal) {
+    async readSemanticMemory(incoming, isCurrent, signal, excludeMessageIds) {
       const selected = bindingFor(incoming.conversation)
       const query = incoming.parts.filter(part => part.kind === 'text').map(part => part.text).join('')
-      return selected ? semanticMemory.read(selected.binding, query, isCurrent, signal, incoming.messageId ? [incoming.messageId] : [],
+      return selected ? semanticMemory.read(selected.binding, query, isCurrent, signal, [...new Set([...(excludeMessageIds ?? []), ...(incoming.messageId ? [incoming.messageId] : [])])],
         incoming.conversation.kind === 'private' && incoming.messageId ? {
           messageId: incoming.messageId, authorId: incoming.sender.id, at: incoming.occurredAt,
         } : undefined) : undefined
@@ -3146,6 +3214,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           await diagnostics.run(scope, 'conversation_memory_source_revocation',
             () => revokePersonMemorySourceForAccount(personMemory, botId, scene, event.messageId, binding && agentPersonaScopeId(binding.agentId)), 'memory')
           if (queue) kickInbox(queue)
+          await webEvidence.revoke(target, event.messageId, isRunning)
         })(),
       ])
       const rejected = results.find(result => result.status === 'rejected')

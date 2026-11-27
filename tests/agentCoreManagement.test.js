@@ -272,11 +272,14 @@ test('Core forget bridges the original durable cutoff, exposes all four source o
       calls.push(structuredClone(input))
       const receipt = await f.host.sourceMemoryCleanup.purgeSubject(input, guard)
       assert.deepEqual(receipt.partitions.map(row => row.id).sort(), ['commitments', 'delegated-memory', 'history-records', 'person-extraction-batches'])
-      return calls.length === 1 ? { ...receipt, partitions: receipt.partitions.map(row => row.id === 'history-records' ? { ...row, cleanup: 'unknown' } : row) } : receipt
+      const partitions = receipt.partitions.map(row => calls.length === 1 && row.id === 'history-records' ? { ...row, cleanup: 'unknown' } : row)
+      if (calls.length === 1) partitions.push({ id: 'public-web-evidence', cleanup: 'completed', removedRecords: 1, removedPartitions: 0 })
+      return { ...receipt, partitions }
     } },
   })
   const first = await forgetting.profile({ userId, requestId: 'core-forget-fixed-cutoff' }, request)
   assert.equal(first.createdAt, cutoff); assert.equal(first.phase, 'unknown'); assert.equal(removals, 1)
+  assert.equal(first.impacts.find(impact => impact.id === 'public-web-evidence')?.state, 'completed')
   assert.deepEqual((await history.read(id)).rows.map(row => row.messageId), ['new-source'])
   assert.equal(await f.store.getCommitment('old-source-task'), null)
   assert.equal((await f.store.getCommitment('new-source-task')).sourceAt, cutoff + 1)

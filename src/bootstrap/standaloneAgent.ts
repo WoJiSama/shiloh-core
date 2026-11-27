@@ -733,8 +733,9 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
       })
       : legacySource ? { source: legacySource } : undefined
     const development = config.execution.taskAiConfig?.development
-    const runDevelopmentModel = (request: ChatRequestData, signal: AbortSignal) => runModel(request, {
+    const runDevelopmentModel = (request: ChatRequestData, signal: AbortSignal, ensureCurrent?: () => Promise<void>) => runModel(request, {
       signal, isCurrent: config.isConfigCurrent, routeLabel: '开发',
+      ...(ensureCurrent ? { ensureCurrent } : {}),
       ...(development ? { taskBackend: 'development' } : { forceChatBackend: true }),
     })
     const codingWorker = codingSnapshot ? createStandaloneAgentCodingWorker({
@@ -759,11 +760,14 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
         () => executor.YTapi(request, execution, undefined, undefined, options), 'model'),
       recordTokens: input => ledger.record({ ...input, usage: input.usage }), logger: safeLogger,
     }
+    const webReuse = config.tools.web?.reuse
     host = createAgentRuntime({
       storage: storage.storage, adapters, logger: safeLogger, diagnostics,
       ...(config.semanticMemory.enabled ? { semanticRedis: storage.semanticStorage } : {}),
       managementBindings,
       featureSwitches: config.featureSwitches,
+      ...(webReuse ? { webEvidence: target => webReuse.groups === undefined ||
+        target.kind === 'group' && target.account.platform === 'qq' && target.account.namespace === 'global' && webReuse.groups.includes(target.id) } : {}),
       toolRegistry: {
         // Removing a definition also fences its pending HTTP, queued send and late result.
         get builtIn() { return config.isConfigCurrent() ? builtInTools : builtInTools.filter(tool => !pixivTools.includes(tool) && !videoTools.includes(tool) && !videoSearchTools.includes(tool) && !magnetSearchTools.includes(tool) && !imageSearchTools.includes(tool) && !localEmojiTools.includes(tool)) },

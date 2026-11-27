@@ -255,6 +255,7 @@ function validBindingToken(value: unknown): value is string {
 export interface TextHistoryTurn {
   user: string
   reply: string
+  messageId?: string
   speakerId?: string
   replyId?: string
 }

@@ -7,12 +7,15 @@ import { createAgentDiagnostics } from '../dist/backend/modules/runtime/infrastr
 import { createAgentFailureAlerts } from '../dist/backend/modules/runtime/infrastructure/agentFailureAlerts.js'
 import { formatQqOwnerAlerts } from '../dist/backend/bootstrap/standaloneQqAlerts.js'
 import { createSimulationRuntime } from '../dist/backend/modules/simulation/infrastructure/simulationRuntime.js'
+import { createCommitmentRuntime } from '../dist/backend/modules/commitments/infrastructure/commitmentTool.js'
 import { createDefaultSimSession } from '../dist/backend/modules/simulation/domain/simConfig.js'
 import { CHARACTER_MIN_WAKE_MS, addCharacterMemory, beginCharacterGoalAttempt, characterKey, createCharacterGoal, createEmptyCharacterState, deleteCharacterMemory } from '../dist/backend/modules/simulation/domain/characterState.js'
 import { simulationAddressKey } from '../dist/backend/modules/simulation/infrastructure/simulationAddress.js'
 import { SIMULATION_KNOWN_GROUPS_KEY } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
 import { agentBindingToken, agentConversationKey, createAgentBindingDirectory } from '../dist/backend/modules/runtime/domain/agentBindings.js'
 import { decodeQqIncomingMessage } from '../dist/backend/adapters/qqMessage.js'
+import { commitmentRedis } from './helpers/commitmentRedis.js'
+import { modelExecutor } from './helpers/modelExecutor.js'
 
 const BOT = '3094088525'
 const GROUP = '80186'
@@ -54,7 +57,7 @@ function fixture({
   runCharacterWorker, recordToolResult, judgeSocialPermission, getPersona, loadDelegatedMemories,
   getStyleDigest, readSemanticMemory, getSemanticRecall, readConversationMemory, readGroupMemory, wakeGateJudge,
   recordGroupReply, recordEpisode,
-  getSelf, handlesTarget, messageActions, getTodaySpendCny, durableIngress, isAccountReady, readFault,
+  getSelf, handlesTarget, messageActions, getTodaySpendCny, durableIngress, isAccountReady, readFault, getBoundTools,
   describeImages, fetchImageBase64, getForwardContent, allowsToolInput, diagnostics, rawModel, failureNoticeFallback, ephemeralTools = false, withDiagnosticScope, logger,
 } = {}) {
   if (seed) for (const groupId of groups) if (!kv.has(sessionKey(groupId))) seedSession(kv, groupId, botId, clock)
@@ -106,6 +109,7 @@ function fixture({
     ...(recordTokens ? { recordTokens } : {}),
     ...(getTodaySpendCny ? { getTodaySpendCny } : {}),
     ...(handlesTarget ? { handlesTarget } : {}),
+    ...(getBoundTools ? { getBoundTools } : {}),
     ...(messageActions ? { messageActions } : {}),
     ...(runCharacterWorker ? { runCharacterWorker } : {}),
     ...(recordToolResult ? { recordToolResult } : {}),
@@ -122,9 +126,9 @@ function fixture({
     ...(getForwardContent ? { getForwardContent } : {}),
     ...(allowsToolInput ? { allowsToolInput } : {}),
     getExtraTools: names => toolDefinitions.filter(tool => names.includes(tool.name)),
-    async YTapi(request) {
+    async YTapi(request, _config, ...guard) {
       calls.push(structuredClone(request))
-      if (rawModel) return await rawModel(request, calls.length - 1)
+      if (rawModel) return await rawModel(request, calls.length - 1, ...guard)
       const message = await script(request, calls.length - 1)
       return { choices: [{ message, finish_reason: message.tool_calls?.length ? 'tool_calls' : 'stop' }], usage: { total_tokens: 10 }, model: 'offline-test' }
     },
@@ -137,9 +141,9 @@ function fixture({
   return {
     runtime, kv, clock, identity, botId, calls, events, sent, errors, writes, groupReplyRecords, episodeRecords,
     scope: (groupId = GROUP) => ({ botId, personaId: identity.id, groupId }),
-    async ingest(text = '看看这个游戏', userId = '40000', { at = true, groupId = GROUP, source } = {}) {
+    async ingest(text = '看看这个游戏', userId = '40000', { at = true, groupId = GROUP, source, name = `群友${userId}` } = {}) {
       const incoming = decodeQqIncomingMessage({ group_id: groupId, self_id: botId, user_id: userId, message_id: `test-${groupId}-${++incomingMessageId}`, message_type: 'group', msg: text,
-        atBot: at, message: at ? [{ type: 'at', data: { qq: botId } }, { type: 'text', data: { text } }] : [], sender: { nickname: `群友${userId}` }, ...(source ? { source } : {}) }, {now: clock.value})
+        atBot: at, message: at ? [{ type: 'at', data: { qq: botId } }, { type: 'text', data: { text } }] : [], sender: { nickname: name }, ...(source ? { source } : {}) }, {now: clock.value})
       assert.ok(incoming)
       return runtime.ingest(incoming)
     },
@@ -353,6 +357,188 @@ test('failed host tools remain one execution and return to the main model before
   assert.doesNotMatch(JSON.stringify(diagnostics.events), /not-completed-private-tool-body/)
 })
 
+function longActivityNotice(end) {
+  return ['活动说明\n来源：https://example.com/agenda',
+    '现场登记流程及公开议程请看附件。'.repeat(450), '签到地点：北门签到台。',
+    '场地和交通安排请参考本页附录。'.repeat(2000), end].join('\n')
+}
+
+test('a group correction survives long tools and provider overflow, then reconciles one 20:50 reminder', async t => {
+  const account = { platform: 'qq', namespace: 'global', id: BOT }, target = { account, kind: 'group', id: GROUP }
+  const binding = createAgentBindingDirectory({ version: 1, agents: [{ id: 'role', personaId: 'default' }],
+    connections: [{ id: 'connection', platform: 'qq', namespace: 'global', accountId: BOT }],
+    bindings: [{ connectionId: 'connection', kind: 'group', conversationId: GROUP, agentId: 'role' }] }, 'one').resolve(target)
+  const clock = { value: Date.parse('2026-11-27T19:00:00+08:00') }
+  const redis = commitmentRedis(new Map(), () => clock.value), attempts = [], rows = []
+  const diagnostics = createAgentDiagnostics({ sink: { async append(row) { rows.push(row); return true } }, logger: { info() {}, warn() {}, error() {} } })
+  const toolsPort = {
+    redis, now: () => clock.value, logger: { info() {}, warn() {}, error() {} },
+    getBot: () => null, loadConfig: () => ({}), isSimulationGroup: () => true, wakeSim: () => assert.fail('expected static reminder'),
+    resolveBinding: () => binding, authorizeOwnedSource: (_binding, source, current) => source.authorId === '40000' && current(),
+    messageActions: { async send(action, guard) {
+      assert.deepEqual(action.target, target)
+      await guard.ensureCurrent()
+      assert.equal(await guard.beforeDispatch(), true)
+      attempts.push({ text: action.parts[0].text, at: clock.value, id: '870003001' })
+      return { state: 'unknown' }
+    } },
+    async verifyGroupDelivery(_binding, proof) {
+      const [attempt] = attempts
+      assert.equal(proof.sha256, createHash('sha256').update(attempt.text).digest('hex'))
+      assert.ok(proof.from <= attempt.at && attempt.at < proof.until)
+      return attempt.id
+    },
+  }
+  const service = createCommitmentRuntime(toolsPort)
+  const lastLine = '补充公告：最终按本群调整后的 21:00 集合。'
+  const notice = longActivityNotice(lastLine), requestText = '按我们最后定的时间，提前十分钟在群里喊我们，顺便看一下活动的签到地点。'
+  let providerCalls = 0, rejected = false
+  const outbound = []
+  const response = (request, round) => {
+      let message
+      if (round === 0) message = tools(toolCall('simGetRecentMessages', { limit: 5 }), toolCall('searchInformationTool', { query: '活动的签到地点' }))
+      else if (round === 1) {
+        const history = JSON.parse(request.messages.find(row => row.name === 'simGetRecentMessages').content)
+        const reading = request.messages.find(row => row.name === 'searchInformationTool').content
+        assert.ok(history.messages.some(row => /小满.*转发.*22:00/u.test(row)))
+        assert.ok(history.messages.some(row => /阿岚.*20:00/u.test(row)))
+        const correction = history.messages.find(row => /阿岚.*我们改到 \d\d:00/u.test(row))
+        const hour = /我们改到 (\d\d):00/u.exec(correction)[1]
+        assert.match(reading, /来源：https:\/\/example\.com\/agenda/u)
+        assert.match(reading, /签到地点：北门签到台/u)
+        assert.ok(reading.includes(lastLine))
+        assert.match(reading, /【运行时行动回执】.*"status":"succeeded"/u)
+        assert.ok(reading.length <= 3200)
+        const schedule = new Date(Date.parse(`2026-11-27T${hour}:00:00+08:00`) - 10 * 60_000).toISOString()
+        message = tools(toolCall('commitmentTool', { action: 'create', intent: requestText, schedule_kind: 'once',
+          schedule_time: schedule, deliver: 'static', static_message: '还有十分钟集合，签到在北门签到台。', mention_creator: false }))
+      } else message = tools(toolCall('simFinishTurn', { choice: 'silent', markRead: true }))
+      return { choices: [{ message }], usage: { prompt_tokens: 12000 + round, total_tokens: 13000 + round }, model: 'offline-test' }
+  }
+  const model = modelExecutor(async (_url, options) => {
+    const request = JSON.parse(options.body)
+    const hasCommitment = request.messages.some(row => row.role === 'tool' && row.name === 'commitmentTool')
+    const hasSearch = request.messages.some(row => row.role === 'tool' && row.name === 'searchInformationTool')
+    outbound.push({ bytes: Buffer.byteLength(options.body), request })
+    providerCalls++
+    if (hasCommitment && !rejected) {
+      rejected = true
+      return new Response(JSON.stringify({ error: { code: 'context_length_exceeded' } }), { status: 400 })
+    }
+    return new Response(JSON.stringify(response(request, hasCommitment ? 2 : hasSearch ? 1 : 0)))
+  })
+  const h = fixture({ clock, diagnostics, getPersona: () => ({ personaId: 'agent:role', persona: { name: '希洛' }, systemContent: '', binding }),
+    getBoundTools: () => [new service.CommitmentTool()], execute: () => ({ ok: true, result: notice }),
+    rawModel(request, _round, signal, isCurrent, ensureCurrent) {
+      return model.YTapi(request, { providers: 'oneapi', useTools: true,
+        chatAiConfig: { chatApiModel: 'fixture', chatApiUrl: 'https://models.invalid/v1', chatApiKey: 'fixture' },
+        toolsAiConfig: { toolsAiModel: 'fixture', toolsAiUrl: 'https://models.invalid/v1', toolsAiApikey: 'fixture' },
+      }, undefined, undefined, { signal, isCurrent, ensureCurrent })
+    },
+  })
+  t.after(() => h.runtime.stop())
+  await h.ingest('本群活动原定周五 20:00 集合。', '40000', { at: false, name: '阿岚' })
+  await h.ingest('我转发的是另一个群的公告，他们 22:00 集合。', '40001', { at: false, name: '小满' })
+  await h.ingest('我们改到 21:00 集合。', '40000', { at: false, name: '阿岚' })
+  await h.ingest(requestText, '40000', { name: '阿岚' })
+  await settled(h, 3)
+  await diagnostics.flush()
+  assert.equal(h.calls.length, 3)
+  assert.equal(providerCalls, 4)
+  assert.ok(outbound[3].bytes < outbound[2].bytes)
+  assert.equal(outbound[3].request.messages.find(row => row.name === 'commitmentTool').content,
+    outbound[2].request.messages.find(row => row.name === 'commitmentTool').content)
+  assert.equal(h.events.length, 1)
+  const measured = rows.find(row => row.operation === 'simulation_main' && row.details?.inputTokens === 12001)
+  assert.equal(measured.details.requestBytes, Buffer.byteLength(JSON.stringify(h.calls[1])))
+  assert.equal(measured.details.estimatedInputTokens, Math.ceil(measured.details.requestBytes / 3))
+  assert.doesNotMatch(JSON.stringify(rows), /阿岚|签到台|example\.com/u)
+  const active = await service.store.listActiveCommitments()
+  assert.equal(active.length, 1)
+  const [registered] = active
+  assert.equal(registered.next_run_at, Date.parse('2026-11-27T20:50:00+08:00'))
+  assert.deepEqual(registered.scope.target, target)
+  assert.equal(registered.groupSource.authorId, '40000')
+  assert.equal(attempts.length, 0)
+
+  clock.value = registered.next_run_at
+  await service.commitmentTick(account)
+  const uncertain = await service.store.getCommitment(registered.id)
+  assert.equal(uncertain.status, 'unknown')
+  clock.value = uncertain.groupDispatch.nextCheckAt + 1
+  const restarted = createCommitmentRuntime(toolsPort)
+  await restarted.commitmentTick(account)
+  await restarted.groupReminderReceiptTick(account)
+  assert.equal((await restarted.store.getCommitment(registered.id)).status, 'completed')
+  assert.equal(attempts.length, 1)
+})
+
+test('large temporary search results get a bounded excerpt and stay out of persisted history', async t => {
+  const notice = longActivityNotice('最后一条公开补充：南入口关闭。')
+  const result = { kind: 'tool_outcome', status: 'success', content: notice }
+  const diagnostics = spy(), h = fixture({ diagnostics, ephemeralTools: true, execute: () => result,
+    script: (_request, index) => index === 0 ? tools(toolCall('searchInformationTool', { query: '入口' })) : tools(toolCall('simFinishTurn', { choice: 'silent' })) })
+  t.after(() => h.runtime.stop())
+  await h.ingest('这次活动从哪个入口进？')
+  await settled(h, 2)
+  const request = h.calls[1]
+  const reading = request.messages.find(row => row.role === 'tool' && row.name === 'searchInformationTool')
+  assert.match(reading.content, /其余资料已省略，不能视为已查全/u)
+  assert.match(reading.content, /南入口关闭/u)
+  assert.doesNotMatch(reading.content, /【运行时行动回执】/u)
+  const previous = { ...request, messages: request.messages.map(row => row === reading ? { ...row, content: JSON.stringify(result).slice(0, 32000) } : row) }
+  assert.ok(Buffer.byteLength(JSON.stringify(request)) < Buffer.byteLength(JSON.stringify(previous)) / 2)
+  const state = JSON.parse(h.kv.get(sessionKey(GROUP)))
+  assert.doesNotMatch(JSON.stringify(state.agentHistory), /南入口关闭/u)
+})
+
+test('multiple searches compact older successful results while keeping evidence, receipts and the latest batch intact', async t => {
+  const facts = ['北门需出示纸质票', '南门只收电子票', '东门时间待核实', '西门只供工作人员通行', '临时入口开放到十点', '无障碍通道在南侧', '补充说明以当天消息为准']
+  for (const ephemeralTools of [false, true]) await t.test(ephemeralTools ? 'temporary reads' : 'reads with durable receipts', async t => {
+    const batches = [[0], [1], [2], [3], [4], [5, 6]].map(batch => batch.map(index => toolCall('searchInformationTool', { query: `入口资料 ${index}` })))
+    const callIds = batches.flat().map(call => call.id)
+    const rows = [], unknownAt = ephemeralTools ? 2 : 6
+    const diagnostics = createAgentDiagnostics({ sink: { async append(row) { rows.push(row); return true } }, logger: { info() {}, warn() {}, error() {} } })
+    const url = index => `https://example.com/doors/${index}`
+    const h = fixture({ diagnostics, ephemeralTools, maxToolRounds: 10, execute(_name, args) {
+      const index = Number(args.query.at(-1))
+      const body = `来源：${url(index)}\n${index === 3 ? '出处：https://example.com/other\n' : ''}` +
+        '到场前请查阅公开活动通行指南。'.repeat(850) + `\n最终更新：${facts[index]}。`
+      return { kind: 'tool_outcome', status: index === unknownAt ? 'unknown' : 'success', content: body }
+    }, script: (_request, index) => batches[index] ? tools(...batches[index]) : tools(toolCall('simFinishTurn', { choice: 'silent' })) })
+    t.after(() => h.runtime.stop())
+    await h.ingest('比较这些入口，然后再决定走哪边。')
+    await settled(h, batches.length + 1)
+    await diagnostics.flush()
+    const final = h.calls.at(-1)
+    const original = new Map(callIds.map(id => [id, h.calls.flatMap(request => request.messages).find(message => message.tool_call_id === id).content]))
+    const toolMessages = final.messages.filter(row => row.role === 'tool')
+    assert.deepEqual(toolMessages.map(row => row.tool_call_id), callIds)
+    assert.deepEqual(final.messages.flatMap(row => row.tool_calls ?? []).map(row => row.id), callIds)
+    assert.deepEqual(h.events.map(event => event.args.query), facts.map((_fact, index) => `入口资料 ${index}`))
+    for (let index = 0; index < facts.length; index++) {
+      const { content, tool_call_id } = toolMessages[index]
+      const initial = original.get(tool_call_id)
+      if (ephemeralTools) assert.doesNotMatch(content, /【运行时行动回执】/u)
+      else assert.ok(content.includes(initial.match(/【运行时行动回执】[^\r\n]+/u)[0]))
+      assert.ok(content.includes(facts[index]))
+      assert.ok(content.includes(url(index)))
+      if ([unknownAt, 3, 5, 6].includes(index)) assert.equal(content, initial)
+    }
+    assert.match(toolMessages[unknownAt].content, /工具结果状态：unknown/u)
+    const compacted = toolMessages.filter(row => row.content.startsWith('【较早工具资料，仅供参考】'))
+    assert.ok(compacted.length >= 2)
+    assert.ok(compacted.every(row => row.content.length <= 1024))
+    const previous = { ...final, messages: final.messages.map(row => row.role === 'tool' ? { ...row, content: original.get(row.tool_call_id) } : row) }
+    const saved = Buffer.byteLength(JSON.stringify(previous)) - Buffer.byteLength(JSON.stringify(final))
+    assert.ok(saved > 4_000)
+    const lastMeasurement = rows.filter(row => row.operation === 'simulation_main' && row.outcome === 'succeeded').at(-1)
+    assert.equal(lastMeasurement.details.savedToolResultBytes, saved)
+    assert.equal(lastMeasurement.details.compactedToolResults, compacted.length)
+    assert.doesNotMatch(JSON.stringify(rows), /example\.com|纸质票/u)
+  })
+})
+
 
 test('routine closing can omit its reason and confirmed read payloads succeed', async t => {
   const diagnostics = spy()
@@ -369,6 +555,52 @@ test('routine closing can omit its reason and confirmed read payloads succeed', 
   assert.equal(finish.properties.markRead.type, 'boolean')
   assert.equal(Object.hasOwn(finish.properties, 'throughSeq'), false)
   assert.equal(JSON.parse(h.kv.get(sessionKey(GROUP))).lastReadThroughSeq, 0)
+})
+
+test('simple group greetings use a small stable surface while reminder and read requests keep their authorized tools', async t => {
+  const h = fixture({ script: () => tools(toolCall('simFinishTurn', { choice: 'silent' })) })
+  t.after(() => h.runtime.stop())
+  await h.ingest('你好！')
+  await settled(h, 1)
+  h.clock.value += 60_000
+  await h.ingest('按我们最后定的时间，帮我查清楚，然后提前十分钟提醒。')
+  await settled(h, 2)
+  const [hello, action] = h.calls
+  assert.deepEqual(hello.tools.map(tool => tool.function.name), ['simFinishTurn', 'simSendMessage'])
+  assert.ok(action.tools.some(tool => tool.function.name === 'searchInformationTool'))
+  assert.ok(action.tools.some(tool => tool.function.name === 'simGetRecentMessages'))
+  assert.ok(Buffer.byteLength(JSON.stringify(hello)) < Buffer.byteLength(JSON.stringify(action)) / 2)
+})
+
+test('a failed follow-up request leaves newly retrieved unread rows outside the modeled watermark', async t => {
+  const h = fixture({ rawModel(_request, round) {
+    if (round === 0) return { choices: [{ message: tools(toolCall('simGetUnreadMessages', { limit: 5 })) }] }
+    return { error: 'provider rejected the request', failure_kind: 'context_length_exceeded' }
+  } })
+  t.after(() => h.runtime.stop())
+  await h.ingest('还未展示的前一条', '50000', { at: false })
+  await h.ingest('这条是新的请求。', '40000')
+  await settled(h, 2)
+  const state = JSON.parse(h.kv.get(sessionKey(GROUP)))
+  assert.ok(h.calls[1].messages.some(row => row.role === 'tool' && row.content.includes('还未展示的前一条')))
+  assert.equal(state.modelSeenSeqs.includes(state.unread.find(message => message.text === '还未展示的前一条').seq), false)
+  assert.equal(state.lastReadThroughSeq, 0)
+})
+
+test('identical successful page evidence keeps a single body and both original action receipts', async t => {
+  const result = { ok: true, result: '来源：https://example.com/same\n' + '资料原文。'.repeat(140) }
+  const h = fixture({ maxToolRounds: 9, execute: () => result, script: (_request, round) => round < 2
+    ? tools(toolCall('searchInformationTool', { query: '同一份公告' })) : tools(toolCall('simFinishTurn', { choice: 'silent' })) })
+  t.after(() => h.runtime.stop())
+  await h.ingest('复查两次这份公告。')
+  await settled(h, 3)
+  const [older, latest] = h.calls[2].messages.filter(row => row.role === 'tool')
+  assert.match(older.content, /相同正文见本轮较新的工具结果/u)
+  assert.ok(older.content.includes(latest.tool_call_id))
+  assert.equal(older.content.includes('资料原文。'), false)
+  assert.match(latest.content, /资料原文。/u)
+  assert.notEqual(older.content.match(/receipt:[\w-]+/u)[0], latest.content.match(/receipt:[\w-]+/u)[0])
+  assert.equal(h.events.length, 2)
 })
 
 test('finish preflight reports fixed rejection reasons to QQ and allows a corrected call', async t => {

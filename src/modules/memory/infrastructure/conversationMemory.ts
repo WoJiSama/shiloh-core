@@ -3,6 +3,9 @@ import type { AgentBindingSnapshot, ConversationAddress } from '../../../contrac
 import type { IncomingMessage } from '../../../contracts/platformMessage.js'
 import type { PersonaScope } from '../../../contracts/persona.js'
 import type { PersonMemoryStore } from '../../../contracts/personMemory.js'
+import type { ConversationTopicCommitment, ConversationTopicRecall } from '../../../contracts/conversationTopic.js'
+import { extractSearchTerms } from '../../conversation/domain/agentIntelligence.js'
+import { safeTruncateUnicode } from '../../models/domain/unicodeText.js'
 import type { ConversationEpisodeInput, ConversationMemoryState, ConversationMemoryRecord, ConversationSummaryModel, MidtermMemoryConfig, EpisodicMemoryConfig,
   AgentConversationMemoryPurgeSubject, AgentConversationMemoryCleanupGuard, AgentConversationMemoryCleanupReceipt,
   ConversationSummaryContext, ConversationSummaryModelPhase } from '../../../contracts/conversationMemory.js'
@@ -86,6 +89,67 @@ export function createConversationMemory(ports: {
       const live = ports.resolve(binding.target)
       return !stopped && ports.isRunning() && !!live && agentBindingToken(live.binding) === agentBindingToken(binding)
     } catch { return false }
+  }
+  async function readTopic(binding: AgentBindingSnapshot, input: { query: string; authorId: string; messageId: string;
+    existing: readonly string[]; signal?: AbortSignal; isCurrent(): boolean; commitments?(): Promise<readonly ConversationTopicCommitment[]> }): Promise<ConversationTopicRecall | undefined> {
+    const valid = () => current(binding) && input.isCurrent() && !input.signal?.aborted
+    if (!valid() || binding.target.kind === 'private' && ports.privatePeer(binding.target) !== input.authorId) return
+    const terms = extractSearchTerms(input.query).filter(term => !/^(?:之前|上次|后来|下次|提醒|还记得|minute|where|when)$/iu.test(term))
+    const followup = /上次|之前|刚才|刚刚|最后(?:定|说)|后来|按(?:之前|原来)|改到|改成|提前.{0,10}(?:分|时)|接着|继续|原定|改期/u.test(input.query)
+    if (!followup) return
+    const [saved, privacy, cleanup] = await Promise.all([store.load(conversationMemoryId(binding)), epoch(binding), store.cleanupToken(binding)])
+    if (!valid() || saved?.token !== agentBindingToken(binding)) return
+    const exclude = new Set([input.messageId, ...input.existing])
+    const candidates = saved.records.filter(row => row.at > privacy && row.at >= now() - Math.min(retention(), 3 * DAY) &&
+      !exclude.has(row.messageId) && (row.authorId === input.authorId || binding.target.kind === 'group' && /我们|群里|本群/u.test(input.query)))
+    const ranked = candidates.map(row => ({ row, matches: terms.filter(term => row.text.toLowerCase().includes(term)).length }))
+    const bySpeaker = ranked.filter(({ row, matches }) => matches || row.authorId === input.authorId && /提前|最后(?:定|说)|改期|改到|改成/u.test(input.query) &&
+      /(?:[01]?\d|2[0-3])[:：][0-5]\d|[零一二三四五六七八九十两]+点/u.test(row.text))
+    const selected = bySpeaker.sort((a, b) => b.row.at - a.row.at || b.row.seq - a.row.seq).slice(0, 12).map(({ row }) => row).reverse()
+    const safe = await safeRecords(binding, selected, input.signal)
+    const rows = safe.slice(-6)
+    const clarification = /改(?:到|成|期)|最终|以.{1,80}为准/gu
+    const correction = [...safe].reverse().find(row => row.authorId === input.authorId &&
+      !/(?:另一个|其他|别的|外|对面)群|转发|转载|转述|(?:他|她|别人)(?:刚|之前)?说/u.test(row.text) &&
+      [...row.text.matchAll(clarification)].length > 0)
+    if (correction && !rows.includes(correction)) rows.splice(0, 1, correction)
+    if (!valid() || !rows.length) return
+    const taskSource = new Set(rows.map(row => row.messageId))
+    const relevantCommitments = async () => {
+      if (!input.commitments) return []
+      const matching = (await input.commitments()).filter(task => task.authorId === input.authorId && task.sourceId && task.sourceId !== input.messageId &&
+        (taskSource.has(task.sourceId) || terms.filter(term => task.intent.toLowerCase().includes(term)).length >= 2)).slice(0, 3)
+      const bySource = new Map(saved.records.map(row => [row.messageId, row]))
+      const proof = await safeRecords(binding, matching.flatMap(item => bySource.has(item.sourceId) ? [bySource.get(item.sourceId)!] : []), input.signal)
+      return matching.filter(task => proof.some(row => row.messageId === task.sourceId && row.authorId === task.authorId))
+    }
+    const tasks = await relevantCommitments()
+    const fingerprint = JSON.stringify(tasks)
+    const ids = rows.map(row => row.messageId)
+    const selectedRows = JSON.stringify(rows)
+    const isCurrent = async () => {
+      try {
+        if (!valid() || await epoch(binding) !== privacy || await store.cleanupToken(binding) !== cleanup) return false
+        const live = await store.load(conversationMemoryId(binding))
+        if (live?.token !== saved.token) return false
+        const byId = new Map(live.records.map(row => [row.messageId, row]))
+        const verified = await safeRecords(binding, ids.flatMap(id => byId.has(id) ? [byId.get(id)!] : []), input.signal)
+        if (JSON.stringify(verified) !== selectedRows || !valid()) return false
+        if (input.commitments && JSON.stringify(await relevantCommitments()) !== fingerprint) return false
+        return valid() && await epoch(binding) === privacy && await store.cleanupToken(binding) === cleanup && valid()
+      } catch { return false }
+    }
+    const references = rows.map(row => {
+      const marker = row === correction ? [...row.text.matchAll(clarification)].at(-1)?.index ?? 0 : 0
+      const start = row.text.length > 360 && marker > 250 ? Math.max(0, marker - 130) : 0
+      return { id: row.messageId, author: row.authorId, speaker: row.name, at: new Date(row.at).toISOString(),
+        quote: safeTruncateUnicode(row.text.slice(start), 360), ...(start > 0 || row.text.length > 360 ? { truncated: true } : {}) }
+    })
+    const openQuestions = references.filter(row => /[？?]$|还没确认|待确认/u.test(row.quote)).map(row => row.id)
+    const text = '【续聊话题原文】以下为已核验本会话的历史资料。更正与提问保留作者及时间，是否仍适用请结合当前用户原话。承诺状态以账本条目为准。\n' +
+      JSON.stringify({ messages: references, latestClarification: correction?.messageId, earlierQuestions: openQuestions,
+        commitments: tasks.map(({ id, status, due }) => ({ id, status, due })) })
+    return ports.allowsText(text) && await isCurrent() ? { text, messageIds: ids, isCurrent } : undefined
   }
   const initial = (binding: AgentBindingSnapshot): ConversationMemoryState => ({
     version: 1, id: conversationMemoryId(binding), scope: { agentId: binding.agentId, target: structuredClone(binding.target) },
@@ -483,7 +547,7 @@ export function createConversationMemory(ports: {
     await ensureConversationCleanup(guard)
     return receipt
   }
-  return { capture, recordEpisode, read, invalidate, tick, purgeSubject,
+  return { capture, recordEpisode, read, readTopic, invalidate, tick, purgeSubject,
     async stop() {
       stopped = true
       lifecycle.abort()

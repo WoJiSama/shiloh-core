@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import http, { createServer } from 'node:http'
 import { Readable } from 'node:stream'
 import test from 'node:test'
-import { createAgentWebTools } from '../dist/backend/modules/tools/infrastructure/agentWebTools.js'
+import { createAgentWebTools, observedPublicWebRead } from '../dist/backend/modules/tools/infrastructure/agentWebTools.js'
 import { createAgentTools } from '../dist/backend/modules/tools/infrastructure/agentTools.js'
 
 const apiKey = 'search-private-key-123456'
@@ -300,6 +300,56 @@ test('public web reads bounded JSON and plain text without interpreting their te
       .execute({ url: 'https://example.com/article' }, context())
     assert.equal(result.status, 'succeeded')
     assert.ok(result.content.includes(body))
+  }
+})
+
+test('search and public web keep useful middle and late text through the provider output limits', async () => {
+  const body = '公开活动说明。\n' + '背景安排请看附件。'.repeat(1700) + '\n凭票从北门签到。\n' +
+    '出行建议请看地图。'.repeat(1700) + '\n终版更新：本群改到 21:00 集合。'
+  const query = '从哪个门签到？', request = { messageId: '1', text: query, mentions: [] }
+  const url = 'https://public.example/guide'
+  const web = await webTool({ request: async () => webResponse(`<article>${body}</article>`) }).execute({ url }, context({ request }))
+  const searchResult = await tool({ search, fetchImpl: async () => answer(body) }).execute({ query }, context())
+  assert.match(web.content, /来源：https:\/\/public\.example\/guide/u)
+  for (const result of [web, searchResult]) {
+    assert.equal(result.status, 'succeeded')
+    assert.match(result.content, /凭票从北门签到/u)
+    assert.match(result.content, /终版更新：本群改到 21:00 集合/u)
+    assert.match(result.content, /其余资料已省略/u)
+  }
+  assert.ok(web.content.length < 8_100)
+  assert.ok(searchResult.content.length < 12_100)
+  assert.ok(observedPublicWebRead(web).text.length <= 8_000)
+})
+
+test('web memory receives only trusted public observations and honors retention headers and expiry', async () => {
+  for (const [headers, expectation] of [
+    [{}, 0],
+    [{ 'cache-control': 'public, max-age=300, s-maxage=20', age: '20' }, 0],
+    [{ 'cache-control': 'public, max-age=300', age: '10' }, 290_000],
+    [{ 'cache-control': 'no-cache, max-age=300' }, 0],
+    [{ 'cache-control': 'private, max-age=300' }, undefined],
+    [{ 'cache-control': 'no-store, max-age=300' }, undefined],
+    [{ 'set-cookie': 'anonymous=A; Secure' }, undefined],
+    [{ vary: 'Accept-Language' }, undefined],
+  ]) {
+    const result = await webTool({ request: async () => webResponse(undefined, headers) }).execute({ url: 'https://public.example/guide' }, context())
+    const observation = observedPublicWebRead(result)
+    assert.equal(result.status, 'succeeded')
+    assert.equal(observation.url, 'https://public.example/guide')
+    assert.equal(observedPublicWebRead({ ...result }), undefined)
+    if (expectation) assert.ok(observation.freshForMs <= expectation && observation.freshForMs > expectation - 2000)
+    else assert.equal(observation.freshForMs, expectation)
+  }
+  const query = await webTool({ request: async () => webResponse(undefined, { 'cache-control': 'public, max-age=300' }) })
+    .execute({ url: 'https://public.example/guide?query=value' }, context())
+  assert.equal(observedPublicWebRead(query).freshForMs, undefined)
+  for (const status of [404, 410, 503]) {
+    const failure = await webTool({ request: async () => ({ status, body: 'error', headers: {} }) })
+      .execute({ url: 'https://public.example/guide' }, context())
+    const observation = observedPublicWebRead(failure)
+    assert.equal(failure.status, 'failed')
+    assert.equal(observation?.requestedUrl, status === 503 ? undefined : 'https://public.example/guide')
   }
 })
 

@@ -272,13 +272,25 @@ test('resetPreSleepWait 清空观察', () => {
   assert.equal(state.preSleepWait.accumMs, 0)
 })
 
-test('trimAgentHistory：条数与字符双上限，整条淘汰', () => {
+test('trimAgentHistory applies both the count and serialized size limits', () => {
   const history = Array.from({ length: 10 }, (_, i) => ({ role: 'user' as const, content: 'x'.repeat(100) }))
   const trimmed = trimAgentHistory(history, 4, 10_000)
   assert.equal(trimmed.length, 4)
-  const byChars = trimAgentHistory(history, 10, 250)
+  const byChars = trimAgentHistory(history, 10, 280)
   assert.equal(byChars.length, 2)
-  assert.ok(byChars.reduce((sum, m) => sum + m.content.length, 0) <= 250)
+  assert.ok(JSON.stringify(byChars).length <= 280)
+})
+
+test('trimAgentHistory keeps the last wake and handles tool exchanges as units', () => {
+  const wake = { role: 'user' as const, content: '周五改到九点，提前十分钟提醒。' }
+  const call = (id: string, size: number) => ({ role: 'assistant' as const, content: '', tool_calls: [{ id, function: { name: 'search', arguments: JSON.stringify('a'.repeat(size)) } }] })
+  const result = (id: string) => ({ role: 'tool' as const, tool_call_id: id, content: 'results' })
+  const old = { role: 'user' as const, content: '八点集合。' }
+  const recent = [call('recent', 10), result('recent')]
+  const history = [old, result('orphan'), wake, call('large', 3000), result('large'), ...recent, call('missing', 4)]
+  assert.deepEqual(trimAgentHistory(history, 8, 350, wake), [wake, ...recent])
+  assert.deepEqual(trimAgentHistory(history, 2, 350, wake), [wake])
+  assert.deepEqual(trimAgentHistory(history, 8, 8000), [old, wake, ...history.slice(3, 7)])
 })
 
 test('buildSimSystemPrompt：人设名与协议关键段', () => {

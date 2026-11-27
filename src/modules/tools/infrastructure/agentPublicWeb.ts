@@ -75,6 +75,7 @@ export interface AgentPublicWebContent {
   readonly url: string
   readonly title: string
   readonly text: string
+  readonly freshForMs?: number
 }
 
 export function assertAgentWebCurrent(context: PublicReadGuard, signal = context.signal): void {
@@ -142,6 +143,8 @@ function nativePublicWebRequest(url: URL, address: LookupAddress, signal: AbortS
       const headers = {
         'content-type': response.headers['content-type'], 'content-length': response.headers['content-length'],
         'content-encoding': response.headers['content-encoding'], location: response.headers.location,
+        'cache-control': response.headers['cache-control'], age: response.headers.age, date: response.headers.date,
+        vary: response.headers.vary, 'set-cookie': response.headers['set-cookie']?.join(', '),
       }
       const status = response.statusCode ?? 0
       // Redirect and error bodies are unnecessary and may be unbounded streams.
@@ -243,6 +246,7 @@ async function readAgentPublicResponse(input: string, context: PublicReadGuard, 
   const signal = AbortSignal.any([context.signal, AbortSignal.timeout(boundedAgentWebTimeout(dependencies.timeoutMs, policy.timeoutMs ?? MAX_WEB_MS))])
   const lookup = dependencies.lookup ?? (hostname => dnsLookup(hostname, { all: true, verbatim: true }))
   const request = dependencies.request ?? ((url, address, signal) => nativePublicWebRequest(url, address, signal, policy))
+  let redirectFreshForMs: number | undefined = Infinity
   let stage: AgentPublicWebFailure['stage'] = 'authority', httpStatus: number | undefined, forcedKind: AgentPublicWebFailure['kind'] | undefined
   try {
     assertAgentWebCurrent(context, signal)
@@ -269,6 +273,10 @@ async function readAgentPublicResponse(input: string, context: PublicReadGuard, 
       stage = 'redirect'
       if (response.status >= 300 && response.status < 400) {
         if (redirects === 3 || !response.headers.location) throw new Error('网页重定向过多或无目标')
+        if (policy === WEB_POLICY && redirectFreshForMs !== undefined) {
+          const freshForMs = url.search ? undefined : publicWebFreshness(response.headers, started)
+          redirectFreshForMs = freshForMs === undefined ? undefined : Math.min(redirectFreshForMs, freshForMs)
+        }
         url = normalizeAgentPublicUrl(new URL(response.headers.location, url).href, policy.signedQuery)
         continue
       }
@@ -277,7 +285,7 @@ async function readAgentPublicResponse(input: string, context: PublicReadGuard, 
       if (response.headers['content-encoding'] && response.headers['content-encoding']!.toLowerCase() !== 'identity') throw new Error('网页不接受压缩响应')
       if (Number(response.headers['content-length']) > policy.maxBytes ||
           (typeof response.body === 'string' ? Buffer.byteLength(response.body) : response.body.byteLength) > policy.maxBytes) throw new Error('网页响应过大')
-      return { url, response, signal, started }
+      return { url, response, signal, started, redirectFreshForMs }
     }
     throw new Error('网页重定向过多')
   } catch (error) {
@@ -286,8 +294,25 @@ async function readAgentPublicResponse(input: string, context: PublicReadGuard, 
   }
 }
 
+function publicWebFreshness(headers: AgentPublicWebResponse['headers'], started: number): number | undefined {
+  const directives = (headers['cache-control'] ?? '').toLowerCase().split(',').map(directive => directive.trim())
+  const has = (name: string) => directives.some(directive => directive.split('=')[0]?.trim() === name)
+  const vary = (headers.vary ?? '').toLowerCase().split(',').map(field => field.trim()).filter(Boolean)
+  if (has('no-store') || has('private') || headers['set-cookie'] !== undefined ||
+      vary.some(field => field !== 'accept-encoding' && field !== 'accept')) return undefined
+  if (has('no-cache')) return 0
+  const name = has('s-maxage') ? 's-maxage' : 'max-age'
+  const ages = directives.filter(directive => directive.split('=')[0]?.trim() === name)
+  const seconds = ages.length === 1 ? Number(ages[0]?.match(/=\s*"?(\d+)"?$/u)?.[1]) : NaN
+  const age = headers.age === undefined ? 0 : /^\d+$/u.test(headers.age) ? Number(headers.age) * 1000 : Infinity
+  const date = Date.parse(headers.date ?? '')
+  const now = Date.now()
+  const elapsed = Math.max(age + Math.max(0, now - started), Number.isFinite(date) ? now - date : 0)
+  return Number.isSafeInteger(seconds) ? Math.max(0, Math.min(14 * 86_400_000, seconds * 1000 - elapsed)) : 0
+}
+
 export async function readAgentPublicWeb(input: string, context: AgentToolContext, dependencies: AgentPublicWebDependencies = {}): Promise<AgentPublicWebContent> {
-  const { url, response, signal, started } = await readAgentPublicResponse(input, context, dependencies, WEB_POLICY)
+  const { url, response, signal, started, redirectFreshForMs } = await readAgentPublicResponse(input, context, dependencies, WEB_POLICY)
   let stage: AgentPublicWebFailure['stage'] = 'response'
   try {
     const type = (response.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase()
@@ -299,7 +324,8 @@ export async function readAgentPublicWeb(input: string, context: AgentToolContex
     await ensureAgentWebCurrent(context, signal)
     stage = 'response'
     if (!content.text) throw new Error('未找到静态网页正文')
-    return { url: url.href, ...content }
+    const freshForMs = response.status === 200 && !url.search && !new URL(input).search ? publicWebFreshness(response.headers, started) : undefined
+    return { url: url.href, ...content, ...(freshForMs === undefined || redirectFreshForMs === undefined ? {} : { freshForMs: Math.min(freshForMs, redirectFreshForMs) }) }
   } catch (error) {
     reportPublicWebFailure(dependencies, stage, started, signal, context, error, response.status)
     throw error

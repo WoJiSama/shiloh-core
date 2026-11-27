@@ -23,7 +23,7 @@ export interface AgentHistoryStyleSources {
   isCurrent(): Promise<boolean>
 }
 const DAY = 86_400_000
-const MAX_CHARS = 16_000
+const MAX_CHARS = 8_000
 const STOPWORDS = new Set(['一下', '帮我', '帮忙', '麻烦', '请问', '看看', '查查', '查询', '搜索', '检索', '找找', '找出', '出来', '告诉', '记得', '记忆', '回忆', '上次', '之前', '以前', '刚才', '刚刚', '最近', '今天', '昨天', '前天', '那天', '当时', '最后', '一次', '来着', '聊天', '历史', '记录', '消息', '内容', '大家', '群友', '群里', '我们', '你们', '他们', '她们', '讨论', '发言', '说的', '说过', '说了', '什么', '怎么', '怎样', '那个', '这个', '那些', '哪些', '哪句', '哪条', '有没有', '是否', '是谁'])
 const fields = new Set(['question', 'user_id', 'start_time', 'end_time', 'keywords', 'limit', 'offset', 'source', 'memory_ids'])
 const PERSONAL_REFERENCE = /(?<![其吉利排无])(?:他|她)(?:们)?(?:的|上次|之前|以前|刚才|昨天|前天|说|讲|聊|提|发)|那哥们|那个人|这哥们|这个人|\bta\b/iu

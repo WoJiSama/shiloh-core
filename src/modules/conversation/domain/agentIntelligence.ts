@@ -21,7 +21,7 @@ function normalizeMessageId(value:unknown) {
   return String(value || "").trim()
 }
 
-function extractSearchTerms(text = "") {
+export function extractSearchTerms(text = "") {
   const normalized = compactText(text)
     .replace(/\[CQ:[^\]]+\]/g, " ")
     .replace(/https?:\/\/\S+/g, " ")

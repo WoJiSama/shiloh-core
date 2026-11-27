@@ -5,6 +5,7 @@ import type { AgentSemanticMemoryCleanup } from '../contracts/semanticMemory.js'
 import type { AgentConversationMemoryCleanup } from '../contracts/conversationMemory.js'
 import type { AgentGroupMemoryCleanup } from '../contracts/groupMemory.js'
 import type { AgentSourceMemoryCleanup } from '../contracts/sourceMemoryCleanup.js'
+import { WEB_EVIDENCE_CLEANUP_PARTITION } from '../contracts/webEvidence.js'
 import { AgentConsoleError, type AgentConsoleContext, type AgentConsoleAuthPort } from '../contracts/agentConsole.js'
 import { ForgetOperationConflictError, type ForgetCleanupOwner, type ForgetCleanupState, type ForgetImpact, type ForgetOperationGuard, type ForgetOperationKind, type ForgetOperationReceipt, type ForgetOperationStore } from '../contracts/forgetOperation.js'
 import { agentBindingToken, agentConversationKey } from '../modules/runtime/domain/agentBindings.js'
@@ -192,10 +193,12 @@ export function createStandaloneAgentForgetOperations(options: {
       return { state: result.cleanup, impacts: ownerImpacts(owner, binding, result.cleanup) }
     }
     const result = await checked(context, 'profiles.delete', binding, () => options.sourceMemoryCleanup!.purgeSubject(selected, lease))
-    if (!result || result.usage !== 'blocked' || !Array.isArray(result.partitions) || result.partitions.length !== ownerPartitions[owner].length) fail('unavailable')
+    if (!result || result.usage !== 'blocked' || !Array.isArray(result.partitions)) fail('unavailable')
     const byId = new Map(result.partitions.map(item => [item.id, item]))
-    if (byId.size !== result.partitions.length) fail('unavailable')
-    const impacts = ownerImpacts(owner, binding, 'unknown').map(item => {
+    const expected = ownerImpacts(owner, binding, 'unknown')
+    if (byId.has(WEB_EVIDENCE_CLEANUP_PARTITION)) expected.push({ ...expected[0]!, id: WEB_EVIDENCE_CLEANUP_PARTITION })
+    if (byId.size !== result.partitions.length || result.partitions.length !== expected.length) fail('unavailable')
+    const impacts = expected.map(item => {
       const row = byId.get(item.id)
       if (!row || !['completed', 'unknown'].includes(row.cleanup)) fail('unavailable')
       counts(row.removedRecords, row.removedPartitions)

@@ -27,7 +27,7 @@ export interface SimToolContext {
   requireExplicitContinuation?: boolean
   /** Only the runtime can set this after checking the triggering user's words. */
   proactiveSourceSeq?(): number | undefined
-  noteVisibleMessages?(seqs: number[]): void
+  noteVisibleMessages?(seqs: number[]): number
   /** Recheck privacy tombstones before and after asynchronous history reads. */
   assertMemoryCurrent?(): Promise<void>
   now(): number
@@ -85,6 +85,12 @@ export interface SimToolContext {
 
 const SEND_TEXT_MAX_CHARS = 500
 
+function presentMessages(ctx: SimToolContext, state: SimSessionState, seqs: number[]): number {
+  if (ctx.noteVisibleMessages) return ctx.noteVisibleMessages(seqs)
+  noteModelSeen(state, seqs)
+  return readThroughSeq(state)
+}
+
 export function createSimTools(ctx: SimToolContext): AbstractTool[] {
   const isUserId = ctx.platformUserId ?? isQqSimulationUserId
   class SimGetUnreadMessagesTool extends AbstractTool {
@@ -119,12 +125,11 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
           lines.push(line); selected.push(message)
         }
         const seqs = selected.map(m => m.seq)
-        noteModelSeen(state, seqs)
-        ctx.noteVisibleMessages?.(seqs)
+        const through = presentMessages(ctx, state, seqs)
         return JSON.stringify({
           messages: lines,
           count: selected.length,
-          readThroughSeq: readThroughSeq(state),
+          readThroughSeq: through,
           remainingUnread: state.unread.length - selected.length,
         })
       })
@@ -165,13 +170,12 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
           lines.push(line); selected.push(message)
         }
         const seqs = selected.map(m => m.seq)
-        noteModelSeen(state, seqs)
-        ctx.noteVisibleMessages?.(seqs)
+        const through = presentMessages(ctx, state, seqs)
         return JSON.stringify({
           messages: lines.reverse(),
           count: selected.length,
           nextOffset: offset + selected.length,
-          readThroughSeq: readThroughSeq(state),
+          readThroughSeq: through,
           totalRecent: state.recent.length,
         })
       })
@@ -200,11 +204,10 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
       const result = await ctx.mutate(state => {
         const message = [...state.unread, ...state.recent].find(m => m.seq === seq)
         if (!message) return JSON.stringify({ found: false, hint: '该消息不在近期缓冲里（可能太旧），可用 simGetRecentMessages 翻更早的记录。' })
-        noteModelSeen(state, [seq])
-        ctx.noteVisibleMessages?.([seq])
+        const through = presentMessages(ctx, state, [seq])
         return JSON.stringify({ found: true, message: compactSimMessage(message, ctx.now()), messageId: message.messageId, imageCount: message.imageCount,
           ...(message.videoCount ? { videoCount: message.videoCount } : {}), ...(message.quoteSource?.video ? { quotedVideoCount: message.quoteSource.video.count } : {}),
-          ...(message.files?.length ? { files: message.files } : {}), ...(message.quoteSource?.file ? { quotedFiles: message.quoteSource.file.files } : {}), readThroughSeq: readThroughSeq(state) })
+          ...(message.files?.length ? { files: message.files } : {}), ...(message.quoteSource?.file ? { quotedFiles: message.quoteSource.file.files } : {}), readThroughSeq: through })
       })
       await ctx.assertMemoryCurrent?.()
       return result

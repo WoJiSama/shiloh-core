@@ -15,7 +15,7 @@ const defaultTools = {
   deferredActions: { enabled: false, rules: [], migrationApprovals: [] },
 }
 
-const { readStandaloneAgentConfig } = await importBilibiliHost('bootstrap/standaloneAgentConfig.js')
+const { createStandaloneAgentCandidateValidator, readStandaloneAgentConfig } = await importBilibiliHost('bootstrap/standaloneAgentConfig.js')
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tools-config-'))
@@ -28,15 +28,20 @@ function fixture(t) {
   const file = path.join(directory, 'agent-host.yaml')
   const env = { TEST_MODEL_KEY: 'main-key', TEST_SEARCH_KEY: 'search-key' }
   const search = { baseUrl: 'https://search.example/v1', name: 'search-model', apiKeyEnv: 'TEST_SEARCH_KEY' }
-  function read(tools, options, credentials = env) {
-    fs.writeFileSync(file, JSON.stringify({
+  function hostSource(tools) {
+    return JSON.stringify({
       version: 1, instance: 'tools-config', model: { baseUrl: 'https://main.example/v1', name: 'main-model', apiKeyEnv: 'TEST_MODEL_KEY' },
       connections: [{ id: 'main', url: 'ws://127.0.0.1:3001' }],
       ...(tools === undefined ? {} : { tools }),
-    }))
+    })
+  }
+  function read(tools, options, credentials = env) {
+    fs.writeFileSync(file, hostSource(tools))
     return readStandaloneAgentConfig(file, credentials, options)
   }
-  return { read, search, env }
+  const validate = createStandaloneAgentCandidateValidator(file, env)
+  return { read, search, env, validateTools: tools => validate({ host: hostSource(tools), personas: undefined,
+    bindings: fs.readFileSync(path.join(directory, 'agent-bindings.yaml'), 'utf8') }) }
 }
 
 test('standalone tools default off and use an explicit search backend with no main model fallback', t => {
@@ -66,6 +71,17 @@ test('standalone tool configuration rejects ambiguous switches, raw credentials 
     'https://search.example/v1?api_key=value', 'https://search.example/v1#fragment', 'not-a-url']) {
     assert.throws(() => read({ search: { ...search, baseUrl } }))
   }
+})
+
+test('public webpage evidence retention is opt-in and can be restricted to selected QQ groups', t => {
+  const { validateTools } = fixture(t)
+  assert.doesNotThrow(() => validateTools({ web: { enabled: true, reuse: {} } }))
+  const groups = ['90001']
+  assert.doesNotThrow(() => validateTools({ web: { enabled: true, reuse: { groups } } }))
+  for (const reuse of [true, null, [], { unknown: true }, { groups: [] }, { groups: [90001] }, { groups: ['90001', '90001'] }]) {
+    assert.throws(() => validateTools({ web: { enabled: true, reuse } }))
+  }
+  assert.throws(() => validateTools({ web: { enabled: false, reuse: {} } }), /tools.web.reuse/u)
 })
 
 test('GitHub is explicit, defaults to anonymous public access and resolves only its declared token environment', t => {

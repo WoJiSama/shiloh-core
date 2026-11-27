@@ -393,13 +393,20 @@ function readTools(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: b
     const model = readModel(input, 'tools.search', env, requireCredentials)
     search = { baseUrl: model.apiUrl, name: model.model, apiKey: model.apiKey, ...(webSearch === undefined ? {} : { webSearch }) }
   }
-  let web: { enabled: true } | undefined
+  let web: { enabled: true; reuse?: { groups?: readonly string[] } } | undefined
   if (config.web !== undefined) {
     const input = object(config.web)
-    if (Object.keys(input).some(key => key !== 'enabled') || typeof input.enabled !== 'boolean') {
-      throw new Error('tools.web 仅支持布尔字段 enabled')
+    if (Object.keys(input).some(key => key !== 'enabled' && key !== 'reuse') || typeof input.enabled !== 'boolean') {
+      throw new Error('tools.web 仅支持布尔字段 enabled 和可选的 reuse')
     }
     if (input.enabled) web = { enabled: true }
+    if (input.reuse !== undefined) {
+      const reuse = object(input.reuse), groups = reuse.groups
+      if (!web || Object.keys(reuse).some(key => key !== 'groups') || groups !== undefined &&
+          (!Array.isArray(groups) || !groups.length || groups.length > 128 || groups.some(group => typeof group !== 'string' || qqId(group) !== group) ||
+            new Set(groups).size !== groups.length)) throw new Error('tools.web.reuse 需要启用网页工具，groups 须为不重复的 QQ 群号字符串列表')
+      web.reuse = Object.freeze(groups === undefined ? {} : { groups: Object.freeze([...groups]) })
+    }
   }
   let images: { generation?: AgentImageBackend | readonly AgentImageBackend[]; edit?: AgentImageBackend | readonly AgentImageBackend[] } | undefined
   if (config.images !== undefined) {

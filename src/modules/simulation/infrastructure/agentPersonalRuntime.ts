@@ -58,6 +58,7 @@ interface PersonalGoal {
 
 export interface PersonalCodingOptions {
   readonly mode: 'investigate' | 'candidate'
+  readonly jobId?: string
   ensureCurrent(): Promise<void>
 }
 
@@ -149,7 +150,9 @@ export interface PersonalPorts {
   publishTool?(agentId: string, name: string, task: string, signal: AbortSignal): Promise<PersonalToolDefinition>
   followFeed?(url: string, current: () => boolean, signal: AbortSignal): Promise<CharacterFeedItem[]>
   research?(agentId: string, query: string, signal: AbortSignal, current: () => boolean): Promise<string | undefined>
-  coding?(agentId: string, task: string, signal: AbortSignal, options: PersonalCodingOptions): Promise<string | undefined>
+  coding?: ((agentId: string, task: string, signal: AbortSignal, options: PersonalCodingOptions) => Promise<string | undefined>) & {
+    canResume?(agentId: string, jobId: string, task: string): Promise<boolean>
+  }
   capabilities?: AgentCoreCapabilities
   capabilityOrigin?(agentId: string, key: string): CoreCapabilityOrigin | undefined
   workSourceCurrent?(agentId: string, origin: CoreCapabilityOrigin, signal: AbortSignal, current: () => boolean): Promise<boolean>
@@ -326,12 +329,21 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
       let state = await store.load()
       if (!state.nextReviewAt || !state.nextWorkAt || state.receipts.some(item => item.state === 'pending' && !item.followBody) ||
           state.goals.some(goal => goal.engineering?.status === 'running')) {
+        const resumable = new Set<string>()
+        for (const goal of state.goals) {
+          if (goal.engineering?.status === 'running' && goal.engineering.mode === 'investigate' &&
+              await ports.coding?.canResume?.(id, goal.id, goal.draft).catch(() => false)) resumable.add(goal.id)
+        }
         state = await store.update(value => {
           requireCurrent()
           value.nextReviewAt ||= now() + firstTurnDelay
           value.nextWorkAt ||= now() + firstTurnDelay
           for (const goal of value.goals) {
-            if (goal.engineering?.status === 'running') settleEngineering(goal, 'unknown')
+            if (goal.engineering?.status !== 'running') continue
+            if (goal.engineering.mode === 'investigate' && resumable.has(goal.id)) {
+              goal.engineering.status = 'queued'
+              goal.waitingFor = '从已核验的源码检查点继续调查'
+            } else settleEngineering(goal, 'unknown')
           }
           for (const item of value.receipts) {
             if (item.state !== 'pending' || item.followBody) continue
@@ -641,7 +653,7 @@ export function createAgentPersonalRuntime(ports: PersonalPorts) {
       try {
         await ensureCurrent()
         started = true
-        const response = await coding(id, goal.draft, signal, { mode: work.mode, ensureCurrent })
+        const response = await coding(id, goal.draft, signal, { mode: work.mode, jobId: goal.id, ensureCurrent })
         await ensureCurrent()
         if (response && ports.allowsText(response)) {
           result = text(response.replace(/\s+/gu, ' ').slice(0, 1200), 1200)
