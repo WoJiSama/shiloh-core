@@ -1,5 +1,6 @@
 import fs, { constants, type BigIntStats } from 'node:fs'
 import path from 'node:path'
+import { isUtf8 } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import { types } from 'node:util'
 import { AgentConsoleError } from '../contracts/agentConsole.js'
@@ -21,14 +22,18 @@ export interface SourceSnapshot {
 interface Pin { readonly name: string; readonly stat: BigIntStats }
 interface Root { readonly hostFile: string; readonly root: string; readonly pins: readonly Pin[] }
 interface Guard { readonly signal: AbortSignal; ensureCurrent(): void }
+const absentFile = { source: undefined, version: 'absent' } as const
+type FileRead = typeof absentFile | { readonly source: string; readonly version: string; readonly stat: BigIntStats; readonly bytes: Buffer }
 const snapshots = new WeakMap<SourceSnapshot, Root>()
 const observations = new WeakMap<Root, SourceSnapshot>()
+const verifiedFiles = new WeakMap<Root, Readonly<Record<ConfigSourceName, FileRead>>>()
 const maximum = 2 * 1024 * 1024
 const fail = (code: 'conflict' | 'unavailable' = 'conflict'): never => { throw new AgentConsoleError(code) }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 const missing = (error: unknown) => !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
 const identity = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino
-const stamp = (s: BigIntStats) => [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs, s.mode, s.uid, s.nlink].join(':')
+const sameFileState = (a: BigIntStats, b: BigIntStats) => identity(a, b) && a.size === b.size && a.mtimeNs === b.mtimeNs &&
+  a.ctimeNs === b.ctimeNs && a.mode === b.mode && a.uid === b.uid && a.nlink === b.nlink
 const stat = (name: string) => fs.lstatSync(name, { bigint: true })
 function rootFor(hostFile: string): Root {
   const absolute = path.resolve(hostFile), root = fs.realpathSync(path.dirname(absolute)), pins: Pin[] = []
@@ -52,36 +57,45 @@ function checkRoot(root: Root) {
 function names(root: Root): Record<ConfigSourceName, string> {
   return { host: root.hostFile, personas: path.join(root.root, 'persona-library.yaml'), bindings: path.join(root.root, 'agent-bindings.yaml') }
 }
-function readFile(name: string, optional: boolean): { source: string | undefined; version: string } {
+function readFile(name: string, optional: boolean, previous?: FileRead): FileRead {
   let fd: number | undefined
   try {
     fd = fs.openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     const before = fs.fstatSync(fd, { bigint: true })
-    if (!before.isFile() || before.nlink !== 1n || before.uid !== BigInt(process.getuid!()) || before.size > BigInt(maximum) || (before.mode & 0o022n) !== 0n || stamp(before) !== stamp(stat(name))) fail('unavailable')
-    const bytes = fs.readFileSync(fd), source = bytes.toString('utf8'), after = fs.fstatSync(fd, { bigint: true })
-    if (!Buffer.from(source).equals(bytes) || stamp(before) !== stamp(after) || stamp(after) !== stamp(stat(name))) fail()
+    if (!before.isFile() || before.nlink !== 1n || before.uid !== BigInt(process.getuid!()) || before.size > BigInt(maximum) ||
+        (before.mode & 0o022n) !== 0n || !sameFileState(before, stat(name))) fail('unavailable')
+    const bytes = fs.readFileSync(fd), after = fs.fstatSync(fd, { bigint: true })
+    if (bytes.length !== Number(after.size) || !sameFileState(before, after) || !sameFileState(after, stat(name))) fail()
+    // Reuse decoded text and its digest only after observing and comparing every byte.
+    if (previous?.source !== undefined && sameFileState(after, previous.stat) && bytes.equals(previous.bytes)) return previous
+    if (!isUtf8(bytes)) fail()
     // Keep binding revisions identical to the runtime's agentBindingConfig reader.
     const nativeStamp = [after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs].join(':')
-    return { source, version: digest(nativeStamp + '\0' + source) }
+    return { source: bytes.toString('utf8'), version: createHash('sha256').update(nativeStamp + '\0').update(bytes).digest('hex'), stat: after, bytes }
   } catch (error) {
-    if (optional && missing(error)) return { source: undefined, version: 'absent' }
+    if (optional && fd === undefined && missing(error)) return absentFile
     if (error instanceof AgentConsoleError) throw error
     return fail('unavailable')
   } finally { if (fd !== undefined) fs.closeSync(fd) }
 }
 function transactionRoot(root: Root): TransactionRoot { return { root: root.root, hostFile: root.hostFile, ensureRoot: () => checkRoot(root) } }
 function readRoot(root: Root): SourceSnapshot {
-  return readConfigTransactionGroup(transactionRoot(root), fence => {
-    const files = names(root), host = readFile(files.host, false), personas = readFile(files.personas, true), bindings = readFile(files.bindings, false)
+  const { reads, snapshot } = readConfigTransactionGroup(transactionRoot(root), fence => {
+    const files = names(root), previous = verifiedFiles.get(root)
+    const host = readFile(files.host, false, previous?.host), personas = readFile(files.personas, true, previous?.personas),
+      bindings = readFile(files.bindings, false, previous?.bindings)
+    const reads = { host, personas, bindings }
     const versions = Object.freeze({ host: host.version, personas: personas.version, bindings: bindings.version })
     // Verify the complete read set, not only the last file read.
-    for (const key of ['host', 'personas', 'bindings'] as const) if (readFile(files[key], key === 'personas').version !== versions[key]) fail()
+    for (const key of ['host', 'personas', 'bindings'] as const) if (readFile(files[key], key === 'personas', reads[key]) !== reads[key]) fail()
     const sources: ConfigSources = Object.freeze({ host: host.source!, personas: personas.source, bindings: bindings.source! })
-    const result: SourceSnapshot = Object.freeze({ hostFile: root.hostFile, root: root.root, versions, sources, fence,
+    const snapshot: SourceSnapshot = Object.freeze({ hostFile: root.hostFile, root: root.root, versions, sources, fence,
       revision: digest(JSON.stringify([root.root, root.pins[0]!.stat.dev.toString(), root.pins[0]!.stat.ino.toString(), versions, fence])) })
-    snapshots.set(result, root)
-    return result
+    return { reads, snapshot }
   })
+  verifiedFiles.set(root, reads)
+  snapshots.set(snapshot, root)
+  return snapshot
 }
 export interface StandaloneAgentConfigLock {
   read(): SourceSnapshot
