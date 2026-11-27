@@ -496,12 +496,42 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
       observe: event => diagnostics.emit({ stage: 'model', ...event }),
       fetch: (url, init) => providerFetch(url, { ...init, redirect: 'error' }),
     })
-    async function runModel(request: ChatRequestData, options: ExecutionOptions = {}) {
-      const signal = AbortSignal.any([executionSignal, AbortSignal.timeout(45_000), ...(options.signal ? [options.signal] : [])])
-      const result = await diagnostics.run(diagnostics.scope(), 'model_request', () => executor.YTapi(request, config.execution, undefined, undefined, { ...options, signal }), 'model')
+    async function runModel(request: ChatRequestData, options: ExecutionOptions = {}, operation = 'model_request') {
+      const timeoutMs = 45_000
+      const deadline = AbortSignal.timeout(timeoutMs)
+      const signal = AbortSignal.any([executionSignal, deadline, ...(options.signal ? [options.signal] : [])])
+      const result = await diagnostics.run(diagnostics.scope(), operation, async () => {
+        const started = performance.now()
+        const phase: { step: Parameters<NonNullable<ExecutionOptions['onRequestPhase']>>[0]; at: number; dispatched: boolean; status?: number } = {
+          step: 'request_prepare', at: started, dispatched: false,
+        }
+        try {
+          return await executor.YTapi(request, config.execution, undefined, undefined, { ...options, signal,
+            onRequestPhase(step, status) {
+              phase.step = step
+              phase.at = performance.now()
+              if (step === 'request_prepare') {
+                phase.dispatched = false
+                delete phase.status
+              } else if (step === 'response_headers') phase.dispatched = true
+              if (status !== undefined) phase.status = status
+            } })
+        } catch (error) {
+          if (signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError') {
+            const at = performance.now()
+            diagnostics.emitFailure({ stage: 'model', operation, outcome: 'failed', code: 'model_request_timeout', error,
+              durationMs: at - started, ...(phase.status === undefined ? {} : { httpStatus: phase.status }),
+              details: { step: phase.step, stepMs: Math.round(at - phase.at), dispatched: phase.dispatched,
+                cause: signal.reason === deadline.reason ? 'model_host_deadline' : 'model_workflow_deadline',
+                ...(signal.reason === deadline.reason ? { limit: timeoutMs } : {}),
+                result: phase.dispatched ? 'discarded' : 'not_dispatched' } })
+          }
+          throw error
+        }
+      }, 'model')
       if (!isModelRequestCurrent(options.isCurrent)) return { error: '角色绑定已改变，模型请求已停止' }
       if (result.error) {
-        diagnostics.emit({ stage: 'model', operation: 'model_request', outcome: 'failed', code: 'model_response_error' })
+        diagnostics.emit({ stage: 'model', operation, outcome: 'failed', code: 'model_response_error' })
         if (result.failure_kind === 'context_length_exceeded' || result.failure_kind === 'request_body_too_large') return result
         return { error: '模型请求失败' }
       }
@@ -737,7 +767,6 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
     if (config.semanticMemory.enabled && config.semanticMemory.embedding) semanticBackend = createAgentSemanticBackend({
       embedding: config.semanticMemory.embedding,
       ...(config.semanticMemory.rerank ? { rerank: config.semanticMemory.rerank } : {}), secrets: hostSecrets,
-      fetchFn: observeModelFetch('semantic_memory_provider_http'),
       diagnostics,
     })
     const pixivTools = config.tools.pixiv?.enabled && mediaRelayHost?.pixivToolProvider ? createAgentPixivTools(config.tools.pixiv, {
@@ -928,8 +957,8 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
       ...(config.migratedGroupToolNames ? { migratedGroupToolNames: config.migratedGroupToolNames, groupTextTools: config.groupTextTools, textGroupRevision: config.textGroupRevision } : {}),
       getExecutionConfig: () => config.execution,
       YTapi: (request, _config, signal, isCurrent, ensureCurrent) => runModel(request, { ...(signal ? { signal } : {}), ...(isCurrent ? { isCurrent } : {}), ...(ensureCurrent ? { ensureCurrent } : {}) }),
-      reflectCharacter: (request, _config, signal, isCurrent, ensureCurrent) => runModel(request, { forceChatBackend: true, signal, ...(isCurrent ? { isCurrent } : {}), ...(ensureCurrent ? { ensureCurrent } : {}) }),
-      judgeSocialPermission: (request, _config, signal, isCurrent, ensureCurrent) => runModel(request, { forceChatBackend: true, signal, ...(isCurrent ? { isCurrent } : {}), ...(ensureCurrent ? { ensureCurrent } : {}) }),
+      reflectCharacter: (request, _config, signal, isCurrent, ensureCurrent) => runModel(request, { forceChatBackend: true, signal, ...(isCurrent ? { isCurrent } : {}), ...(ensureCurrent ? { ensureCurrent } : {}) }, 'simulation_reflection_model'),
+      judgeSocialPermission: (request, _config, signal, isCurrent, ensureCurrent) => runModel(request, { forceChatBackend: true, signal, ...(isCurrent ? { isCurrent } : {}), ...(ensureCurrent ? { ensureCurrent } : {}) }, 'simulation_social_permission_model'),
       ...(reviewCharacter ? { reviewCharacter } : {}),
       ...(describeImages ? { describeImages } : {}),
       ...(lifeThreadProvider ? { lifeThreadProvider } : {}),

@@ -3,6 +3,8 @@ import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 import { agentSemanticMemoryId, createAgentSemanticMemoryStore } from '../dist/backend/modules/memory/infrastructure/agentSemanticMemoryStore.js'
+import { createAgentSemanticBackend } from '../dist/backend/modules/memory/infrastructure/agentSemanticBackend.js'
+import { createAgentDiagnostics } from '../dist/backend/modules/runtime/infrastructure/agentDiagnostics.js'
 import { createPersonMemoryStore } from '../dist/backend/modules/memory/infrastructure/personMemoryStore.js'
 import { personMemoryAddress } from '../dist/backend/modules/memory/infrastructure/personMemoryContext.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
@@ -407,6 +409,31 @@ test('embedding provider errors still emit an index failure', redisTest, async t
   await f.composer.tick()
   await waitFor(() => events.length, 'provider failure recorded')
   assert.deepEqual(events.map(({ outcome, code }) => [outcome, code]), [['failed', 'semantic_index_embedding_failed']])
+  assert.equal((await f.state()).rows[0].vector, undefined)
+})
+
+test('an embedding provider failure produces one alert and retains the index retry in its trace', redisTest, async t => {
+  const events = [], alerts = []
+  const diagnostics = createAgentDiagnostics({ sink: { async append(event) { events.push(event); return true } },
+    onFailure: event => alerts.push(event) })
+  const f = await fixture(t, { diagnostics })
+  const backend = createAgentSemanticBackend({ embedding: { baseUrl: 'https://fixture.example/embeddings', name: 'fixture', apiKey: 'fixture-key-123' },
+    diagnostics, fetchFn: async () => new Response('PRIVATE-PROVIDER-ERROR', { status: 503 }) })
+  t.after(() => backend.dispose())
+  f.behavior.embed = call => backend.embed(call.texts, call.context)
+  await f.capture('等待向量化的合成记录')
+  await f.composer.tick()
+  await waitFor(() => events.some(event => event.operation === 'semantic_memory_index' && event.outcome === 'failed'), 'index retry logged')
+  await diagnostics.flush()
+  assert.deepEqual(alerts.map(event => [event.operation, event.code, event.details.step]), [
+    ['semantic_embedding_provider', 'http_error', 'response_headers'],
+  ])
+  const index = events.find(event => event.operation === 'semantic_memory_index')
+  assert.equal(index.traceId, alerts[0].traceId)
+  assert.deepEqual(index.scope, { kind: 'account', account: f.binding().target.account })
+  assert.equal(index.details.causeEventId, alerts[0].id)
+  assert.equal(index.details.result, 'retry_scheduled')
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE-PROVIDER-ERROR/u)
   assert.equal((await f.state()).rows[0].vector, undefined)
 })
 

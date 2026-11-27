@@ -283,6 +283,31 @@ test('experience, interest, goal and actual outcome consolidate into a revocable
   })
 })
 
+test('a consolidation checkpoint checks each batch source without repeating all projected node checks per source', async () => {
+  const f = fixture()
+  const rows = Array.from({ length: 28 }, (_, index) => source('consolidation-source-' + index))
+  await f.cognition.record(rows, guard())
+  await f.cognition.propose(agentId, a, rows.slice(0, 8).map((row, index) => proposal('projected-' + index, [row])), guard())
+  await assert.rejects(f.cognition.consolidate(agentId, a, guard(), async (input, modelGuard) => {
+    assert.equal(input.sources.length, rows.length)
+    assert.equal(input.current.length, 8)
+    f.checked.length = 0
+    await modelGuard.ensureCurrent()
+    assert.ok(f.checked.length <= rows.length + 3 * input.current.length)
+    assert.ok(rows.every(row => f.checked.some(checked => checked.id === row.id)))
+    const deadline = new AbortController()
+    f.control.sourceHook = () => deadline.abort(new DOMException('fixture deadline', 'TimeoutError'))
+    const seen = f.checked.length
+    await assert.rejects(modelGuard.ensureCurrent(deadline.signal), { name: 'TimeoutError' })
+    assert.ok(f.checked.length - seen < rows.length)
+    f.control.sourceHook = undefined
+    f.control.denied.add(rows.at(-1).id)
+    await modelGuard.ensureCurrent()
+    return []
+  }), /来源已不可用/u)
+  assert.equal((await f.store.read(agentId)).processed.length, 0)
+})
+
 test('a normal goal version change preserves the independently confirmed outcome and its current result relationship', async () => {
   const f = fixture(), raw = source('raw-1'), state = character()
   state.goals.push({ id: 'guide', title: '整理合作游戏策略', nextStep: '核对规则', status: 'active', evidenceRefs: ['message:1'], createdAt: at, updatedAt: at })

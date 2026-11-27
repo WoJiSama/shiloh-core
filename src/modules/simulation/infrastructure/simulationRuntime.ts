@@ -284,7 +284,7 @@ export interface SimulationRuntimePorts {
     binding?: AgentBindingSnapshot; at?: number; messageIds?: string[]; replyIds?: string[]; isCurrent?: () => boolean }): void | Promise<void>
   /** 本群专属梗提取（侧路小模型，返回原始模型文本；runtime 负责容错解析） */
   memeExtract?(messages: { name: string; text: string }[], isCurrent?: () => boolean, context?: PersonProfileExtractionContext,
-    onPhase?: (phase: AgentSimulationWakePhase) => void): Promise<string>
+    onPhase?: (phase: AgentSimulationWakePhase) => void, repairField?: string): Promise<string>
   /** 令牌账本：仿真回合/梗提取的归组记录 */
   recordTokens?(input: { scope: string; stage: string; model?: string; usage?: unknown; ms?: number }): void
   /** 只读观察实际工具协议回复；返回值不参与执行，观察失败不影响业务。 */
@@ -4861,13 +4861,18 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             await ports.consolidateCognition!(binding, { isCurrent: canCallModel, signal: memoryTurn ? AbortSignal.any([controller.signal, memoryTurn.signal]) : controller.signal, ensureCurrent: guard }, async (input, sourceGuard) => {
               const timeout = AbortSignal.timeout(30_000)
               const signal = AbortSignal.any([timeout, controller.signal, ...(sourceGuard.signal ? [sourceGuard.signal] : [])])
-              await sourceGuard.ensureCurrent?.()
-              const response = await ports.reflectCharacter!({ messages: [{ role: 'system', content: cognitionConsolidationPrompt(input) }, { role: 'user', content: '只返回本次有依据的认知变更 JSON。' }], temperature: 0.3, max_tokens: 1600 }, ports.getExecutionConfig(), signal, sourceGuard.isCurrent, sourceGuard.ensureCurrent)
+              const ensureSources = async () => {
+                signal.throwIfAborted()
+                await sourceGuard.ensureCurrent?.(signal)
+                signal.throwIfAborted()
+              }
+              await ensureSources()
+              const response = await ports.reflectCharacter!({ messages: [{ role: 'system', content: cognitionConsolidationPrompt(input) }, { role: 'user', content: '只返回本次有依据的认知变更 JSON。' }], temperature: 0.3, max_tokens: 1600 }, ports.getExecutionConfig(), signal, sourceGuard.isCurrent, ensureSources)
               const usage = record(response.usage)
               recordWakeTokens(state, Number(usage.total_tokens) || 0)
               await store.save(groupId, state)
               ports.recordTokens?.({ scope: groupId, stage: 'cognition-consolidation', model: String(response.model || ''), usage })
-              await sourceGuard.ensureCurrent?.()
+              await ensureSources()
               if (response.error || signal.aborted) throw new Error('认知整理模型调用失败')
               const content = response.choices?.[0]?.message?.content
               if (typeof content !== 'string' || content.length > 16_000) throw new Error('认知整理未返回有效结构')
@@ -5047,7 +5052,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       phase = 'model'
       const input = fresh.map(m => ({ name: m.name, text: m.text }))
       const requestSignal = memoryTurn ? AbortSignal.any([signal, memoryTurn.signal]) : signal
-      const extract = async () => {
+      const extract = async (repairField?: string) => {
         const started = now()
         let requestFinished = false, usageRecorded = false
         step = 'provider_request'; stepStarted = performance.now(); dispatched = false
@@ -5064,7 +5069,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (requestFinished || requestSignal.aborted) return
             step = next; stepStarted = performance.now()
             if (next === 'response_headers') dispatched = true
-          }), requestSignal, isCurrent)
+          }, repairField), requestSignal, isCurrent)
           if (!usageRecorded) try { ports.recordTokens?.({ scope: groupId, stage: 'meme-extract', ms: now() - started }) } catch { /* 账本不可用 */ }
           return parseMemeCandidates(raw, { requireArray: true })
         } finally { requestFinished = true }
@@ -5073,10 +5078,11 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       try { candidates = await extract() }
       catch (error) {
         if (!(error instanceof AgentSimulationModelError) || error.code !== 'meme_output_json_invalid' && error.code !== 'meme_output_schema_invalid') throw error
+        const evidence = agentErrorDetails(error)
         diagnose({ stage: 'model', operation: 'simulation_meme_extract_response', outcome: 'failed', code: error.code,
-          details: { step: 'response_validation', result: 'retry_scheduled', attempt: 1, maxAttempts: 2 } })
+          details: { ...evidence, step: 'response_validation', result: 'retry_scheduled', attempt: 1, maxAttempts: 2 } })
         await ensureCurrent()
-        candidates = await extract()
+        candidates = await extract(evidence?.field ?? 'meme_output')
         diagnose({ stage: 'model', operation: 'simulation_meme_extract_response', outcome: 'succeeded',
           code: error.code === 'meme_output_json_invalid' ? 'meme_output_json_recovered' : 'meme_output_schema_recovered',
           details: { result: 'recovered', attempt: 2, maxAttempts: 2 } })

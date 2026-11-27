@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { AgentSemanticMemoryBackend } from '../../../contracts/semanticMemory.js'
 import type { PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
-import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import { agentErrorDetails, annotateAgentError, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { EmbeddingGateway } from './EmbeddingGateway.js'
 import { RerankGateway } from './RerankGateway.js'
 import { AgentSemanticMemoryTimeoutError } from './agentSemanticRetrieval.js'
@@ -23,6 +23,7 @@ export interface AgentSemanticBackendOptions {
 const MAX_RESPONSE_BYTES = 1024 * 1024
 const MAX_INPUT_BYTES = 1024 * 1024
 const FAILURE = '语义记忆请求失败：请求已取消、来源授权失效或服务响应无效。'
+const retryableTransport = new Set(['network_timeout', 'connection_timeout', 'connection_reset', 'connection_closed'])
 
 function fail(): never { throw new Error(FAILURE) }
 function object(value: unknown): Record<string, unknown> {
@@ -125,7 +126,7 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
         Buffer.byteLength(JSON.stringify(texts), 'utf8') > MAX_INPUT_BYTES) fail()
   }
   function operationFetch(model: SemanticModel, operation: 'embedding' | 'rerank', context: PersonProfileExtractionContext,
-    signal: AbortSignal, reportFailure: () => void): typeof fetch {
+    signal: AbortSignal, reportFailure: (error: Error) => void): typeof fetch {
     return async (input, init) => {
       let response: Response | undefined
       let combined: AbortSignal | undefined, dispatched = false
@@ -133,7 +134,9 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
       let stepStarted = performance.now()
       const advance = (next: string) => { step = next; stepStarted = performance.now() }
       let failure: string | undefined
+      let retrying = false
       const started = performance.now()
+      const operationName = operation === 'embedding' ? 'semantic_embedding_provider' : 'semantic_rerank_provider'
       try {
         const endpoint = new URL(typeof input === 'string' || input instanceof URL ? input : input.url)
         // Each configured gateway gets only its exact endpoint and credentials.
@@ -144,18 +147,29 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
         const count = operation === 'embedding' ? Array.isArray(body.input) ? body.input.length : 0
           : Array.isArray(body.documents) ? body.documents.length : 0
         if (!count) fail()
-        advance('authorization')
-        await ensureCurrent(context, requestSignal)
-        // No authorization result survives across actual HTTP requests or batches.
-        assertCurrent(context, requestSignal)
-        advance('response_headers')
-        const pending = Promise.resolve().then(() => {
+        const dispatch = async () => {
+          dispatched = false
+          advance('authorization')
+          await ensureCurrent(context, requestSignal)
+          advance('response_headers')
           assertCurrent(context, requestSignal)
           dispatched = true
-          return fetchFn(endpoint.href, { ...init, redirect: 'error', signal: requestSignal })
-        })
-        void pending.then(late => { if (requestSignal.aborted) void late.body?.cancel().catch(() => {}) }, () => {})
-        response = await abortable(pending, requestSignal)
+          const pending = fetchFn(endpoint.href, { ...init, redirect: 'error', signal: requestSignal })
+          void pending.then(late => { if (requestSignal.aborted) void late.body?.cancel().catch(() => {}) }, () => {})
+          return abortable(pending, requestSignal)
+        }
+        try { response = await dispatch() }
+        catch (error) {
+          const cause = agentErrorDetails(error)?.cause
+          if (operation !== 'embedding' || !dispatched || requestSignal.aborted || !cause || !retryableTransport.has(cause)) throw error
+          retrying = true
+          try {
+            options.diagnostics?.emit({ stage: 'model', operation: operationName, outcome: 'failed', code: 'provider_transport_error',
+              durationMs: performance.now() - started, details: { cause, step, stepMs: Math.round(performance.now() - stepStarted),
+                dispatched: true, result: 'retry_scheduled', attempt: 1, maxAttempts: 2 } })
+          } catch { /* Keep the retry under the same request signal. */ }
+          response = await dispatch()
+        }
         assertCurrent(context, requestSignal)
         if (!response.ok) { failure = 'http_error'; fail() }
         if (response.redirected || response.url && new URL(response.url).href !== model.baseUrl) { failure = 'provider_redirected'; fail() }
@@ -165,10 +179,13 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
         await ensureCurrent(context, requestSignal)
         advance('response_validation')
         validatePayload(payload, operation, count)
+        if (retrying) try {
+          options.diagnostics?.emit({ stage: 'model', operation: operationName, outcome: 'succeeded', code: 'semantic_embedding_retry_recovered',
+            httpStatus: response.status, durationMs: performance.now() - started, details: { result: 'recovered', attempt: 2, maxAttempts: 2 } })
+        } catch { /* Preserve the validated vector response. */ }
         // The legacy gateways only see validated JSON, never provider error bodies.
         return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
       } catch (error) {
-        reportFailure()
         const deadline = combined?.reason instanceof AgentSemanticMemoryTimeoutError ? combined.reason : undefined
         const providerTimedOut = !signal.aborted && combined?.reason instanceof DOMException && combined.reason.name === 'TimeoutError'
         const cancelled = combined?.aborted && !providerTimedOut
@@ -177,15 +194,19 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
             step === 'response_headers' ? 'provider_transport_error' : step === 'response_body'
               ? error instanceof SyntaxError ? 'model_response_body_invalid' : 'model_response_body_read_failed'
               : step === 'response_validation' ? 'model_response_envelope_invalid' : 'request_invalid')
+        const cause = agentErrorDetails(error)?.cause
+        const providerError = annotateAgentError(new Error(FAILURE), cause ? { cause } : {})
+        reportFailure(providerError)
         try {
-          options.diagnostics?.emit({ stage: 'model', operation: operation === 'embedding' ? 'semantic_embedding_provider' : 'semantic_rerank_provider',
-            outcome: cancelled ? 'cancelled' : 'failed', code, durationMs: performance.now() - started,
-            ...(response ? { httpStatus: response.status } : {}), details: { step,
+          options.diagnostics?.emit({ stage: 'model', operation: operationName,
+            outcome: cancelled ? 'cancelled' : 'failed', code, durationMs: performance.now() - started, error: providerError,
+            ...(response ? { httpStatus: response.status } : {}), details: { step, ...(cause ? { cause } : {}),
               stepMs: Math.round(performance.now() - stepStarted), dispatched,
               ...(step === 'authorization' ? { field: dispatched ? 'semantic_response_authorization' : 'semantic_request_authorization' } : {}),
-              ...(deadline?.budgetMs === undefined ? {} : { limit: deadline.budgetMs }), result: dispatched ? 'discarded' : 'not_dispatched' } })
+              ...(deadline?.budgetMs === undefined ? {} : { limit: deadline.budgetMs }),
+              ...(retrying ? { attempt: 2, maxAttempts: 2 } : {}), result: dispatched ? 'discarded' : 'not_dispatched' } })
         } catch { /* Observation must not change the safe failure returned to the caller. */ }
-        return fail()
+        throw providerError
       } finally {
         void response?.body?.cancel().catch(() => {})
       }
@@ -196,29 +217,30 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
     id,
     async embed(texts, context) {
       let gateway: EmbeddingGateway | undefined
+      let failure: Error | undefined
       try {
         const signal = AbortSignal.any([context.signal, lifecycle.signal])
         assertCurrent(context, signal)
         inputs(texts)
         if (!texts.length) return []
-        let failed = false
         gateway = new EmbeddingGateway({ apiUrl: embedding.baseUrl, model: embedding.name, apiKey: embedding.apiKey,
-          fetchFn: operationFetch(embedding, 'embedding', context, signal, () => { failed = true }) })
+          fetchFn: operationFetch(embedding, 'embedding', context, signal, error => { failure = error }) })
         const vectors = await abortable(gateway.embedBatch([...texts], { signal }), signal)
         assertCurrent(context, signal)
-        if (failed || vectors.some(vector => vector === null)) fail()
+        if (failure || vectors.some(vector => vector === null)) fail()
         let dimensions: number | undefined
         return vectors.map(vector => {
           if (!vector || dimensions !== undefined && vector.length !== dimensions) fail()
           dimensions = vector.length
           return Array.from(vector)
         })
-      } catch { return fail() }
+      } catch { if (failure) throw failure; return fail() }
       finally { gateway?.dispose() }
     },
     ...(rerank ? {
       async rerank(query: string, documents: readonly { readonly id: string; readonly text: string }[], context: PersonProfileExtractionContext) {
         let gateway: RerankGateway | undefined
+        let failure: Error | undefined
         try {
           const signal = AbortSignal.any([context.signal, lifecycle.signal])
           assertCurrent(context, signal)
@@ -226,14 +248,13 @@ export function createAgentSemanticBackend(options: AgentSemanticBackendOptions)
           if (documents.some(document => typeof document.id !== 'string' || !document.id || document.id.length > 256 || hasSecret(document.id, secrets)) ||
               new Set(documents.map(document => document.id)).size !== documents.length) fail()
           if (!documents.length) return null
-          let failed = false
           gateway = new RerankGateway({ apiUrl: rerank.baseUrl, model: rerank.name, apiKey: rerank.apiKey,
-            fetchFn: operationFetch(rerank, 'rerank', context, signal, () => { failed = true }) })
+            fetchFn: operationFetch(rerank, 'rerank', context, signal, error => { failure = error }) })
           const scores = await abortable(gateway.rerank(query, [...documents], { signal }), signal)
           assertCurrent(context, signal)
-          if (failed || !scores) fail()
+          if (failure || !scores) fail()
           return scores
-        } catch { return fail() }
+        } catch { if (failure) throw failure; return fail() }
         finally { gateway?.dispose() }
       },
     } : {}),

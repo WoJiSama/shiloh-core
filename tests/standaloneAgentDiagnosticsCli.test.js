@@ -10,6 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { createClient } from '@redis/client'
 import { WebSocketServer } from 'ws'
+import { parseAgentDiagnosticEvent } from '../dist/backend/modules/runtime/infrastructure/agentOperationJournal.js'
 
 const repo = fileURLToPath(new URL('../', import.meta.url)), release = path.resolve(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo)
 const entry = path.join(release, 'scripts/start-agent.mjs')
@@ -127,9 +128,9 @@ async function fixture(t, mode) {
       const content = await readFile(file, 'utf8'); assert.ok(content.endsWith('\n'), 'shutdown leaves only complete journal lines')
       texts.push(content); for (const line of content.trimEnd().split('\n')) rows.push(JSON.parse(line))
     }
-    const allowed = ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code', 'durationMs', 'errorKind', 'httpStatus', 'configurationRevision', 'delivery']
     for (const row of rows) {
-      assert.equal(row.version, 1); assert.ok(Object.keys(row).every(key => allowed.includes(key)), 'journal contains only approved metadata fields')
+      const approved = JSON.parse(JSON.stringify(parseAgentDiagnosticEvent(row)))
+      assert.deepEqual(row, approved, 'journal contains only approved metadata fields')
       assert.match(row.traceId, /^[a-f0-9-]{36}$/u)
       assert.match(row.configurationRevision, /^[a-f0-9]{64}$/u, 'each event identifies the configuration loaded by its process')
       if (row.delivery) {

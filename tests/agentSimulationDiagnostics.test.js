@@ -734,11 +734,11 @@ test('a single nested string array works for both send and finish', async t => {
   })
 })
 
-test('simSendMessage reports the invalid value type and accepts the corrected string array', async t => {
+test('simSendMessage reports unsupported objects and can unwrap a plain text message', async t => {
   const diagnostics = spy()
   const h = fixture({ diagnostics, script(_request, index) {
-    if (index === 0) return tools(toolCall('simSendMessage', { messages: [{ text: 'PRIVATE-TOOL-VALUE' }] }))
-    if (index === 1) return tools(toolCall('simSendMessage', { messages: ['已按数组发送'] }))
+    if (index === 0) return tools(toolCall('simSendMessage', { messages: [{ text: 'PRIVATE-TOOL-VALUE', atUserIds: ['1234'] }] }))
+    if (index === 1) return tools(toolCall('simSendMessage', { messages: [{ text: '已通过纯文本对象发送' }] }))
     return tools(toolCall('simFinishTurn', { choice: 'silent', reason: '发送完成' }))
   } })
   t.after(() => h.runtime.stop())
@@ -749,7 +749,7 @@ test('simSendMessage reports the invalid value type and accepts the corrected st
   assert.doesNotMatch(JSON.stringify(failed), /PRIVATE-TOOL-VALUE/u)
   assert.match(h.calls[1].messages.find(row => row.role === 'tool').content, /"messages":\["你好"\]/u)
   assert.equal(h.sent.length, 1)
-  assert.match(JSON.stringify(h.sent[0]), /已按数组发送/u)
+  assert.match(JSON.stringify(h.sent[0]), /已通过纯文本对象发送/u)
 })
 
 test('markRead can finish a directed reply with an earlier unread gap', async t => {

@@ -10,8 +10,10 @@ import { createCognitionConsolidation } from './cognitionConsolidation.js'
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const current = (guard: CognitionGuard) => !guard.signal?.aborted && guard.isCurrent()
 async function check(guard: CognitionGuard) {
+  guard.signal?.throwIfAborted()
   if (!current(guard)) throw new Error('认知资料权限已改变')
-  await guard.ensureCurrent?.()
+  await guard.ensureCurrent?.(guard.signal)
+  guard.signal?.throwIfAborted()
   if (!current(guard)) throw new Error('认知资料权限已改变')
 }
 
@@ -117,15 +119,25 @@ export function createAgentCognition(ports: {
       if (!model) return
       const proofState = await store.read(agentId)
       const usedNodes: CognitionNode[] = []
-      const consolidationGuard: CognitionGuard = { ...guard, ensureCurrent: async () => {
+      // The enclosing phase validates the full snapshot. Each proof read checks
+      // its live source and cancellation without walking that snapshot again.
+      const proofGuard = (parent: CognitionGuard, signal = parent.signal): CognitionGuard => ({
+        isCurrent: () => current(parent) && !signal?.aborted,
+        ...(signal ? { signal } : {}),
+      })
+      const consolidationGuard: CognitionGuard = { ...guard, ensureCurrent: async signal => {
         await check(guard)
-        for (const node of usedNodes) if (!await allowed(proofState, [node.id], guard)) throw new Error('认知整理的当前条目已不可用')
+        const authority = proofGuard(guard, signal)
+        for (const node of usedNodes) if (!await allowed(proofState, [node.id], authority)) throw new Error('认知整理的当前条目已不可用')
+        await check(guard)
       } }
       const consolidation = createCognitionConsolidation({ store,
         model: async (input, modelGuard) => {
           const currentNodes: CognitionNode[] = []
-          for (const node of input.current) if (await allowed(proofState, [node.id], modelGuard)) currentNodes.push(node)
+          const authority = proofGuard(modelGuard)
+          for (const node of input.current) if (await allowed(proofState, [node.id], authority)) currentNodes.push(node)
           usedNodes.push(...currentNodes)
+          await check(modelGuard)
           const proposals = await model({ sources: input.sources, current: currentNodes }, modelGuard)
           await check(modelGuard)
           if (proposals.some(proposal => ports.allowsText?.(proposal.content) === false)) throw new Error('认知整理内容不可用')
@@ -134,7 +146,7 @@ export function createAgentCognition(ports: {
         },
         canUseSource: async (source, sourceGuard) => {
           if (!proofState.sources.some(saved => saved.id === source.id && saved.revision === source.revision && saved.status === 'active')) return false
-          return allowed(proofState, [source.id], sourceGuard)
+          return allowed(proofState, [source.id], proofGuard(sourceGuard))
         }, now,
       })
       await consolidation.consolidate(agentId, conversation, consolidationGuard)

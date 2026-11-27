@@ -2,7 +2,7 @@ import { buildVisibleFailureDetail } from '../domain/visibleFailure.js'
 import { sanitizeJsonValue } from '../domain/unicodeText.js'
 import { parseChatResponse } from '../domain/chatResponse.js'
 import type { ChatMessage, ChatRequestData, ChatResponse } from '../../../contracts/modelGateway.js'
-import type { Backend, ChatBackendConfig, ExecutionConfig, ExecutionOptions, ModelContextLimits, ModelExecutionPorts } from '../../../contracts/modelExecution.js'
+import type { Backend, ChatBackendConfig, ExecutionConfig, ExecutionOptions, ModelContextLimits, ModelExecutionPorts, ModelRequestPhase } from '../../../contracts/modelExecution.js'
 import { awaitModelRequestAuthority, isModelRequestCurrent } from '../../../contracts/modelExecution.js'
 import { excerptContext, messageContextMetadata, modelContextFailure, modelContextLimits, modelContextMetadata, optionalContext, packModelContext, rememberContextOutputLimit, type ContextPurpose, type ModelContextFailure } from '../domain/requestContext.js'
 import type { AgentDiagnosticDetails } from '../../../contracts/agentDiagnostics.js'
@@ -50,9 +50,14 @@ async function fetchWithGenerationCompatibility(url: string, headers: Record<str
     const pack = (smallerThan?: number) => packModelContext(requestData, context?.limits, {
         tokensPerByte: density.get(densityKey) ?? 1 / 3, ...(smallerThan === undefined ? {} : { smallerThan }),
     })
-    const sendRequest = async (projection = context ? pack() : undefined) => {
+    const phase = (step: ModelRequestPhase, status?: number) => {
+        try { options.onRequestPhase?.(step, status) } catch { /* Observation cannot change the request. */ }
+    }
+    const sendRequest = async (candidate?: ReturnType<typeof packModelContext>) => {
+        phase('request_prepare')
         options.signal?.throwIfAborted()
         if (!isModelRequestCurrent(options.isCurrent)) throw new Error(bindingChanged)
+        const projection = candidate ?? (context ? pack() : undefined)
         const started = performance.now()
         const attempt = context && options.contextAttempt ? ++options.contextAttempt.calls : 0
         const report = (outcome: 'succeeded' | 'failed' | 'cancelled', code: string, status?: number, data?: ChatResponse) => {
@@ -85,10 +90,12 @@ async function fetchWithGenerationCompatibility(url: string, headers: Record<str
             throw new ContextBudgetError(projection.blockedBy)
         }
         try {
+            phase('model_request_authorization')
             if (options.ensureCurrent) await options.ensureCurrent()
             options.signal?.throwIfAborted()
             const body = projection?.body ?? JSON.stringify(sanitizeJsonValue(requestData))
             if (!isModelRequestCurrent(options.isCurrent)) throw new Error(bindingChanged)
+            phase('response_headers')
             const response = await fetch(url, { method: 'POST', headers, body, ...(options.signal ? { signal: options.signal } : {}) })
             return { response, report, projection }
         } catch (error) {
@@ -98,6 +105,7 @@ async function fetchWithGenerationCompatibility(url: string, headers: Record<str
     }
     const sendAndRead = async (projection?: ReturnType<typeof packModelContext>) => {
         const sent = await sendRequest(projection), { response } = sent
+        phase('response_body', response.status)
         let completion: { data: unknown } | { error: unknown } | undefined
         let errorText = ''
         if (response.ok) {
@@ -106,6 +114,7 @@ async function fetchWithGenerationCompatibility(url: string, headers: Record<str
         } else errorText = await response.text().catch(() => '无法读取错误内容')
         options.signal?.throwIfAborted()
         if (!isModelRequestCurrent(options.isCurrent)) throw new Error(bindingChanged)
+        phase('response_validation', response.status)
         const detail = completion && 'data' in completion ? completion.data : errorText
         const overflow = context ? modelContextFailure(response.status, detail) : undefined
         if (overflow || !response.ok) sent.report('failed', overflow ?? 'model_provider_http_failed', response.status)

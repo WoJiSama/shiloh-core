@@ -1,3 +1,4 @@
+import { isProxy } from 'node:util/types'
 import type { SimMemoryEntry, SimMessage, SimMoodState, SimSessionState, SimWakeConfig } from '../../../contracts/simulation.js'
 import type { MessageImage } from '../../../contracts/platformConnection.js'
 import { coerceStringArray, looksLikeToolArguments, normalizeMessageTextsInput, normalizeStringArrayInput } from '../domain/paramTolerance.js'
@@ -264,7 +265,15 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
 
     override normalizeParameters(params: unknown) {
       const input = super.normalizeParameters(params)
-      if (Object.hasOwn(input, 'messages')) input.messages = normalizeMessageTextsInput(input.messages)
+      if (Object.hasOwn(input, 'messages')) {
+        const messages = normalizeMessageTextsInput(input.messages)
+        // A text-only wrapper has the same meaning as one message string.
+        input.messages = Array.isArray(messages) ? messages.map(item => {
+          if (!item || typeof item !== 'object' || isProxy(item) || Reflect.ownKeys(item).length !== 1) return item
+          const text = Object.getOwnPropertyDescriptor(item, 'text')?.value
+          return typeof text === 'string' ? text : item
+        }) : messages
+      }
       return input
     }
 

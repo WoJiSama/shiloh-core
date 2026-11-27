@@ -3,7 +3,7 @@ import { resolveChatCompletionUrl } from '../../models/domain/chatCompletionUrl.
 import { glmFlashJsonOptions } from '../../models/domain/modelGateway.js'
 import { buildMemeExtractionPrompt } from '../domain/simMemory.js'
 import { inspectGroupWakeSelection, type GroupWakeRouting, type GroupWakeSelection } from '../domain/groupTurnRouting.js'
-import type { AgentDiagnosticDetails } from '../../../contracts/agentDiagnostics.js'
+import type { AgentDiagnosticDetails, AgentDiagnosticValueType } from '../../../contracts/agentDiagnostics.js'
 import { conversationAddressKey, isConversationAddress, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
 import { agentErrorDetails, annotateAgentError, diagnosticValueType } from '../../runtime/infrastructure/agentDiagnostics.js'
 
@@ -35,6 +35,14 @@ export class AgentSimulationModelError extends Error {
   }
 }
 const MAX_RESPONSE_BYTES = 512 * 1024
+const memeRepairs = new Map([
+  ['meme_output', '只返回示例中的完整 JSON，不添加前言、代码围栏或其它字段。'],
+  ['candidates', '候选必须是数组，最多五项。没有合适的候选时提供空数组。'],
+  ['candidates.items', '每项必须是对象，字段只使用 content、source_id 和 note。'],
+  ['candidates.content', 'content 必须是非空短字符串，写群聊中有依据的短语。'],
+  ['candidates.source_id', 'source_id 填实际输入中的一个数字编号。不要填数组、解释或输入范围外的编号。'],
+  ['candidates.note', 'note 使用短字符串说明依据。没有额外说明时省略此字段。'],
+])
 const WAKE_SYSTEM = [
   '你是群聊机器人的唤醒预判器。主模型进入完整回合开销大，你用极小上下文判断这次唤醒值不值得。',
   '判定值得（engage=true）：有人@机器人/引用它、明确向它提问、话题明显需要它参与（跑团剧情推进到它的角色、有人找它帮忙）。',
@@ -287,32 +295,56 @@ export function createAgentSimulationMemeExtractor(options: AgentSimulationModel
   const jsonObject = supportsSimulationJsonObject(options)
   const run = client(options, { deadlineMs: 15_000, temperature: 0.2, maxTokens: 2000, jsonObject })
   return async (messages: readonly AgentSimulationMemeMessage[], isCurrent?: () => boolean, context?: PersonProfileExtractionContext,
-    onPhase?: (phase: AgentSimulationWakePhase) => void): Promise<string> => {
+    onPhase?: (phase: AgentSimulationWakePhase) => void, repairField?: string): Promise<string> => {
     const raw = await run(messages, () => {
       if (!Array.isArray(messages) || !messages.length || messages.length > 40 || messages.some(row => !row || typeof row.name !== 'string' || typeof row.text !== 'string')) throw new Error(FAILURE)
+      const repair = repairField === undefined ? undefined : memeRepairs.get(repairField) ?? memeRepairs.get('meme_output')
       return [
         { role: 'system', content: jsonObject
           ? '你是群聊梗提取器，只输出包含 candidates 字段的 JSON 对象。'
           : '你是群聊梗提取器，只输出 JSON 数组。' },
+        ...(repair ? [{ role: 'system', content: repair }] : []),
         { role: 'user', content: buildMemeExtractionPrompt(messages.map(row => ({ name: row.name.slice(0, 80), text: row.text })), jsonObject) },
       ]
     }, context, isCurrent, onPhase)
     let parsed: unknown
     try { parsed = parseOutput(raw, jsonObject ? '{' : '[') }
-    catch { throw new AgentSimulationModelError('meme_output_json_invalid') }
+    catch { throw annotateAgentError(new AgentSimulationModelError('meme_output_json_invalid'), { field: 'meme_output' }) }
+    const invalid = (details: AgentDiagnosticDetails): never => {
+      throw annotateAgentError(new AgentSimulationModelError('meme_output_schema_invalid'), details)
+    }
+    function wrongType(field: string, expectedType: AgentDiagnosticValueType, value: unknown): never {
+      return invalid({ field, rule: 'type', expectedType, actualType: diagnosticValueType(value) })
+    }
     const envelope = object(parsed)
-    if (jsonObject && (Object.keys(envelope).length !== 1 || !Object.hasOwn(envelope, 'candidates'))) {
-      throw new AgentSimulationModelError('meme_output_schema_invalid')
+    if (jsonObject) {
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) wrongType('meme_output', 'object', parsed)
+      if (!Object.hasOwn(envelope, 'candidates')) invalid({ field: 'candidates', rule: 'required' })
+      if (Object.keys(envelope).length !== 1) invalid({ field: 'meme_output', rule: 'additionalProperties' })
     }
     const candidates = jsonObject ? envelope.candidates : parsed
-    if (!Array.isArray(candidates) || candidates.length > 5 || candidates.some(item => {
+    if (!Array.isArray(candidates)) wrongType('candidates', 'array', candidates)
+    if (candidates.length > 5) invalid({ field: 'candidates', rule: 'maxItems', limit: 5 })
+    for (const item of candidates) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) wrongType('candidates.items', 'object', item)
       const row = object(item)
-      return !item || Array.isArray(item) || typeof row.content !== 'string' || !row.content.trim() || row.content.length > 120 ||
-        Object.keys(row).some(key => !['content', 'source_id', 'note'].includes(key)) ||
-        row.source_id !== undefined && !((typeof row.source_id === 'string' && /^[1-9]\d?$/u.test(row.source_id) || typeof row.source_id === 'number') &&
-          Number.isSafeInteger(Number(row.source_id)) && Number(row.source_id) >= 1 && Number(row.source_id) <= messages.length) ||
-        row.note !== undefined && (typeof row.note !== 'string' || row.note.length > 1000)
-    })) throw new AgentSimulationModelError('meme_output_schema_invalid')
+      if (Object.keys(row).some(key => !['content', 'source_id', 'note'].includes(key))) invalid({ field: 'candidates.items', rule: 'additionalProperties' })
+      if (typeof row.content !== 'string') wrongType('candidates.content', 'string', row.content)
+      if (!row.content.trim()) invalid({ field: 'candidates.content', rule: 'minLength', limit: 1 })
+      if (row.content.length > 120) invalid({ field: 'candidates.content', rule: 'maxLength', limit: 120 })
+      if (row.source_id !== undefined) {
+        const source = row.source_id
+        if (typeof source !== 'number' && typeof source !== 'string') wrongType('candidates.source_id', 'number', source)
+        const index = typeof source === 'number' ? source : /^[1-9]\d?$/u.test(source) ? Number(source) : NaN
+        if (!Number.isSafeInteger(index) || index < 1 || index > messages.length) {
+          invalid({ field: 'candidates.source_id', cause: 'meme_source_id_invalid', limit: messages.length })
+        }
+      }
+      if (row.note !== undefined) {
+        if (typeof row.note !== 'string') wrongType('candidates.note', 'string', row.note)
+        if (row.note.length > 1000) invalid({ field: 'candidates.note', rule: 'maxLength', limit: 1000 })
+      }
+    }
     return JSON.stringify(candidates)
   }
 }

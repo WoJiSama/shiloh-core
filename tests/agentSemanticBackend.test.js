@@ -221,3 +221,22 @@ test('provider diagnostics distinguish a local budget while waiting for headers 
   assert.ok(rows.every(row => row.operation === 'semantic_embedding_provider' && Number.isFinite(row.durationMs)))
   assert.doesNotMatch(JSON.stringify(rows), /private-|embedding\.example/u)
 })
+
+test('a transient transport failure is reported before one reauthorized embedding attempt in the same deadline', async () => {
+  const rows = [], requests = []
+  let authorizations = 0
+  const run = backend({ diagnostics: { emit: row => rows.push(row) }, fetchFn: async (_url, { signal }) => {
+    requests.push([signal, authorizations])
+    if (requests.length === 1) throw new TypeError('private-transport-message', { cause: Object.assign(new Error('private-address'), { code: 'ETIMEDOUT' }) })
+    return answer(vectors())
+  } })
+  assert.deepEqual(await run.embed(['private-query-content'], context({ async ensureCurrent() { authorizations++ } })), [[0.5, 1]])
+  assert.deepEqual(requests.map(([, checks]) => checks), [1, 2])
+  assert.equal(requests[0][0], requests[1][0])
+  assert.equal(authorizations, 3)
+  assert.deepEqual(rows.map(row => [row.outcome, row.code, row.details.cause, row.details.attempt]), [
+    ['failed', 'provider_transport_error', 'network_timeout', 1],
+    ['succeeded', 'semantic_embedding_retry_recovered', undefined, 2],
+  ])
+  assert.doesNotMatch(JSON.stringify(rows), /private-/u)
+})

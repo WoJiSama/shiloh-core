@@ -7,6 +7,25 @@ const config = { providers: 'oneapi', chatAiConfig: { chatApiUrl: 'https://chat.
 const request = { messages: [{ role: 'user', content: 'hello' }] }
 const success = () => new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }))
 
+test('provider request phases distinguish authorization timeout from a dispatched response', async () => {
+  const phases = [], controller = new AbortController(), entered = Promise.withResolvers()
+  const options = { onRequestPhase: (...values) => phases.push(values) }
+  const { YTapi } = modelExecutor(async () => assert.fail('timed out before HTTP dispatch'))
+  const pending = YTapi(request, config, undefined, undefined, { ...options, signal: controller.signal,
+    ensureCurrent: () => { entered.resolve(); return new Promise(() => {}) } })
+  await entered.promise
+  controller.abort(new DOMException('fixture timeout', 'TimeoutError'))
+  await assert.rejects(pending, { name: 'TimeoutError' })
+  assert.deepEqual(phases.map(([step]) => step), ['request_prepare', 'model_request_authorization'])
+
+  phases.length = 0
+  await modelExecutor(async () => success()).YTapi(request, config, undefined, undefined, options)
+  assert.deepEqual(phases.map(([step, status]) => [step, status]), [
+    ['request_prepare', undefined], ['model_request_authorization', undefined], ['response_headers', undefined],
+    ['response_body', 200], ['response_validation', 200],
+  ])
+})
+
 test('a narrower fallback uses its own wire budget and keeps current sources and tool IDs', async () => {
   const calls = []
   const carry = optionalContext({ role: 'user', content: 'OLD_STYLE'.repeat(1700) }, 'style')

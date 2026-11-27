@@ -149,6 +149,28 @@ test('meme provider failures carry only a fixed label and optional HTTP status',
   }
 })
 
+test('meme validation reports the declared field and requests a correction without replaying the bad response', async () => {
+  const packets = []
+  const payloads = [
+    { candidates: [{ content: 'PRIVATE_INVALID_MEME', source_id: 9 }] },
+    { candidates: [{ content: '蓝色星期八', source_id: 1 }] },
+  ]
+  const extract = createAgentSimulationMemeExtractor({ ...options, baseUrl: 'https://open.bigmodel.cn/api/paas/v4', name: 'glm-5.3-flash',
+    fetchImpl: async (_url, init) => { packets.push(JSON.parse(init.body)); return answer(JSON.stringify(payloads.shift())) } })
+  let repair
+  await assert.rejects(extract(memes, undefined, context()), error => {
+    assert.equal(error.code, 'meme_output_schema_invalid')
+    const details = agentErrorDetails(error)
+    assert.deepEqual(details, { field: 'candidates.source_id', cause: 'meme_source_id_invalid', limit: 2 })
+    assert.doesNotMatch(JSON.stringify(error), /PRIVATE_INVALID_MEME/u)
+    repair = details.field
+    return true
+  })
+  assert.equal(JSON.parse(await extract(memes, undefined, context(), undefined, repair))[0].source_id, 1)
+  assert.equal(packets[0].messages[1].role, 'user')
+  assert.match(packets[1].messages[1].content, /source_id 填实际输入中的一个数字编号/u)
+  assert.doesNotMatch(JSON.stringify(packets[1]), /PRIVATE_INVALID_MEME/u)
+})
 test('failed source checks after the model responds remain separate from malformed output', async () => {
   let responded = false
   const extract = createAgentSimulationMemeExtractor({ ...options, fetchImpl: async () => {

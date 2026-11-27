@@ -7,6 +7,7 @@ const { createSimSessionStore } = await load('modules/simulation/infrastructure/
 const { createDefaultSimSession } = await load('modules/simulation/domain/simConfig.js')
 const { agentBindingToken } = await load('modules/runtime/domain/agentBindings.js')
 const { AgentSimulationModelError } = await load('modules/simulation/infrastructure/agentSimulationModels.js')
+const { annotateAgentError } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
 const { PersonProfileExtractionError } = await load('modules/memory/infrastructure/agentPersonExtractor.js')
 const at = 1800000000000, bot = '90000', user = '10001', group = '10086'
 const target = { account: { platform: 'qq', namespace: 'global', id: bot }, kind: 'group', id: group }
@@ -211,12 +212,14 @@ test('meme output validation retries once with current sources and accounts for 
     const events = [], requests = [], usage = []
     const f = fixture({ meme: true, diagnostics: { emit: event => events.push(event) },
       recordTokens: record => usage.push(record),
-      async memeExtract(messages, current, context) {
+      async memeExtract(messages, current, context, _observe, repairField) {
         await context.ensureCurrent()
         assert.equal(current(), true)
         requests.push(messages)
+        assert.equal(repairField, requests.length === 1 ? undefined : 'candidates.source_id')
         context.recordUsage('fixture', { total_tokens: 10 })
-        if (requests.length === 1 || !recovers) throw new AgentSimulationModelError('meme_output_schema_invalid')
+        if (requests.length === 1 || !recovers) throw annotateAgentError(new AgentSimulationModelError('meme_output_schema_invalid'),
+          { field: 'candidates.source_id', cause: 'meme_source_id_invalid' })
         return '[{"content":"蓝色星期八","source_id":1}]'
       },
     })
@@ -226,7 +229,8 @@ test('meme output validation retries once with current sources and accounts for 
       assert.deepEqual(requests[0], requests[1])
       assert.equal(usage.filter(row => row.stage === 'meme-extract').length, 2)
       assert.ok(events.some(row => row.operation === 'simulation_meme_extract_response' &&
-        row.outcome === 'failed' && row.code === 'meme_output_schema_invalid' && row.details.result === 'retry_scheduled'))
+        row.outcome === 'failed' && row.code === 'meme_output_schema_invalid' && row.details.result === 'retry_scheduled' &&
+        row.details.field === 'candidates.source_id'))
       if (recovers) {
         assert.equal(f.session().memeCursor.seq, 20)
         assert.equal(f.session().memeRetryAt, undefined)

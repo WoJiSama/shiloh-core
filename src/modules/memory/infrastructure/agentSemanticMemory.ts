@@ -64,7 +64,7 @@ export function createAgentSemanticMemory(ports: {
   observeCurrent?(check: () => boolean): boolean
   allowsText(text: string): boolean
   logger: { warn(message: string, error?: unknown): void }
-  diagnostics?: Pick<AgentDiagnostics, 'emit'>
+  diagnostics?: Pick<AgentDiagnostics, 'emit'> & Partial<Pick<AgentDiagnostics, 'emitFailure' | 'withScope'>>
   now?(): number
   /** Offline evaluation only; omitted by the host. Public recall and authorization stay unchanged. */
   retrieval?: AgentSemanticRetrievalOptions
@@ -525,7 +525,7 @@ export function createAgentSemanticMemory(ports: {
         dirty.delete(state.id); nextCheck.set(state.id, now() + 60_000)
         let step: IndexStep = 'store'
         const started = now()
-        const work = maintain(state.scope, value => { step = value }).then(() => {
+        const run = () => maintain(state.scope, value => { step = value }).then(() => {
           if (!retryAt.delete(state.id)) return
           try { ports.diagnostics?.emit({ stage: 'memory', operation: 'semantic_memory_index', outcome: 'succeeded',
             code: 'semantic_index_check_recovered', details: { result: 'recovered' }, durationMs: now() - started }) }
@@ -544,11 +544,16 @@ export function createAgentSemanticMemory(ports: {
           retryAt.set(state.id, now() + retryInMs)
           const code = error instanceof AgentSemanticMemoryTimeoutError ? `semantic_index_${step}_timeout`
             : semanticMemoryFailureCode(error, 'index') ?? `semantic_index_${step}_failed`
-          reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'semantic_memory_index', code, durationMs: now() - started,
-            details: { step, ...(enabled() ? { result: 'retry_scheduled', retryInMs } : {}) }, error },
-            () => ports.logger.warn('[Agent] 语义记忆索引暂时不可用'))
+          const event = { stage: 'memory', operation: 'semantic_memory_index', outcome: 'failed', code, durationMs: now() - started,
+            details: { step, ...(enabled() ? { result: 'retry_scheduled' as const, retryInMs } : {}) }, error } as const
+          try {
+            if (ports.diagnostics?.emitFailure) ports.diagnostics.emitFailure(event)
+            else reportAgentFailure(ports.diagnostics, event, () => ports.logger.warn('[Agent] 语义记忆索引暂时不可用'))
+          } catch { /* Diagnostics do not interrupt the scheduled retry. */ }
         })
-          .finally(() => { indexing.delete(state.id) })
+        const work = (ports.diagnostics?.withScope
+          ? ports.diagnostics.withScope({ kind: 'account', account: state.scope.target.account }, 'semantic_memory_index', run)
+          : run()).finally(() => { indexing.delete(state.id) })
         indexing.set(state.id, work)
       }
     })().catch(error => {

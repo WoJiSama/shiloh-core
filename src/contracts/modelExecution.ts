@@ -15,12 +15,15 @@ export interface ExecutionConfig {
  memoryAiConfig?: { memoryAiUrl?: string; memoryAiModel?: string; memoryAiApikey?: string | string[] }
  taskAiConfig?: Record<string, Backend>; modelContext?: Readonly<Record<string, ModelContextLimits>>; [field: string]: unknown
 }
+export type ModelRequestPhase = 'request_prepare' | 'model_request_authorization' | 'response_headers' | 'response_body' | 'response_validation'
 export interface ExecutionOptions {
  taskBackend?: string; forceChatBackend?: boolean; toolsBackendFallback?: boolean; textBackendFallback?: boolean; routeLabel?: string
  /** A host-owned, synchronous authorization check before every provider dispatch. */
  isCurrent?: () => boolean
  /** Host-owned source authorization, awaited before every actual provider request, including retries and fallbacks. Reject to revoke the request. */
  ensureCurrent?: () => Promise<void>
+ /** Reports the active request phase using fixed labels. */
+ onRequestPhase?: (phase: ModelRequestPhase, httpStatus?: number) => void
  signal?: AbortSignal; generation?: { temperature?: number; topP?: number; maxOutputTokens?: number; maxTokensField?: string; reasoningEffort?: string }
 }
 export function isModelRequestCurrent(check?: () => boolean): boolean {
@@ -41,7 +44,10 @@ export function awaitModelRequestAuthority(check: () => Promise<void>, signal?: 
     }
     const abort = () => finish(signal?.reason ?? new Error('模型请求已取消'))
     signal?.addEventListener('abort', abort, { once: true })
-    Promise.resolve().then(check).then(() => finish(), error => finish(error ?? new Error('模型请求授权失败')))
+    Promise.resolve().then(() => {
+      signal?.throwIfAborted()
+      return check()
+    }).then(() => finish(), error => finish(error ?? new Error('模型请求授权失败')))
   })
 }
 export interface ModelExecutionPorts {

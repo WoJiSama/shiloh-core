@@ -72,7 +72,7 @@ export interface CognitionState {
 export interface CognitionGuard {
   isCurrent(): boolean
   signal?: AbortSignal
-  ensureCurrent?(): Promise<void>
+  ensureCurrent?(signal?: AbortSignal): Promise<void>
 }
 
 export interface CognitionRedis {

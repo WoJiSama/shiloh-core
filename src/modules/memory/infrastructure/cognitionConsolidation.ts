@@ -7,8 +7,11 @@ import { applyCognitionProposals, isCognitionSelfSource, validateCognitionPropos
 import { cognitionSourceIsInvalidated } from '../domain/cognitionState.js'
 
 const SOURCE_BATCH = 32, INPUT_CHARACTERS = 48_000
-const current = (guard: CognitionGuard) => { if (!guard || guard.signal?.aborted || guard.isCurrent() !== true) throw new Error('认知整理已失效') }
-async function check(guard: CognitionGuard): Promise<void> { current(guard); await guard.ensureCurrent?.(); current(guard) }
+const current = (guard: CognitionGuard) => {
+  guard?.signal?.throwIfAborted()
+  if (!guard || guard.isCurrent() !== true) throw new Error('认知整理已失效')
+}
+async function check(guard: CognitionGuard): Promise<void> { current(guard); await guard.ensureCurrent?.(guard.signal); current(guard) }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const sameScene = (left: ConversationAddress, right: ConversationAddress) => conversationAddressKey(left) === conversationAddressKey(right)
 const fingerprint = (agentId: string, scene: ConversationAddress, sources: readonly CognitionSource[]) =>
@@ -53,9 +56,7 @@ interface CognitionConsolidationOptions {
 }
 
 export function createCognitionConsolidation(options: CognitionConsolidationOptions): { consolidate(agentId: string, conversation: ConversationAddress, guard: CognitionGuard): Promise<void> } {
-  async function allowedSources(state: CognitionState, conversation: ConversationAddress, guard: CognitionGuard): Promise<Set<string>> {
-    const selected = state.sources.filter(source => source.status === 'active' && !cognitionSourceIsInvalidated(source, state.invalidations) &&
-      (sameScene(source.conversation, conversation) || isCognitionSelfSource(source)))
+  async function allowedSources(selected: readonly CognitionSource[], guard: CognitionGuard): Promise<Set<string>> {
     const allowed = new Set<string>()
     let cursor = 0
     await Promise.all(Array.from({ length: Math.min(6, selected.length) }, async () => {
@@ -65,7 +66,7 @@ export function createCognitionConsolidation(options: CognitionConsolidationOpti
         if (await options.canUseSource(structuredClone(source), guard) === true) allowed.add(source.id)
       }
     }))
-    await check(guard)
+    current(guard)
     return allowed
   }
   async function consolidate(agentId: string, conversation: ConversationAddress, guard: CognitionGuard): Promise<void> {
@@ -75,7 +76,10 @@ export function createCognitionConsolidation(options: CognitionConsolidationOpti
     const snapshot = await options.store.read(agentId)
     await check(guard)
     if (snapshot.agentId !== agentId) throw new Error('认知整理归属错误')
-    const allowed = await allowedSources(snapshot, conversation, guard)
+    const eligible = snapshot.sources.filter(source => source.status === 'active' && !cognitionSourceIsInvalidated(source, snapshot.invalidations) &&
+      (sameScene(source.conversation, conversation) || isCognitionSelfSource(source)))
+    const allowed = await allowedSources(eligible, guard)
+    await check(guard)
     const available = snapshot.sources.filter(source => allowed.has(source.id) && sameScene(source.conversation, conversation))
       .sort((a, b) => a.occurredAt - b.occurredAt || a.id.localeCompare(b.id))
     let sources: CognitionSource[] | undefined, batch = ''
@@ -98,17 +102,20 @@ export function createCognitionConsolidation(options: CognitionConsolidationOpti
     const inputFingerprint = `input:v1:${hash([agentId, conversationAddressKey(conversation), input])}`
     if (snapshot.processed.includes(inputFingerprint)) return
     const usedIds = new Set([...sources.map(source => source.id), ...nodes.flatMap(node => node.sourceIds)])
-    async function verifyUsed(): Promise<void> {
-      for (const source of snapshot.sources) if (usedIds.has(source.id)) {
-        await check(guard)
-        if (await options.canUseSource(structuredClone(source), guard) !== true) throw new Error('认知整理的来源已不可用')
-      }
+    const usedSources = snapshot.sources.filter(source => usedIds.has(source.id))
+    async function verifyUsed(active: CognitionGuard): Promise<void> {
+      const verified = await allowedSources(usedSources, active)
+      if (verified.size !== usedSources.length) throw new Error('认知整理的来源已不可用')
+    }
+    const ensureSources = async () => {
+      await verifyUsed(guard)
       await check(guard)
     }
-    const ensureSnapshot = async () => {
-      await verifyUsed()
+    const ensureSnapshot = async (requestSignal?: AbortSignal) => {
+      const active = requestSignal ? { ...guard, signal: guard.signal ? AbortSignal.any([guard.signal, requestSignal]) : requestSignal } : guard
+      await verifyUsed(active)
       const latest = await options.store.read(agentId)
-      await check(guard)
+      await check(active)
       if (latest.revision !== snapshot.revision || latest.privacyRevision !== snapshot.privacyRevision) throw new Error('认知整理快照已过期')
     }
     const modelGuard: CognitionGuard = { isCurrent: () => !guard.signal?.aborted && guard.isCurrent(), ensureCurrent: ensureSnapshot }
@@ -121,8 +128,8 @@ export function createCognitionConsolidation(options: CognitionConsolidationOpti
     for (const proposal of proposals) {
       if (proposal.sourceIds.some(id => !supplied.has(id)) || proposal.targetId && !targets.has(proposal.targetId)) throw new Error('认知整理引用了本次资料之外的证据')
     }
-    await verifyUsed()
-    const commitGuard: CognitionGuard = { ...guard, ensureCurrent: verifyUsed }
+    await ensureSources()
+    const commitGuard: CognitionGuard = { ...guard, ensureCurrent: ensureSources }
     await options.store.update(agentId, state => {
       current(guard)
       if (state.revision !== snapshot.revision || state.privacyRevision !== snapshot.privacyRevision) throw new Error('认知整理快照已过期')
