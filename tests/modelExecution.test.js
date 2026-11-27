@@ -1,9 +1,125 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { modelExecutor } from './helpers/modelExecutor.js'
+import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
+const { modelContextRequest, optionalContext, excerptContext, decodeModelContextLimits } = await load('modules/models/domain/requestContext.js')
 const config = { providers: 'oneapi', chatAiConfig: { chatApiUrl: 'https://chat.invalid/v1', chatApiModel: 'chat', chatApiKey: 'fixture' }, toolsAiConfig: { toolsAiUrl: 'https://tools.invalid/v1', toolsAiModel: 'tools', toolsAiApikey: 'fixture' } }
 const request = { messages: [{ role: 'user', content: 'hello' }] }
 const success = () => new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }))
+
+test('a narrower fallback uses its own wire budget and keeps current sources and tool IDs', async () => {
+  const calls = []
+  const carry = optionalContext({ role: 'user', content: 'OLD_STYLE'.repeat(1700) }, 'style')
+  const authority = { role: 'user', content: 'FINAL: 21:00，原群只登记一次' }
+  const result = await modelExecutor(async (url, options) => {
+    const body = JSON.parse(options.body)
+    calls.push({ url, bytes: Buffer.byteLength(options.body), body })
+    return url.includes('tools.invalid') ? new Response('busy', { status: 503 }) : success()
+  }).YTapi(modelContextRequest({ messages: [{ role: 'system', content: 'fixed' }, carry, authority],
+    tools: [{ type: 'function', function: { name: 'reminderTool', description: 'file' } }], tool_choice: 'auto' }, 'text'),
+    { ...config, useTools: true, modelContext: decodeModelContextLimits({ chat: { windowTokens: 2048, maxRequestBytes: 4096 }, tools: { windowTokens: 32768 } }) })
+  assert.equal(result.choices[0].message.content, 'ok')
+  assert.equal(calls.length, 2)
+  assert.match(calls[0].url, /tools\.invalid/u)
+  assert.match(calls[1].url, /chat\.invalid/u)
+  assert.ok(calls[1].bytes < 4096)
+  assert.ok(calls[0].body.messages.some(row => row.content.startsWith('OLD_STYLE')))
+  assert.deepEqual(calls[1].body.messages.at(-1), authority)
+  assert.equal(calls[1].body.messages.some(row => row.content.startsWith('OLD_STYLE')), false)
+  assert.equal(calls[1].body.tools, undefined)
+})
+
+test('context overflow retries only a reduced inference and rechecks source authorization', async () => {
+  for (const revoked of [false, true]) {
+    let checks = 0, sends = 0
+    const bodies = []
+    const result = await modelExecutor(async (_url, options) => {
+      sends++
+      bodies.push(JSON.parse(options.body))
+      return new Response(JSON.stringify({ error: { code: 'context_length_exceeded' } }), { status: 400 })
+    }).YTapi(modelContextRequest({ messages: [
+      { role: 'system', content: 'system authority' }, optionalContext({ role: 'user', content: 'older matter; '.repeat(90) }, 'history'),
+      { role: 'user', content: 'Current verified group request' },
+      { role: 'assistant', tool_calls: [{ id: 'called', function: { name: 'commitmentTool', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'called', content: 'Reminder committed; receipt T1' },
+      excerptContext({ role: 'user', content: 'references '.repeat(700) + '21:00' }, 'original source: 21:00'),
+    ], tools: [{ type: 'function', function: { name: 'simFinishTurn' } }], tool_choice: 'required' }, 'simulation', 3),
+    { ...config, useTools: true }, undefined, undefined, { async ensureCurrent() { if (++checks === 2 && revoked) throw new Error('original message revoked') } })
+    assert.equal(checks, 2)
+    assert.equal(sends, revoked ? 1 : 2)
+    assert.equal(result.failure_kind, revoked ? undefined : 'context_length_exceeded')
+    if (revoked) continue
+    assert.equal(bodies[1].tool_choice, 'required')
+    assert.deepEqual(bodies[1].tools, bodies[0].tools)
+    assert.deepEqual(bodies[1].messages.filter(row => row.tool_calls || row.tool_call_id), bodies[0].messages.filter(row => row.tool_calls || row.tool_call_id))
+    assert.ok(bodies[1].messages.some(row => row.content === 'original source: 21:00'))
+    assert.ok(bodies[1].messages.every(row => !row.content?.includes('older matter')))
+  }
+})
+
+test('request-body rejection is distinct, and mandatory context that exceeds a configured budget never goes out', async () => {
+  let calls = 0
+  const { YTapi } = modelExecutor(async () => { calls++; return new Response('gateway payload rejected', { status: 413 }) })
+  assert.equal((await YTapi(modelContextRequest(request, 'text'), config, undefined, undefined, { forceChatBackend: true })).failure_kind, 'request_body_too_large')
+  const limits = decodeModelContextLimits({ chat: { windowTokens: 2048 } })
+  const blocked = await YTapi(modelContextRequest({ ...request, messages: [{ role: 'user', content: '凭原文授权'.repeat(1000) }] }, 'text'),
+    { ...config, modelContext: limits }, undefined, undefined, { forceChatBackend: true })
+  assert.equal(blocked.failure_kind, 'context_length_exceeded')
+  const capped = await YTapi(modelContextRequest({ messages: [{ role: 'user', content: 'source '.repeat(800) }] }, 'text'),
+    { ...config, modelContext: decodeModelContextLimits({ chat: { windowTokens: 32768, maxRequestBytes: 4096 } }) },
+    undefined, undefined, { forceChatBackend: true })
+  assert.equal(capped.failure_kind, 'request_body_too_large')
+  assert.equal(calls, 1)
+})
+test('provider error envelopes share one recovery path across the tools and chat backends', async () => {
+  for (const [status, payload, expected] of [
+    [200, [{ error: { code: 'bad_request', type: 'prompt_too_long' } }], 'context_length_exceeded'],
+    [422, { detail: { message: 'This model maximum context length was exceeded.' } }, 'context_length_exceeded'],
+    [413, { error: { code: 'payload_too_large' } }, 'request_body_too_large'],
+  ]) {
+    const failed = () => new Response(JSON.stringify(payload), { status })
+    for (const [useTools, recovers] of [[true, false], [true, true], [false, false], [false, true]]) {
+      const calls = []
+      const { YTapi } = modelExecutor(async (url, options) => {
+        calls.push({ url, body: options.body })
+        return recovers && calls.length > 1 ? success() : failed()
+      })
+      const input = modelContextRequest({
+        messages: [{ role: 'system', content: 'Rules' },
+          optionalContext({ role: 'user', content: 'Old background. '.repeat(1100) }, 'history'), { role: 'user', content: 'Current question' }],
+        ...(useTools ? { tools: [{ type: 'function', function: { name: 'read' } }], tool_choice: 'auto' } : {}),
+      }, 'text', 2)
+      const result = await YTapi(input, { ...config, useTools })
+      assert.equal(calls.length, 2)
+      assert.equal(calls[0].url, calls[1].url)
+      assert.ok(Buffer.byteLength(calls[1].body) < Buffer.byteLength(calls[0].body))
+      assert.equal(JSON.parse(calls[1].body).messages.at(-1).content, 'Current question')
+      if (recovers) assert.equal(result.choices[0].message.content, 'ok')
+      else assert.equal(result.failure_kind, expected)
+    }
+  }
+  const { YTapi } = modelExecutor(async () => new Response(JSON.stringify({ choices: [{ message: { content: 'The prompt is too long.' } }] })))
+  assert.equal((await YTapi(modelContextRequest({ ...request }, 'text'), config)).choices[0].message.content, 'The prompt is too long.')
+})
+
+test('configured output caps survive compatibility retries on a short-window backend', async () => {
+  const calls = []
+  const result = await modelExecutor(async (_url, options) => {
+    calls.push(JSON.parse(options.body))
+    return calls.length === 1 ? new Response('unsupported reasoning_effort', { status: 400 }) : success()
+  }).YTapi(modelContextRequest({ messages: [
+    optionalContext({ role: 'user', content: 'Optional. '.repeat(650) }, 'history'), ...request.messages,
+  ] }, 'text'), {
+    ...config, chatAiConfig: { ...config.chatAiConfig, chatApiModel: 'gpt-5-fixture' },
+    modelContext: decodeModelContextLimits({ 'gpt-5-fixture': { windowTokens: 2048, reserveOutputTokens: 512 } }),
+  }, undefined, undefined, { generation: { reasoningEffort: 'low' } })
+  assert.equal(result.choices[0].message.content, 'ok')
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0].reasoning_effort, 'low')
+  assert.equal(calls[1].reasoning_effort, undefined)
+  assert.deepEqual(calls.map(body => body.max_completion_tokens), [512, 512])
+  assert.deepEqual(calls.map(body => body.messages), [request.messages, request.messages])
+})
 test('unsupported generation options retry once on same backend, retaining messages/model', async () => {
  const calls = []
  const { YTapi } = modelExecutor(async (url, options) => {

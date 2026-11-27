@@ -8,6 +8,7 @@ import { parseAgentDiagnosticEvent } from '../modules/runtime/infrastructure/age
 import type { AgentJournalReadResult } from '../modules/runtime/infrastructure/agentOperationJournalReader.js'
 import { captureSynchronousGuardCheck, createSynchronousGuard, ensureSynchronousGuard } from '../modules/runtime/domain/synchronousGuard.js'
 import { describeAgentDiagnostic } from './standaloneQqAlerts.js'
+import { aggregateContextMetrics } from '../modules/runtime/domain/contextMetrics.js'
 
 export interface StandaloneAgentObserveOptions {
   readonly bindings: { list(): readonly AgentBindingSnapshot[]; resolve(target: ConversationAddress): AgentBindingSnapshot | undefined }
@@ -160,6 +161,7 @@ export function createStandaloneAgentObserve(options: StandaloneAgentObserveOpti
         configuration: Object.freeze({ loadedRevision, storedRevision, phase, requiresRestart: configuration.requiresRestart }), journal,
         scan: Object.freeze({ truncated: read.truncated || filtered.length > selected.limit, hostCountersVisible: hostVisible,
           invalidRecords: hostVisible ? count(read.invalidRecords) : 0, scannedEvents: hostVisible ? read.events.length : visible.length }), events,
+        contextMetrics: aggregateContextMetrics(filtered),
       }) as unknown as AgentConsoleJson }
     },
   })

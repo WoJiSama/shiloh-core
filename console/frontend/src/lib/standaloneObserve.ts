@@ -62,6 +62,35 @@ export interface StandaloneObserveSummary {
     hostCountersVisible: boolean
   }
   events: DiagnosticEvent[]
+  contextMetrics?: ContextMetric[]
+}
+export type Percentiles = { p50: number; p95: number } | null
+export interface ContextMeasurement {
+  inputTokens: Percentiles
+  estimatedInputTokens: Percentiles
+  latencyMs: Percentiles
+}
+interface ContextRequestMeasurement extends ContextMeasurement {
+  requests: number
+  requestBytes: Percentiles
+  systemBytes: Percentiles
+  toolSchemaBytes: Percentiles
+}
+interface ContextMetric {
+  platform: string
+  scene: string
+  purpose: string
+  model: string
+  route: string
+  first: ContextRequestMeasurement
+  followup: ContextRequestMeasurement
+  turns: ContextMeasurement & { count: number }
+  savedBytes: number
+  overflow: number
+  repeatedReads: number
+  cachePercent: number | null
+  pricedCostMicroCny: number | null
+  priced: number
 }
 const fail = (): never => {
   throw new Error('运行观测响应不完整或会话身份不一致，请刷新核对')
@@ -84,6 +113,26 @@ function integer(value: unknown, maximum = Number.MAX_SAFE_INTEGER): number {
 }
 function boolean(value: unknown): boolean {
   return typeof value === 'boolean' ? value : fail()
+}
+function percentiles(input: unknown): Percentiles {
+  if (input === null) return null
+  const row = object(input), p50 = integer(row.p50), p95 = integer(row.p95)
+  return p50 <= p95 ? { p50, p95 } : fail()
+}
+function contextMetrics(value: unknown): ContextMetric[] {
+  if (!Array.isArray(value) || value.length > 32) return fail()
+  const measure = (row: Record<string, unknown>): ContextMeasurement => ({ inputTokens: percentiles(row.inputTokens),
+    estimatedInputTokens: percentiles(row.estimatedInputTokens), latencyMs: percentiles(row.latencyMs) })
+  const requests = (row: Record<string, unknown>): ContextRequestMeasurement => ({ ...measure(row), requests: integer(row.requests),
+    requestBytes: percentiles(row.requestBytes), systemBytes: percentiles(row.systemBytes), toolSchemaBytes: percentiles(row.toolSchemaBytes) })
+  return value.map(raw => {
+    const row = object(raw), turns = object(row.turns)
+    return { platform: text(row.platform, 64), scene: text(row.scene, 64), purpose: text(row.purpose, 64), model: text(row.model, 120),
+      route: text(row.route, 64), first: requests(object(row.first)), followup: requests(object(row.followup)), turns: { ...measure(turns), count: integer(turns.count) },
+      savedBytes: integer(row.savedBytes), overflow: integer(row.overflow), repeatedReads: integer(row.repeatedReads),
+      cachePercent: row.cachePercent === null ? null : integer(row.cachePercent, 100),
+      pricedCostMicroCny: row.pricedCostMicroCny === null ? null : integer(row.pricedCostMicroCny), priced: integer(row.priced) }
+  })
 }
 function choice<T extends string>(value: unknown, values: readonly T[]): T {
   return typeof value === 'string' && values.includes(value as T) ? (value as T) : fail()
@@ -254,7 +303,8 @@ export function parseStandaloneObserve(value: unknown): StandaloneObserveSummary
       scannedEvents: integer(scan.scannedEvents),
       hostCountersVisible: boolean(scan.hostCountersVisible)
     },
-    events
+    events,
+    ...(raw.contextMetrics === undefined ? {} : { contextMetrics: contextMetrics(raw.contextMetrics) })
   }
 }
 function conversationScopeKey(binding: WorkspaceConversation['binding']) {

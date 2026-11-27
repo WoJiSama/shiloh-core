@@ -1,5 +1,6 @@
 import type { ChatMessage, ChatRequestData, ChatResponse } from './modelGateway.js'
 import type { AgentDiagnosticEvent } from './agentDiagnostics.js'
+export interface ModelContextLimits { readonly windowTokens: number; readonly reserveOutputTokens: number; readonly maxRequestBytes: number }
 export interface Backend {
  apiUrl?: string | undefined; model?: string | undefined; apiKey?: string | string[] | undefined; label?: string | undefined
  reasoningEffort?: string | undefined; maxTokensField?: string | undefined; maxOutputTokens?: number | undefined
@@ -12,7 +13,7 @@ export interface ExecutionConfig {
  trackAiConfig?: { trackAiUrl?: string; trackAiModel?: string; trackAiApikey?: string | string[] }
  searchAiConfig?: { searchApiUrl?: string; searchApiModel?: string; searchApiKey?: string | string[] }
  memoryAiConfig?: { memoryAiUrl?: string; memoryAiModel?: string; memoryAiApikey?: string | string[] }
- taskAiConfig?: Record<string, Backend>; [field: string]: unknown
+ taskAiConfig?: Record<string, Backend>; modelContext?: Readonly<Record<string, ModelContextLimits>>; [field: string]: unknown
 }
 export interface ExecutionOptions {
  taskBackend?: string; forceChatBackend?: boolean; toolsBackendFallback?: boolean; textBackendFallback?: boolean; routeLabel?: string
@@ -46,7 +47,7 @@ export function awaitModelRequestAuthority(check: () => Promise<void>, signal?: 
 export interface ModelExecutionPorts {
  fetch: typeof fetch
  logger: { info(...values: unknown[]): void; warn(...values: unknown[]): void; error(...values: unknown[]): void }
- observe?(event: Pick<AgentDiagnosticEvent, 'operation' | 'outcome' | 'code' | 'httpStatus' | 'details'> & { error?: unknown }): void
+ observe?(event: Pick<AgentDiagnosticEvent, 'operation' | 'outcome' | 'code' | 'httpStatus' | 'durationMs' | 'details'> & { error?: unknown }): void
  removeToolPromptsFromMessages(messages: ChatMessage[]): ChatMessage[]
  resolveChatCompletionUrl(url?: string): string
  resolveAgentBackend(config: ExecutionConfig, request: ChatRequestData): Backend

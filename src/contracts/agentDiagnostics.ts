@@ -38,6 +38,24 @@ export interface AgentDiagnosticDetails {
   readonly configReadCount?: number
   readonly configReadMs?: number
   readonly timeoutOverrunMs?: number
+  readonly requestBytes?: number
+  readonly estimatedInputTokens?: number
+  readonly inputTokens?: number
+  readonly compactedToolResults?: number
+  readonly savedToolResultBytes?: number
+  readonly contextPurpose?: string
+  readonly contextModel?: string
+  readonly contextRoute?: string
+  readonly contextRound?: number
+  readonly repeatedContextReads?: number
+  readonly inputLimitTokens?: number
+  readonly outputReserveTokens?: number
+  readonly trimmedContextMessages?: number
+  readonly savedContextBytes?: number
+  readonly systemBytes?: number
+  readonly toolSchemaBytes?: number
+  readonly cachedInputTokens?: number
+  readonly pricedCostMicroCny?: number
   readonly outputTokens?: number
   readonly reasoningTokens?: number
   readonly requestedSeq?: number

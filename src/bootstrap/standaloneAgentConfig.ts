@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import YAML from 'yaml'
 import type { ConversationAddress, PlatformConnection } from '../contracts/agentBinding.js'
 import type { ExecutionConfig } from '../contracts/modelExecution.js'
+import { decodeModelContextLimits } from '../modules/models/domain/requestContext.js'
 import type { SimulationSection } from '../contracts/simulation.js'
 import type { TextPersonMemoryConfig } from '../contracts/textPersonMemory.js'
 import type { MidtermMemoryConfig, EpisodicMemoryConfig } from '../contracts/conversationMemory.js'
@@ -584,6 +585,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     chatAiConfig: { chatApiUrl: apiUrl, chatApiModel: modelName, chatApiKey: apiKey,
       ...(mainModel.reasoningEffort ? { chatReasoningEffort: mainModel.reasoningEffort } : {}) },
     toolsAiConfig: { toolsAiUrl: apiUrl, toolsAiModel: modelName, toolsAiApikey: apiKey },
+    ...(raw.modelContext === undefined ? {} : { modelContext: decodeModelContextLimits(raw.modelContext) }),
     ...(developmentModel ? { taskAiConfig: { development: developmentModel } } : {}),
   }
   const hostConfig = decodeHostConfig({ ...(raw.simulation === undefined ? {} : { simulation: object(raw.simulation) }), persona: raw.persona, forbiddenWords: raw.forbiddenWords })

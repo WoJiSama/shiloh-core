@@ -2,8 +2,11 @@ import { buildVisibleFailureDetail } from '../domain/visibleFailure.js'
 import { sanitizeJsonValue } from '../domain/unicodeText.js'
 import { parseChatResponse } from '../domain/chatResponse.js'
 import type { ChatMessage, ChatRequestData, ChatResponse } from '../../../contracts/modelGateway.js'
-import type { Backend, ChatBackendConfig, ExecutionConfig, ExecutionOptions, ModelExecutionPorts } from '../../../contracts/modelExecution.js'
+import type { Backend, ChatBackendConfig, ExecutionConfig, ExecutionOptions, ModelContextLimits, ModelExecutionPorts } from '../../../contracts/modelExecution.js'
 import { awaitModelRequestAuthority, isModelRequestCurrent } from '../../../contracts/modelExecution.js'
+import { modelContextFailure, modelContextLimits, modelContextMetadata, packModelContext, rememberContextOutputLimit, type ContextPurpose, type ModelContextFailure } from '../domain/requestContext.js'
+import type { AgentDiagnosticDetails } from '../../../contracts/agentDiagnostics.js'
+import { costOfUsage } from '../domain/modelPrices.js'
 // A provider may require a flat named choice on the wire. Keep that shape at
 // this boundary instead of weakening the application's nested tool contract.
 interface ProviderChatRequestData {
@@ -21,34 +24,107 @@ function sourceFailure(url: string, model: unknown, detail: string): string {
  return `【渠道=${host}；模型=${buildVisibleFailureDetail(String(model || '未知'))}】${buildVisibleFailureDetail(detail)}`
 }
 const bindingChanged = '角色绑定已改变，模型请求已停止'
+class ContextBudgetError extends Error {
+    constructor(readonly kind: ModelContextFailure) { super('模型请求超过本地预算') }
+}
+type ProviderExecution = ExecutionOptions & { contextAttempt?: { recovered?: ModelContextFailure; calls: number } }
+type ProviderContext = { purpose: ContextPurpose | 'configured'; route: 'tools' | 'chat' | 'task'; limits?: ModelContextLimits; round?: number;
+    repeatedReads?: number; savedToolResultBytes?: number }
+const requestRejection = (kind: ModelContextFailure): ChatResponse => ({
+    error: kind === 'request_body_too_large' ? '本次资料超出模型渠道的请求体上限，未能完成。' : '本次资料超出模型可用上下文，未能完成。',
+    failure_kind: kind,
+})
+const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+const modelLabel = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,119}$/u.test(value) ? value : 'custom'
 
 export function createModelExecutor(ports: ModelExecutionPorts) {
  const { fetch, logger, removeToolPromptsFromMessages, resolveChatCompletionUrl, resolveAgentBackend, shouldAcceptPlannerTextResponse, summarizeToolResultForAgent } = ports
  const observe = (event: Parameters<NonNullable<ModelExecutionPorts['observe']>>[0], legacy: () => void) => {
     try { if (ports.observe) ports.observe(event); else legacy() } catch { /* Observation cannot change the request. */ }
  }
+ const density = new Map<string, number>()
 
-async function fetchWithGenerationCompatibility(url: string, headers: Record<string, string>, requestData: ProviderChatRequestData, options: ExecutionOptions) {
-    const sendRequest = async () => {
+async function fetchWithGenerationCompatibility(url: string, headers: Record<string, string>, requestData: ProviderChatRequestData,
+    options: ProviderExecution, context?: ProviderContext) {
+    const densityKey = url + '\0' + String(requestData.model ?? '')
+    const pack = (smallerThan?: number) => packModelContext(requestData, context?.limits, {
+        tokensPerByte: density.get(densityKey) ?? 1 / 3, ...(smallerThan === undefined ? {} : { smallerThan }),
+    })
+    const sendRequest = async (projection = context ? pack() : undefined) => {
         options.signal?.throwIfAborted()
         if (!isModelRequestCurrent(options.isCurrent)) throw new Error(bindingChanged)
-        if (options.ensureCurrent) await options.ensureCurrent()
-        options.signal?.throwIfAborted()
-        const body = JSON.stringify(sanitizeJsonValue(requestData))
-        if (!isModelRequestCurrent(options.isCurrent)) throw new Error(bindingChanged)
-        return fetch(url, {
-            method: 'POST', headers,
-            body,
-            ...(options.signal ? { signal: options.signal } : {})
-        })
+        const started = performance.now()
+        const attempt = context && options.contextAttempt ? ++options.contextAttempt.calls : 0
+        const report = (outcome: 'succeeded' | 'failed' | 'cancelled', code: string, status?: number, data?: ChatResponse) => {
+            if (!context || !projection) return
+            const usage = data?.usage as { prompt_tokens?: unknown; input_tokens?: unknown; completion_tokens?: unknown; output_tokens?: unknown;
+                prompt_tokens_details?: { cached_tokens?: unknown }; cache_read_input_tokens?: unknown } | undefined
+            const input = usage?.prompt_tokens ?? usage?.input_tokens
+            const output = usage?.completion_tokens ?? usage?.output_tokens
+            const cache = usage?.prompt_tokens_details?.cached_tokens ?? usage?.cache_read_input_tokens
+            if (count(input) && input > 0 && projection.requestBytes >= 2048) {
+                if (density.size >= 64 && !density.has(densityKey)) density.delete(density.keys().next().value!)
+                density.set(densityKey, Math.max(density.get(densityKey) ?? 1 / 3, Math.min(1, input / projection.requestBytes * 1.04)))
+            }
+            const { body: _body, blockedBy: _blockedBy, ...metrics } = projection
+            const cost = count(input) && count(output) ? costOfUsage(modelLabel(requestData.model),
+                { input, output, cached: count(cache) ? Math.min(cache, input) : 0, reasoning: 0, total: input + output }, Date.now()) : undefined
+            const details: AgentDiagnosticDetails = { ...metrics, contextPurpose: context.purpose, contextRoute: context.route,
+                contextModel: modelLabel(requestData.model), attempt, ...(count(input) ? { inputTokens: input } : {}),
+                ...(context.round === undefined ? {} : { contextRound: context.round }),
+                ...(context.repeatedReads === undefined ? {} : { repeatedContextReads: context.repeatedReads }),
+                ...(context.savedToolResultBytes ? { savedToolResultBytes: context.savedToolResultBytes } : {}),
+                ...(cost && !cost.estimated && count(Math.round(cost.cny * 1e6)) ? { pricedCostMicroCny: Math.round(cost.cny * 1e6) } : {}),
+                ...(count(cache) ? { cachedInputTokens: count(input) ? Math.min(cache, input) : cache } : {}),
+                ...(count(output) ? { outputTokens: output } : {}) }
+            observe({ operation: 'provider_context', outcome, code, details, durationMs: Math.round(performance.now() - started),
+                ...(status === undefined ? {} : { httpStatus: status }) }, () => {})
+        }
+        if (projection?.blockedBy) {
+            report('failed', projection.blockedBy === 'request_body_too_large' ? 'model_request_body_budget_exceeded' : 'model_context_budget_exceeded')
+            throw new ContextBudgetError(projection.blockedBy)
+        }
+        try {
+            if (options.ensureCurrent) await options.ensureCurrent()
+            options.signal?.throwIfAborted()
+            const body = projection?.body ?? JSON.stringify(sanitizeJsonValue(requestData))
+            if (!isModelRequestCurrent(options.isCurrent)) throw new Error(bindingChanged)
+            const response = await fetch(url, { method: 'POST', headers, body, ...(options.signal ? { signal: options.signal } : {}) })
+            return { response, report, projection }
+        } catch (error) {
+            report(options.signal?.aborted ? 'cancelled' : 'failed', 'model_provider_transport_failed')
+            throw error
+        }
     }
-    let response = await sendRequest()
-    if (response.ok) return { response, errorText: "" }
-
-    let errorText = await response.text().catch(() => '无法读取错误内容')
-    if (!isModelRequestCurrent(options.isCurrent)) throw new Error(bindingChanged)
+    const sendAndRead = async (projection?: ReturnType<typeof packModelContext>) => {
+        const sent = await sendRequest(projection), { response } = sent
+        let completion: { data: unknown } | { error: unknown } | undefined
+        let errorText = ''
+        if (response.ok) {
+            try { completion = { data: await response.json() } }
+            catch (error) { completion = { error } }
+        } else errorText = await response.text().catch(() => '无法读取错误内容')
+        options.signal?.throwIfAborted()
+        if (!isModelRequestCurrent(options.isCurrent)) throw new Error(bindingChanged)
+        const detail = completion && 'data' in completion ? completion.data : errorText
+        const overflow = context ? modelContextFailure(response.status, detail) : undefined
+        if (overflow || !response.ok) sent.report('failed', overflow ?? 'model_provider_http_failed', response.status)
+        return { ...sent, completion, errorText, overflow }
+    }
+    const retryOverflow = async (previous: Awaited<ReturnType<typeof sendAndRead>>) => {
+        const { overflow, projection } = previous, attempt = options.contextAttempt
+        if (!overflow || !projection || !attempt || attempt.recovered) return previous
+        const reduced = pack(projection.requestBytes)
+        if (reduced.blockedBy || reduced.requestBytes >= projection.requestBytes) return previous
+        attempt.recovered = overflow
+        const sent = await sendAndRead(reduced)
+        return sent.response.ok ? sent : { ...sent, overflow: sent.overflow ?? overflow }
+    }
+    const sent = await sendAndRead(), { response, errorText } = sent
+    if (sent.overflow) return retryOverflow(sent)
+    if (response.ok) return sent
     const optionalFields = ["temperature", "top_p", "max_tokens", "max_completion_tokens", "reasoning_effort", "response_format"]
-        .filter(field => Object.hasOwn(requestData, field))
+        .filter(field => Object.hasOwn(requestData, field) && !(context?.limits && ['max_tokens', 'max_completion_tokens'].includes(field)))
     // Tool-choice recovery has its own contract and must retain the effort.
     const mayRetryWithoutOptions = response.status === 400 && optionalFields.length > 0 &&
         !/thinking mode does not support this tool_choice/i.test(errorText) &&
@@ -58,13 +134,20 @@ async function fetchWithGenerationCompatibility(url: string, headers: Record<str
             details: { step: 'provider_request', result: 'retry_scheduled', retryInMs: 0,
                 ...(optionalFields.length === 1 && optionalFields[0] ? { field: optionalFields[0] } : {}) } },
         () => logger.warn(`[API兼容] 可选生成参数不受支持，移除后在同一后端重试 fields=${optionalFields.join(',')}${optionalFields.includes("reasoning_effort") ? " effort=provider_default" : ""}`))
+        if (context) rememberContextOutputLimit(requestData, Math.max(Number(requestData.max_completion_tokens) || 0, Number(requestData.max_tokens) || 0))
         for (const field of optionalFields) delete requestData[field]
-        response = await sendRequest()
-        if (response.ok) observe({ operation: 'provider_recovery', outcome: 'succeeded', code: 'model_generation_options_retry_accepted',
-            httpStatus: response.status, details: { step: 'provider_request', result: 'recovered' } }, () => {})
-        errorText = response.ok ? "" : await response.text().catch(() => '无法读取错误内容')
+        const compatible = await sendAndRead()
+        if (compatible.overflow) return retryOverflow(compatible)
+        if (compatible.response.ok) observe({ operation: 'provider_recovery', outcome: 'succeeded', code: 'model_generation_options_retry_accepted',
+            httpStatus: compatible.response.status, details: { step: 'provider_request', result: 'recovered' } }, () => {})
+        return compatible
     }
-    return { response, errorText }
+    return sent
+}
+
+function readCompletion(completion: { data: unknown } | { error: unknown } | undefined) {
+    if (completion && 'error' in completion) throw completion.error
+    return completion?.data
 }
 
 function preserveReasoningEffort(options: ExecutionOptions, effort: unknown): ExecutionOptions {
@@ -78,8 +161,18 @@ function preserveReasoningEffort(options: ExecutionOptions, effort: unknown): Ex
  * @param {Object} config - 配置对象
  * @returns {Object|null} - 返回处理后的响应数据或错误信息
  */
-async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, toolContent?: unknown, toolName?: string, options: ExecutionOptions = {}): Promise<ChatResponse> {
+async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, toolContent?: unknown, toolName?: string, options: ProviderExecution = {}): Promise<ChatResponse> {
     const provider = config.providers?.toLowerCase();
+    if (!options.contextAttempt) options = { ...options, contextAttempt: { calls: 0 } }
+    function contextFor(model: unknown, route: ProviderContext['route']): ProviderContext | undefined {
+        const metadata = modelContextMetadata(requestData), limits = modelContextLimits(config.modelContext, model)
+        return metadata || limits ? { purpose: 'configured', ...metadata, route, ...(limits ? { limits } : {}) } : undefined
+    }
+    function capOutput(request: ProviderChatRequestData, context: ProviderContext | undefined) {
+        if (!context?.limits || request.max_tokens !== undefined || request.max_completion_tokens !== undefined) return request
+        const field = typeof request.model === 'string' && /^(?:openai\/)?(?:gpt-5|o[134](?:-|$))/iu.test(request.model) ? 'max_completion_tokens' : 'max_tokens'
+        return { ...request, [field]: context.limits.reserveOutputTokens }
+    }
 
     options.signal?.throwIfAborted()
     const checkCurrent = options.isCurrent
@@ -118,7 +211,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
                 'Content-Type': 'application/json'
             };
 
-            let openaiResponse;
+            let openaiResponse, toolAttempt: Awaited<ReturnType<typeof fetchWithGenerationCompatibility>>;
             try {
                 // 使用config.OpenAiModel替换请求中的模型
                 const openaiRequestData = normalizeToolChoiceForToolsProvider({
@@ -128,29 +221,35 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
                     ...buildGenerationOptions(requestData, options, toolsBackend)
                 }, openaiUrl);
                 options = preserveReasoningEffort(options, openaiRequestData.reasoning_effort)
-                const sent = await fetchWithGenerationCompatibility(openaiUrl, openaiHeaders, openaiRequestData, options)
-                openaiResponse = sent.response
+                const context = contextFor(toolsBackend.model, 'tools')
+                toolAttempt = await fetchWithGenerationCompatibility(openaiUrl, openaiHeaders, capOutput(openaiRequestData, context), options, context)
+                openaiResponse = toolAttempt.response
                 if (!current()) return { error: bindingChanged }
+                if (toolAttempt.overflow) return requestRejection(toolAttempt.overflow)
 
                 if (!openaiResponse.ok) {
-                    const failure = sourceFailure(openaiUrl, config.toolsAiConfig?.toolsAiModel, `OpenAI API 请求失败：${openaiResponse.status} ${openaiResponse.statusText} - ${sent.errorText}`);
+                    const failure = sourceFailure(openaiUrl, config.toolsAiConfig?.toolsAiModel, `OpenAI API 请求失败：${openaiResponse.status} ${openaiResponse.statusText} - ${toolAttempt.errorText}`);
                     if (!ports.observe) logger.error(failure);
                     return await fallbackFromToolsBackend(requestData, config, toolContent, toolName, options, failure);
                 }
             } catch (openaiFetchError) {
                 options.signal?.throwIfAborted()
                 if (!current()) return { error: bindingChanged }
+                if (openaiFetchError instanceof ContextBudgetError) return requestRejection(openaiFetchError.kind)
                 const failure = sourceFailure(openaiUrl, config.toolsAiConfig?.toolsAiModel, `OpenAI API 请求失败：${errorMessage(openaiFetchError)}`);
                 if (!ports.observe) logger.error("OpenAI API 请求失败:", openaiFetchError);
+                if (options.contextAttempt?.recovered) return requestRejection(options.contextAttempt.recovered)
                 return await fallbackFromToolsBackend(requestData, config, toolContent, toolName, options, failure);
             }
 
             let openaiData;
             try {
-                openaiData = processResponse(await openaiResponse.json());
+                openaiData = processResponse(readCompletion(toolAttempt.completion));
+                toolAttempt.report(openaiData.error ? 'failed' : 'succeeded', openaiData.error ? 'model_provider_response_error' : 'completed', openaiResponse.status, openaiData)
                 if (!current()) return { error: bindingChanged }
                 logger.info('工具模型响应已接收');
             } catch (openaiJsonError) {
+                toolAttempt.report('failed', 'model_provider_body_invalid', openaiResponse.status)
                 if (!current()) return { error: bindingChanged }
                 observe({ operation: 'provider_response_body', outcome: 'failed', code: openaiJsonError instanceof SyntaxError ?
                     'model_response_body_invalid' : 'model_response_body_read_failed', httpStatus: openaiResponse.status, error: openaiJsonError,
@@ -164,6 +263,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
                 // 直接返回 tool_calls 响应，保持 OpenAI 模型
                 return processResponse(openaiData);
             }
+            if (options.contextAttempt?.recovered) return openaiData
             if (shouldAcceptPlannerTextResponse(openaiData)) {
                 logger.info(`[Agent路由] 工具模型选择直接文字回复，保留原始回答，不再交给快速模型重答`);
                 return processResponse(openaiData);
@@ -183,7 +283,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
 
             finalRequestData = {
                 model: selectedTextBackend.model,
-                messages: convertToolMessagesForChat(requestData.messages, toolName),
+                messages: convertToolMessagesForChat(requestData.messages, toolName, !!modelContextMetadata(requestData)),
                 stream: false,
                 ...buildGenerationOptions(requestData, options, selectedTextBackend)
             };
@@ -205,7 +305,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
             };
             finalRequestData = {
                 model: backend.model,
-                messages: convertToolMessagesForChat(requestData.messages, toolName),
+                messages: convertToolMessagesForChat(requestData.messages, toolName, !!modelContextMetadata(requestData)),
                 stream: false,
                 ...buildGenerationOptions(requestData, options, backend)
             };
@@ -222,7 +322,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
             return { error: "缺少必要的请求参数（URL、headers 或请求体）" };
         }
 
-        let response;
+        let response, textAttempt: Awaited<ReturnType<typeof fetchWithGenerationCompatibility>>;
         if (url.includes('v1/chat/completions') && typeof finalRequestData === 'object' && finalRequestData !== null) {
             delete finalRequestData.tools;
             delete finalRequestData.tool_choice;
@@ -234,12 +334,14 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
         logger.info('模型请求已准备');
         options = preserveReasoningEffort(options, finalRequestData.reasoning_effort)
         try {
-            const sent = await fetchWithGenerationCompatibility(url, headers, finalRequestData, options)
-            response = sent.response
+            const context = contextFor(finalRequestData.model, options.taskBackend ? 'task' : 'chat')
+            textAttempt = await fetchWithGenerationCompatibility(url, headers, capOutput(finalRequestData, context), options, context)
+            response = textAttempt.response
             if (!current()) return { error: bindingChanged }
+            if (textAttempt.overflow) return requestRejection(textAttempt.overflow)
 
             if (!response.ok) {
-                const failure = sourceFailure(selectedTextBackend?.apiUrl || url, selectedTextBackend?.model || finalRequestData.model, `API 请求失败：${response.status} ${response.statusText} - ${sent.errorText}`);
+                const failure = sourceFailure(selectedTextBackend?.apiUrl || url, selectedTextBackend?.model || finalRequestData.model, `API 请求失败：${response.status} ${response.statusText} - ${textAttempt.errorText}`);
                 if (!ports.observe) logger.error(failure);
                 const fallback = await fallbackFromTextBackend(
                     requestData,
@@ -255,6 +357,8 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
         } catch (fetchError) {
             options.signal?.throwIfAborted()
             if (!current()) return { error: bindingChanged }
+            if (fetchError instanceof ContextBudgetError) return requestRejection(fetchError.kind)
+            if (options.contextAttempt?.recovered) return requestRejection(options.contextAttempt.recovered)
             const failure = sourceFailure(selectedTextBackend?.apiUrl || url, selectedTextBackend?.model || finalRequestData.model, `${provider || 'API'} 请求失败：${errorMessage(fetchError)}`);
             if (!ports.observe) logger.error(`${provider || 'API'} 请求失败:`, fetchError);
             const fallback = await fallbackFromTextBackend(
@@ -271,17 +375,20 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
 
         let responseData;
         try {
-            responseData = await response.json();
+            responseData = readCompletion(textAttempt.completion);
             if (!current()) return { error: bindingChanged }
             logger.info('回答模型响应已接收');
         } catch (jsonError) {
+            textAttempt.report('failed', 'model_provider_body_invalid', response.status)
             if (!current()) return { error: bindingChanged }
             observe({ operation: 'provider_response_body', outcome: 'failed', code: jsonError instanceof SyntaxError ?
                 'model_response_body_invalid' : 'model_response_body_read_failed', httpStatus: response.status, error: jsonError,
                 details: { step: 'response_body', result: 'discarded' } }, () => logger.error(`解析 ${provider || 'API'} 响应 JSON 失败:`, jsonError));
             return { error: sourceFailure(selectedTextBackend?.apiUrl || url, selectedTextBackend?.model || finalRequestData.model, `解析 ${provider || 'API'} 响应 JSON 失败：${errorMessage(jsonError)}`) };
         }
-        return processResponse(responseData);
+        const result = processResponse(responseData)
+        textAttempt.report(result.error ? 'failed' : 'succeeded', result.error ? 'model_provider_response_error' : 'completed', response.status, result)
+        return result;
 
     } catch (error) {
         options.signal?.throwIfAborted()
@@ -303,7 +410,7 @@ function canFallbackFromToolsBackend(requestData: ChatRequestData = {}) {
 async function fallbackFromToolsBackend(requestData: ChatRequestData, config: ExecutionConfig, toolContent: unknown, toolName: string | undefined, options: ExecutionOptions, failure: string): Promise<ChatResponse> {
     if (!canFallbackFromToolsBackend(requestData)) return { error: failure };
 
-    const candidates = resolveToolsBackendFallbacks(config);
+    const candidates = modelContextMetadata(requestData) ? resolveToolsBackendFallbacks(config).slice(0, 1) : resolveToolsBackendFallbacks(config);
     // A casual task may lend its effort to a tool request, but cannot replace
     // the explicitly selected text fallback's address, model or credentials.
     const { taskBackend: _taskBackend, ...fallbackOptions } = options
@@ -342,8 +449,8 @@ async function fallbackFromTextBackend(requestData: ChatRequestData, config: Exe
     if (options.textBackendFallback || options.taskBackend) return null;
 
     let lastFailure: ChatResponse | null = null;
-    for (const candidate of resolveToolsBackendFallbacks(config)) {
-        if (hasSameBackend(candidate, selectedBackend)) continue;
+    const candidates = resolveToolsBackendFallbacks(config).filter(candidate => !hasSameBackend(candidate, selectedBackend))
+    for (const candidate of modelContextMetadata(requestData) ? candidates.slice(0, 1) : candidates) {
         if (!isModelRequestCurrent(options.isCurrent)) return { error: bindingChanged }
         observe({ operation: 'provider_fallback', outcome: 'started', code: 'text_backend_fallback' },
             () => logger.warn(`[Agent路由] 回答模型不可用，降级到 ${candidate.label}: ${failure}`));
@@ -502,7 +609,7 @@ function normalizeToolChoiceForToolsProvider(requestData: ChatRequestData, apiUr
  * @param {Object|Array} responseData - API 响应数据
  * @returns {Object} - 处理后的响应数据
  */
-function convertToolMessagesForChat(messages: ChatMessage[] = [], fallbackToolName = 'tool') {
+function convertToolMessagesForChat(messages: ChatMessage[] = [], fallbackToolName = 'tool', untrusted = false) {
     const converted = [];
 
     for (let i = 0; i < messages.length; i++) {
@@ -523,7 +630,7 @@ function convertToolMessagesForChat(messages: ChatMessage[] = [], fallbackToolNa
             }
 
             converted.push({
-                role: 'system',
+                role: untrusted ? 'user' : 'system',
                 content: [
                     '[tool_execution]',
                     'requests:',
@@ -538,7 +645,7 @@ function convertToolMessagesForChat(messages: ChatMessage[] = [], fallbackToolNa
         if (msg.role === 'tool') {
             const name = msg.name || fallbackToolName || 'tool';
             converted.push({
-                role: 'system',
+                role: untrusted ? 'user' : 'system',
                 content: `[tool_execution]\nresults:\n${summarizeToolResultForChat(name, msg.content)}`
             });
             continue;

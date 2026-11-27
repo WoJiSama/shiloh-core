@@ -17,8 +17,18 @@ import {
   diagnosticStatus,
   diagnosticTraceKey,
   parseStandaloneObserve,
+  type ContextMeasurement,
+  type Percentiles,
   type DiagnosticEvent
 } from '../lib/standaloneObserve'
+
+function percentileLabel(value: Percentiles): string {
+  return value ? `${count(value.p50)} / ${count(value.p95)}` : '—'
+}
+function contextTokenLabel(sample: ContextMeasurement): string {
+  if (sample.inputTokens) return percentileLabel(sample.inputTokens)
+  return sample.estimatedInputTokens ? `${percentileLabel(sample.estimatedInputTokens)}（估算）` : '—'
+}
 
 const query = ref(''),
   traceDraft = ref(''),
@@ -359,6 +369,31 @@ function detail(event: DiagnosticEvent) {
             ><strong>{{ count(metric.value) }}</strong>
           </div>
         </div>
+        <section v-if="resource.data.value.contextMetrics?.length" class="panel events-panel">
+          <div class="panel-heading">
+            <div>
+              <h2 class="section-title">模型上下文</h2>
+              <p class="field-help">本次授权日志的 P50 / P95。回合列累计每条轨迹在该模型和渠道上的已采样请求。预算拒绝和超限响应计入超限次数。</p>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="events-table">
+              <thead><tr><th>场景 / 模型</th><th>首轮输入 token</th><th>后续输入 token</th><th>回合累计输入 token</th><th>回合推理耗时 ms</th><th>首轮提示词 / 工具字节 P95</th><th>裁剪与缓存</th></tr></thead>
+              <tbody>
+                <tr v-for="metric in resource.data.value.contextMetrics" :key="`${metric.platform}/${metric.scene}/${metric.purpose}/${metric.model}/${metric.route}`">
+                  <td>{{ metric.platform }} · {{ metric.scene }} · {{ metric.purpose }}<br />{{ metric.model }} · {{ metric.route }}</td>
+                  <td>{{ contextTokenLabel(metric.first) }}</td>
+                  <td>{{ contextTokenLabel(metric.followup) }}</td>
+                  <td>{{ contextTokenLabel(metric.turns) }}</td>
+                  <td>{{ percentileLabel(metric.turns.latencyMs) }}</td>
+                  <td>{{ count(metric.first.systemBytes?.p95 ?? 0) }} / {{ count(metric.first.toolSchemaBytes?.p95 ?? 0) }}</td>
+                  <td>{{ count(metric.savedBytes) }} B · 超限 {{ count(metric.overflow) }} · 重读 {{ count(metric.repeatedReads) }}<br />缓存 {{ metric.cachePercent === null ? '—' : `${metric.cachePercent}%` }}<br />
+                    <span v-if="metric.pricedCostMicroCny !== null">价目估算 ¥{{ (metric.pricedCostMicroCny / 1000000).toFixed(4) }}（{{ count(metric.priced) }} 次）</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
         <section class="panel events-panel">
           <div class="panel-heading">
             <div>

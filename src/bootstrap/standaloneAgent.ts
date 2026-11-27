@@ -459,6 +459,7 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
       if (!isModelRequestCurrent(options.isCurrent)) return { error: '角色绑定已改变，模型请求已停止' }
       if (result.error) {
         diagnostics.emit({ stage: 'model', operation: 'model_request', outcome: 'failed', code: 'model_response_error' })
+        if (result.failure_kind === 'context_length_exceeded' || result.failure_kind === 'request_body_too_large') return result
         return { error: '模型请求失败' }
       }
       const taskModel = options.taskBackend ? config.execution.taskAiConfig?.[options.taskBackend]?.model : undefined
