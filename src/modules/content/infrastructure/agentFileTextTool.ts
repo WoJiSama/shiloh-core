@@ -15,6 +15,7 @@ export interface AgentFileTextToolOptions {
   readonly allowsText?: (text: string) => boolean
   readonly nativeFormats?: readonly FileTextNativeFormat[]
 }
+const defaultTextPage = 4_000
 const failed = (content = '文件文本读取失败：来源、格式、解析预算、期限或授权无效。'): AgentToolResult => ({ status: 'failed', content })
 function hasSecret(value: string, secrets: readonly string[]) {
   const unicode = value.replace(/\\u([\da-f]{4})/giu, (_match, code: string) => String.fromCharCode(Number.parseInt(code, 16)))
@@ -38,11 +39,11 @@ export function createAgentFileTextTool(options: AgentFileTextToolOptions = {}):
       folderPath: { type: 'string', maxLength: 1024, description: '当前群文件目录。' },
       fileUrl: { type: 'string', maxLength: 2048, description: '仅限本轮真人原文明确给出的公共HTTP(S)文件链接。' },
       offset: { type: 'integer', minimum: 0, maximum: MAX_FILE_TEXT_CHARS, description: 'Unicode字符偏移，默认0；继续读取使用nextOffset。' },
-      limit: { type: 'integer', minimum: 1, maximum: MAX_FILE_TEXT_PAGE, description: '本页字符数，默认11000。' },
+      limit: { type: 'integer', minimum: 1, maximum: MAX_FILE_TEXT_PAGE, description: '本页字符数，默认4000。需要更多时按返回偏移继续。' },
     }, required: [], additionalProperties: false },
     async execute(raw, context) {
       try {
-        const input = fileTextInput(raw), { offset = 0, limit = MAX_FILE_TEXT_PAGE, ...source } = input
+        const input = fileTextInput(raw), { offset = 0, limit = defaultTextPage, ...source } = input
         if (!safe(JSON.stringify(input)) || context.actor.kind !== 'user' || !context.actor.user || !context.request?.messageId || !context.readFile) return failed()
         await ensureAgentWebCurrent(context)
         // Snapshot returned text metadata and bytes before any post-read authority await.

@@ -30,7 +30,17 @@ function formatCell(cell: ReturnType<typeof readExcelCell>['cell']) {
 export function boundAgentExcelResult(text: string): string {
   if ([...text].length <= MAX_AGENT_EXCEL_RESULT_CHARS) return text
   const suffix = '\n（结果达到长度上限，已截断；请缩小查询范围。）'
-  return safeTruncateUnicode(text, MAX_AGENT_EXCEL_RESULT_CHARS - [...suffix].length) + suffix
+  const budget = MAX_AGENT_EXCEL_RESULT_CHARS - [...suffix].length
+  const blocks = text.split('\n\n'), kept: string[] = []
+  let used = 0
+  for (const block of blocks) {
+    const size = [...block].length + (kept.length ? 2 : 0)
+    if (used + size > budget) break
+    kept.push(block)
+    used += size
+  }
+  if (kept.length && blocks.length > 1) return kept.join('\n\n') + suffix
+  return safeTruncateUnicode(text, budget) + suffix
 }
 export function formatAgentExcelResult(result: AgentExcelResult, source: AgentExcelSource): string {
   const header = ['【Excel 工作簿查询结果】', `文件: ${label(source.name)}`, `来源: ${source.origin ?? '当前会话授权文件'}`]
@@ -38,7 +48,8 @@ export function formatAgentExcelResult(result: AgentExcelResult, source: AgentEx
     `${sheet.index}. ${sheet.name}（${sheet.state}，${sheet.rowCount}行 × ${sheet.columnCount}列）`)].join('\n'))
   if (result.operation === 'read_cell') return boundAgentExcelResult([...header, `工作表: ${result.sheetName}`, formatCell(result.cell)].join('\n'))
   if (result.operation === 'read_range') return boundAgentExcelResult([...header, `工作表: ${result.sheetName}`, `区域: ${result.range}（${result.cellCount}个单元格）`,
-    ...result.rows.flatMap(row => row.map(formatCell))].join('\n\n'))
+    `列: ${[...new Set((result.rows[0] ?? []).map(cell => cell.address.replace(/\d+$/u, '')))].join('、')}`,
+    ...result.rows.map(row => row.map(formatCell).join('\n'))].join('\n\n'))
   const modes: Record<string, string> = { contains: '包含', exact: '完全等于', starts_with: '开头是', ends_with: '结尾是' }
   const lines = [...header, `搜索: ${result.query}`, `匹配方式: ${modes[result.matchMode] ?? result.matchMode}`,
     ...(result.scope ? [`搜索区域: ${result.scope}`] : []), ...(result.relatedTerms.length ? [
