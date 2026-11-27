@@ -607,6 +607,7 @@ const stepNames = new Map(Object.entries({
   provider_request: '请求服务', request_prepare: '准备请求', response_body: '读取响应体', response_validation: '校验响应',
   response_headers: '等待响应头',
   model_request_authorization: '复核模型请求来源权限',
+  reflection_reserve: '登记反思任务和预算', cognition_consolidation: '整理认知资料', reflection_review: '审核反思结果',
   wake_request_authorization: '复核唤醒请求发送权限', wake_response_authorization: '复核唤醒结果使用权限',
   meme_request_authorization: '复核群梗请求发送权限', meme_response_authorization: '复核群梗结果使用权限',
   semantic_acquire: '取得语义记忆读取授权', semantic_store_observation: '读取语义原文和向量状态',

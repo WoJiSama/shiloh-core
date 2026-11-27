@@ -361,6 +361,8 @@ test('Core meeting-time replay distinguishes current, original and recalled sche
           await waitFor(async () => (await f.semantic(group))?.rows.filter(row => row.providerId === backend.id).length === sourceRows.length,
             'original sources captured and indexed by Core')
           assert.equal(f.requests.length, 0, 'ambient evidence must not trigger a reply')
+          // Move past the recent topic window while retaining the indexed sources and history.
+          clock += 4 * 86_400_000
           for (const step of steps) {
             clock += 60_000
             let recallRecorded = null

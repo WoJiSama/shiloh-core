@@ -71,7 +71,11 @@ test('unified cognition shares the reflection budget and replaces its model call
 
 test('failed cognition consolidation retains unprocessed evidence and cannot immediately retry', async () => {
   const h = harness(); await h.reflection.read(); await h.addInputs(); h.clock.value += SIX_HOURS
-  await h.run({ consolidate: async () => { throw new Error('consolidation-failed') } })
+  const failure = new DOMException('consolidation-failed', 'TimeoutError'), reported = []
+  await h.run({ consolidate: async () => { throw failure }, onFailure: (error, step) => reported.push({ error, step }) })
+  assert.equal(reported.length, 1)
+  assert.equal(reported[0].error, failure)
+  assert.equal(reported[0].step, 'cognition_consolidation')
   assert.deepEqual((await h.reflection.read()).processed, [])
   assert.match((await h.reflection.read()).lastOutcome, /consolidation-failed/)
   assert.equal(h.counts().reserved, 1)

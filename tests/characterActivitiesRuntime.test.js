@@ -359,6 +359,23 @@ test('后台反思阻止重置和巡检重入，保留新消息，暂停后丢�
   } finally { held.resolve(); if (background) await background; h.runtime.stop() }
 })
 
+test('a reflection failure is reported even though the background sweep completes', async t => {
+  const events = [], deadline = new DOMException('fixture deadline', 'TimeoutError')
+  const h = fixture({ diagnostics: { emit: event => events.push(event), traceId: () => 'reflection-test' },
+    async reflectCharacter() { throw deadline } })
+  t.after(() => h.runtime.stop())
+  await h.memory('source-a', '我喜欢探索')
+  await h.memory('source-b', '我喜欢有线索的谜题')
+  h.clock.value = (await h.runtime.describeGroup(GROUP)).activities.reflection.nextRunAt
+  await h.runtime.sweepOnce()
+  const failures = events.filter(event => event.operation === 'simulation_character_background' && event.outcome === 'failed')
+  assert.equal(failures.length, 1)
+  assert.equal(failures[0].code, 'character_background_timeout')
+  assert.equal(failures[0].details.step, 'provider_request')
+  assert.equal(failures[0].error, deadline)
+  assert.equal(h.sent.length, 0)
+})
+
 test('共享只投影已批自我偏好；模型等待时撤销会拦截迟到发送并防止旧历史复活', async () => {
   const held = deferred()
   let waiting = false

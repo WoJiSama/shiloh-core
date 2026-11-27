@@ -9,6 +9,7 @@ import type { CommitmentRunOptions, CommitmentRunResult } from '../../../contrac
 import type { CoreCapabilityToolFactory } from '../../tools/infrastructure/agentCoreCapabilities.js'
 import type { ChatRequestData, ChatResponse } from '../../../contracts/modelGateway.js'
 import type { ExecutionOptions } from '../../../contracts/modelExecution.js'
+import { awaitModelRequestAuthority } from '../../../contracts/modelExecution.js'
 import type { AgentHistoryRecall, AgentHistoryRequestSource } from '../../../contracts/agentHistory.js'
 import type { ConversationTopicRecall } from '../../../contracts/conversationTopic.js'
 import type { CognitionConsolidator, CognitionGuard, CognitionRecall, CognitionTurnProjection } from '../../../contracts/agentCognition.js'
@@ -4796,6 +4797,18 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       return bindingCurrent && groupActive(runtimeConfig(), groupId) && proactiveAllowed(groupId)
     }
     const canCallModel = () => ports.observeCurrent ? ports.observeCurrent(checkBackgroundAuthority) === true : checkBackgroundAuthority()
+    const reportFailure = (error: unknown, step?: string) => {
+      const timedOut = [error, controller.signal.reason].some(reason => reason instanceof DOMException && reason.name === 'TimeoutError')
+      const revoked = !timedOut && (error instanceof CharacterBackgroundRevokedError || controller.signal.aborted || memoryTurn?.signal.aborted)
+      const diagnostic = { stage: 'runtime', operation: 'simulation_character_background', outcome: revoked ? 'cancelled' : 'failed',
+        code: revoked ? 'character_background_revoked' : timedOut ? 'character_background_timeout' : `character_background_${phase}_failed`,
+        durationMs: now() - started, ...(revoked ? {} : { error }), ...(step ? { details: { step } } : {}),
+      } satisfies Parameters<AgentDiagnostics['emit']>[0]
+      try {
+        if (!revoked && ports.diagnostics?.emitFailure) ports.diagnostics.emitFailure(diagnostic)
+        else diagnose(diagnostic, revoked ? undefined : () => logger.warn(`[仿真] 群 ${groupId} 后台活动停止`))
+      } catch { /* Diagnostics never affect execution. */ }
+    }
     const guard = async () => {
       await refreshGroupState(true)
       if (!canCallModel()) throw new CharacterBackgroundRevokedError('角色后台活动范围已改变')
@@ -4856,14 +4869,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         if (binding && ports.projectCognition) await ports.projectCognition({ agentId: binding.agentId, conversation: target,
           character: await characters.load(scope), messageRefs: [...state.recent, ...state.unread].filter(message => message.messageId != null).map(message => ({ seq: message.seq, messageId: String(message.messageId) })), expressions: [],
         }, { isCurrent: canCallModel, signal: controller.signal, ensureCurrent: guard })
-        await reflection.run({ guard, memoryInvalidatedAt, sharedSources: ports.readCognition ? [] : (await shared.contextProjection()).map(item => item.id),
+        await reflection.run({ guard, onFailure: reportFailure, memoryInvalidatedAt, sharedSources: ports.readCognition ? [] : (await shared.contextProjection()).map(item => item.id),
           ...(binding && ports.consolidateCognition ? { consolidate: async () => {
             await ports.consolidateCognition!(binding, { isCurrent: canCallModel, signal: memoryTurn ? AbortSignal.any([controller.signal, memoryTurn.signal]) : controller.signal, ensureCurrent: guard }, async (input, sourceGuard) => {
               const timeout = AbortSignal.timeout(30_000)
               const signal = AbortSignal.any([timeout, controller.signal, ...(sourceGuard.signal ? [sourceGuard.signal] : [])])
               const ensureSources = async () => {
-                signal.throwIfAborted()
-                await sourceGuard.ensureCurrent?.(signal)
+                await awaitModelRequestAuthority(async () => sourceGuard.ensureCurrent?.(signal), signal)
                 signal.throwIfAborted()
               }
               await ensureSources()
@@ -4933,17 +4945,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         }
       }
     } catch (error) {
-      const timedOut = controller.signal.reason instanceof DOMException && controller.signal.reason.name === 'TimeoutError'
-      const revoked = !timedOut && error instanceof CharacterBackgroundRevokedError
-      const diagnostic = { stage: 'runtime', operation: 'simulation_character_background', outcome: revoked ? 'cancelled' : 'failed',
-        code: revoked ? 'character_background_revoked' : timedOut ? 'character_background_timeout' : `character_background_${phase}_failed`,
-        durationMs: now() - started, ...(revoked ? {} : { error }),
-        ...(phase === 'subscription' && subscriptionStep ? { details: { step: subscriptionStep } } : {}),
-      } satisfies Parameters<AgentDiagnostics['emit']>[0]
-      try {
-        if (!revoked && ports.diagnostics?.emitFailure) ports.diagnostics.emitFailure(diagnostic)
-        else diagnose(diagnostic, revoked ? undefined : () => logger.warn(`[仿真] 群 ${groupId} 后台活动停止`))
-      } catch { /* Diagnostics never affect execution. */ }
+      reportFailure(error, phase === 'subscription' ? subscriptionStep : undefined)
     }
     finally {
       memoryTurn?.release()

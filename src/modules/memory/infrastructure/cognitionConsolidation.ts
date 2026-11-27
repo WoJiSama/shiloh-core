@@ -118,7 +118,7 @@ export function createCognitionConsolidation(options: CognitionConsolidationOpti
       await check(active)
       if (latest.revision !== snapshot.revision || latest.privacyRevision !== snapshot.privacyRevision) throw new Error('认知整理快照已过期')
     }
-    const modelGuard: CognitionGuard = { isCurrent: () => !guard.signal?.aborted && guard.isCurrent(), ensureCurrent: ensureSnapshot }
+    const modelGuard: CognitionGuard = { ...guard, isCurrent: () => !guard.signal?.aborted && guard.isCurrent(), ensureCurrent: ensureSnapshot }
     if (guard.signal) modelGuard.signal = guard.signal
     await ensureSnapshot()
     const output = await options.model(input, modelGuard)

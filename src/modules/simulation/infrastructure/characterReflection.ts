@@ -5,6 +5,7 @@ import { createCharacterStore, type CharacterRedis } from './characterStore.js'
 import { createScopedStateStore } from './scopedStateStore.js'
 
 const INTERVAL = 6 * 3600_000
+type ReflectionStep = 'reflection_reserve' | 'cognition_consolidation' | 'provider_request' | 'response_validation' | 'reflection_review' | 'save'
 export interface ReflectionState { schemaVersion: 1; lastRunAt: number; nextRunAt: number; lastOutcome: string; runsToday: number; day: string; processed: string[] }
 
 export function characterReflectionKey(scope: CharacterScope): string {
@@ -30,10 +31,11 @@ export function createCharacterReflection({ redis, scope, now = Date.now, retain
     const memories = characterMemoryVisibility(character, invalidatedAt).memories.filter(m => !m.id.startsWith('reflection-') && !state.processed.includes(`memory:${m.id}`)).slice(-6)
     return { receipts, memories, refs: [...receipts.map(r => `receipt:${r.id}`), ...memories.map(m => `memory:${m.id}`)] }
   }
-  async function run({ guard, infer, reserve, review, consolidate, sharedSources = [], memoryInvalidatedAt = 0 }: {
+  async function run({ guard, infer, reserve, review, consolidate, onFailure, sharedSources = [], memoryInvalidatedAt = 0 }: {
     guard(): Promise<void>; infer(prompt: string): Promise<string>; reserve(): Promise<void>; sharedSources?: string[]; memoryInvalidatedAt?: number
     review?(candidate: Record<string, unknown>, before: CharacterState, evidence: unknown): Promise<void>
     consolidate?(): Promise<void>
+    onFailure?(error: unknown, step: ReflectionStep): void
   }): Promise<boolean> {
     const at = now(), day = new Date(at).toISOString().slice(0,10)
     const state = await initialize(), before = await characters.load(scope), evidence = inputs(before, state, memoryInvalidatedAt)
@@ -43,10 +45,13 @@ export function createCharacterReflection({ redis, scope, now = Date.now, retain
       if (at < current.nextRunAt || (current.day === day && current.runsToday >= 2)) throw new Error('反思已检查或达到日限额')
       return { ...current, lastRunAt: at, nextRunAt: at + INTERVAL, runsToday: (current.day === day ? current.runsToday : 0) + 1, day, lastOutcome: '反思进行中；重启不会自动重试本次调用' }
     })
+    let step: ReflectionStep = 'reflection_reserve'
     try {
       await reserve()
       if (consolidate) {
+        step = 'cognition_consolidation'
         await consolidate()
+        step = 'save'
         await guard()
         await store.update(current => ({ ...current, lastOutcome: '统一认知整理完成', processed: [...new Set([...current.processed, ...evidence.refs])].slice(-512) }))
         return true
@@ -57,7 +62,9 @@ export function createCharacterReflection({ redis, scope, now = Date.now, retain
         'updates至多2条，goals至多1条。可以都为空。保持长期人格，不因一次调侃或沉默给自己/他人永久定性，不把失败/计划当成完成。观点一律是推测，不是新事实。新意见需要明确依据；只输出需要持久化的变化，不输出思考过程。',
         JSON.stringify({ evidence, currentMemories: characterMemoryVisibility(before, memoryInvalidatedAt).memories.slice(-12), goals: characterMemoryVisibility(before, memoryInvalidatedAt).goals.filter(g => ['active','waiting'].includes(g.status)) }),
       ].join('\n')
+      step = 'provider_request'
       const raw = await infer(prompt)
+      step = 'response_validation'
       await guard()
       const parsed = JSON.parse(raw.replace(/^```(?:json)?\s*/u,'').replace(/\s*```$/u,'')) as Record<string, unknown>
       if (!parsed || Object.keys(parsed).some(k => !['summary','updates','goals'].includes(k)) || typeof parsed.summary !== 'string' || parsed.summary.length > 500 || !Array.isArray(parsed.updates) || parsed.updates.length > 2 || !Array.isArray(parsed.goals) || parsed.goals.length > 1) throw new Error('反思响应结构不合法')
@@ -74,8 +81,10 @@ export function createCharacterReflection({ redis, scope, now = Date.now, retain
         if (!value || Object.keys(value).some(k => !['id','action','reason','nextStep'].includes(k)) || typeof value.id !== 'string' || !['wait','abandon'].includes(String(value.action)) || typeof value.reason !== 'string' || !value.reason.trim() || value.reason.length > 500 || (value.nextStep !== undefined && typeof value.nextStep !== 'string') || !characterMemoryVisibility(before, memoryInvalidatedAt).goals.some(g => g.id === value.id && ['active','waiting'].includes(g.status))) throw new Error('反思目标更新无效')
         draft = transitionCharacterGoal(draft, value.id, value.action === 'wait' ? 'waiting' : 'abandoned', { now: at, nextCheckAt: at + INTERVAL, lastOutcome: value.reason, ...(typeof value.nextStep === 'string' ? { nextStep: value.nextStep } : {}) })
       }
+      step = 'reflection_review'
       await guard()
       await review?.(structuredClone(parsed), structuredClone(before), structuredClone(evidence))
+      step = 'save'
       await guard()
       await characters.update(scope, current => {
         if (current.revision !== before.revision || current.paused) throw new Error('反思期间状态已改变，拒绝过期更新')
@@ -84,6 +93,7 @@ export function createCharacterReflection({ redis, scope, now = Date.now, retain
       const outcome = String(parsed.summary || '没有值得更新的内容')
       await store.update(current => ({ ...current, lastOutcome: outcome, processed: [...new Set([...current.processed, ...evidence.refs])].slice(-512) }))
     } catch (error) {
+      try { onFailure?.(error, step) } catch { /* Preserve the reflection outcome. */ }
       await store.update(current => ({ ...current, lastOutcome: `未应用反思：${error instanceof Error ? error.message : '调用失败'}`.slice(0,600) }))
     }
     return true
