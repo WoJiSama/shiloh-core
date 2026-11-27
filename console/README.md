@@ -51,7 +51,7 @@ console:
 
 流程依次使用 `GET /api/configuration/catalog`、`POST /api/configuration/preview` 和 `POST /api/configuration/commit`。预览展示字段差异、受影响本人、连接、完整会话及权限变化，完整候选保留在服务端；提交只携带 `previewId`、`revision`、`candidateDigest` 和包含 host/personas/bindings 的完整 `readSet`。候选过期、身份撤销或配置变化后须重新预览，不能用旧预览覆盖新配置。
 
-默认把宿主设置、人设库和绑定一起提交到 `agent-config.sqlite`，分别记录已保存和已加载的版本。涉及启动期装配的提交可通过「重启并应用配置」生效。使用标准启动器且由它管理应用生命周期时，提交先交付响应，再释放 Redis 租约并重新装配。控制台等宿主重新核验账号后恢复编辑。 [初始化和旧配置导入](../docs/architecture/agent-bindings.md#独立-core-配置库)
+默认把宿主设置、人设库和绑定一起提交到 `agent-config.sqlite`，分别记录已保存和已加载的版本。涉及启动期装配的提交可通过「重启并应用配置」生效。使用标准启动器且由它管理应用生命周期时，提交先交付响应，再释放 Redis 租约并重新装配。控制台等宿主重新核验账号后恢复编辑。钉钉回复规则按账号保存，即时生效。 [初始化和旧配置导入](../docs/architecture/agent-bindings.md#独立-core-配置库)
 
 提交结果未知时先核对配置状态。SQLite 在下次可写打开时处理上次未完成的事务。以下命令检查能否读到有效配置。
 

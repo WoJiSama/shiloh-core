@@ -29,6 +29,7 @@ export function standaloneAgentSecrets(config: ReturnType<typeof readStandaloneA
     ...proxySecrets,
     ...(config.tools.magnetSearch ? standaloneMagnetSearchSecrets(config.tools.magnetSearch) : []),
     ...Object.values(config.tools.mcp?.servers ?? {}).flatMap(server => [...Object.values(server.headers ?? {}), ...Object.values(server.env ?? {})]),
+    ...config.dingtalkConnections.map(connection => connection.clientSecret),
     ...config.connections.map(connection => 'accessToken' in connection ? connection.accessToken : undefined)]
     .filter((key): key is string => typeof key === 'string' && !!key)
 }

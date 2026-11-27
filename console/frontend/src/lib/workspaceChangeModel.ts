@@ -2,17 +2,14 @@ import type { ConfigSaveResult } from './consoleRestart'
 
 export type ConfigurationJson =
   null | boolean | number | string | ConfigurationJson[] | { [key: string]: ConfigurationJson }
-export type ConfigurationTransport = 'forward-websocket' | 'reverse-websocket'
+export type ConfigurationTransport = 'forward-websocket' | 'reverse-websocket' | 'dingtalk-stream'
 export interface ConfigurationReadSet {
   host: string
   personas: string
   bindings: string
 }
-export interface ConfigurationAccount {
-  platform: 'qq'
-  namespace: 'global'
-  id: string
-}
+export type ConfigurationAccount = { platform: 'qq'; namespace: 'global'; id: string }
+  | { platform: 'dingtalk'; namespace: string; id: string }
 export interface ConfigurationTarget {
   account: ConfigurationAccount
   kind: 'group' | 'private'
@@ -46,7 +43,7 @@ export type ConfigurationChange =
       connection: {
         id: string
         accountId: string
-        transport: ConfigurationTransport
+        transport: Exclude<ConfigurationTransport, 'dingtalk-stream'>
         url: string
         accessTokenEnv?: string
       }
@@ -135,11 +132,12 @@ function unique(values: readonly string[]) {
 function account(value: unknown): ConfigurationAccount {
   const raw = record(value)
   fields(raw, ['platform', 'namespace', 'id'])
+  if (raw.platform === 'dingtalk') return { platform: 'dingtalk', namespace: text(raw.namespace, 128), id: text(raw.id, 128) }
   if (raw.platform !== 'qq' || raw.namespace !== 'global') invalid()
   return { platform: 'qq', namespace: 'global', id: qqId(raw.id) }
 }
 function transport(value: unknown): ConfigurationTransport {
-  return value === 'forward-websocket' || value === 'reverse-websocket' ? value : invalid()
+  return value === 'forward-websocket' || value === 'reverse-websocket' || value === 'dingtalk-stream' ? value : invalid()
 }
 function readSet(value: unknown): ConfigurationReadSet {
   const raw = record(value)
@@ -199,22 +197,20 @@ export function parseConfigurationCatalog(value: unknown): ConfigurationCatalog 
     const item = record(value)
     fields(item, ['agentId', 'personaId'])
     const result = { agentId: internalId(item.agentId), personaId: personaId(item.personaId) }
-    if (!personas.some((persona) => persona.id === result.personaId)) invalid()
+    if (result.personaId !== 'assistant:none' && !personas.some((persona) => persona.id === result.personaId)) invalid()
     return result
   })
   unique(agents.map((item) => item.agentId))
   const connections = list(raw.connections).map((value) => {
     const item = record(value)
     fields(item, ['id', 'account', 'transport'])
-    return {
-      id: internalId(item.id),
-      account: account(item.account),
-      transport: transport(item.transport)
-    }
+    const entry = { id: internalId(item.id), account: account(item.account), transport: transport(item.transport) }
+    if ((entry.transport === 'dingtalk-stream') !== (entry.account.platform === 'dingtalk')) return invalid()
+    return entry
   })
   if (!connections.length || !personas.length) invalid()
   unique(connections.map((item) => item.id))
-  unique(connections.map((item) => item.account.id))
+  unique(connections.map((item) => JSON.stringify(item.account)))
   return {
     ...base(raw),
     personas,
@@ -289,27 +285,28 @@ export function parseConfigurationPreview(value: unknown): ConfigurationPreview 
     return { id: internalId(item.id), account: account(item.account) }
   })
   unique(connections.map((item) => item.id))
-  unique(connections.map((item) => item.account.id))
+  unique(connections.map((item) => JSON.stringify(item.account)))
   const conversations = list(affected.conversations).map((value) => {
     const item = record(value)
     fields(item, ['agentId', 'connectionId', 'target'])
     const target = record(item.target)
     fields(target, ['account', 'kind', 'id'])
     if (target.kind !== 'group' && target.kind !== 'private') invalid()
+    const selected = account(target.account)
     const result: ConfigurationConversation = {
       agentId: internalId(item.agentId),
       connectionId: internalId(item.connectionId),
       target: {
-        account: account(target.account),
+        account: selected,
         kind: target.kind as 'group' | 'private',
-        id: qqId(target.id)
+        id: selected.platform === 'qq' ? qqId(target.id) : text(target.id, 128)
       }
     }
     const connection = connections.find((entry) => entry.id === result.connectionId)
     if (
       !agents.includes(result.agentId) ||
       !connection ||
-      connection.account.id !== result.target.account.id
+      JSON.stringify(connection.account) !== JSON.stringify(result.target.account)
     )
       invalid()
     return result

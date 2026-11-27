@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import type { ConversationAddress, PlatformConnection } from '../contracts/agentBinding.js'
+import { neutralAgentPersona, neutralAgentPersonaId } from '../contracts/agentBinding.js'
 import type { ExecutionConfig } from '../contracts/modelExecution.js'
 import { decodeModelContextLimits } from '../modules/models/domain/requestContext.js'
 import type { SimulationSection } from '../contracts/simulation.js'
@@ -15,7 +16,11 @@ import type { AgentImageBackend } from '../modules/tools/infrastructure/agentIma
 import type { AgentRenderingConfig } from '../modules/tools/infrastructure/agentRenderingTools.js'
 import type { AgentMcpServerConfig } from '../modules/tools/infrastructure/agentMcpTools.js'
 import { parseOneBotReverseUrl, parseOneBotUrl } from '../adapters/oneBotConnection.js'
-import { qqId, validateQqBindingAddress } from '../adapters/qqIdentity.js'
+import { qqId } from '../adapters/qqIdentity.js'
+import { readStandaloneDingTalkConnection, validateStandaloneBindingAddress } from './standaloneDingTalkConfig.js'
+import { readStandaloneDingTalkMcp } from './standaloneDingTalkMcp.js'
+import { readStandaloneMemorySpaces } from './standaloneMemorySpaces.js'
+import { decodeRepositoryCatalog } from '../modules/knowledge/infrastructure/repositoryCatalog.js'
 import { normalizePersonaEntry, PERSONA_ENTRY_FIELDS } from '../modules/conversation/infrastructure/personaLibrary.js'
 import { decodeHostConfig } from '../modules/host/infrastructure/hostConfig.js'
 import type { ForbiddenConfig } from '../modules/conversation/domain/forbiddenWordGuard.js'
@@ -484,7 +489,7 @@ function parsedPersonaLibrary(source: string | undefined, base: { name?: string;
   }
   for (const item of entries) {
     const entry = object(item), id = text(entry.id, 'id', 128, false), name = text(entry.name, 'name', 200, false).trim()
-    if (id.trim() !== id || /[\r\n\t]/u.test(id) || id === 'default' || byId.has(id) || names.has(name.toLowerCase())) throw new Error('人设库模板 ID、名字重复或字段无效')
+    if (id.trim() !== id || /[\r\n\t]/u.test(id) || id === 'default' || id === neutralAgentPersonaId || byId.has(id) || names.has(name.toLowerCase())) throw new Error('人设库模板 ID、名字重复或字段无效')
     const projected: Record<string, unknown> = {}
     for (const field of PERSONA_ENTRY_FIELDS) {
       if (!Object.hasOwn(entry, field)) continue
@@ -522,6 +527,7 @@ function parsedPersonaLibrary(source: string | undefined, base: { name?: string;
   if (raw.privateBinding !== undefined) exists(raw.privateBinding, true)
   return { detailById(id: string) {
     if (id === 'default') return { id, source: 'default', persona: { ...base } }
+    if (id === neutralAgentPersonaId) return { id, source: 'default', persona: { ...neutralAgentPersona } }
     const entry = byId.get(id)
     return entry ? { id, source: 'library', persona: { ...base, ...entry } } : null
   } }
@@ -623,23 +629,35 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   if (raw.systemContent !== undefined && typeof raw.systemContent !== 'string') throw new Error('systemContent 必须是文本')
   const systemContent = typeof raw.systemContent === 'string' ? raw.systemContent : ''
   const rawBindings = parseSource(input.sources.bindings, '角色绑定', input.sources.format)
-  const bindings = createAgentBindingDirectory(rawBindings, input.bindingRevision, validateQqBindingAddress)
+  const bindings = createAgentBindingDirectory(rawBindings, input.bindingRevision, validateStandaloneBindingAddress)
   const diceEngineConfig = readStandaloneDiceEngine(raw.dice, bindings.listBindings())
   const readBindings = () => input.readBindings ? input.readBindings(bindings) : bindings
   const library = parsedPersonaLibrary(input.sources.personas, hostConfig.persona ?? {}, input.sources.format)
-  for (const value of rawBindings.agents as unknown[]) {
-    const agent = object(value)
-    if (!library.detailById(String(agent.personaId))) throw new Error('角色绑定引用的人设不存在')
-    if (library.detailById('agent:' + String(agent.id))) throw new Error('角色状态标识与现有人设 ID 冲突')
+  for (const agent of bindings.listAgents()) {
+    if (!library.detailById(agent.personaId)) throw new Error('角色绑定引用的人设不存在')
+    if (library.detailById('agent:' + agent.id)) throw new Error('角色状态标识与现有人设 ID 冲突')
+  }
+  for (const connection of bindings.listConnections()) {
+    if (connection.personaId && !library.detailById(connection.personaId)) throw new Error('账号引用的人设不存在')
   }
   for (const binding of bindings.listBindings()) resolveConfiguredAgentPersona(binding, library.detailById)
   if (!Array.isArray(raw.connections) || !raw.connections.length) throw new Error('独立宿主配置需要至少一个 connections 条目')
-  const accountIds = new Set<string>()
-  const connections = raw.connections.map(value => {
+  const hostIds = new Set<string>()
+  const hostConnections = raw.connections.map(value => {
     const item = object(value)
     const connection: PlatformConnection | undefined = typeof item.id === 'string' ? bindings.connectionById(item.id) : undefined
+    if (!connection || hostIds.has(connection.id)) throw new Error('宿主连接必须引用唯一、已登记的账号')
+    hostIds.add(connection.id)
+    return { item, connection }
+  })
+  const dingtalkConnections = hostConnections.filter(row => row.connection.account.platform === 'dingtalk')
+    .map(({ item, connection }) => readStandaloneDingTalkConnection(item, connection, env, requireCredentials))
+  const dingtalkMcp = readStandaloneDingTalkMcp(raw.dingtalkMcp, directory, dingtalkConnections.map(row => row.connection), target => !!bindings.resolve(target))
+  const memorySpaces = readStandaloneMemorySpaces(raw.memorySpaces, hostConnections.map(row => row.connection), target => !!bindings.resolve(target))
+  const accountIds = new Set<string>()
+  const connections = hostConnections.filter(row => row.connection.account.platform !== 'dingtalk').map(({ item, connection }) => {
     if (!connection || connection.account.platform !== 'qq' || connection.account.namespace !== 'global' || qqId(connection.account.id) !== connection.account.id) {
-      throw new Error('连接必须引用 agent-bindings.yaml 中的 QQ 账号')
+      throw new Error('连接必须引用绑定配置中登记的 QQ 账号')
     }
     if (accountIds.has(connection.account.id)) throw new Error('同一 QQ 账号只能配置一个 OneBot 连接')
     accountIds.add(connection.account.id)
@@ -662,6 +680,16 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     }
     return { ...endpoint, accessToken }
   })
+  const repositoryInput = raw.projectKnowledge === undefined ? {} : object(raw.projectKnowledge)
+  if (Object.keys(repositoryInput).some(key => !['enabled', 'allowModel', 'syncIntervalSeconds', 'catalog'].includes(key)) ||
+      ['enabled', 'allowModel'].some(key => repositoryInput[key] !== undefined && typeof repositoryInput[key] !== 'boolean') ||
+      repositoryInput.syncIntervalSeconds !== undefined && (!Number.isInteger(repositoryInput.syncIntervalSeconds) ||
+      Number(repositoryInput.syncIntervalSeconds) < 30 || Number(repositoryInput.syncIntervalSeconds) > 86400)) throw new Error('projectKnowledge 配置无效')
+  const projectKnowledge = { enabled: repositoryInput.enabled === true, allowModel: repositoryInput.allowModel === true,
+    syncIntervalMs: Number(repositoryInput.syncIntervalSeconds ?? 300) * 1000,
+    ...(repositoryInput.catalog === undefined ? {} : { seed: decodeRepositoryCatalog(repositoryInput.catalog, target => !!bindings.resolve(target) &&
+      hostIds.has(bindings.resolve(target)!.connectionId)) }),
+  }
   if (consoleConfig.qqLogin.some(row => !connections.some(({ connection }) =>
     connection.id === row.connectionId && connection.account.id === row.accountId))) {
     throw new Error('console.qqLogin 的连接和 QQ 账号须与当前宿主绑定一致')
@@ -708,13 +736,17 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   const textGroupRevision = textGroups.size ? createHash('sha256')
     .update(JSON.stringify([input.hostVersion, [...textGroups].sort(), privateTextTools])).digest('hex') : undefined
   function resolvePersona(target: ConversationAddress) {
-    const binding = readBindings()?.resolve(target)
+    const directory = readBindings(), binding = directory?.resolve(target)
     if (!binding) return undefined
     const { selected, scopeId } = resolveConfiguredAgentPersona(binding, library.detailById)
-    return { binding, personaId: scopeId, persona: selected.persona, systemContent, ...(personaGuard ? { personaGuard } : {}) }
+    const neutral = binding.personaId === neutralAgentPersonaId
+    return { binding, personaId: scopeId, persona: selected.persona,
+      systemContent: neutral ? '你是通用助手。用清楚自然的语言回答。' : systemContent,
+      ...(neutral || directory?.connectionById(binding.connectionId)?.personaId ? { fixedPersona: true } : {}),
+      ...(!neutral && personaGuard ? { personaGuard } : {}) }
   }
   function checkBindings() {
-    const counts = new Map(connections.map(({ connection }) => [connection.id, { simulationGroups: 0, textGroups: 0, friends: 0 }]))
+    const counts = new Map(hostConnections.map(({ connection }) => [connection.id, { simulationGroups: 0, textGroups: 0, friends: 0 }]))
     const current = readBindings()
     if (!current || current !== bindings) throw new Error('检查期间角色绑定文件已改变，请重试')
     for (const binding of current.listBindings()) {
@@ -723,7 +755,8 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
       if (!count) continue
       resolveConfiguredAgentPersona(binding, library.detailById)
       if (target.kind === 'group') {
-        count.simulationGroups++
+        if (target.account.platform === 'dingtalk') count.textGroups++
+        else count.simulationGroups++
       } else if (target.kind === 'private') {
         count.friends++
       }
@@ -738,8 +771,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   }
   const candidate: ValidatedConsoleCandidate = Object.freeze({ dice, featureSwitches, persona: safeJsonObject(normalizePersonaEntry(hostConfig.persona ?? {})),
     personaGuard: safeJsonObject(personaGuard ?? {}), models: Object.freeze(models) })
-  const workspaceAgents = Object.freeze((rawBindings.agents as unknown[]).map(value => {
-    const entry = object(value), id = String(entry.id), personaId = String(entry.personaId)
+  const workspaceAgents = Object.freeze(bindings.listAgents().map(({ id, personaId }) => {
     const selected = library.detailById(personaId)!
     const personaName = typeof selected.persona.name === 'string' && selected.persona.name.trim() ? selected.persona.name.trim() : personaId
     return Object.freeze({ id, name: personaName, personaId, personaName })
@@ -749,12 +781,14 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     identity: String(library.detailById(personaId)!.persona.identity ?? '').replace(/\s+/gu, ' ').trim().slice(0, 1000),
   }))
   return { candidate, config: {
-    instance, dataDir, games, groupPolicy, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, cognition: { enabled: cognition.enabled }, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords, featureSwitches,
+    instance, dataDir, games, groupPolicy, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, cognition: { enabled: cognition.enabled }, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, dingtalkConnections, dingtalkMcp, memorySpaces, projectKnowledge, resolvePersona, checkBindings, forbiddenWords, featureSwitches,
     workspaceAgents,
     personalSeeds,
     personalFollow: { enabled: personalFollow.enabled },
     loadedBindings: Object.freeze([...bindings.listBindings()]),
+    loadedAccountSettings: bindings.connectionById,
     listBindings: () => readBindings()?.listBindings() ?? [],
+    accountSettings: (target: ConversationAddress) => readBindings()?.connectionFor(target.account),
     hasMusicGroup(account: ConversationAddress['account']) {
       return readBindings()?.listBindings().some(binding => binding.target.kind === 'group' &&
         binding.target.account.platform === account.platform && binding.target.account.namespace === account.namespace && binding.target.account.id === account.id &&
@@ -812,7 +846,7 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
         // Preserve the initial directory identity used by checkBindings while its revision is unchanged.
         if (current.versions.bindings === sourceSnapshot.versions.bindings) return initial
         if (liveBindingRevision !== current.versions.bindings) {
-          liveBindings = createAgentBindingDirectory(parseSource(current.sources.bindings, '角色绑定', current.sources.format), current.versions.bindings, validateQqBindingAddress)
+          liveBindings = createAgentBindingDirectory(parseSource(current.sources.bindings, '角色绑定', current.sources.format), current.versions.bindings, validateStandaloneBindingAddress)
           liveBindingRevision = current.versions.bindings
         }
         return liveBindings

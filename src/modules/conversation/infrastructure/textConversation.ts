@@ -60,6 +60,7 @@ export function createTextConversation(ports: {
   actions: MessageActionPort
   personMemory: Pick<PersonMemoryStore, 'getSceneRedactions' | 'query'>
   bindingToken(binding: AgentBindingSnapshot): string
+  allowsUndirectedReply?(incoming: IncomingMessage): boolean
   groupToolNames(target: ConversationAddress): readonly GroupTextToolName[]
   privateToolNames?: readonly string[]
   isToolEnabled?(name: string, target: ConversationAddress): boolean
@@ -124,9 +125,10 @@ export function createTextConversation(ports: {
       if (!isCurrent()) return
       log('runtime', 'text_delivery', 'started', 'delivery_started')
       try {
+        // DingTalk also requires the source ID for private replies without a native quote.
         const receipt = await ports.actions.send({
           version: 1, kind: 'message.send', target, binding, parts: [{ kind: 'text', text }],
-          ...(!isPrivateChat && trigger?.quote !== false ? {replyTo: messageId} : {}),
+          ...(target.account.platform === 'dingtalk' || !isPrivateChat && trigger?.quote !== false ? { replyTo: messageId } : {}),
         }, { isCurrent, async ensureCurrent() {
           if (!isCurrent()) throw new Error('文字回复来源已失效')
           await trigger?.ensureCurrent()
@@ -186,7 +188,7 @@ export function createTextConversation(ports: {
       (saved.personMemoryInvalidatedAt ?? 0) === invalidatedAt ? saved.turns : []
     const quoteId = incoming.quote?.messageId
     const isReplyToBot = quoteId !== undefined && turns.some(turn => turn.replyId === quoteId)
-    if (!isPrivateChat && !incoming.directedToAccount && !isReplyToBot && !trigger) return
+    if (!isPrivateChat && !incoming.directedToAccount && !isReplyToBot && !trigger && !ports.allowsUndirectedReply?.(incoming)) return
     if (trigger) {
       if (isPrivateChat || !trigger.sources.length || trigger.sources.length > 20 || !trigger.sources.some(source => source === incoming) ||
           trigger.sources.some(source => !source.messageId || conversationAddressKey(source.conversation) !== conversationAddressKey(target) ||

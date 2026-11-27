@@ -125,6 +125,8 @@ export interface PlatformConnectionAdapter extends PlatformConnection {
   /** Cached display metadata for one configured address. This does not attest membership or grant authority. */
   conversationName?(target: ConversationAddress): string | undefined
   readonly actions: MessageActionPort
+  /** If provided, gates message admission and makes allowed messages eligible for a text reply. */
+  allowsReply?(incoming: IncomingMessage): boolean
   /** Explicitly declared platform extensions; omission keeps each capability unavailable. */
   readonly gift?: AgentGiftDeliveryPort
   readonly qzone?: AgentQzoneProvider

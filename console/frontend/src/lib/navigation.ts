@@ -86,6 +86,7 @@ export const workspaceNavigation = [
     icon: Database,
     hint: '人设、模型与创作资源'
   },
+  { path: '/project-knowledge', label: '项目知识库', icon: Database, hint: '代码仓库与会话授权' },
   {
     path: '/runtime',
     label: '运行中心',

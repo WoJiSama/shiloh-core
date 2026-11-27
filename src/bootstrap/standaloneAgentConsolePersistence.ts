@@ -13,6 +13,7 @@ import type { ConfigSourceName, ConfigSources, SourceSnapshot } from './standalo
 import { readStandaloneConfigDocument, stringifyStandaloneConfigDocument } from './standaloneAgentConfigDocument.js'
 import { createStandaloneAgentConsoleCommitCoordinator } from './standaloneAgentConsoleCommit.js'
 import { agentBindingToken, agentConversationKey, createAgentBindingDirectory } from '../modules/runtime/domain/agentBindings.js'
+import { neutralAgentPersonaId } from '../contracts/agentBinding.js'
 import { validateQqBindingAddress } from '../adapters/qqIdentity.js'
 import { normalizePersonaEntry, PERSONA_ENTRY_FIELDS } from '../modules/conversation/infrastructure/personaLibrary.js'
 import { createPersonaReplyGuard } from '../modules/conversation/domain/personaReplyGuard.js'
@@ -112,7 +113,7 @@ function templates(value: unknown, input = false): Data[] {
     const raw = record(item)
     if (input) fields(raw, ['id', ...PERSONA_ENTRY_FIELDS])
     const key = id(raw.id), name = text(raw.name, 200, false).trim(), normalizedName = name.toLowerCase()
-    if (key === 'default' || seenIds.has(key) || seenNames.has(normalizedName)) return fail()
+    if (key === 'default' || key === neutralAgentPersonaId || seenIds.has(key) || seenNames.has(normalizedName)) return fail()
     seenIds.add(key); seenNames.add(normalizedName)
     const cleaned: Data = { id: key }, normalized = input ? raw : normalizePersonaEntry(raw)
     for (const field of PERSONA_ENTRY_FIELDS) if (Object.hasOwn(normalized, field)) cleaned[field] = personaField(field, normalized[field], input)
@@ -125,8 +126,8 @@ function parsed(sources: ConfigSources, revision: string) {
   const rawLibrary = record(library.toJS()), rawBindings = record(bindings.toJS())
   const personas = templates(rawLibrary.personas ?? [])
   const directory = createAgentBindingDirectory(rawBindings, revision, validateQqBindingAddress)
-  const agents = (rawBindings.agents as Data[]).map(agent => ({ agentId: id(agent.id), personaId: id(agent.personaId) }))
-  const ids = new Set(['default', ...personas.map(persona => String(persona.id))])
+  const agents = directory.listAgents().map(agent => ({ agentId: agent.id, personaId: agent.personaId }))
+  const ids = new Set(['default', neutralAgentPersonaId, ...personas.map(persona => String(persona.id))])
   if (agents.some(agent => !ids.has(agent.personaId))) return fail('conflict')
   return { host, library, bindings, rawLibrary, personas, agents, directory }
 }
@@ -433,7 +434,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
       fields(payload as Data, ['revision', 'personas'])
       const next = templates(payload.personas, true)
       return save(context, payload, 'persona.write', 'templates', 'personas', state => {
-        const ids = new Set(['default', ...next.map(persona => String(persona.id))])
+        const ids = new Set(['default', neutralAgentPersonaId, ...next.map(persona => String(persona.id))])
         if (state.agents.some(agent => !ids.has(agent.personaId))) return fail('conflict')
         for (const key of ['groupBindings', 'accountBindings']) for (const value of Object.values(record(state.rawLibrary[key] ?? {}))) if (typeof value === 'string' && value && !ids.has(value)) return fail('conflict')
         if (state.rawLibrary.privateBinding && !ids.has(String(state.rawLibrary.privateBinding))) return fail('conflict')
@@ -506,7 +507,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
         return { agentId, personaId }
       })
       return save(context, payload, 'persona-assignments.write', 'assignments', 'bindings', state => {
-        const available = new Set(['default', ...state.personas.map(persona => String(persona.id))])
+        const available = new Set(['default', neutralAgentPersonaId, ...state.personas.map(persona => String(persona.id))])
         let changed = 0
         const seq = state.bindings.get('agents', true)
         if (!YAML.isSeq(seq)) return fail()

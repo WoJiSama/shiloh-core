@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { NButton, NDrawer, NInput, NSelect } from 'naive-ui'
+import { NButton, NCheckbox, NDrawer, NInput, NSelect } from 'naive-ui'
 import WorkspaceOnboarding from '../components/WorkspaceOnboarding.vue'
 import WorkspaceConnections from '../pages/WorkspaceConnections.vue'
 import WorkspaceRobots from '../pages/WorkspaceRobots.vue'
 import SchemaField from '../components/SchemaField.vue'
 import { workspace } from './workspace'
-import { consoleRestart } from './consoleRestart'
+import { consoleRestart, isConfigurationWrite } from './consoleRestart'
 import { hasUnsavedChanges } from '../composables/useUnsavedGuard'
 import { api } from './api'
 import { configurationScopeKey } from './workspaceChangeModel'
@@ -252,6 +252,72 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 describe('workspace configuration onboarding', () => {
+  it('saves reply rules directly from the DingTalk connection card', async () => {
+    const empty: string[] = []
+    const initial = { mode: 'both', requireMention: true, allowUserIds: empty, denyUserIds: empty, allowGroupIds: empty, denyGroupIds: empty }
+    const dingTalk = { id: 'work', account: { platform: 'dingtalk', namespace: 'ding-company', id: 'work-robot' } as const }
+    const initialRevision = '00000000-0000-4000-8000-000000000001'
+    const savedRevision = '00000000-0000-4000-8000-000000000002'
+    const otherRevision = '00000000-0000-4000-8000-000000000003'
+    const endpoint = '/api/connections/work/dingtalk-reply-policy'
+    workspace.data.value!.capabilities.push(
+      { operation: 'dingtalk-reply-policy.read', scope: 'global', effect: 'read', status: 'available', reason: '' },
+      { operation: 'dingtalk-reply-policy.write', scope: 'global', effect: 'write', status: 'available', reason: '' }
+    )
+    workspace.data.value!.connections = [
+      { id: 'main', account: { platform: 'qq', namespace: 'global', id: '19000911' }, state: 'connected', conversationCount: 0, capabilities: [] },
+      { id: dingTalk.id, account: dingTalk.account, state: 'connected', conversationCount: 1, capabilities: [] }
+    ]
+    const rule = { ...initial, mode: 'group', requireMention: false, allowGroupIds: ['cid-engineering'], denyUserIds: ['blocked', 'another'] }
+    let view = { connectionId: dingTalk.id, revision: initialRevision, privateChatEnabled: false, replyPolicy: initial }
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path !== endpoint) throw new Error('unexpected API: ' + path)
+      if (options?.method === 'PUT') {
+        if (JSON.parse(String(options.body)).revision !== view.revision) throw Object.assign(new Error('conflict'), { status: 409 })
+        view = { ...view, revision: savedRevision, replyPolicy: rule }
+      }
+      return view
+    })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: WorkspaceConnections }] })
+    await router.push('/connections')
+    await router.isReady()
+    const wrapper = mount(WorkspaceConnections, { attachTo: document.body, global: { plugins: [router] } })
+    wrappers.push(wrapper)
+    expect(wrapper.findAllComponents(NButton).filter(item => item.text() === '回复规则')).toHaveLength(1)
+    await button(wrapper, '回复规则').trigger('click')
+    await flushPromises()
+    expect(text()).toContain('privateChat.enabled')
+    expect(button(wrapper, '保存规则').props('disabled')).toBe(true)
+    await select(wrapper, '回复范围', 'group')
+    wrapper.findComponent(NCheckbox).vm.$emit('update:checked', false)
+    for (const [label, value] of [['群聊白名单', 'cid-engineering'], ['成员黑名单', 'blocked，another']]) {
+      const textarea = document.body.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${label}"]`)!
+      textarea.value = value!
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    await flushPromises()
+    expect(text()).toContain('钉钉实际投递')
+    await button(wrapper, '保存规则').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(api).mock.calls.map(([path, options]) => [path, options?.method ?? 'GET'])).toEqual([[endpoint, 'GET'], [endpoint, 'PUT']])
+    expect(JSON.parse(String(vi.mocked(api).mock.calls[1]![1]!.body))).toEqual({ revision: initialRevision, replyPolicy: rule })
+    expect(isConfigurationWrite(endpoint, 'PUT')).toBe(false)
+    expect(consoleRestart.state.phase).toBe('active')
+    expect(text()).toContain('回复规则已生效')
+
+    view = { ...view, revision: otherRevision, replyPolicy: { ...rule, allowUserIds: ['coworker'] } }
+    await select(wrapper, '回复范围', 'private')
+    await button(wrapper, '保存规则').trigger('click')
+    await flushPromises()
+    expect(JSON.parse(String(vi.mocked(api).mock.calls[2]![1]!.body)).revision).toBe(savedRevision)
+    expect(text()).toContain('回复规则已有新版本')
+    expect(button(wrapper, '保存规则')).toBeUndefined()
+    await button(wrapper, '重新读取规则').trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector<HTMLTextAreaElement>('textarea[aria-label="成员白名单"]')?.value).toBe('coworker')
+    expect(button(wrapper, '保存规则').props('disabled')).toBe(true)
+  })
+
   it('adds a second account to the same person with explicit sources and submits only the server candidate', async () => {
     const wrapper = page()
     await flushPromises()

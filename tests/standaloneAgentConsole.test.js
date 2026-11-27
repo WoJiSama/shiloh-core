@@ -88,6 +88,61 @@ test('the standalone HTTP boundary serves existing static assets and exposes kno
   assert.equal((await f.request('/src/contracts/agentConsole.ts')).status, 404)
 })
 
+test('DingTalk reply rules save through their own authenticated, versioned operation', async t => {
+  const { openStandaloneDingTalkReplyPolicies } = await load('bootstrap/standaloneDingTalkReplyPolicies.js')
+  const { readDingTalkReplyPolicy } = await load('bootstrap/standaloneDingTalkConfig.js')
+  const replyPolicy = readDingTalkReplyPolicy({ mode: 'group', allowGroupIds: ['cid-engineering'] })
+  const connection = { id: 'work', account: { platform: 'dingtalk', namespace: 'ding-corp', id: 'work-robot' } }
+  const values = new Map()
+  let loseReply = false
+  const storage = {
+    async get(key) { return values.get(key) ?? null },
+    async getMany(keys) { return keys.map(key => values.get(key) ?? null) },
+    async eval(_script, { keys: [key], arguments: [expected, next] }) {
+      if ((values.get(key) ?? '') !== expected) return 0
+      values.set(key, next)
+      if (loseReply) throw new Error('connection closed after save')
+      return 1
+    },
+  }
+  const options = { storage, privateChatEnabled: false, connections: [{ connection, replyPolicy }] }
+  const rules = await openStandaloneDingTalkReplyPolicies(options)
+  const f = await fixture(t, rules.services)
+  const endpoint = '/api/connections/work/dingtalk-reply-policy'
+  assert.equal((await f.request(endpoint, { token: false })).status, 401)
+  assert.equal((await f.request('/api/connections/qq/dingtalk-reply-policy')).status, 404)
+  const { data: initial } = await f.request(endpoint)
+  assert.equal(initial.connectionId, 'work')
+  assert.equal(initial.privateChatEnabled, false)
+  assert.deepEqual(initial.replyPolicy, replyPolicy)
+  const save = (revision, replyPolicy) => f.request(endpoint, { method: 'PUT', body: { revision, replyPolicy } })
+  const nextRule = { ...replyPolicy, requireMention: false }
+  f.permissions.set('dingtalk-reply-policy.write', 'denied')
+  assert.equal((await save(initial.revision, nextRule)).status, 403)
+  assert.equal(values.size, 0)
+  f.permissions.delete('dingtalk-reply-policy.write')
+  assert.equal((await save(initial.revision, { mode: 'anywhere' })).status, 400)
+  assert.equal((await save(initial.revision, { mode: 'private' })).status, 400)
+  const results = await Promise.all([save(initial.revision, nextRule), save(initial.revision, { ...replyPolicy, mode: 'private' })])
+  assert.deepEqual(results.map(result => result.status).sort(), [200, 409])
+  const saved = results.find(result => result.status === 200).data
+  assert.notEqual(saved.revision, initial.revision)
+  assert.deepEqual(rules.current(connection.id), saved.replyPolicy)
+
+  loseReply = true
+  const lastRule = { ...saved.replyPolicy, denyUserIds: ['employee-2'] }
+  const recovered = await save(saved.revision, lastRule)
+  assert.equal(recovered.status, 200)
+  assert.deepEqual((await f.request(endpoint)).data, recovered.data)
+  assert.deepEqual(rules.current(connection.id), lastRule)
+  const reloaded = await openStandaloneDingTalkReplyPolicies({ ...options, connections: [
+    { connection: { ...connection, id: 'renamed' }, replyPolicy },
+    { connection: { ...connection, account: { ...connection.account, namespace: 'another-corp' } }, replyPolicy },
+  ] })
+  assert.deepEqual(reloaded.current('renamed'), lastRule)
+  assert.deepEqual(reloaded.current('work'), replyPolicy)
+})
+
 test('offline QQ login is scoped to the configured account and reports recovery from the OneBot connection', async t => {
   const { createStandaloneAgentConsoleQqLogin } = await load('bootstrap/standaloneAgentConsoleQqLogin.js')
   const { readStandaloneAgentConsoleConfig } = await load('bootstrap/standaloneAgentConsoleConfig.js')

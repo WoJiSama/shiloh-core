@@ -7,6 +7,7 @@ export const router = createRouter({
     { path: '/robots', component: () => import('./pages/WorkspaceRobots.vue') },
     { path: '/robots/:id/:tab?', component: () => import('./pages/WorkspaceRobot.vue') },
     { path: '/connections/:id?', component: () => import('./pages/WorkspaceConnections.vue') },
+    { path: '/project-knowledge', component: () => import('./pages/ProjectKnowledge.vue') },
     ...(['features', 'resources', 'runtime', 'system'] as const).map((section) => ({
       path: '/' + section,
       component: () => import('./pages/WorkspaceHub.vue'),

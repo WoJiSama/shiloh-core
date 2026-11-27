@@ -7,6 +7,8 @@ import WorkspaceOnboarding from '../components/WorkspaceOnboarding.vue'
 import QzoneComposer from '../components/QzoneComposer.vue'
 import WorkspaceQqLogin from '../components/WorkspaceQqLogin.vue'
 import WorkspaceBindingAdd from '../components/WorkspaceBindingAdd.vue'
+import WorkspaceChannelSettings from '../components/WorkspaceChannelSettings.vue'
+import WorkspaceDingTalkReplyPolicy from '../components/WorkspaceDingTalkReplyPolicy.vue'
 import { api } from '../lib/api'
 import { useOpsResource } from '../lib/operations'
 import { workspace, capability } from '../lib/workspace'
@@ -89,7 +91,7 @@ watch([query, () => route.params.id], () => (page.value = 1))
   <div class="page-stack">
     <PageHeader
       :title="title"
-      description="查看平台账号、QQ 登录和已接入的会话。"
+      description="管理平台账号、回复规则、人设、记忆空间和会话。"
       ><template #actions
         ><NButton v-if="managedAccounts.data.value?.canProvision && capability('accounts.add').status === 'available'" type="primary"
           @click="provisioning = true">开通 QQ 账号</NButton><NButton
@@ -98,7 +100,7 @@ watch([query, () => route.params.id], () => (page.value = 1))
           :title="createCapability?.reason"
           @click="onboarding = true"
           >新增 QQ 连接</NButton
-        ></template
+        ><WorkspaceChannelSettings /></template
       ></PageHeader
     >
     <p v-if="createCapability" class="field-help">{{ createCapability.reason }}</p>
@@ -134,9 +136,12 @@ watch([query, () => route.params.id], () => (page.value = 1))
         }}</NTag>
       </div>
       <p class="field-help">{{ connection.conversationCount }} 个接入会话</p>
-      <WorkspaceQqLogin :connection="connection" :primary="connection.state === 'disconnected'" />
-      <WorkspaceBindingAdd :connection-id="connection.id" />
-      <RouterLink v-if="capability('bot-stats.read').status === 'available'"
+      <p class="field-help">人设 {{ connection.personaId === 'assistant:none' ? '无' : connection.personaId || '继承会话绑定' }} · 记忆 {{ connection.memorySpaceId || '独享' }}</p>
+      <WorkspaceQqLogin v-if="connection.account.platform === 'qq'" :connection="connection" :primary="connection.state === 'disconnected'" />
+      <WorkspaceBindingAdd :connection-id="connection.id" :platform="connection.account.platform" />
+      <WorkspaceChannelSettings :connection="connection" />
+      <WorkspaceDingTalkReplyPolicy v-if="connection.account.platform === 'dingtalk'" :connection-id="connection.id" />
+      <RouterLink v-if="connection.account.platform === 'qq' && capability('bot-stats.read').status === 'available'"
         :to="{ path: '/runtime', query: { qq: connection.account.id } }">收发统计</RouterLink>
       <div v-if="managed.has(connection.id)" class="toolbar">
         <span class="field-help">{{ stateLabels[managed.get(connection.id)!.state] }}</span>

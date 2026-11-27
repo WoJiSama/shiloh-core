@@ -7,6 +7,7 @@ import type {
   PlatformAccountRef,
   PlatformConnection,
 } from '../../../contracts/agentBinding.js'
+import { neutralAgentPersonaId } from '../../../contracts/agentBinding.js'
 
 const conversationKinds = new Set<string>(['group', 'private', 'channel', 'thread'])
 const internalIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -134,12 +135,12 @@ export function createAgentBindingDirectory(value: unknown, revision: string, va
     const agent = fields(entry, label, ['id', 'personaId'])
     const id = internalId(agent.id, `${label}.id`)
     if (agents.has(id)) fail(`${label}.id 重复`)
-    agents.set(id, { id, personaId: identifier(agent.personaId, `${label}.personaId`) })
+    agents.set(id, { id, personaId: agent.personaId === null ? neutralAgentPersonaId : identifier(agent.personaId, `${label}.personaId`) })
   }
 
   for (const [index, entry] of entries(raw.connections, 'connections').entries()) {
     const label = `connections[${index}]`
-    const connection = fields(entry, label, ['id', 'platform', 'namespace', 'accountId'])
+    const connection = fields(entry, label, ['id', 'platform', 'namespace', 'accountId', 'personaId', 'memorySpaceId'])
     const id = internalId(connection.id, `${label}.id`)
     const account = Object.freeze({
       platform: internalId(connection.platform, `${label}.platform`),
@@ -148,7 +149,10 @@ export function createAgentBindingDirectory(value: unknown, revision: string, va
     })
     const key = platformAccountKey(account)
     if (connections.has(id) || accounts.has(key)) fail(`${label} 的连接 ID 或平台账号重复`)
-    const configured = Object.freeze({ id, account })
+    const configured: PlatformConnection = Object.freeze({ id, account,
+      ...(connection.personaId === undefined ? {} : { personaId: connection.personaId === null ? neutralAgentPersonaId : identifier(connection.personaId, `${label}.personaId`) }),
+      ...(connection.memorySpaceId === undefined ? {} : { memorySpaceId: internalId(connection.memorySpaceId, `${label}.memorySpaceId`) }),
+    })
     connections.set(id, configured)
     accounts.set(key, configured)
   }
@@ -173,7 +177,7 @@ export function createAgentBindingDirectory(value: unknown, revision: string, va
       id: key,
       revision,
       agentId: agent.id,
-      personaId: agent.personaId,
+      personaId: connection.personaId ?? agent.personaId,
       connectionId: connection.id,
       target,
     }))
@@ -183,6 +187,8 @@ export function createAgentBindingDirectory(value: unknown, revision: string, va
     resolve: (target: ConversationAddress) => bindings.get(conversationAddressKey(target)),
     connectionFor: (account: PlatformAccountRef) => accounts.get(platformAccountKey(account)),
     connectionById: (id: string) => connections.get(id),
+    listConnections: (): readonly PlatformConnection[] => [...connections.values()],
+    listAgents: (): readonly AgentDefinition[] => [...agents.values()],
     listBindings: (): readonly AgentBindingSnapshot[] => [...bindings.values()],
   }
 }

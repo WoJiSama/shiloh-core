@@ -14,6 +14,7 @@ export interface WorkspaceConversation {
   scopeKey: string
   bindingToken: string
   name?: string
+  sharedGroup?: boolean
   binding: {
     source: 'configured'
     id: string
@@ -35,6 +36,8 @@ export interface WorkspaceConnection {
   id: string
   account: WorkspaceAccount
   name?: string
+  personaId?: string
+  memorySpaceId?: string
   state: 'connected' | 'disconnected' | 'unknown'
   conversationCount: number
   capabilities: string[]
@@ -115,6 +118,8 @@ export function parseWorkspace(value: unknown): ConsoleWorkspace {
       id: text(item.id),
       account: identity,
       ...(name ? { name } : {}),
+      ...(item.personaId === undefined ? {} : { personaId: text(item.personaId, 128) }),
+      ...(item.memorySpaceId === undefined ? {} : { memorySpaceId: text(item.memorySpaceId, 64) }),
       state: item.state,
       conversationCount: item.conversationCount,
       capabilities: list(item.capabilities, 1000).map((value) => text(value))
@@ -142,12 +147,12 @@ export function parseWorkspace(value: unknown): ConsoleWorkspace {
       if (
         b.source !== 'configured' ||
         binding.agentId !== id ||
-        binding.personaId !== personaId ||
         !['group', 'private', 'channel', 'thread'].includes(binding.target.kind)
       )
         fail()
       const connection = connections.find((item) => item.id === binding.connectionId)
-      if (!connection || JSON.stringify(connection.account) !== JSON.stringify(a)) fail()
+      if (!connection || (connection.personaId ?? personaId) !== binding.personaId ||
+        JSON.stringify(connection.account) !== JSON.stringify(a)) fail()
       const scopeKey = text(row.scopeKey),
         bindingToken = text(row.bindingToken, 8192)
       if (
@@ -156,7 +161,7 @@ export function parseWorkspace(value: unknown): ConsoleWorkspace {
       )
         fail()
       const name = displayName(row.name, binding.target.id)
-      return { scopeKey, bindingToken, binding, ...(name ? { name } : {}) }
+      return { scopeKey, bindingToken, binding, ...(name ? { name } : {}), ...(row.sharedGroup === true ? { sharedGroup: true } : {}) }
     })
     return {
       id,

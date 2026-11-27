@@ -2,6 +2,13 @@ import { parseArgs } from 'node:util'
 import path from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { createOneBotConnection, verifyOneBotLogin } from '../adapters/oneBotConnection.js'
+import { createDingTalkConnection } from '../adapters/dingTalkConnection.js'
+import type { PlatformConnectionAdapter } from '../contracts/platformConnection.js'
+import { createRepositoryGit } from './repositoryGit.js'
+import { openRepositoryKnowledge } from '../modules/knowledge/infrastructure/repositoryKnowledge.js'
+import { createStandaloneRepositoryConsole } from './standaloneRepositoryConsole.js'
+import { createStandaloneDingTalkMcp } from './standaloneDingTalkMcp.js'
+import { openStandaloneDingTalkReplyPolicies } from './standaloneDingTalkReplyPolicies.js'
 import { exportStandaloneAgentConfig, importStandaloneAgentConfig } from './standaloneAgentConfigImport.js'
 import { createAgentQzoneLedger } from '../modules/runtime/infrastructure/agentQzoneLedger.js'
 import { sideLLMCall } from '../adapters/sideLLM.js'
@@ -122,6 +129,9 @@ async function checkStandaloneQq(config: ReturnType<typeof readStandaloneAgentCo
     connections: config.connections.map(({connection}) => ({
       id: connection.id, accountId: connection.account.id, loginVerified: true, ...bindings.get(connection.id),
     })),
+    ...(config.dingtalkConnections.length ? { dingtalk: config.dingtalkConnections.map(({ connection }) => ({
+      id: connection.id, accountId: connection.account.id, configurationValidated: true, ...bindings.get(connection.id),
+    })) } : {}),
   }
 }
 
@@ -395,7 +405,8 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
   let consoleAuth: Awaited<ReturnType<typeof openStandaloneAgentConsoleAuth>> | undefined
   let consoleHost: ReturnType<typeof createStandaloneAgentConsole> | undefined
   let consolePersistence: ReturnType<typeof createStandaloneAgentConsolePersistence> | undefined
-  let adapters: ReturnType<typeof createOneBotConnection>[] = []
+  let adapters: PlatformConnectionAdapter[] = []
+  let repositories: Awaited<ReturnType<typeof openRepositoryKnowledge>> | undefined
   const ledger = createTokenLedger({ dataDir: config.dataDir, diagnostics })
   const words = createForbiddenWordGuard({
     warn() { diagnostics.emit({ stage: 'host', operation: 'forbidden_word_config', outcome: 'failed', code: 'forbidden_regex_invalid' }) },
@@ -524,6 +535,16 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
     const allowsSecretText = (text: string) => createAgentSecretTextCheck([...hostSecrets, ...(musicProvider?.getSecrets() ?? [])])(text)
     const allowsMediaText = (text: string) => allowsSecretText(text) &&
       (config.forbiddenWords.blockOutput === false || !words.findForbiddenWord(text, config.forbiddenWords))
+    if (config.projectKnowledge.enabled) {
+      const directory = path.join(config.dataDir, 'repositories')
+      repositories = await openRepositoryKnowledge({
+        directory, git: createRepositoryGit({ directory }), syncIntervalMs: config.projectKnowledge.syncIntervalMs,
+        ...(config.projectKnowledge.seed ? { seed: config.projectKnowledge.seed } : {}),
+        modelAllowed: config.projectKnowledge.allowModel, model: (request, guard) => runModel(request, guard),
+        allowsText: text => allowsSecretText(text) && !words.findForbiddenWord(text, config.forbiddenWords),
+        isCurrent: () => storage?.isCurrent() === true && config.isConfigCurrent(), signal: executionSignal,
+      })
+    }
     bilibiliAuthService = await openStandaloneBilibiliAuth({ config: config.bilibiliQuality, dataDir: config.dataDir, instance: config.instance,
       isLeaseCurrent: storage.isCurrent, registerSecrets: registerHostSecrets, secrets: hostSecrets, allowsText: allowsMediaText, diagnostics })
     if (config.mediaRelay.enabled || config.tools.pixiv?.enabled || config.bilibiliQuality.enabled || config.tools.videoSearch?.enabled && config.tools.videoSearch.attachments) mediaRelayHost = await openStandaloneMediaRelay({ config: config.mediaRelay,
@@ -563,6 +584,20 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
       if (alertOwner) qqAlertAdapter = adapter
       return adapter
     })
+    const dingTalkReplyPolicies = await openStandaloneDingTalkReplyPolicies({ storage: storage.storage,
+      connections: config.dingtalkConnections, privateChatEnabled: config.privateChatEnabled, allowsText: allowsSecretText,
+      onUnavailable: () => diagnostics.emit({ stage: 'host', operation: 'dingtalk_reply_policy', outcome: 'failed', code: 'stored_policy_unavailable' }),
+    })
+    adapters.push(...config.dingtalkConnections.map(connection => createDingTalkConnection({ ...connection,
+      getReplyPolicy: () => dingTalkReplyPolicies.current(connection.connection.id),
+      canUse: target => storage?.isCurrent() === true && config.isConfigCurrent() &&
+        (target.kind !== 'private' || config.privateChatEnabled) && config.resolvePersona(target)?.binding.connectionId === connection.connection.id,
+      onState(state) {
+        diagnostics.emit({ stage: 'host', operation: 'dingtalk_connection', outcome: state === 'connected' ? 'succeeded' : 'failed',
+          code: state === 'connected' ? 'connected' : 'connection_lost' })
+        if (state === 'connected') void host?.resumePendingWork().catch(() => {})
+      },
+    })))
     const reviewFetch = observeModelFetch('consistency_provider_http')
     const reviewCharacter: AgentRuntimeOptions['reviewCharacter'] = reviewBackend && (async (request, _config, signal, isCurrent, ensureCurrent) => {
       const combinedSignal = AbortSignal.any([executionSignal, signal, AbortSignal.timeout(15_000)])
@@ -792,6 +827,15 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
     const webReuse = config.tools.web?.reuse
     host = createAgentRuntime({
       storage: storage.storage, adapters, logger: safeLogger, diagnostics,
+      ...(repositories ? { repositoryKnowledge: repositories.knowledge } : {}),
+      ...(config.memorySpaces.active ? { sharedMemorySpaces: {
+        available: config.memorySpaces.available,
+        scope: (target, actor) => config.memorySpaces.scope(target, actor, config.accountSettings(target)?.memorySpaceId),
+      } } : {}),
+      ...(config.dingtalkMcp ? { dingtalkMcp: createStandaloneDingTalkMcp(config.dingtalkMcp, {
+        model: (request, guard) => runModel(request, guard),
+        allowsText: text => allowsSecretText(text) && !words.findForbiddenWord(text, config.forbiddenWords),
+      }) } : {}),
       ...(config.semanticMemory.enabled ? { semanticRedis: storage.semanticStorage } : {}),
       managementBindings,
       featureSwitches: config.featureSwitches,
@@ -968,7 +1012,9 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
         ] })
       // The workspace describes this process's loaded configuration, including after execution retires.
       const loadedBindings = managementBindings
-      const services: AgentConsoleService[] = [...installed]
+      const services: AgentConsoleService[] = [...installed, ...dingTalkReplyPolicies.services]
+      if (repositories) services.push(...createStandaloneRepositoryConsole(repositories,
+        target => !!bindings.resolve(target) && adapters.some(adapter => adapter.id === bindings.resolve(target)!.connectionId)))
       if (accounts.available) {
         const operation = (name: string) => AGENT_CONSOLE_SERVICES.find(item => item.operation === name)!
         services.push({ ...operation('accounts.managed'), async handle(request, context) {
@@ -1057,13 +1103,16 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
         }),
         connections: () => adapters.map(adapter => {
           const name = directory.accountName(adapter)
+          const settings = config.loadedAccountSettings(adapter.id)
           return { id: adapter.id, account: adapter.account, ...(name ? { name } : {}),
+            ...(settings?.personaId ? { personaId: settings.personaId } : {}), ...(settings?.memorySpaceId ? { memorySpaceId: settings.memorySpaceId } : {}),
             state: adapter.isReady() ? 'connected' as const : 'disconnected' as const,
             capabilities: ['message.send', ...(qqLogin.supports(adapter.id) ? ['qq.login'] : []), ...(adapter.readMessage ? ['message.read'] : []),
               ...(adapter.readConversationMember ? ['member.read'] : []), ...(adapter.listConversationMembers ? ['members.read'] : []),
               ...(adapter.gift ? ['qq.gift'] : []), ...(adapter.qzone ? ['qq.qzone'] : []), ...(adapter.redPackets ? ['qq.red-packet'] : [])],
           }
-        }), services: () => services, configState: persistence.state }))
+        }), sharedGroup: binding => binding.target.kind === 'group' && config.memorySpaces.available(binding.target),
+        services: () => services, configState: persistence.state }))
       consoleHost = createStandaloneAgentConsole({ frontendDir: config.console.frontendDir, host: config.console.host, port: config.console.port,
         authority, bindings, auth: consoleAuth, services, execution: persistence.execution, commits: persistence.commits,
         ...(managedRestart ? { requestRestart } : {}),
@@ -1118,6 +1167,7 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
         cleanup('group_log_close', () => groupLogHost?.close()),
         cleanup('local_emoji_close', () => localEmoji?.close()),
         cleanup('mcp_close', () => mcp?.close()), cleanup('semantic_close', () => semanticBackend?.dispose()),
+        cleanup('repository_knowledge_close', () => repositories?.close()),
         cleanup('ledger_flush', () => ledger.flush()),
       ])
       await cleanup('qq_alert_drain', () => qqAlertDrain)

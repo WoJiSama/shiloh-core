@@ -115,6 +115,9 @@ export interface AgentConsoleService {
 /** Existing non-proxy operations. The standalone host supplies real handlers or leaves them explicitly unavailable. */
 export const AGENT_CONSOLE_SERVICES: readonly AgentConsoleService[] = Object.freeze([
   ['GET', '/api/workspace', 'workspace.read'],
+  ['GET', '/api/project-knowledge', 'project-knowledge.read'],
+  ['PUT', '/api/project-knowledge', 'project-knowledge.write'],
+  ['POST', '/api/project-knowledge/:repoId/refresh', 'project-knowledge.refresh'],
   ['GET', '/api/self-profile/:agentId', 'self-profile.read'],
   ['GET', '/api/overview', 'overview.read'],
   ['GET', '/api/overview/accounts', 'accounts.read'],
@@ -126,6 +129,8 @@ export const AGENT_CONSOLE_SERVICES: readonly AgentConsoleService[] = Object.fre
   ['GET', '/api/accounts/managed', 'accounts.managed'],
   ['GET', '/api/connections/:connectionId/qq-login/:accountId', 'qq-login.read'],
   ['POST', '/api/connections/:connectionId/qq-login/:accountId', 'qq-login.refresh'],
+  ['GET', '/api/connections/:connectionId/dingtalk-reply-policy', 'dingtalk-reply-policy.read'],
+  ['PUT', '/api/connections/:connectionId/dingtalk-reply-policy', 'dingtalk-reply-policy.write'],
   ['GET', '/api/bot/stats', 'bot-stats.read'],
   ['GET', '/api/groups', 'groups.read'],
   ['GET', '/api/identities', 'identities.read'],

@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { isAgentBindingCurrent, type AgentBindingSnapshot, type AgentBindingTurn, type RestoreDeferredAgentBinding } from '../contracts/agentBinding.js'
+import { isAgentBindingCurrent, neutralAgentPersona, neutralAgentPersonaId, type AgentBindingSnapshot, type AgentBindingTurn, type RestoreDeferredAgentBinding } from '../contracts/agentBinding.js'
 import type { createPersonaLibrary } from '../modules/conversation/infrastructure/personaLibrary.js'
 import { resolveConfiguredAgentPersona } from '../modules/runtime/application/agentPersona.js'
 import { agentBindingIdentity, agentBindingToken, conversationAddressKey } from '../modules/runtime/domain/agentBindings.js'
@@ -22,7 +22,8 @@ export function createQqAgentBindingResolver(library: PersonaLibrary) {
     const directory = read()
     const configured = target && directory?.resolve(target)
     if (configured) {
-      return { ...resolveConfiguredAgentPersona(configured, library.detailById), binding: configured }
+      return { ...resolveConfiguredAgentPersona(configured, id => id === neutralAgentPersonaId
+        ? { id, source: 'default', persona: { ...neutralAgentPersona } } : library.detailById(id)), binding: configured }
     }
 
     const selected = library.resolve({

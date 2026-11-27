@@ -24,7 +24,12 @@ export interface AgentDefinition {
 export interface PlatformConnection {
   readonly id: string
   readonly account: PlatformAccountRef
+  readonly personaId?: string
+  readonly memorySpaceId?: string
 }
+
+export const neutralAgentPersonaId = 'assistant:none'
+export const neutralAgentPersona = Object.freeze({ name: '助手', identity: '' })
 
 /** Durable ownership of conversation data, stable across binding revisions. */
 export interface AgentConversationScope {

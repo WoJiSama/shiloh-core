@@ -18,6 +18,8 @@ export interface StandaloneAgentWorkspaceConnection {
   readonly id: string
   readonly account: PlatformAccountRef
   readonly name?: string
+  readonly personaId?: string
+  readonly memorySpaceId?: string
   readonly state: 'connected' | 'disconnected' | 'unknown'
   readonly capabilities: readonly string[]
 }
@@ -29,6 +31,7 @@ export interface StandaloneAgentWorkspaceOptions {
   readonly agents: () => readonly StandaloneAgentWorkspaceAgent[]
   readonly connections: () => readonly StandaloneAgentWorkspaceConnection[]
   readonly conversationName?: (binding: AgentBindingSnapshot) => string | undefined
+  readonly sharedGroup?: (binding: AgentBindingSnapshot) => boolean
   /** Include only installed services. A declaration without a handler is unavailable. */
   readonly services: () => readonly AgentConsoleService[]
   readonly configState: (context: AgentConsoleContext) => Record<string, unknown>
@@ -110,8 +113,9 @@ function connections(input: unknown): readonly StandaloneAgentWorkspaceConnectio
   const rows = array(input, maximumRows, input => {
     const row = object(input), state = own(row, 'state'), capabilities = array(own(row, 'capabilities'), 64, value => label(value))
     if (state !== 'connected' && state !== 'disconnected' && state !== 'unknown') return fail('unavailable')
-    const name = own(row, 'name', true)
+    const name = own(row, 'name', true), personaId = own(row, 'personaId', true), memorySpaceId = own(row, 'memorySpaceId', true)
     return Object.freeze({ id: identifier(own(row, 'id')), account: account(own(row, 'account')), state, capabilities: Object.freeze([...new Set(capabilities)].sort()),
+      ...(personaId === undefined ? {} : { personaId: label(personaId) }), ...(memorySpaceId === undefined ? {} : { memorySpaceId: identifier(memorySpaceId) }),
       ...(name === undefined ? {} : { name: label(name) }) })
   })
   unique(rows, row => row.id); unique(rows, row => platformAccountKey(row.account))
@@ -178,7 +182,8 @@ export function createStandaloneAgentWorkspace(options: StandaloneAgentWorkspace
       for (const row of rows) {
         const owner = agentMap.get(row.agentId), connection = connectionMap.get(row.connectionId)
         // The complete loaded directory must agree; never infer a connection from an equal group or account ID.
-        if (!owner || owner.personaId !== row.personaId || !connection || platformAccountKey(connection.account) !== platformAccountKey(row.target.account)) return fail('conflict')
+        if (!owner || !connection || (connection.personaId ?? owner.personaId) !== row.personaId ||
+          platformAccountKey(connection.account) !== platformAccountKey(row.target.account)) return fail('conflict')
       }
       function isCurrent(): boolean {
         try { return baseCurrent() && directoryCurrent() } catch { return false }
@@ -221,7 +226,7 @@ export function createStandaloneAgentWorkspace(options: StandaloneAgentWorkspace
         conversations: Object.freeze(visible.filter(selected => selected.agentId === row.id).map(selected => {
           const name = options.conversationName?.(selected)
           return Object.freeze({ scopeKey: agentConversationKey(selected), bindingToken: agentBindingToken(selected), binding: selected,
-            ...(name === undefined ? {} : { name: label(name) }) })
+            ...(name === undefined ? {} : { name: label(name) }), ...(options.sharedGroup?.(selected) ? { sharedGroup: true } : {}) })
         })),
       })))
       const outputConnections = Object.freeze(connectionRows.filter(row => showUnboundConnections || visibleConnections.has(row.id)).map(row => Object.freeze({ ...row,
