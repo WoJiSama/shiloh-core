@@ -281,6 +281,8 @@
 
 ### Core B站查询与视频卡片
 
+- 普通自动搬运在下载前筛选官方视频候选，按提供者顺序使用通过核验的主地址或备用地址。每次下载及重定向均继续核验官方域和公网地址。
+
 - `tools.videoSearch.enabled`默认关闭，独立声明只接受`enabled`及可选`attachments`布尔开关，不加载宿主Cookie、代理或任意解析端点。真人群仿真及显式列入`textGroups.tools`的普通群文字可获得`searchVideoTool`与`videoShareTool`；前者返回最多8条中立元数据，零发送。查询/解析仅固定官方搜索、作品详情、番剧及b23路由，逐跳公网DNS钉住实际IP；每响应2MiB、提供器操作15秒。匿名设备fingerprint仅用于官方元数据接口，失败静态诊断后可匿名降级，取消/撤权不降级。提供器统一卡片validator并隔离不合格搜索条目；命名/数字HTML实体完整有界解码，拒绝控制码、孤立代理及残留实体。
 - 单槽列表按完整账号/会话/Agent/绑定版本隔离，5分钟绝对过期，新搜索立即撤销旧generation。只保留闭合元数据、规范公开作品页面与真实搜索来源，不保存查询词、Cookie、原生卡片JSON或媒体资源。ID/序号必须命中live列表；直接URL/关键词须逐字出现在当前真人请求，四种选择单选。当前和原搜索来源在排队与发送前重核作者、撤回和人物隐私，不能把模型URL伪造成平台媒体来源。
 - `sendVideoCard`固定当前目标，与发送额度、队列、出站审核和unknown冻结共用边界；闭合卡片仅provider/id/title/author/durationSeconds/pageUrl，拒绝Proxy、访问器、额外字段、孤立UTF16 surrogate、控制字符和秘密。QQ只转换为一个固定原生JSON段，不下载封面/视频，不传入任意原生JSON或接收者。精确来源/generation guard经宿主合并signal并消费异步授权，native调用前同时等待异步ensureCurrent，收到signal/isCurrent。真实非零message_id才sent，发送前持久pending；pending/sent/failed/unknown保留7天且不自动重发，不能宣称跨系统exactly-once。
