@@ -378,10 +378,11 @@ test('a reflection failure is reported even though the background sweep complete
 
 test('共享只投影已批自我偏好；模型等待时撤销会拦截迟到发送并防止旧历史复活', async () => {
   const held = deferred()
+  const events = []
   let waiting = false
   const preference = '我偏爱能够自由探索的独立解谜游戏'
   const privateText = '只有原群知道的私聊细节'
-  const h = fixture({ groups: [GROUP, OTHER_GROUP], script: async (request, index) => {
+  const h = fixture({ groups: [GROUP, OTHER_GROUP], diagnostics: { emit: event => events.push(event), traceId: () => 'revoked-source-test' }, script: async (request, index) => {
     if (index === 0) {
       const prompt = JSON.stringify(request.messages)
       assert.ok(prompt.includes(preference))
@@ -391,6 +392,7 @@ test('共享只投影已批自我偏好；模型等待时撤销会拦截迟到�
       waiting = true; await held.promise
       return tools(call('simSendMessage', { messages: ['撤销以后不得发送这段旧上下文'] }))
     }
+    assert.equal(JSON.stringify(request.messages).includes(preference), false)
     return quiet()
   } })
   try {
@@ -402,11 +404,14 @@ test('共享只投影已批自我偏好；模型等待时撤销会拦截迟到�
     await h.ingest('你更喜欢什么游戏', { groupId: OTHER_GROUP })
     await waitFor(() => waiting, '另一群模型已读取共享偏好')
     await h.runtime.controlActivity(GROUP, 'shared-delete', id)
-    held.resolve(); await idle(h, 2, OTHER_GROUP)
-    assert.match(toolResult(h.calls[1], 'simSendMessage'), /^error:/)
+    held.resolve(); await idle(h, 1, OTHER_GROUP)
+    assert.equal(h.calls.length, 1)
     assert.equal(h.sent.length, 0)
+    assert.ok(events.some(event => event.operation === 'simulation_turn_model' && event.outcome === 'cancelled' &&
+      event.code === 'model_response_source_changed' && event.details.step === 'model_response_authorization'))
     assert.deepEqual(JSON.parse(h.kv.get(sessionKey(OTHER_GROUP))).agentHistory, [])
     assert.deepEqual((await h.runtime.describeGroup(OTHER_GROUP)).activities.shared, [])
+    await h.ingest('那换个新话题', { groupId: OTHER_GROUP }); await idle(h, 2, OTHER_GROUP)
   } finally { held.resolve(); h.runtime.stop() }
 })
 
@@ -423,7 +428,7 @@ test('独立控制台删除作品会撤销机器人迟到发送，撤销版本�
       entered.resolve(); await held.promise
       return tools(call('simSendMessage', { messages: [content] }))
     }
-    if (index === 5) assert.equal(JSON.stringify(request.messages).includes(content), false, '后续回合不得复用删除前的模型历史')
+    if (index === 4) assert.equal(JSON.stringify(request.messages).includes(content), false, '后续回合不得复用删除前的模型历史')
     return quiet()
   } })
   const consoleRuntime = h.peerRuntime()
@@ -439,13 +444,13 @@ test('独立控制台删除作品会撤销机器人迟到发送，撤销版本�
     assert.equal(versions.length, 2, '源修改前后各撤销一次，覆盖修改期间启动的回合')
     assert.notEqual(versions[0], versions[1])
     assert.equal(h.kv.get(sessionKey(GROUP)), oldSession, '独立控制台不得把旧会话整份写回覆盖入站和预算')
-    held.resolve(); await idle(h, 5)
-    assert.match(toolResult(h.calls[4], 'simSendMessage'), /^error:/)
+    held.resolve(); await idle(h, 4)
+    assert.equal(h.calls.length, 4)
     assert.equal(h.sent.length, 0, '删除成功后到达的旧模型结果不得发出')
     assert.equal(h.kv.get(versionKey), revokedVersion, '机器人旧会话收尾不能覆盖独立撤销版本')
     assert.deepEqual(JSON.parse(h.kv.get(sessionKey(GROUP))).agentHistory, [])
     assert.equal((await consoleRuntime.describeGroup(GROUP)).activities.works.length, 0)
-    await h.ingest('开始一个新的话题'); await idle(h, 6)
+    await h.ingest('开始一个新的话题'); await idle(h, 5)
     assert.equal(h.kv.get(versionKey), revokedVersion)
   } finally { held.resolve(); h.runtime.stop(); consoleRuntime.stop() }
 })
@@ -459,7 +464,7 @@ test('独立控制台删除记忆不回写旧会话，机器人迟到正文与�
       entered.resolve(); await held.promise
       return tools(call('simSendMessage', { messages: [content] }))
     }
-    if (index === 2) assert.equal(JSON.stringify(request.messages).includes(content), false)
+    if (index === 1) assert.equal(JSON.stringify(request.messages).includes(content), false)
     return quiet()
   } })
   const consoleRuntime = h.peerRuntime()
@@ -472,12 +477,12 @@ test('独立控制台删除记忆不回写旧会话，机器人迟到正文与�
     assert.equal(versions.length, 2)
     assert.notEqual(versions[0], versions[1])
     const version = h.kv.get(`${sessionKey(GROUP)}:activity-version`)
-    held.resolve(); await idle(h, 2)
-    assert.match(toolResult(h.calls[1], 'simSendMessage'), /^error:/)
+    held.resolve(); await idle(h, 1)
+    assert.equal(h.calls.length, 1)
     assert.equal(h.sent.length, 0)
     assert.deepEqual(JSON.parse(h.kv.get(sessionKey(GROUP))).agentHistory, [])
     assert.equal(h.kv.get(`${sessionKey(GROUP)}:activity-version`), version)
-    await h.ingest('新的无关话题'); await idle(h, 3)
+    await h.ingest('新的无关话题'); await idle(h, 2)
   } finally { held.resolve(); h.runtime.stop(); consoleRuntime.stop() }
 })
 

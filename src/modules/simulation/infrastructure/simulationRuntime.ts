@@ -2293,26 +2293,26 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             return ''
           }) ?? ''
         const assertGroupMemoryCurrent = async () => {
-          if (topic && !await topic.isCurrent()) throw new Error('续聊话题原文或承诺状态已改变')
-          for (const projection of historyProjections) if (!await projection.isCurrent()) throw new Error('显式历史来源已改变，停止使用旧上下文')
-          for (const projection of fileProjections) if (!await projection.isCurrent()) throw new Error('文件资料来源已改变，停止使用旧上下文')
-          if (semanticProjection?.text && !await semanticProjection.isCurrent()) throw new Error('语义记忆来源已改变，停止使用旧上下文')
-          if (webEvidence && !await webEvidence.isCurrent()) throw new Error('公开资料来源已改变，停止使用旧上下文')
-          if (cognitionProjection?.text && !await cognitionProjection.isCurrent()) throw new Error('统一自我来源已改变，停止使用旧上下文')
-          if (ports.isGroupMemoryCurrent && !await ports.isGroupMemoryCurrent(target, groupMemoryContext, actor.kind === 'user', canCallModel)) throw new Error('本群资料来源已改变，停止使用旧上下文')
+          if (topic && !await topic.isCurrent()) throw new SimulationSourceRevokedError('续聊话题原文或承诺状态已改变')
+          for (const projection of historyProjections) if (!await projection.isCurrent()) throw new SimulationSourceRevokedError('显式历史来源已改变，停止使用旧上下文')
+          for (const projection of fileProjections) if (!await projection.isCurrent()) throw new SimulationSourceRevokedError('文件资料来源已改变，停止使用旧上下文')
+          if (semanticProjection?.text && !await semanticProjection.isCurrent()) throw new SimulationSourceRevokedError('语义记忆来源已改变，停止使用旧上下文')
+          if (webEvidence && !await webEvidence.isCurrent()) throw new SimulationSourceRevokedError('公开资料来源已改变，停止使用旧上下文')
+          if (cognitionProjection?.text && !await cognitionProjection.isCurrent()) throw new SimulationSourceRevokedError('统一自我来源已改变，停止使用旧上下文')
+          if (ports.isGroupMemoryCurrent && !await ports.isGroupMemoryCurrent(target, groupMemoryContext, actor.kind === 'user', canCallModel)) throw new SimulationSourceRevokedError('本群资料来源已改变，停止使用旧上下文')
         }
         const ensureModelCurrent = async () => {
-          if (!canCallModel()) throw new Error('模型请求的来源或绑定已改变')
+          if (!canCallModel()) throw new SimulationSourceRevokedError('模型请求的来源或绑定已改变')
           await assertTriggerCurrent()
           await assertGroupMemoryCurrent()
           const sourceState = await characters.load(characterScope)
           if ((await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt ||
               await shared.fingerprint() !== sharedFingerprint ||
               [...sourceMemoryIds].some(id => !activeCharacterMemories(sourceState).some(memory => memory.id === id))) {
-            throw new Error('模型请求的记忆来源已改变')
+            throw new SimulationSourceRevokedError('模型请求的记忆来源已改变')
           }
-          if (await store.loadActivityVersion(groupId) !== activityVersion) throw new Error('角色活动已撤销，停止模型请求')
-          if (!canCallModel()) throw new Error('模型请求的来源或绑定已改变')
+          if (await store.loadActivityVersion(groupId) !== activityVersion) throw new SimulationSourceRevokedError('角色活动已撤销，停止模型请求')
+          if (!canCallModel()) throw new SimulationSourceRevokedError('模型请求的来源或绑定已改变')
         }
         if (!canCallModel()) return
         const casual = actor.kind === 'user' && isDirectAddressKind(reason.kind) && !!anchor && !anchor.quoteSource && !anchor.forwardId &&
@@ -3809,6 +3809,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         type RawToolCall = NonNullable<SimHistoryMessage['tool_calls']>[number]
         let rounds = 0
         let failureStage: 'model' | 'tool' | 'runtime' | undefined
+        let responseAuthorizationFailed = false
         // 用户对话/正式托付的未外发文本兜底：自主回合的最终文本只留在内部历史。
         let nudgedForUnsent = false
         while (rounds < cfg.turn.maxToolRounds) {
@@ -3896,7 +3897,18 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             break
           }
           if (modelResponseFailure(response)) { executionError = '模型没有返回有效结果'; failureStage = 'model'; break }
-          await ensureModelCurrent()
+          try { await ensureModelCurrent() }
+          catch (error) {
+            responseAuthorizationFailed = true
+            const revoked = error instanceof SimulationSourceRevokedError
+            cancelled ||= revoked
+            executionError = revoked ? '模型返回时资料来源已改变' : '模型返回后未能核验资料来源'
+            diagnose({ stage: 'model', operation: 'simulation_turn_model', outcome: revoked ? 'cancelled' : 'failed',
+              code: revoked ? 'model_response_source_changed' : 'model_source_check_failed', ...(revoked ? {} : { error }),
+              details: { step: 'model_response_authorization', result: 'discarded' } },
+            revoked ? undefined : () => logger.warn('[仿真] 模型返回后未能核验资料来源'))
+            break
+          }
           noteModelSeen(state, [...stagedMessageSeqs])
           for (const seq of stagedMessageSeqs) visibleMessageSeqs.add(seq)
           stagedMessageSeqs.clear()
@@ -4074,12 +4086,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           if (turnClosed) break
         }
 
-        if (!turnClosed && rounds >= cfg.turn.maxToolRounds) {
+        if (!responseAuthorizationFailed && !turnClosed && rounds >= cfg.turn.maxToolRounds) {
           failureStage ??= 'runtime'
           if (!executionError) executionError = '回合执行轮次已用尽，尚未完成收尾'
           diagnose({ stage: 'runtime', operation: 'simulation_turn', outcome: 'failed', code: 'tool_budget_exhausted' })
         }
-        if (failureStage && !turnClosed) {
+        if (failureStage && !responseAuthorizationFailed && !turnClosed) {
           const failureCurrent = async () => {
             if (!toolEnabled('simFinishTurn') || !toolEnabled('simSendMessage') || actor.kind !== 'user' || !actor.userId || !triggerMessage?.messageId || triggerMessage.userId !== actor.userId ||
                 sends > 0 || confirmedActions > 0 || uncertainAction || memoryBox.deliveryUnknown || decision === 'silent' || decision === 'deferred' ||
@@ -4113,16 +4125,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         }
 
         recordWakeTokens(state, tokens)
-        const latestCharacter = await characters.load(characterScope)
-        const attachmentRevoked = attachmentSourceIds.size > 0 &&
-          (await Promise.all([...attachmentSourceIds].map(id => ports.isMessageRecalled?.(target, id)))).some(Boolean)
-        const semanticRevoked = semanticProjection?.text && !await semanticProjection.isCurrent()
-        const topicRevoked = topic && !await topic.isCurrent()
-        const webEvidenceRevoked = webEvidence && !await webEvidence.isCurrent()
-        const cognitionRevoked = cognitionProjection?.text && !await cognitionProjection.isCurrent()
-        const historyRevoked = !(await Promise.all(historyProjections.map(projection => projection.isCurrent()))).every(Boolean)
-        const filesRevoked = !(await Promise.all(fileProjections.map(projection => projection.isCurrent()))).every(Boolean)
-        const removedSource = attachmentRevoked || semanticRevoked || topicRevoked || webEvidenceRevoked || cognitionRevoked || historyRevoked || filesRevoked || memoryTurn?.isCurrent() === false ||
+        const latestCharacter = responseAuthorizationFailed ? character : await characters.load(characterScope)
+        const removedSource = responseAuthorizationFailed || memoryTurn?.isCurrent() === false ||
+          attachmentSourceIds.size > 0 && (await Promise.all([...attachmentSourceIds].map(id => ports.isMessageRecalled?.(target, id)))).some(Boolean) ||
+          semanticProjection?.text && !await semanticProjection.isCurrent() || topic && !await topic.isCurrent() ||
+          webEvidence && !await webEvidence.isCurrent() || cognitionProjection?.text && !await cognitionProjection.isCurrent() ||
+          !(await Promise.all(historyProjections.map(projection => projection.isCurrent()))).every(Boolean) ||
+          !(await Promise.all(fileProjections.map(projection => projection.isCurrent()))).every(Boolean) ||
           (await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })).invalidatedAt !== memorySceneState.invalidatedAt || revisedSources || [...sourceMemoryIds].some(id => !activeCharacterMemories(latestCharacter).some(memory => memory.id === id)) || await store.loadActivityVersion(groupId) !== activityVersion || await shared.fingerprint() !== sharedFingerprint || !isBindingCurrent()
         // Intermediate model output may echo ephemeral image or initial prompt material.
         const thisTurn = (semanticRecall || topic || cognitionProjection?.text || ephemeralRead || usedImageDescription || usedInitialPrompt || groupMemoryContext
