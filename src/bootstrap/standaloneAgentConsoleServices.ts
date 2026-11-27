@@ -100,10 +100,14 @@ export interface StandaloneAgentConsoleServicesPorts {
   }
   /** Additional real operations (accounts, images, games, observation, style, Qzone, etc.), under the same server checks. */
   readonly extra?: readonly AgentConsoleService[]
+  readonly groupAdmin?: {
+    read(context: AgentConsoleContext): Data
+    write(payload: Readonly<Data>, context: AgentConsoleContext): Promise<Data | AgentConsoleCommittedResponse>
+  }
 }
 
 const fail = (code: ConstructorParameters<typeof AgentConsoleError>[0]): never => { throw new AgentConsoleError(code) }
-const schemas = new Set(['groupAdmin', 'dice', 'tracking', 'memory', 'conversation', 'reasoning', 'persona', 'pipeline', 'riskControl', 'turtleSoup', 'umaRace', 'deltaForce', 'feature-switches'])
+const schemas = new Set(['groupAdmin', 'dice', 'diceAssets', 'commands', 'tracking', 'memory', 'conversation', 'reasoning', 'persona', 'pipeline', 'riskControl', 'turtleSoup', 'umaRace', 'deltaForce', 'feature-switches'])
 const activityOperations = new Set(['work-archive', 'work-restore', 'work-delete', 'subscription-pause', 'subscription-resume', 'subscription-remove', 'shared-approve', 'shared-delete', 'reflection-reset'])
 const characterOperations = new Set(['pause', 'resume', 'cancel-goal', 'pause-goal', 'resume-goal', 'delete-memory'])
 function data(value: unknown): Data {
@@ -319,6 +323,23 @@ export function createStandaloneAgentConsoleServices(ports: StandaloneAgentConso
     install('tokens.recent', async (request, context) => json({ rows: await invoke(context, () => ledger.recent(queryNumber(request.query.limit, 50, 1, 500))) }))
   }
   const config = ports.config
+  const groupAdmin = ports.groupAdmin
+  if (groupAdmin) {
+    function group(request: AgentConsoleRequest, context: AgentConsoleContext) {
+      if (context.binding?.target.kind !== 'group' || context.binding.target.id !== request.params.groupId ||
+          Object.keys(request.query).length) return fail('invalid_request')
+    }
+    install('group-admin.read', async (request, context) => {
+      group(request, context)
+      return json(await invoke(context, () => groupAdmin.read(context)))
+    })
+    install('group-admin.write', async (request, context) => {
+      group(request, context)
+      const body = data(request.body)
+      revision(body)
+      return invokeWrite(context, () => groupAdmin.write(body, context))
+    })
+  }
   if (config?.read) install('config.read', async (request, context) => {
     const kind = request.params.kind!
     if (!schemas.has(kind)) return fail('not_found')

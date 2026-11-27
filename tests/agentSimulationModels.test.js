@@ -21,14 +21,14 @@ async function rejected(operation) {
   await assert.rejects(operation, error => error.message === FAILURE && error.cause === undefined)
 }
 
-test('wake and meme providers use real local JSON HTTP with fixed model budgets and scoped usage', async t => {
+test('wake uses the provider output budget and meme extraction sends its own budget over HTTP', async t => {
   const received = [], usage = []
   const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk
     const data = JSON.parse(body)
     received.push({ path: req.url, method: req.method, authorization: req.headers.authorization, data })
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
-      choices: [{ message: { content: data.max_tokens === 64 ? '```json\n{"engage":false,"reason":"群友闲聊"}\n```' : JSON.stringify(memeResult) } }],
+      choices: [{ message: { content: received.length === 1 ? '```json\n{"engage":false,"reason":"群友闲聊"}\n```' : JSON.stringify(memeResult) } }],
       usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7, hidden: 99 },
     }))
   })
@@ -46,10 +46,11 @@ test('wake and meme providers use real local JSON HTTP with fixed model budgets 
     assert.equal(req.data.model, options.name)
     assert.equal(req.data.stream, false)
     assert.equal(req.data.thinking, undefined)
+    assert.equal(req.data.response_format, undefined)
     assert.deepEqual(req.data.messages.map(message => message.role), ['system', 'user'])
     assert.doesNotMatch(JSON.stringify(req.data), /private-(?:account|group|binding|revision|agent|persona|connection)/u)
   }
-  assert.equal(received[0].data.max_tokens, 64)
+  assert.equal(Object.hasOwn(received[0].data, 'max_tokens'), false)
   assert.equal(received[0].data.temperature, 0.1)
   assert.equal(received[1].data.max_tokens, 2000)
   assert.equal(received[1].data.temperature, 0.2)
@@ -64,11 +65,17 @@ test('official GLM flash side tasks request content without spending the JSON bu
     async fetchImpl(_url, init) {
       const body = JSON.parse(init.body)
       bodies.push(body)
-      return answer(body.max_tokens === 64 ? '{"engage":false,"reason":"普通闲聊"}' : '[]')
+      return answer(bodies.length === 1 ? '{"engage":false,"reason":"普通闲聊"}' : JSON.stringify({ candidates: memeResult }))
     } }
   assert.deepEqual(await createAgentSimulationWakeGate(config)(input, undefined, context()), { engage: false, reason: '普通闲聊' })
-  assert.equal(await createAgentSimulationMemeExtractor(config)(memes, undefined, context()), '[]')
+  assert.deepEqual(JSON.parse(await createAgentSimulationMemeExtractor(config)(memes, undefined, context())), memeResult)
   assert.deepEqual(bodies.map(body => body.thinking), [{ type: 'disabled' }, { type: 'disabled' }])
+  assert.equal(Object.hasOwn(bodies[0], 'max_tokens'), false)
+  assert.equal(bodies[0].response_format, undefined)
+  assert.deepEqual(bodies[1].response_format, { type: 'json_object' })
+  assert.match(bodies[1].messages[1].content, /\{"candidates":\[\]\}/u)
+  const empty = createAgentSimulationMemeExtractor({ ...config, fetchImpl: async () => answer('{"candidates":[]}') })
+  assert.equal(await empty(memes, undefined, context()), '[]')
 })
 
 test('the standalone wake judge can report a verified upstream error while callers default to fail-open', async () => {
@@ -80,13 +87,23 @@ test('the standalone wake judge can report a verified upstream error while calle
     assert.doesNotMatch(JSON.stringify(error), /private upstream detail/u)
     return true
   })
+  const truncated = { ...options, fetchImpl: async () => answer(undefined, {
+    choices: [{ finish_reason: 'length', message: { content: '{"engage":' } }],
+  }) }
+  assert.equal(await createAgentSimulationWakeGate(truncated)(input, undefined, context()), null)
+  await assert.rejects(createAgentSimulationWakeGate({ ...truncated, throwOnFailure: true })(input, undefined, context()),
+    { code: 'model_response_truncated' })
 })
 
 test('meme provider failures carry only a fixed label and optional HTTP status', async () => {
   for (const [fetchImpl, code, status] of [
     [async () => new Response(`PRIVATE ${apiKey}`, { status: 503 }), 'http_error', 503],
     [async () => { throw Error(`PRIVATE ${apiKey}`) }, 'provider_transport_error', undefined],
-    [async () => answer('bad result'), 'model_response_invalid', undefined],
+    [async () => new Response('invalid HTTP body'), 'model_response_body_invalid', undefined],
+    [async () => answer(null), 'model_response_envelope_invalid', undefined],
+    [async () => answer('bad result'), 'meme_output_json_invalid', undefined],
+    [async () => answer(JSON.stringify([{ ...memeResult[0], source_id: '99' }])), 'meme_output_schema_invalid', undefined],
+    [async () => answer('[]', { metadata: { credential: apiKey } }), 'model_response_blocked', undefined],
   ]) {
     const extract = createAgentSimulationMemeExtractor({ ...options, fetchImpl })
     await assert.rejects(extract(memes, undefined, context()), error => {
@@ -98,6 +115,17 @@ test('meme provider failures carry only a fixed label and optional HTTP status',
       return true
     })
   }
+})
+
+test('failed source checks after the model responds remain separate from malformed output', async () => {
+  let responded = false
+  const extract = createAgentSimulationMemeExtractor({ ...options, fetchImpl: async () => {
+    responded = true
+    return answer('[]')
+  } })
+  await assert.rejects(extract(memes, undefined, context({ async ensureCurrent() {
+    if (responded) throw new Error('private read error')
+  } })), error => error.code === 'model_source_check_failed' && error.cause === undefined)
 })
 
 test('missing binding or mismatched target prevents every provider request', async () => {

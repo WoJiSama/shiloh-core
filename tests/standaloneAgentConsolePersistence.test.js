@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import fs from 'node:fs'
+import { createServer } from 'node:http'
+import { once } from 'node:events'
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -15,7 +17,7 @@ const [{ createStandaloneAgentConsolePersistence: persistence }, { readStandalon
   load('modules/runtime/infrastructure/agentBindingConfig.js'),
 ])
 const token = 'fixture-console-token-6aac', secret = 'fixture-server-model-secret-cab4'
-const slots = ['model', 'vision', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction', 'textTriggerModel']
+const slots = ['model', 'developmentModel', 'vision', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction', 'textTriggerModel']
 const models = () => Object.fromEntries(slots.map(slot => [slot, { baseUrl: 'https://models.example.test/v1/', name: `${slot}-v1`, apiKeyEnv: slot === 'model' ? 'MODEL_KEY' : `${slot.replace(/[A-Z]/g, letter => '_' + letter).toUpperCase()}_KEY` }]))
 const bindingsObject = () => ({ version: 1,
   agents: [{ id: 'daily', personaId: 'default' }, { id: 'reader', personaId: 'p-one' }],
@@ -49,6 +51,8 @@ async function fixture(t, options = {}) {
     persona: { name: 'Default persona', identity: 'default identity' }, personaGuard: { enabled: true }, extensionOwned: { preserve: 'this field' } }
   if (options.diceEngine !== undefined) host.dice.engine = options.diceEngine
   if (options.reasoningEffort !== undefined) host.model.reasoningEffort = options.reasoningEffort
+  if (options.modelBaseUrl) host.model.baseUrl = options.modelBaseUrl
+  if (options.inheritDevelopment) delete host.developmentModel
   await writeFile(hostFile, '# host comment\n' + YAML.stringify(host))
   const bindingData = bindingsObject()
   if (options.noLibrary) bindingData.agents[1].personaId = 'default'
@@ -57,7 +61,8 @@ async function fixture(t, options = {}) {
   const frontendDir = path.join(root, 'frontend'); await mkdir(frontendDir); await writeFile(path.join(frontendDir, 'index.html'), '<!doctype html><title>fixture</title>')
   const lifetime = new AbortController(), control = { session: true, lease: true, filter: true, forbidden: new Set() }
   const authority = { signal: lifetime.signal, isCurrent: () => control.lease }
-  const owned = persistence({ enabled: options.enabled ?? true, hostFile, loaded: snapshot(hostFile), authority, validateCandidate: options.validateCandidate ?? validateCandidate })
+  const owned = persistence({ enabled: options.enabled ?? true, hostFile, loaded: snapshot(hostFile), authority,
+    ...(options.providerEnv ? { providerEnv: options.providerEnv } : {}), validateCandidate: options.validateCandidate ?? validateCandidate })
   const readBindings = createAgentBindingConfig(path.join(root, 'agent-bindings.yaml'))
   const bindings = { list: () => readBindings().listBindings(), resolve: target => readBindings().resolve(target) }
   const principal = { id: 'fixture-session', username: 'admin', via: 'session' }
@@ -92,6 +97,48 @@ const waitFor = async predicate => {
   const end = Date.now() + 2000
   while (!predicate()) { if (Date.now() > end) throw new Error('fixture condition did not become true'); await new Promise(resolve => setTimeout(resolve, 5)) }
 }
+
+test('Core model probes use only the loaded URL and key and return no provider payload', async t => {
+  const calls = []
+  const provider = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    calls.push({ url: request.url, body, authorized: request.headers.authorization === 'Bearer ' + secret })
+    if (body.model === 'draft-v2') {
+      response.writeHead(401, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: { message: secret } }))
+    } else {
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { content: secret } }] }))
+    }
+  })
+  provider.listen(0, '127.0.0.1'); await once(provider, 'listening')
+  t.after(() => new Promise(resolve => provider.close(resolve)))
+  const baseUrl = `http://127.0.0.1:${provider.address().port}/v1/`
+  const f = await fixture(t, { modelBaseUrl: baseUrl, providerEnv: { MODEL_KEY: secret }, inheritDevelopment: true })
+  const post = (route, body) => f.request(route, { method: 'POST', body })
+  const before = await f.files()
+  const saved = await post('/api/ai/probe', { configKey: 'model' })
+  assert.equal(saved.status, 200, saved.text)
+  assert.deepEqual(saved.data.results.map(({ ms, ...row }) => row), [{ name: 'model-v1', ok: true, detail: '模型已响应' }])
+  const inherited = await post('/api/ai/probe', { configKey: 'developmentModel' })
+  assert.equal(inherited.status, 200, inherited.text)
+  assert.equal(inherited.data.results[0].name, 'model-v1')
+  const draft = { baseUrl, name: 'draft-v2', apiKeyEnv: 'MODEL_KEY' }
+  const tested = await post('/api/ai/probe-provider', { configKey: 'model', provider: draft })
+  assert.equal(tested.status, 200, tested.text)
+  assert.equal(tested.data.results[0].detail, 'HTTP 401')
+  assert.equal(tested.text.includes(secret), false)
+  for (const change of [{ baseUrl: baseUrl + 'unexpected' }, { apiKeyEnv: 'OTHER_KEY' }])
+    assert.equal((await post('/api/ai/probe-provider', { configKey: 'model', provider: { ...draft, ...change } })).status, 409)
+  f.control.forbidden.add('providers.probe')
+  assert.equal((await post('/api/ai/probe', { configKey: 'model' })).status, 403)
+  assert.deepEqual(calls.map(call => [call.url, call.body.model, call.body.messages, call.authorized]), [
+    ['/v1/chat/completions', 'model-v1', [{ role: 'user', content: 'ping' }], true],
+    ['/v1/chat/completions', 'model-v1', [{ role: 'user', content: 'ping' }], true],
+    ['/v1/chat/completions', 'draft-v2', [{ role: 'user', content: 'ping' }], true],
+  ])
+  assert.deepEqual(await f.files(), before)
+})
 
 test('host dice save returns its canonical view, retires execution immediately and reloads on a new process epoch', async t => {
   const f = await fixture(t), before = await f.files(), view = (await f.request('/api/config/dice')).data
@@ -175,7 +222,7 @@ test('editing an exposed dice field preserves an opaque engine subtree without p
   assert.equal(stored.dice.maxRounds, 28); assert.deepEqual(stored.dice.engine, engine)
 })
 
-test('each of the six real model slots saves one environment-reference provider in the host', async t => {
+test('each model slot saves one environment-reference provider in the host', async t => {
   for (const slot of slots) await t.test(slot, async t => {
     const f = await fixture(t), before = await f.files(), view = (await f.request('/api/ai/config')).data
     assert.deepEqual(view.definitions.map(definition => definition.configKey), slots)
@@ -190,6 +237,25 @@ test('each of the six real model slots saves one environment-reference provider 
     for (const other of slots.filter(value => value !== slot)) assert.deepEqual(host[other], YAML.parse(before['agent-host.yaml'])[other])
     assert.equal(after['persona-library.yaml'], before['persona-library.yaml']); assert.equal(after['agent-bindings.yaml'], before['agent-bindings.yaml'])
     assert.equal(result.text.includes('apiKey"'), false); assert.equal(result.text.includes(secret), false)
+  })
+})
+
+test('the development slot is available before configuration and can return to the main model', async t => {
+  for (const inheritDevelopment of [true, false]) await t.test(inheritDevelopment ? 'configure' : 'reset', async t => {
+    const f = await fixture(t, { inheritDevelopment }), view = (await f.request('/api/ai/config')).data
+    const definition = view.definitions.find(item => item.configKey === 'developmentModel')
+    assert.equal(definition.title, '开发'); assert.equal(definition.fallbackConfigKey, 'model')
+    assert.equal(view.sections.developmentModel.length, inheritDevelopment ? 0 : 1)
+    const provider = { baseUrl: 'https://development.example.test/v1', name: 'code-v2', apiKeyEnv: 'DEV_KEY' }
+    const prior = YAML.parse((await f.files())['agent-host.yaml'])
+    const saved = await put(f, '/api/ai/config', { configKey: 'developmentModel', revision: view.revisions.developmentModel,
+      providers: inheritDevelopment ? [provider] : [] })
+    assert.equal(saved.status, 200, saved.text)
+    assert.equal(saved.data.requiresRestart, true)
+    assert.equal(saved.data.view.sections.developmentModel.length, inheritDevelopment ? 1 : 0)
+    const stored = YAML.parse((await f.files())['agent-host.yaml'])
+    assert.deepEqual(stored.model, prior.model)
+    assert.deepEqual(stored.developmentModel, inheritDevelopment ? provider : undefined)
   })
 })
 
@@ -331,7 +397,7 @@ test('unsupported fields, raw keys, multiple providers, mixed files and dangling
     ['/api/config/dice', { revision: dice.revision, values: { 'diceSystem.customRules': [] } }, 400],
     ['/api/config/dice', { revision: dice.revision, values: { 'dice.maxRounds': 0 } }, 400],
     ['/api/config/dice', { revision: dice.revision, values: {}, secrets: { apiKey: { action: 'replace', value: secret } } }, 400],
-    ['/api/config/memory', { revision: dice.revision, values: {} }, 404],
+    ['/api/config/memory', { revision: dice.revision, values: {} }, 409],
     ['/api/ai/config', { revision: ai.revisions.model, configKey: 'model', providers: [{ ...provider, apiKey: secret }] }, 400],
     ['/api/ai/config', { revision: ai.revisions.model, configKey: 'model', providers: [provider, provider] }, 400],
     ['/api/ai/config', { revision: ai.revisions.model, configKey: 'model', providers: [{ ...provider, priority: 1 }] }, 400],

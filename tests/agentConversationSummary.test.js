@@ -37,7 +37,7 @@ async function listen(t, handler) {
 }
 
 test('conversation summary uses real HTTP, bounded conversational records and two prompt roles without host context', async t => {
-  const received = [], usage = []
+  const received = [], usage = [], phases = []
   const baseUrl = await listen(t, async (request, response) => {
     const chunks = []
     for await (const chunk of request) chunks.push(chunk)
@@ -53,7 +53,9 @@ test('conversation summary uses real HTTP, bounded conversational records and tw
   }))
   assert.equal(await provider({ baseUrl: `${baseUrl}/v1` })({
     previous: '🐕'.repeat(4010), messages, maxChars: 500, binding: 'private-input-binding',
-  }, context({ recordUsage: (...args) => usage.push(args) })), summary)
+  }, context({ recordUsage: (...args) => usage.push(args), observePhase: (...args) => phases.push(args) })), summary)
+  assert.deepEqual(phases, [['request_prepare'], ['request_authorization'], ['provider_http'], ['provider_body', 200],
+    ['response_authorization'], ['response_validation'], ['response_authorization']])
   assert.equal(received.length, 1)
   const request = received[0]
   assert.equal(request.path, '/v1/chat/completions')
@@ -150,6 +152,41 @@ test('the official GLM summary avoids extra reasoning and exposes only fixed HTT
     assert.doesNotMatch(JSON.stringify(error), /private upstream data/u)
     return true
   })
+})
+
+test('summary HTTP 400 stops at the provider phase and retains only documented GLM codes', async () => {
+  const official = 'https://open.bigmodel.cn/api/paas/v4'
+  const cases = [
+    [official, '1301', 'glm_1301'],
+    [official, 1261, 'glm_1261'],
+    [official, '1214', 'glm_1214'],
+    [official, 'unrecognized-private-code', 'http_error'],
+    [official, undefined, 'http_error'],
+    [config.baseUrl, '1301', 'http_error'],
+  ]
+  for (const [baseUrl, upstreamCode, diagnosticCode] of cases) {
+    let checks = 0
+    const phases = [], usage = []
+    const body = upstreamCode === undefined ? 'private unparseable body' : JSON.stringify({
+      error: { code: upstreamCode, message: 'private error body' }, usage: { prompt_tokens: 7 },
+    })
+    const run = provider({ baseUrl, fetchImpl: async () => new Response(body, { status: 400 }) })
+    await assert.rejects(run(input, context({
+      async ensureCurrent() { checks++ },
+      observePhase(phase) { phases.push(phase) },
+      recordUsage: (...args) => usage.push(args),
+    })), error => {
+      assert.equal(error.code, diagnosticCode)
+      assert.equal(error.httpStatus, 400)
+      assert.equal(error.message, FAILURE)
+      assert.equal(error.cause, undefined)
+      assert.doesNotMatch(JSON.stringify(error), /private/u)
+      return true
+    })
+    assert.equal(checks, 1)
+    assert.deepEqual(phases, ['request_prepare', 'request_authorization', 'provider_http'])
+    assert.deepEqual(usage, upstreamCode === undefined ? [] : [[config.name, { prompt_tokens: 7 }]])
+  }
 })
 
 test('conversation summary clamps character and token budgets and truncates output by Unicode code point', async () => {
@@ -348,6 +385,16 @@ test('conversation summary authorization waits can be cancelled or timed out bef
       assert.equal(calls, 0)
     } finally { clearTimeout(timer) }
   }
+})
+
+test('summary requests that reach the provider and time out before headers retain the dispatch stage', async t => {
+  const baseUrl = await listen(t, () => {})
+  const { agentErrorDetails } = await importBilibiliHost('modules/runtime/infrastructure/agentDiagnostics.js')
+  await assert.rejects(provider({ baseUrl, timeoutMs: 50 })(input, context()), error => {
+    assert.equal(error.code, 'provider_timeout')
+    assert.deepEqual(agentErrorDetails(error), { dispatched: true, step: 'response_headers', limit: 50 })
+    return true
+  })
 })
 
 test('conversation summary transport waits can be cancelled even when injected transport ignores the signal', async () => {

@@ -5,6 +5,7 @@ import type { PersonMemoryCommand } from '../domain/personMemoryCommands.js'
 
 interface PersonMemoryRedis {
   get(key: string): Promise<unknown>
+  getMany?(keys: string[]): Promise<(string | null)[]>
   set(key: string, value: string, options?: { NX?: boolean; PX?: number }): Promise<unknown>
   del(key: string): Promise<unknown>
   eval?(script: string, options: { keys: string[]; arguments: string[] }): Promise<unknown>
@@ -132,11 +133,21 @@ function updateSceneRule(rules: PersonMemorySceneRule[], scene: PersonMemoryScen
   if (existing) Object.assign(existing, patch)
   else rules.push({ scene: { ...scene }, forgottenBefore: 0, disabled: false, ...patch })
 }
+function observedSource(person: PersonDocument, scope: ScopeDocument, source: PersonMemorySource): boolean {
+  return scope.subjects.includes(person.subjectId) && person.seen.some(item => samePersonMemoryScene(item.scene, source.scene) && item.at >= source.at)
+}
 function observe(person: PersonDocument, scope: ScopeDocument, source: PersonMemorySource) {
   if (!scope.subjects.includes(person.subjectId)) scope.subjects.push(person.subjectId)
   const previous = person.seen.find(item => samePersonMemoryScene(item.scene, source.scene))
   if (previous) previous.at = Math.max(previous.at, source.at)
   else person.seen.push({ scene: { ...source.scene }, at: source.at })
+}
+function parseIdentities(raw: unknown): PersonMemoryIdentity[] {
+  const values = raw === null || raw === undefined ? [] : json(raw)
+  if (!Array.isArray(values) || !values.every(value => validPersonMemoryIdentity(value as PersonMemoryIdentity))) {
+    throw new Error('人物记忆身份目录损坏')
+  }
+  return values as PersonMemoryIdentity[]
 }
 
 interface MemoryTransferSide {
@@ -384,18 +395,12 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
   }
 
   async function identities(): Promise<PersonMemoryIdentity[]> {
-    const raw = await redis.get(DIRECTORY)
-    if (raw === null || raw === undefined) return []
-    const values = json(raw)
-    if (!Array.isArray(values) || !values.every(value => validPersonMemoryIdentity(value as PersonMemoryIdentity))) throw new Error('人物记忆身份目录损坏')
-    return values as PersonMemoryIdentity[]
+    return parseIdentities(await redis.get(DIRECTORY))
   }
   async function registerIdentity(identity: PersonMemoryIdentity) {
     requireIdentity(identity)
     await transaction(DIRECTORY, async tx => {
-      const raw = await tx.get(DIRECTORY), parsed = raw === null || raw === undefined ? [] : json(raw)
-      if (!Array.isArray(parsed) || !parsed.every(value => validPersonMemoryIdentity(value as PersonMemoryIdentity))) throw new Error('人物记忆身份目录损坏')
-      const values = parsed as PersonMemoryIdentity[]
+      const values = parseIdentities(await tx.get(DIRECTORY))
       if (!values.some(value => sameIdentity(value, identity))) tx.set(DIRECTORY, JSON.stringify([...values, {botId:identity.botId,personaId:identity.personaId}]))
     })
   }
@@ -414,6 +419,58 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
   async function getRedactions(input: PersonMemorySubject) {
     const { person, scope } = await load(input)
     return redactions(person, scope)
+  }
+  async function readRedactionsBatch(identity: PersonMemoryIdentity, subjects: readonly string[] | undefined, signal: AbortSignal) {
+    const scopeName = scopeKey(identity)
+    signal.throwIfAborted()
+    let scopeRaw = subjects === undefined ? await redis.get(scopeName) : undefined
+    signal.throwIfAborted()
+    let scope = scopeRaw === undefined ? undefined : parseScope(scopeRaw, identity)
+    const ids = [...new Set(subjects ?? scope!.subjects)]
+    const result = new Map<string, PersonMemoryRedactions>()
+    const batchSize = 32, concurrentBatches = 4
+    for (let offset = 0; offset < ids.length; offset += batchSize * concurrentBatches) {
+      signal.throwIfAborted()
+      const batches = []
+      for (let start = offset; start < Math.min(ids.length, offset + batchSize * concurrentBatches); start += batchSize) {
+        const batch = ids.slice(start, start + batchSize).map(subjectId => ({ identity, subjectId }))
+        batch.forEach(requireSubject)
+        batches.push(batch)
+      }
+      // Keep each Redis read small while avoiding a round trip per 32 subjects.
+      // Each response carries its own scope fence and must match the other batches.
+      const snapshots = await Promise.all(batches.map(async batch =>
+        redis.getMany!([scopeName, ...batch.map(subject => personKey(identity, subject.subjectId))])))
+      signal.throwIfAborted()
+      for (const [batchIndex, batch] of batches.entries()) {
+        const [currentScope, ...people] = snapshots[batchIndex]!
+        if (people.length !== batch.length) throw new Error('人物记忆批量读取结果无效')
+        if (!scope || currentScope !== scopeRaw) {
+          const next = parseScope(currentScope, identity)
+          // Ordinary source registration may update the revision without changing privacy.
+          if (scope && (next.invalidatedAt !== scope.invalidatedAt ||
+              JSON.stringify([next.scenes, next.revokedSources, next.tombstones]) !==
+              JSON.stringify([scope.scenes, scope.revokedSources, scope.tombstones]) ||
+              subjects === undefined && JSON.stringify(next.subjects) !== JSON.stringify(scope.subjects))) return
+          scopeRaw = currentScope
+          scope = next
+        }
+        for (const [index, subject] of batch.entries()) {
+          result.set(subject.subjectId, redactions(parsePerson(people[index], subject), scope))
+        }
+      }
+    }
+    return result
+  }
+  async function getRedactionsBatch(identity: PersonMemoryIdentity, subjects: readonly string[] | undefined, signal: AbortSignal) {
+    requireIdentity(identity)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await readRedactionsBatch(identity, subjects, signal)
+      if (result) return result
+    }
+    // A privacy change invalidates earlier person documents. Never return the
+    // mixed result, even when contention lasts for the entire retry window.
+    throw new Error('人物记忆权限来源持续变化，无法完成批量核验')
   }
   async function participantsAllow(input: PersonMemoryDraft, scope: ScopeDocument, reader: Pick<Transaction, 'get'>,
     cache: Map<string, Promise<PersonMemoryRedactions>>): Promise<boolean> {
@@ -450,12 +507,30 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
   async function registerSource(input: PersonMemorySubject & { source: PersonMemorySource }, isCurrent?:()=>boolean) {
     requireSubject(input)
     if (!validPersonMemorySource(input.source) || input.source.authorId !== input.subjectId) return false
-    await registerIdentity(input.identity)
+    let identityKnown = false
+    if (redis.getMany) {
+      // Conversation, semantic, history and group stores may register the same
+      // source. Re-read current privacy and the watermark together before skipping a write.
+      const values = await redis.getMany([DIRECTORY, personKey(input.identity, input.subjectId), scopeKey(input.identity)])
+      if (values.length !== 3) throw new Error('人物记忆批量读取结果无效')
+      const [directory, personRaw, scopeRaw] = values
+      identityKnown = parseIdentities(directory).some(value => sameIdentity(value, input.identity))
+      if (identityKnown) {
+        const person = parsePerson(personRaw, input), scope = parseScope(scopeRaw, input.identity)
+        if (observedSource(person, scope, input.source)) {
+          if (isCurrent?.() === false) throw new Error('人物记忆写入期间会话绑定已改变')
+          return !isPersonMemoryRedacted(input.source, input.source.excerpt, redactions(person, scope))
+        }
+      }
+    }
+    if (!identityKnown) await registerIdentity(input.identity)
     return transaction(baseKey(input.identity), async tx => {
       const { person, scope } = await load(input, tx)
       if (isPersonMemoryRedacted(input.source, input.source.excerpt, redactions(person, scope))) return false
-      observe(person, scope, input.source)
-      save(tx, person, scope)
+      if (!observedSource(person, scope, input.source)) {
+        observe(person, scope, input.source)
+        save(tx, person, scope)
+      }
       return true
     }, isCurrent)
   }
@@ -682,6 +757,7 @@ export function createPersonMemoryStore({ redis, now = Date.now }: { redis: Pers
   return {
     remember, registerSource, query, list: query, listScene: input => query(input, undefined, true),
     read: input => query(input, input.ids), getRedactions, getSceneRedactions,
+    ...(redis.getMany ? { getRedactionsBatch } : {}),
     forget, revokeSource, forgetScene, setEnabled, scenes, identities, listSubjects, applyPrivacyCommand,
   }
 }

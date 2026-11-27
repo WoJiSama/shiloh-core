@@ -12,8 +12,9 @@ import { createClient } from '@redis/client'
 import { WebSocketServer } from 'ws'
 import { agentHostModuleUrl, importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 
-const [{ createConversationMemoryStore }, { simulationAddressKey }] = await Promise.all([
+const [{ createConversationMemoryStore }, { simulationAddressKey }, { simulationSessionKey, SIMULATION_OVERRIDES_KEY }] = await Promise.all([
   load('modules/memory/infrastructure/conversationMemoryStore.js'), load('modules/simulation/infrastructure/simulationAddress.js'),
+  load('modules/simulation/infrastructure/simSessionStore.js'),
 ])
 
 const repo = fileURLToPath(new URL('../', import.meta.url))
@@ -49,6 +50,18 @@ async function waitFor(probe, description, timeoutMs = 8000) {
 function completion(content, usage = { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 }) {
   return JSON.stringify({ choices: [{ message: { content } }], usage })
 }
+function wakePromptIndex(body) {
+  return body.messages.findLastIndex(row => row.role === 'user' && typeof row.content === 'string' && row.content.includes('【唤醒原因】'))
+}
+function wakeContains(body, text) {
+  return body.messages[wakePromptIndex(body)]?.content.includes(text) === true
+}
+function finishReply(text, callId) {
+  const args = text ? { choice: 'chat', reason: '回复当前群消息', messages: [text] } : { choice: 'silent', reason: '本次回复已尝试' }
+  return JSON.stringify({ choices: [{ finish_reason: 'tool_calls', message: { role: 'assistant', content: '', tool_calls: [
+    { id: callId, type: 'function', function: { name: 'simFinishTurn', arguments: JSON.stringify(args) } },
+  ] } }], usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 } })
+}
 
 async function fixture(t, { instance, backend = true, enabled = true, cleanup = false, startupTimeoutMs = 8000 }) {
   const directory = await mkdtemp(path.join(tmpdir(), 'standalone-conversation-memory-'))
@@ -71,8 +84,11 @@ async function fixture(t, { instance, backend = true, enabled = true, cleanup = 
       }
       if (request.url === '/main/v1/chat/completions') {
         mainRequests.push({ epoch, auth: request.headers.authorization, body })
-        const text = body.messages.at(-1)?.content
-        response.end(completion(text === unknownProbe ? unknownReply : text === confirmedProbe ? confirmedReply : '嗯，安排已经收到。'))
+        assert.ok(body.tools?.some(tool => tool.function?.name === 'simFinishTurn'))
+        const attempted = body.messages.slice(wakePromptIndex(body) + 1).some(row => row.role === 'tool')
+        const reply = attempted ? undefined : wakeContains(body, confirmedProbe) ? confirmedReply :
+          wakeContains(body, unknownProbe) ? unknownReply : '嗯，安排已经收到。'
+        response.end(finishReply(reply, `summary-finish-${mainRequests.length}`))
         return
       }
       unexpected.push(request.url)
@@ -129,7 +145,7 @@ async function fixture(t, { instance, backend = true, enabled = true, cleanup = 
     episodicMemory: { enabled: true, proactiveEnabled: true },
     textGroups: [groupId, ...(cleanup ? [groupId + 1] : [])].map(id => ({ connectionId: 'qq-summary', conversationId: String(id) })),
     connections: [{ id: 'qq-summary', url: `ws://127.0.0.1:${port}/onebot`, accessTokenEnv: 'TEST_SUMMARY_ONEBOT_TOKEN' }],
-    simulation: { wake: { probability: 0, proactiveProbability: 0 }, reflection: { enabled: false },
+    simulation: { wake: { probability: 0, proactiveProbability: 0, batchWindowMs: 1000, maxWakePerMinute: 10 }, wakeGate: { enabled: false }, reflection: { enabled: false },
       rhythm: { enabled: false }, personProfile: { enabled: false }, turn: { minSendGapMs: 0 }, budget: { dailyCostCny: 0 } },
   }
   await writeFile(path.join(directory, 'agent-bindings.yaml'), JSON.stringify({
@@ -197,6 +213,16 @@ async function fixture(t, { instance, backend = true, enabled = true, cleanup = 
     bindings.bindings.push({ connectionId: 'qq-summary', kind: 'private', conversationId: String(userId), agentId: 'daily' })
     await writeFile(file, JSON.stringify(bindings))
   }
+  async function resumeWithSessionWake(messageId) {
+    assert.equal(child, undefined, 'stage the durable wake in the stopped fixture')
+    const group = simulationAddressKey(target), key = prefix + simulationSessionKey(group)
+    const saved = JSON.parse(await reader.get(key))
+    const source = saved.recent.find(row => row.messageId === String(messageId))
+    assert.ok(source)
+    await reader.multi().set(prefix + SIMULATION_OVERRIDES_KEY, JSON.stringify({ proactive: { [group]: true } }))
+      .set(key, JSON.stringify({ ...saved, unread: [source], recent: [source], lastReadThroughSeq: source.seq - 1,
+        queuedIngressWake: { kind: 'session', seq: source.seq } })).exec()
+  }
   async function feedSources() {
     for (const [index, text] of sourceTexts.entries()) send(text, 86101 + index)
     return await waitFor(async () => {
@@ -232,7 +258,7 @@ async function fixture(t, { instance, backend = true, enabled = true, cleanup = 
   return { start, stop, send, sendPrivate, disableForPrivateCleanup, rawStates,
     diagnostics() { return { log: completeLog, summaries: summaries.length, mainRequests: mainRequests.length, errors: fixtureErrors } },
     async rawCatalog() { return JSON.parse(await reader.get(`${prefix}agent:conversation-memory:v1:catalog`)) },
-    feedSources, state, check, ledgerRows, assertClean, mainRequests, summaries, deliveries,
+    feedSources, resumeWithSessionWake, state, check, ledgerRows, assertClean, mainRequests, summaries, deliveries,
     unknownNext() { unknownNext = true } }
 }
 
@@ -261,12 +287,14 @@ test('standalone uses its summary service after a real debounce, injects the res
 
   run.unknownNext()
   run.send(unknownProbe, 86105, { directed: true })
-  const ordinaryRequest = await waitFor(() => run.mainRequests.find(row => row.body.messages.at(-1).content === unknownProbe), 'ordinary group prompt after summarization')
-  assert.ok(ordinaryRequest.body.messages.some(row => row.content?.includes('【近期群聊主线】') && row.content.includes(digest)))
+  const ordinaryRequest = await waitFor(() => run.mainRequests.find(row => wakeContains(row.body, unknownProbe)), 'ordinary group prompt after summarization')
+  assert.ok(!ordinaryRequest.body.messages.some(row => row.content?.includes('【近期群聊主线】')),
+    'a directed turn keeps the context of its own source')
   await waitFor(() => run.deliveries.length === 1, 'unknown OneBot delivery without message id')
   assert.equal(run.deliveries[0].messageId, undefined)
   // A following real inbox item proves the preceding unknown delivery has completed.
-  run.send('处理顺序核验消息。', 86106)
+  const recall = '上次物资清单里提到了什么？'
+  run.send(recall, 86106, { authorId: userId + 1 })
   await waitFor(async () => (await run.state())?.records.some(row => row.messageId === '86106'), 'post-delivery inbox barrier')
   assert.deepEqual((await run.state()).episodes, [], 'no episode is created from an unknown delivery')
 
@@ -277,15 +305,18 @@ test('standalone uses its summary service after a real debounce, injects the res
   assert.equal(confirmed.source.botId, String(botId))
   assert.equal(confirmed.source.personaId, 'agent:daily')
   await run.stop()
+  await run.resumeWithSessionWake(86106)
   await run.start()
   assert.equal((await run.state()).summary.text, digest)
   assert.equal((await run.state()).episodes[0].id, confirmed.id)
-  const recall = '上次物资清单里提到了什么？'
-  run.send(recall, 86108, { directed: true, authorId: userId + 1 })
-  const recalled = await waitFor(() => run.mainRequests.find(row => row.epoch === 2 && row.body.messages.at(-1).content === recall), 'different group reader recalls confirmed episode')
+  let recalled
+  try {
+    recalled = await waitFor(() => run.mainRequests.find(row => row.epoch === 2 && wakeContains(row.body, recall)), 'restored session wake recalls confirmed history')
+  } catch (error) { assert.fail(`${error.message}; ${JSON.stringify(run.diagnostics())}`) }
+  assert.ok(recalled.body.messages.some(row => row.content?.includes('【近期群聊主线】') && row.content.includes(digest)))
   const episodeSection = recalled.body.messages.find(row => row.content?.includes('【近期情节】'))
-  assert.ok(episodeSection?.content.includes(confirmedReply), 'another author has no copied text history and receives the persisted episode')
-  assert.ok(!JSON.stringify(recalled.body.messages).includes(unknownReply))
+  assert.ok(episodeSection?.content.includes(confirmedReply), 'the session wake receives the persisted confirmed episode')
+  assert.ok(!episodeSection.content.includes(unknownReply), 'an unconfirmed tool attempt is never promoted to an episode')
   await waitFor(() => run.deliveries.length === 3, 'post-restart reply')
   await run.stop()
   assert.equal(run.summaries.length, 1)
@@ -316,7 +347,7 @@ test('standalone keeps local episodes when summary is disabled or its backend is
     run.send(confirmedProbe, 86107, { directed: true })
     await waitFor(async () => (await run.state())?.episodes.some(row => row.messageIds.includes('86107') && row.reply === confirmedReply), 'local episode without a summary backend')
     assert.equal(run.mainRequests.length, 1)
-    assert.equal(run.mainRequests[0].body.messages.at(-1).content, confirmedProbe)
+    assert.ok(wakeContains(run.mainRequests[0].body, confirmedProbe))
     assert.ok(!run.mainRequests[0].body.messages.some(row => row.content?.includes('【近期群聊主线】')))
     await run.stop()
     assert.equal((await run.ledgerRows()).rows.filter(row => row.stage === 'midterm-summary').length, 0)

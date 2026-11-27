@@ -82,6 +82,9 @@ export interface SendMessageBundleAction {
 }
 
 export interface MessageActionOptions {
+  readonly signal?: AbortSignal
+  /** Trusted Core hook to persist a scheduled dispatch after queueing and authorization. */
+  beforeDispatch?(): Promise<boolean>
   /** Await immediately before dispatch after any platform queue or resource staging. */
   ensureCurrent?(): Promise<void>
   /** Recheck synchronously immediately before transport, including after any adapter queue. */

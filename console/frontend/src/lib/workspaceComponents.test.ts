@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, shallowMount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterLink } from 'vue-router'
-import { NButton, NInput } from 'naive-ui'
+import { NButton, NDrawer, NInput } from 'naive-ui'
 import RobotScene from '../components/RobotScene.vue'
 import WorkspaceRobots from '../pages/WorkspaceRobots.vue'
 import WorkspaceRobot from '../pages/WorkspaceRobot.vue'
 import WorkspaceOverview from '../pages/WorkspaceOverview.vue'
+import WorkspaceConnections from '../pages/WorkspaceConnections.vue'
+import WorkspaceHub from '../pages/WorkspaceHub.vue'
 import WorkspaceShell from '../components/WorkspaceShell.vue'
 import StandaloneProfiles from '../components/StandaloneProfiles.vue'
 import StandalonePersonaConfig from '../components/StandalonePersonaConfig.vue'
@@ -120,6 +122,48 @@ function page(component: any, props = {}, plugins: any[] = []) {
   wrappers.push(wrapper)
   return wrapper
 }
+
+it('makes an offline QQ sign-in visible on the overview and updates when OneBot connects', async () => {
+  const snapshot = data()
+  const selected = snapshot.connections[0]
+  selected.state = 'disconnected'
+  selected.capabilities.push('qq.login')
+  for (const operation of ['qq-login.read', 'qq-login.refresh']) {
+    snapshot.capabilities.push({ operation, scope: 'global', effect: operation.endsWith('read') ? 'read' : 'write',
+      status: 'available', reason: '' })
+  }
+  workspace.data.value = snapshot
+  const path = `/api/connections/${selected.id}/qq-login/${selected.account.id}`
+  let state = 'login-required'
+  vi.mocked(api).mockImplementation(async (route, options) => {
+    if (route === '/api/workspace') return { ...snapshot, connections: snapshot.connections.map(
+      connection => connection === selected ? { ...connection, state: 'connected' } : connection) }
+    expect(route).toBe(path)
+    if (options?.method === 'POST') state = 'awaiting-scan'
+    return { accountId: selected.account.id, state, ...(state === 'awaiting-scan'
+      ? { qrImage: 'data:image/png;base64,aGVsbG8=', remainingMs: 100_000 } : {}) }
+  })
+  const wrapper = mount(WorkspaceOverview, { attachTo: document.body, global: { stubs: {
+    RouterLink: { template: '<a><slot /></a>' }, teleport: true,
+  } } })
+  wrappers.push(wrapper)
+  expect(wrapper.text()).toContain('QQ 连接已断开')
+  const scan = wrapper.findAll('button').find(button => button.text() === '扫码登录')
+  expect(scan).toBeDefined()
+  vi.useFakeTimers()
+  try {
+    await scan!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('img[alt="QQ 登录二维码"]').attributes('src')).toMatch(/^data:image\/png;base64,/)
+    expect(vi.mocked(api).mock.calls.filter(([route, options]) => route === path && options?.method === 'POST')).toHaveLength(1)
+    state = 'connected'
+    await vi.advanceTimersByTimeAsync(3000)
+    await flushPromises()
+    expect(workspace.data.value?.connections[0]?.state).toBe('connected')
+    expect(wrapper.text()).not.toContain('QQ 连接已断开')
+  } finally { vi.useRealTimers() }
+})
+
 beforeEach(() => {
   workspace.reset()
   workspace.mode.value = 'standalone'
@@ -145,6 +189,35 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 describe('robot workspace components', () => {
+  it('searches connections by conversation name and retains the full selector for equal group IDs', async () => {
+    const snapshot = data()
+    const first = snapshot.agents[0]!.conversations[0]!
+    const second = snapshot.agents[1]!.conversations[0]!
+    first.name = '周末桌游'
+    second.name = '晚间读书'
+    snapshot.connections[0]!.name = '希洛 QQ'
+    workspace.data.value = parseWorkspace(snapshot)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/connections', component: { template: '<div />' } },
+        { path: '/robots/:id/:tab', component: { template: '<div />' } }
+      ]
+    })
+    await router.push('/connections')
+    const wrapper = page(WorkspaceConnections, {}, [router])
+    expect(wrapper.text()).toContain('希洛 QQ')
+    expect(wrapper.text()).toContain('19001111')
+    expect(wrapper.text()).toContain('晚间读书（群聊 33001111）')
+    await wrapper.get('input[aria-label="搜索连接或会话"]').setValue(' 周末桌游 ')
+    const rows = wrapper.findAll('.workspace-list-row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.text()).toContain('周末桌游（群聊 33001111）')
+    const link = new URL(rows[0]!.get('a').attributes('href')!, 'http://console')
+    expect(link.pathname).toBe('/robots/alice/conversations')
+    expect(link.searchParams.get('scopeKey')).toBe(first.scopeKey)
+    expect(link.searchParams.get('bindingToken')).toBe(first.bindingToken)
+  })
   it('renders separate people sharing one template without inventing online or activity state', () => {
     const wrapper = page(WorkspaceRobots)
     expect(wrapper.findAll('.robot-card')).toHaveLength(2)
@@ -406,6 +479,27 @@ describe('robot workspace components', () => {
       scene().bindingToken
     )
   })
+  it('shows the interest update, source and unconfirmed share in the actions tab', async () => {
+    workspace.data.value!.capabilities.push({
+      operation: 'self-profile.read', scope: 'global', effect: 'read', status: 'available', reason: ''
+    })
+    const source = 'https://github.com/example/game', url = source + '/releases/tag/v2'
+    const at = Date.UTC(2026, 10, 21, 10)
+    vi.mocked(api).mockResolvedValue({ profiles: [], work: { goals: [], tools: [], followEnabled: true,
+      follows: [{ id: 'f1', title: '游戏版本', url: source, state: 'active', nextAt: at + 3600_000,
+        lastCheckedAt: at, failures: 0, latest: { text: '新版本修复了存档。', url, at } }],
+      actions: [{ id: 'a1', kind: 'follow-share', state: 'unknown', at, followId: 'f1' }]
+    } })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/robots/:id/:tab', component: WorkspaceRobot }] })
+    await router.push('/robots/alice/actions')
+    const wrapper = page(WorkspaceRobot, {}, [router])
+    await flushPromises()
+    expect(api).toHaveBeenCalledWith('/api/self-profile/alice', expect.anything())
+    expect(wrapper.text()).toContain('兴趣跟进')
+    expect(wrapper.text()).toContain('新版本修复了存档。')
+    expect(wrapper.get(`a[href="${url}"]`).text()).toBe('查看原公告')
+    expect(wrapper.text()).toContain('分享兴趣更新 · 待核实')
+  })
   it('restores scoped memory and trusteeship panels from URLs and clears panels on tab changes', async () => {
     const row = scene()
     workspace.data.value!.capabilities.push({
@@ -559,13 +653,42 @@ describe('robot workspace components', () => {
     wrappers.push(wrapper)
     expect(wrapper.find('.template-editor h2').text()).toBe('当前机器人的模板')
   })
-  it('keeps module navigation and search available and assigns observation details to runtime', async () => {
+  it('links the dice and game pages back to both entries on the feature overview', async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }]
+    })
+    await router.push('/commands')
+    const dice = page(ConsoleFeaturePage, { feature: 'commands' }, [router])
+    expect(dice.get('.feature-breadcrumb a').attributes('href')).toBe('/features')
+    expect(dice.get('.feature-breadcrumb a').text()).toContain('返回功能')
+
+    await router.push('/games')
+    const games = page(ConsoleFeaturePage, { feature: 'games' }, [router])
+    expect(games.get('.feature-breadcrumb a').attributes('href')).toBe('/features')
+    await games.get('.feature-breadcrumb a').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/features')
+
+    const hub = page(WorkspaceHub, { section: 'features' }, [router])
+    expect(hub.findAll('a.resource-card').map((link) => ({
+      name: link.get('h2').text(),
+      path: link.attributes('href')
+    }))).toEqual([
+      { name: '骰子', path: '/commands' },
+      { name: '游戏', path: '/games' }
+    ])
+  })
+  it('opens one section in the sidebar, follows routes, and keeps module search available', async () => {
     const snapshot = data()
     vi.mocked(api).mockResolvedValue(snapshot)
     vi.stubGlobal('__CONSOLE_BUILD__', { revision: 'test', at: '2026-11-18T00:00:00Z' })
     const router = createRouter({
       history: createMemoryHistory(),
-      routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }]
+      routes: [
+        { path: '/robots/:id/:tab?', component: { template: '<div />' } },
+        { path: '/:pathMatch(.*)*', component: { template: '<div />' } }
+      ]
     })
     await router.push('/observe/details')
     await router.isReady()
@@ -576,12 +699,38 @@ describe('robot workspace components', () => {
     })
     wrappers.push(shell)
     await flushPromises()
-    expect(shell.find('.navigation .active').text()).toBe('运行中心')
-    expect(shell.find('.workspace-subnav .active').text()).toBe('运行观测')
-    expect(shell.find('.workspace-subnav').text()).toContain('托付与承诺')
-    await router.push('/ai')
-    expect(shell.find('.workspace-subnav .active').text()).toBe('模型资源')
-    expect(shell.find('.workspace-subnav').text()).toContain('记忆检索')
+    const nav = shell.get('nav[aria-label="主导航"]')
+    const heading = (label: string) =>
+      nav.findAll('button').find((button) => button.text() === label)!
+    const links = (label: string) => nav.get('#' + heading(label).attributes('aria-controls'))
+    const collapsed = (label: string) => links(label).element.hasAttribute('inert')
+    const current = () => nav.get('a[aria-current="page"]').text()
+    expect(heading('运行中心').attributes('aria-expanded')).toBe('true')
+    expect(current()).toBe('运行观测')
+    expect(collapsed('运行中心')).toBe(false)
+    expect(collapsed('资源库')).toBe(true)
+    await heading('功能').trigger('click')
+    expect(router.currentRoute.value.path).toBe('/observe/details')
+    expect(collapsed('运行中心')).toBe(true)
+    expect(collapsed('功能')).toBe(false)
+    expect(links('功能').findAll('a').map((link) => link.text())).toEqual(['骰子', '游戏'])
+    await links('功能').get('a[href="/commands"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/commands')
+    expect(current()).toBe('骰子')
+    expect(shell.get('.breadcrumbs').text()).toContain('功能')
+    await links('功能').get('a[href="/games"]').trigger('click')
+    await flushPromises()
+    expect(current()).toBe('游戏')
+    await heading('功能').trigger('click')
+    expect(collapsed('功能')).toBe(true)
+    expect(router.currentRoute.value.path).toBe('/games')
+    await router.push('/ai/')
+    await flushPromises()
+    expect(current()).toBe('模型资源')
+    expect(collapsed('资源库')).toBe(false)
+    expect(links('资源库').text()).toContain('记忆检索')
+    expect(shell.find('.workspace-subnav').exists()).toBe(false)
     await shell.find('.search-trigger').trigger('click')
     await flushPromises()
     shell
@@ -593,9 +742,55 @@ describe('robot workspace components', () => {
     ;(document.querySelector('.search-results button') as HTMLButtonElement).click()
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/tokens')
+    expect(current()).toBe('模型用量')
+    expect(collapsed('运行中心')).toBe(false)
+    await router.push('/robots/alice/self?connection=19001111&panel=person-profiles')
+    await flushPromises()
+    expect(current()).toBe('人物记忆')
+    await heading('运行中心').trigger('click')
+    const trusteeship = links('运行中心')
+      .findAll('a')
+      .find((link) => link.text() === '托付与承诺')!
+    await trusteeship.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/robots/alice/actions')
+    expect(router.currentRoute.value.query).toEqual({
+      connection: '19001111',
+      panel: 'trusteeship'
+    })
+    expect(current()).toBe('托付与承诺')
+    expect(collapsed('运行中心')).toBe(false)
     const details = page(EmbeddedPage, {}, [router])
     expect(details.find('iframe').exists()).toBe(false)
     expect(details.text()).toContain('尚未提供完整运行明细')
+  })
+  it('dismisses the mobile menu when the already open page is selected', async () => {
+    vi.mocked(api).mockResolvedValue(data())
+    vi.stubGlobal('__CONSOLE_BUILD__', { revision: 'test', at: '2026-11-18T00:00:00Z' })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/commands', component: { template: '<div />' } },
+        { path: '/:pathMatch(.*)*', component: { template: '<div />' } }
+      ]
+    })
+    await router.push('/commands')
+    const shell = mount(WorkspaceShell, {
+      props: { appearance: 'light' },
+      attachTo: document.body,
+      global: { plugins: [router] }
+    })
+    wrappers.push(shell)
+    await shell.get('[aria-label="打开导航"]').trigger('click')
+    await flushPromises()
+    expect(shell.getComponent(NDrawer).props('show')).toBe(true)
+    const link = document.querySelector<HTMLAnchorElement>(
+      'nav[aria-label="移动主导航"] a[href="/commands"]'
+    )!
+    link.click()
+    await flushPromises()
+    expect(shell.getComponent(NDrawer).props('show')).toBe(false)
+    expect(router.currentRoute.value.path).toBe('/commands')
   })
 })
 function profile(row = scene(), text = '喜欢天文') {

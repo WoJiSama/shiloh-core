@@ -1,6 +1,6 @@
 import { ref, shallowRef } from 'vue'
 import { api } from './api'
-import { parseWorkspace, type ConsoleWorkspace, type WorkspaceCapability } from './workspaceModel'
+import { parseWorkspace, type ConsoleWorkspace, type WorkspaceCapability, type WorkspaceConnection } from './workspaceModel'
 import { consoleRestart } from './consoleRestart'
 
 export function createWorkspaceStore(
@@ -56,7 +56,7 @@ export const workspace = createWorkspaceStore(
 )
 export function capability(operation: string, scopeKey?: string): WorkspaceCapability {
   const item = workspace.data.value?.capabilities.find((item) => item.operation === operation)
-  if (consoleRestart.blocked.value && !['observe.read', 'pipeline.read'].includes(operation))
+  if (consoleRestart.blocked.value && !['observe.read', 'pipeline.read', 'host.readiness', 'host.restart'].includes(operation))
     return {
       operation,
       scope: item?.scope ?? 'global',
@@ -95,6 +95,10 @@ export function capability(operation: string, scopeKey?: string): WorkspaceCapab
         status: 'unavailable',
         reason: '当前宿主未提供这项能力。'
       }
+}
+export function canInspectQqLogin(connection: WorkspaceConnection) {
+  return connection.account.platform === 'qq' && connection.capabilities.includes('qq.login') &&
+    capability('qq-login.read').status === 'available'
 }
 export function configurationLabel() {
   if (consoleRestart.state.recoveryRequired || workspace.data.value?.configState.recoveryRequired)

@@ -7,6 +7,7 @@ import type { SimulationSection } from '../contracts/simulation.js'
 import type { TextPersonMemoryConfig } from '../contracts/textPersonMemory.js'
 import type { MidtermMemoryConfig, EpisodicMemoryConfig } from '../contracts/conversationMemory.js'
 import type { GroupMemoryConfig } from '../contracts/groupMemory.js'
+import { readAgentGroupPolicy } from '../modules/groupAdmin/domain/agentGroupPolicy.js'
 import type { AgentSemanticMemoryConfig } from '../contracts/semanticMemory.js'
 import type { AgentHistoryConfig } from '../contracts/agentHistory.js'
 import type { AgentDiceConfig } from '../contracts/agentDice.js'
@@ -57,9 +58,10 @@ function envName(value: unknown): string {
   return value
 }
 
-function readModel(value: unknown, section: 'model' | 'vision' | 'characterConsistency' | 'personMemoryExtraction' | 'midtermSummary' | 'groupMemoryExtraction' | 'textTriggerModel' | 'tools.search' | 'tools.images.generation' | 'tools.images.edit' | 'tools.modrinth.translation' | 'tools.rendering.mindMap', env: NodeJS.ProcessEnv, requireCredentials: boolean) {
+function readModel(value: unknown, section: ConsoleModelSlot | 'characterConsistency' | 'tools.search' | 'tools.images.generation' |
+  'tools.images.edit' | 'tools.modrinth.translation' | 'tools.rendering.mindMap', env: NodeJS.ProcessEnv, requireCredentials: boolean) {
   const model = object(value)
-  if (['characterConsistency', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction', 'textTriggerModel'].includes(section) && Object.keys(model).some(key => !['baseUrl', 'name', 'apiKeyEnv'].includes(key))) {
+  if (['developmentModel', 'characterConsistency', 'personMemoryExtraction', 'midtermSummary', 'groupMemoryExtraction', 'textTriggerModel'].includes(section) && Object.keys(model).some(key => !['baseUrl', 'name', 'apiKeyEnv'].includes(key))) {
     throw new Error(`${section} 仅支持 baseUrl、name 和 apiKeyEnv`)
   }
   let apiUrl: URL
@@ -124,16 +126,18 @@ interface StandaloneSemanticModel {
   apiKeyEnv: string
 }
 
-export interface StandaloneSemanticMemoryConfig extends Required<AgentSemanticMemoryConfig> {
+export interface StandaloneSemanticMemoryConfig extends Required<Omit<AgentSemanticMemoryConfig, 'groupOnly'>> {
+  groupOnly?: boolean
   embedding?: StandaloneSemanticModel
   rerank?: StandaloneSemanticModel
 }
 
 function readSemanticMemory(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: boolean): StandaloneSemanticMemoryConfig {
   const input = value === undefined ? {} : object(value)
-  const allowed = ['enabled', 'retentionDays', 'maxMessagesPerConversation', 'topK', 'minScore', 'timeoutMs', 'embedding', 'rerank']
+  const allowed = ['enabled', 'groupOnly', 'retentionDays', 'maxMessagesPerConversation', 'topK', 'minScore', 'timeoutMs', 'embedding', 'rerank']
   if (Object.keys(input).some(key => !allowed.includes(key))) throw new Error('semanticMemory 包含不支持的字段')
   if (input.enabled !== undefined && typeof input.enabled !== 'boolean') throw new Error('semanticMemory.enabled 必须是布尔值')
+  if (input.groupOnly !== undefined && typeof input.groupOnly !== 'boolean') throw new Error('semanticMemory.groupOnly 必须是布尔值')
   const enabled = input.enabled === true
   function integer(key: string, minimum: number, maximum: number, fallback: number): number {
     const value = input[key]
@@ -169,6 +173,7 @@ function readSemanticMemory(value: unknown, env: NodeJS.ProcessEnv, requireCrede
   if (enabled && !embedding) throw new Error('启用 semanticMemory.enabled 需要显式配置 embedding')
   return {
     enabled,
+    ...(input.groupOnly !== undefined ? { groupOnly: input.groupOnly } : {}),
     retentionDays: integer('retentionDays', 1, 90, 30),
     maxMessagesPerConversation: integer('maxMessagesPerConversation', 50, 2000, 1000),
     topK: integer('topK', 1, 10, 5), minScore,
@@ -524,6 +529,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   const instance = raw.instance
   const dataDir = path.resolve(directory, typeof raw.dataDir === 'string' && raw.dataDir ? raw.dataDir : `data/${instance}`)
   const games = readStandaloneGamesConfig(raw.games, { dataDir })
+  const groupPolicy = readAgentGroupPolicy(raw.groupAdmin)
   const logging = raw.logging === undefined ? {} : object(raw.logging)
   if (Object.keys(logging).some(key => !['maxFileBytes', 'maxFiles', 'retentionDays'].includes(key)) ||
       (['maxFileBytes', 'maxFiles', 'retentionDays'] as const).some((key, index) => logging[key] !== undefined &&
@@ -534,6 +540,8 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   const requireCredentials = options?.requireCredentials !== false
   const mainModel = readModel(raw.model, 'model', env, requireCredentials)
   const { apiUrl, model: modelName, apiKey, apiKeyEnv } = mainModel
+  const developmentModel = raw.developmentModel === undefined ? undefined
+    : readModel(raw.developmentModel, 'developmentModel', env, requireCredentials)
   const vision = raw.vision === undefined ? undefined : readModel(raw.vision, 'vision', env, requireCredentials)
   const personMemoryExtraction = raw.personMemoryExtraction === undefined ? undefined
     : readModel(raw.personMemoryExtraction, 'personMemoryExtraction', env, requireCredentials)
@@ -547,6 +555,10 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   const semanticMemory = readSemanticMemory(raw.semanticMemory, env, requireCredentials)
   const cognition = raw.cognition === undefined ? { enabled: false } : object(raw.cognition)
   if (Object.keys(cognition).some(key => key !== 'enabled') || typeof cognition.enabled !== 'boolean') throw new Error('cognition 仅支持布尔值 enabled')
+  const personalFollow = raw.personalFollow === undefined ? { enabled: true } : object(raw.personalFollow)
+  if (Object.keys(personalFollow).some(key => key !== 'enabled') || typeof personalFollow.enabled !== 'boolean') {
+    throw new Error('personalFollow 仅支持布尔值 enabled')
+  }
   const history = readHistory(raw.history)
   const dice = readDice(raw.dice)
   const textTrigger = resolveAgentTextTriggerConfig(raw.textTrigger)
@@ -572,6 +584,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     chatAiConfig: { chatApiUrl: apiUrl, chatApiModel: modelName, chatApiKey: apiKey,
       ...(mainModel.reasoningEffort ? { chatReasoningEffort: mainModel.reasoningEffort } : {}) },
     toolsAiConfig: { toolsAiUrl: apiUrl, toolsAiModel: modelName, toolsAiApikey: apiKey },
+    ...(developmentModel ? { taskAiConfig: { development: developmentModel } } : {}),
   }
   const hostConfig = decodeHostConfig({ ...(raw.simulation === undefined ? {} : { simulation: object(raw.simulation) }), persona: raw.persona, forbiddenWords: raw.forbiddenWords })
   const personaGuard: PersonaGuardConfig | undefined = raw.personaGuard === undefined ? undefined : object(raw.personaGuard)
@@ -638,17 +651,21 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     }
     return { ...endpoint, accessToken }
   })
+  if (consoleConfig.qqLogin.some(row => !connections.some(({ connection }) =>
+    connection.id === row.connectionId && connection.account.id === row.accountId))) {
+    throw new Error('console.qqLogin 的连接和 QQ 账号须与当前宿主绑定一致')
+  }
   const mediaRelay = readStandaloneMediaRelayConfig(raw.mediaRelay, connections.map(({ connection }) => connection), env, requireCredentials)
   const bilibiliQuality = readStandaloneBilibiliQualityConfig(raw.bilibiliQuality, connections.map(({ connection }) => connection))
-  if (tools.pixiv?.enabled && (mediaRelay.bridges.length !== connections.length || connections.some(({ connection }) => !mediaRelay.bridges.some(bridge => bridge.connectionId === connection.id)))) {
-    throw new Error('启用 tools.pixiv 需要为所有连接配置 mediaRelay.bridges')
+  if (tools.pixiv?.enabled && !mediaRelay.bridges.length) {
+    throw new Error('启用 tools.pixiv 需要配置 mediaRelay.bridges')
   }
-  if (bilibiliQuality.enabled && (mediaRelay.bridges.length !== connections.length || connections.some(({ connection }) => !mediaRelay.bridges.some(bridge => bridge.connectionId === connection.id)))) {
-    throw new Error('启用 bilibiliQuality 需要为所有连接配置 mediaRelay.bridges')
+  if (bilibiliQuality.enabled && !mediaRelay.bridges.length) {
+    throw new Error('启用 bilibiliQuality 需要配置 mediaRelay.bridges')
   }
   const videoSearchAttachments = tools.videoSearch?.enabled && tools.videoSearch.attachments === true
-  if (videoSearchAttachments && (mediaRelay.bridges.length !== connections.length || connections.some(({ connection }) => !mediaRelay.bridges.some(bridge => bridge.connectionId === connection.id)))) {
-    throw new Error('启用 tools.videoSearch.attachments 需要为所有连接配置 mediaRelay.bridges')
+  if (videoSearchAttachments && !mediaRelay.bridges.length) {
+    throw new Error('启用 tools.videoSearch.attachments 需要配置 mediaRelay.bridges')
   }
   const torrentDownload = readStandaloneTorrentConfig(raw.torrentDownload, connections.map(({ connection }) => connection))
   if ((mediaRelay.enabled || tools.pixiv?.enabled || bilibiliQuality.enabled || videoSearchAttachments) && torrentDownload.enabled && mediaRelay.bridges.some(media => torrentDownload.bridges.some(torrent =>
@@ -695,8 +712,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
       if (!count) continue
       resolveConfiguredAgentPersona(binding, library.detailById)
       if (target.kind === 'group') {
-        if (textGroups.has(conversationAddressKey(target))) count.textGroups++
-        else count.simulationGroups++
+        count.simulationGroups++
       } else if (target.kind === 'private') {
         count.friends++
       }
@@ -705,7 +721,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   }
   const forbiddenWords: ForbiddenConfig = hostConfig.forbiddenWords ?? {}
   const models: Partial<Record<ConsoleModelSlot, ConsoleModelView>> = {}
-  for (const [slot, selected] of [['model', mainModel], ['vision', vision], ['personMemoryExtraction', personMemoryExtraction],
+  for (const [slot, selected] of [['model', mainModel], ['developmentModel', developmentModel], ['vision', vision], ['personMemoryExtraction', personMemoryExtraction],
     ['midtermSummary', midtermSummary], ['groupMemoryExtraction', groupMemoryExtraction], ['textTriggerModel', textTriggerModel]] as const) {
     if (selected) models[slot] = Object.freeze({ baseUrl: selected.apiUrl, name: selected.model, apiKeyEnv: selected.apiKeyEnv, apiKeyConfigured: !!selected.apiKey })
   }
@@ -717,16 +733,21 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     const personaName = typeof selected.persona.name === 'string' && selected.persona.name.trim() ? selected.persona.name.trim() : personaId
     return Object.freeze({ id, name: personaName, personaId, personaName })
   }))
+  const personalSeeds = workspaceAgents.map(({ id, name, personaId }) => ({
+    id, name: name.replace(/\s+/gu, ' ').slice(0, 64),
+    identity: String(library.detailById(personaId)!.persona.identity ?? '').replace(/\s+/gu, ' ').trim().slice(0, 1000),
+  }))
   return { candidate, config: {
-    instance, dataDir, games, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, cognition: { enabled: cognition.enabled }, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords, featureSwitches,
+    instance, dataDir, games, groupPolicy, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, cognition: { enabled: cognition.enabled }, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, resolvePersona, checkBindings, forbiddenWords, featureSwitches,
     workspaceAgents,
+    personalSeeds,
+    personalFollow: { enabled: personalFollow.enabled },
     loadedBindings: Object.freeze([...bindings.listBindings()]),
     listBindings: () => readBindings()?.listBindings() ?? [],
     hasMusicGroup(account: ConversationAddress['account']) {
-      if (simulation.enabled === false) return false
       return readBindings()?.listBindings().some(binding => binding.target.kind === 'group' &&
         binding.target.account.platform === account.platform && binding.target.account.namespace === account.namespace && binding.target.account.id === account.id &&
-        !textGroups.has(conversationAddressKey(binding.target)) && !!resolvePersona(binding.target)) === true
+        !!resolvePersona(binding.target)) === true
     },
     ...(personMemoryExtraction ? { personMemoryExtraction } : {}),
     ...(midtermSummary ? { midtermSummary } : {}),
@@ -734,7 +755,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     ...(reviewEnabled && reviewModel ? { characterConsistency: { apiUrl: reviewModel.apiUrl, model: reviewModel.model, apiKey: reviewModel.apiKey } } : {}),
     isConfigCurrent: input.isConfigCurrent ?? (() => true),
     ...(textGroupRevision ? {
-      useTextGroup: (target: ConversationAddress) => textGroups.has(conversationAddressKey(target)),
+      migratedGroupToolNames: (target: ConversationAddress) => textGroups.get(conversationAddressKey(target)),
       groupTextTools: (target: ConversationAddress) => textGroups.get(conversationAddressKey(target)) ?? [],
       textGroupRevision,
     } : {}),

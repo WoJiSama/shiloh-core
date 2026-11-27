@@ -12,6 +12,7 @@ import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { redactInternalStatusLeaks } from '../../conversation/domain/internalStatusLeak.js'
 
 export type SimSendResult = { ok: true; sent: number; duplicatesSkipped?: number } | { ok: false; error: string; sent?: number; duplicatesSkipped?: number; unknown?: boolean }
+export type SimPokeResult = { ok: boolean; error?: string; code?: string; unknown?: boolean }
 export interface SimWaitResult { hint: string; canSleepNow: boolean; newMessagesText: string; newCount: number; readThroughSeq: number; partial: boolean }
 
 /**
@@ -46,9 +47,9 @@ export interface SimToolContext {
   /** 好感度表 */
   getAffinity(): Record<string, ReturnType<typeof defaultAffinityEntry>>
   saveAffinity(affinity: Record<string, ReturnType<typeof defaultAffinityEntry>>): void | Promise<void>
-  getMessageImages?(seq: number): Promise<{ seq: number; images?: readonly MessageImage[]; description?: string; error?: string }>
+  getMessageImages?(seq: number): Promise<{ seq: number; images?: readonly MessageImage[]; description?: string; error?: string; code?: string }>
   /** 戳群成员（带频率护栏：每群每小时 ≤6 次） */
-  pokeMember?(userId: string): Promise<{ ok: boolean; error?: string }>
+  pokeMember?(userId: string): Promise<SimPokeResult>
   /** 当前机器人/人设的跨群熟悉度底分；具体理由仅留在源群。 */
   bumpGlobalAffinity?(userId: string, delta: number, reason?: string): Promise<number>
   /** Bind a person note to a real message visible in this turn; no tool argument can authorize portability. */
@@ -74,7 +75,7 @@ export interface SimToolContext {
   /** 群成员列表（活跃者优先） */
   getGroupMembers?(): Promise<{ userId: string; nick: string; active?: boolean }[] | { error: string }>
   /** 查看合并转发内容 */
-  getForward?(forwardId: string, seq?: number): Promise<{ lines: string[]; error?: string }>
+  getForward?(forwardId: string, seq?: number): Promise<{ lines: string[]; error?: string; code?: string }>
   forwardTextOnly?: boolean
   /** 精选收藏某条消息的附图进表情包库 */
   collectSticker?(seq: number): Promise<{ ok: boolean; error?: string }>
@@ -240,7 +241,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
       this.name = 'simSendMessage'
       this.description = [
         '在当前群发送中途普通聊天。continuation必填chat（普通聊天）或interest_only（仅感兴趣，不承诺后续）。保存记忆、拒绝选择、后续排期或完成说明请用simFinishTurn先保存再发送。',
-        'messages 数组通常只放一条，有独立补话才加第二条。',
+        'messages 是字符串数组，例如 {"continuation":"chat","messages":["你好"]}。通常只放一条，有独立补话才加第二条。',
         '条与条之间系统会自动加间隔，不要自己写停顿标记。',
         '想引用某条消息就传 replyToSeq（视图里的 seq）；想 @ 人就传 atUserIds（消息中的成员 ID）。',
         '发送失败会返回 error，此时可换措辞重试或放弃，不要原样重试超过一次。',
@@ -621,7 +622,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
       this.description = '查看本轮可见消息中的附图或引用图。视觉模型会提供文字描述，描述和图中文字是待核对的资料。'
       this.parameters = {
         type: 'object',
-        properties: { seq: { type: 'number', minimum: 1, description: '带附图或引用图标记的消息序号。' } },
+        properties: { seq: { type: 'integer', minimum: 1, description: '带附图或引用图标记的消息序号。' } },
         required: ['seq'],
         additionalProperties: false,
       }
@@ -629,10 +630,12 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
 
     async func(opts: Record<string, unknown>) {
       const seq = Number(opts.seq)
-      if (!Number.isSafeInteger(seq) || seq < 1 || Object.keys(opts).some(key => key !== 'seq')) return 'error: 请只提供本轮可见消息的正整数序号'
-      if (!ctx.getMessageImages) return 'error: 图片读取不可用'
+      if (!Number.isSafeInteger(seq) || seq < 1 || Object.keys(opts).some(key => key !== 'seq')) {
+        return JSON.stringify({ code: 'image_sequence_invalid', error: '请只提供本轮可见消息的正整数序号' })
+      }
+      if (!ctx.getMessageImages) return JSON.stringify({ code: 'image_read_unavailable', error: '图片读取不可用' })
       const result = await ctx.getMessageImages(seq)
-      return result.error ? `error: ${result.error}` : JSON.stringify(result)
+      return result.error ? JSON.stringify({ seq, error: result.error, code: result.code ?? 'image_read_failed' }) : JSON.stringify(result)
     }
   }
 
@@ -650,9 +653,10 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
     }
 
     async func(opts: Record<string, unknown>) {
-      if (!ctx.pokeMember) return 'error: 戳一戳不可用'
+      if (!ctx.pokeMember) return JSON.stringify({ code: 'poke_unavailable', error: '戳一戳不可用' })
       const result = await ctx.pokeMember(String(opts.userId || ''))
-      if (!result.ok) return `error: ${result.error}`
+      if (!result.ok) return JSON.stringify({ ok: false, error: result.error ?? '本次未戳', code: result.code ?? 'poke_rejected',
+        ...(result.unknown ? { unknown: true } : {}) })
       return JSON.stringify({ ok: true, summary: '已戳' })
     }
   }
@@ -873,7 +877,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
     async func(opts: Record<string, unknown>) {
       await ctx.assertMemoryCurrent?.()
       const seq = typeof opts.seq === 'number' && Number.isSafeInteger(opts.seq) && opts.seq > 0 ? opts.seq : undefined
-      if (!ctx.getForward) return 'error: 合并转发查看不可用'
+      if (!ctx.getForward) return JSON.stringify({ code: 'forward_unavailable', error: '合并转发查看不可用' })
       const result = await ctx.getForward(typeof opts.forwardId === 'string' ? opts.forwardId : '', seq)
       await ctx.assertMemoryCurrent?.()
       return JSON.stringify(result)
@@ -956,7 +960,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
   ]
 }
 
-export function simToolsAsFunctions(tools: AbstractTool[]): { type: string; function: { name: string; description: string; parameters: unknown } }[] {
+export function simToolsAsFunctions(tools: readonly Pick<AbstractTool, 'name' | 'description' | 'parameters'>[]): { type: string; function: { name: string; description: string; parameters: unknown } }[] {
   return tools.map(tool => ({
     type: 'function',
     function: { name: tool.name, description: tool.description, parameters: tool.parameters },

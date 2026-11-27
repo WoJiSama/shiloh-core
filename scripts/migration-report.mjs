@@ -388,7 +388,7 @@ export const bootstrapEntries = [
   // Reviewed 17fef9a against 5acd1ee: only four fixed, sanitized legacy-memory
   // diagnostics were added. Artifact verification and main(argv) delegation stay
   // here; command validation and migration remain in src/bootstrap TypeScript.
-  { legacy: 'scripts/start-agent.mjs', kind: 'composition', reason: 'Artifact-verified standalone Agent entry, committed configuration restart, and fixed sanitized startup diagnostics', reviewedSha256: '34d6f80b9e7c333521287d5060dcd57ef50e6f6408fd6bd80e898e260762d59b' },
+  { legacy: 'scripts/start-agent.mjs', kind: 'composition', reason: 'Artifact-verified standalone Agent entry, committed configuration restart, and fixed sanitized startup diagnostics', reviewedSha256: 'e3268ecd7878d3e42e19305720a1de38d0470ba63514609420291ef75adc816d' },
   {
     "legacy": "guoba.support.js",
     "kind": "composition",

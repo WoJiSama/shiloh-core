@@ -115,6 +115,7 @@ export interface AgentConsoleService {
 /** Existing non-proxy operations. The standalone host supplies real handlers or leaves them explicitly unavailable. */
 export const AGENT_CONSOLE_SERVICES: readonly AgentConsoleService[] = Object.freeze([
   ['GET', '/api/workspace', 'workspace.read'],
+  ['GET', '/api/self-profile/:agentId', 'self-profile.read'],
   ['GET', '/api/overview', 'overview.read'],
   ['GET', '/api/overview/accounts', 'accounts.read'],
   ['GET', '/api/overview/stats', 'stats.read'],
@@ -122,6 +123,9 @@ export const AGENT_CONSOLE_SERVICES: readonly AgentConsoleService[] = Object.fre
   ['GET', '/api/apps', 'apps.read'],
   ['POST', '/api/accounts/action', 'accounts.action'],
   ['POST', '/api/accounts/add', 'accounts.add'],
+  ['GET', '/api/accounts/managed', 'accounts.managed'],
+  ['GET', '/api/connections/:connectionId/qq-login/:accountId', 'qq-login.read'],
+  ['POST', '/api/connections/:connectionId/qq-login/:accountId', 'qq-login.refresh'],
   ['GET', '/api/bot/stats', 'bot-stats.read'],
   ['GET', '/api/groups', 'groups.read'],
   ['GET', '/api/identities', 'identities.read'],
@@ -129,6 +133,8 @@ export const AGENT_CONSOLE_SERVICES: readonly AgentConsoleService[] = Object.fre
   ['GET', '/api/config/:kind', 'config.read'],
   ['PUT', '/api/config/:kind', 'config.write'],
   ['GET', '/api/config-state', 'config-state.read'],
+  ['GET', '/api/host/readiness', 'host.readiness'],
+  ['POST', '/api/host/restart', 'host.restart'],
   ['GET', '/api/configuration/catalog', 'configuration.read'],
   ['POST', '/api/configuration/preview', 'configuration.preview'],
   ['POST', '/api/configuration/commit', 'configuration.commit'],
@@ -154,6 +160,9 @@ export const AGENT_CONSOLE_SERVICES: readonly AgentConsoleService[] = Object.fre
   ['GET', '/api/style/overview', 'style.read'],
   ['POST', '/api/style/block-word', 'style.block-word', 'conversation'],
   ['POST', '/api/style/remove-rule', 'style.remove-rule'],
+  ['GET', '/api/semantic', 'semantic.read'],
+  ['GET', '/api/semantic/records', 'semantic.records', 'conversation'],
+  ['GET', '/api/semantic/recall', 'semantic.recall', 'conversation'],
   ['GET', '/api/tokens/summary', 'tokens.summary'],
   ['GET', '/api/tokens/series', 'tokens.series'],
   ['GET', '/api/tokens/recent', 'tokens.recent'],
@@ -172,22 +181,23 @@ export const AGENT_CONSOLE_SERVICES: readonly AgentConsoleService[] = Object.fre
   ['GET', '/api/health/alerts', 'health.read'],
   ['GET', '/api/life/overview', 'life.read'],
   ['POST', '/api/life/rhythm', 'life.rhythm'],
-  ['GET', '/api/games/turtle-soup/overview', 'turtle-soup.read'],
-  ['GET', '/api/games/turtle-soup/candidates', 'turtle-soup.candidates'],
-  ['GET', '/api/games/turtle-soup/rejected', 'turtle-soup.rejected'],
-  ['POST', '/api/games/turtle-soup/puzzles/:id/audit', 'turtle-soup.audit'],
-  ['PUT', '/api/games/turtle-soup/puzzles/:id/status', 'turtle-soup.status'],
-  ['POST', '/api/games/turtle-soup/generate', 'turtle-soup.generate'],
-  ['POST', '/api/games/turtle-soup/puzzles/:id/repair', 'turtle-soup.repair'],
-  ['POST', '/api/games/turtle-soup/candidates/:id/recover', 'turtle-soup.recover'],
-  ['POST', '/api/games/turtle-soup/puzzles/:id/score', 'turtle-soup.score'],
-  ['DELETE', '/api/games/turtle-soup/puzzles/:id', 'turtle-soup.delete'],
+  ['GET', '/api/games/turtle-soup/overview', 'turtle-soup.read', 'conversation'],
+  ['GET', '/api/games/turtle-soup/candidates', 'turtle-soup.candidates', 'conversation'],
+  ['GET', '/api/games/turtle-soup/rejected', 'turtle-soup.rejected', 'conversation'],
+  ['POST', '/api/games/turtle-soup/puzzles/:id/audit', 'turtle-soup.audit', 'conversation'],
+  ['PUT', '/api/games/turtle-soup/puzzles/:id/status', 'turtle-soup.status', 'conversation'],
+  ['POST', '/api/games/turtle-soup/generate', 'turtle-soup.generate', 'conversation'],
+  ['POST', '/api/games/turtle-soup/puzzles/:id/repair', 'turtle-soup.repair', 'conversation'],
+  ['POST', '/api/games/turtle-soup/candidates/:id/recover', 'turtle-soup.recover', 'conversation'],
+  ['POST', '/api/games/turtle-soup/puzzles/:id/score', 'turtle-soup.score', 'conversation'],
+  ['DELETE', '/api/games/turtle-soup/puzzles/:id/score', 'turtle-soup.score-clear', 'conversation'],
+  ['DELETE', '/api/games/turtle-soup/puzzles/:id', 'turtle-soup.delete', 'conversation'],
   // These API shapes are retained; the standalone host must supply its own account/policy services.
   ['GET', '/api/qzone/bots', 'qzone.accounts'],
   ['POST', '/api/qzone/publish', 'qzone.publish'],
 ].map(([method, servicePath, operation, scope, body]) => Object.freeze({
   method: method as AgentConsoleMethod, path: servicePath!, operation: operation!, scope: (scope ?? 'global') as 'global' | 'conversation',
-  ...(body ? { body: body as 'bytes', maxBodyBytes: 20 * 1024 * 1024 } : {}),
+  ...(body ? { body: body as 'bytes', maxBodyBytes: 60 * 1024 * 1024 } : {}),
 })))
 
 export interface AgentConsolePorts {
@@ -201,6 +211,8 @@ export interface AgentConsolePorts {
   readonly authority: { readonly signal: AbortSignal; isCurrent(): boolean }
   /** Execution configuration retirement must not terminate authentication or its own committed response. */
   readonly execution?: { readonly signal: AbortSignal; isCurrent(): boolean }
+  /** A managed supervisor starts the next process after an accepted restart response. */
+  requestRestart?(): void
   readonly commits?: AgentConsoleCommitPort
   /** Reuse the host's credential filter. Returning false suppresses the entire response. */
   allowsResponse(body: string | Uint8Array, contentType: string): boolean

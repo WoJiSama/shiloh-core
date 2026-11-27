@@ -69,8 +69,8 @@ function syncDirectory(name: string) {
     fs.fsyncSync(fd)
   } finally { fs.closeSync(fd) }
 }
-function artifact(value: BigIntStats, bytes: Buffer): Artifact {
-  return { dev: String(value.dev), ino: String(value.ino), size: String(value.size), mtime: String(value.mtimeNs), mode: String(value.mode), uid: String(value.uid), hash: digest(bytes) }
+function artifact(value: BigIntStats, hash: string): Artifact {
+  return { dev: String(value.dev), ino: String(value.ino), size: String(value.size), mtime: String(value.mtimeNs), mode: String(value.mode), uid: String(value.uid), hash }
 }
 function same(left: Artifact, right: Artifact) { return JSON.stringify(left) === JSON.stringify(right) }
 function readState(name: string, optional = false, links = 1n, limit = maximum): FileState | null {
@@ -80,8 +80,10 @@ function readState(name: string, optional = false, links = 1n, limit = maximum):
     const before = fs.fstatSync(fd, { bigint: true })
     if (!before.isFile() || before.uid !== BigInt(process.getuid!()) || before.nlink < 1n || before.nlink > links || before.size > BigInt(limit) || (before.mode & 0o022n) !== 0n || !identity(before, stat(name))) return fail('unavailable')
     const bytes = fs.readFileSync(fd), after = fs.fstatSync(fd, { bigint: true }), source = bytes.toString('utf8')
-    if (!Buffer.from(source).equals(bytes) || !same(artifact(before, bytes), artifact(after, bytes)) || before.ctimeNs !== after.ctimeNs || !identity(after, stat(name))) return fail()
-    return { source, artifact: artifact(after, bytes), version: digest([after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs].join(':') + '\0' + source) }
+    if (bytes.length !== Number(after.size) || !Buffer.from(source).equals(bytes) || !identity(before, after) ||
+        before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs ||
+        before.mode !== after.mode || before.uid !== after.uid || !identity(after, stat(name))) return fail()
+    return { source, artifact: artifact(after, digest(bytes)), version: digest([after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs].join(':') + '\0' + source) }
   } catch (error) { if (optional && absent(error)) return null; if (error instanceof AgentConsoleError) throw error; return fail('unavailable') }
   finally { if (fd !== undefined) fs.closeSync(fd) }
 }

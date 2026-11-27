@@ -5,6 +5,7 @@ import { createAgentBindingDirectory, createAgentRuntime } from '../dist/backend
 import { agentBindingToken, conversationAddressKey, platformAccountKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
 import { createAgentInbox } from '../dist/backend/modules/runtime/infrastructure/agentInbox.js'
 import { createAgentInboxDispatch } from '../dist/backend/modules/runtime/application/agentInboxDispatch.js'
+import { createAgentDiagnostics } from '../dist/backend/modules/runtime/infrastructure/agentDiagnostics.js'
 import { simulationAddressKey } from '../dist/backend/modules/simulation/infrastructure/simulationAddress.js'
 import { simulationSessionKey } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
@@ -248,5 +249,68 @@ test('Core ingests independent accounts while a quoted message stalls another ac
   } finally {
     release.resolve()
     await Promise.allSettled([starting, host.stop()])
+  }
+})
+
+test('only sustained semantic storage inactivity triggers a retry and the original stays queued', { ...redisTest, timeout: 25_000 }, async t => {
+  const { reader, storage, prefix, isCurrent } = await createAgentRedisFixture(t, 'agent-inbox-semantic-timeout')
+  const directory = createAgentBindingDirectory({ version: 1, agents: [{ id: 'fixture', personaId: 'default' }],
+    connections: [{ id: 'fixture', platform: first.account.platform, namespace: first.account.namespace, accountId: first.account.id }],
+    bindings: [{ connectionId: 'fixture', kind: first.kind, conversationId: first.id, agentId: 'fixture' }],
+  }, 'inbox-semantic-timeout')
+  const binding = directory.resolve(first)
+  const stalled = deferred(), release = deferred(), failed = Promise.withResolvers()
+  const failures = []
+  const logger = { info() {}, warn() {}, error() {} }
+  const diagnostics = createAgentDiagnostics({ logger, onFailure(event) {
+    if (event.operation === 'consume_simulation') { failures.push(event); failed.resolve(event) }
+  } })
+  let accept, held = false
+  const host = createAgentRuntime({
+    storage, isExecutionCurrent: isCurrent, logger, diagnostics,
+    semanticMemory: { enabled: true },
+    semanticMemoryBackend: { id: 'a'.repeat(64), async embed(texts) { return texts.map(() => [1, 0]) } },
+    semanticRedis: { ...storage, async eval(script, input) {
+      if (!held && script.startsWith('return {redis.call') && input.keys[1]?.startsWith('agent:semantic-memory:v1:state:')) {
+        held = true
+        stalled.resolve()
+        await release.promise
+      }
+      return storage.eval(script, input)
+    } },
+    adapters: [{
+      id: 'fixture', account: first.account, botUserId: first.account.id, botName: 'fixture',
+      async start(handler) { accept = handler }, stop() {}, isReady: () => Boolean(accept),
+      actions: { async send() { assert.fail('test only ingests a message') } },
+    }],
+    getSection: () => ({ wake: { batchWindowMs: 60_000 }, reflection: { enabled: false }, rhythm: { enabled: false } }),
+    getExecutionConfig: () => ({}),
+    resolvePersona: target => {
+      const selected = directory.resolve(target)
+      return selected && { binding: selected, persona: { name: 'fixture' }, systemContent: '' }
+    },
+    YTapi: async () => ({ choices: [] }),
+  })
+  const item = message(first, 'slow-semantic-save', 'synthetic message for inbox retry')
+  item.directedToAccount = false
+  try {
+    await host.start()
+    await accept({ kind: 'message', message: item })
+    await stalled.promise
+    await delay(5250)
+    assert.deepEqual(failures, [], 'the old five-second total deadline must not abort a pending save')
+    const failure = await failed.promise
+    assert.equal(failure.code, 'semantic_capture_save_timeout')
+    assert.deepEqual(failure.scope, { kind: 'conversation', binding, messageId: item.messageId })
+    assert.ok(failure.durationMs >= 14_900)
+    const key = prefix + simulationKey(first)
+    assert.equal(await reader.lLen(key), 1)
+    release.resolve()
+    await waitFor(async () => await reader.lLen(key) === 0, 'semantic inbox retry acknowledgement')
+    const session = JSON.parse(await storage.get(simulationSessionKey(simulationAddressKey(first))))
+    assert.deepEqual(session.recent.map(row => row.messageId), [item.messageId])
+  } finally {
+    release.resolve()
+    await host.stop()
   }
 })

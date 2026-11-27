@@ -2,6 +2,7 @@
 import type {DelegatedMemoryEntry,DelegatedMemoryPorts} from '../../../contracts/delegatedMemory.js'
 import type {AgentConversationScope} from '../../../contracts/agentBinding.js'
 import {agentConversationKey,decodeAgentConversationKey} from '../../runtime/domain/agentBindings.js'
+import {reportAgentFailure,type AgentDiagnostics} from '../../runtime/infrastructure/agentDiagnostics.js'
 import {normalizeDelegatedEntries} from '../domain/delegatedMemory.js'
 import type {AgentSourceMemoryCleanupGuard,AgentSourceMemoryPurgeSubject} from '../../../contracts/sourceMemoryCleanup.js'
 import {conversationCleanupMatchesScope,filterConversationCleanupRows,parseConversationCleanup} from './conversationMemoryCleanup.js'
@@ -55,7 +56,7 @@ export function delegatedMemoryScopeFromKey(key:string):MemoryScope | null {
   }
 }
 
-export function createDelegatedMemoryStore(ports:DelegatedMemoryPorts) {
+export function createDelegatedMemoryStore(ports:DelegatedMemoryPorts & { diagnostics?: Pick<AgentDiagnostics, 'emit'> }) {
   const now=ports.now ?? Date.now
   async function snapshot(scope:MemoryScope){
     if(typeof scope==='string')return {raw:await ports.redis.get(delegatedMemoryStorageKey(scope)),fenceRaw:null,fences:parseConversationCleanup(null)}
@@ -85,8 +86,9 @@ export function createDelegatedMemoryStore(ports:DelegatedMemoryPorts) {
     try{
       const parsed:unknown=JSON.parse(raw)
       return filtered(scope,normalizeDelegatedEntries(Array.isArray(parsed)?parsed:[],now()),saved.fences)
-    }catch{
-      ports.logger.warn(`[委托记忆] 群 ${typeof scope === 'string' ? scope : scope.target.id} 数据损坏，按空处理`)
+    }catch(error){
+      reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'delegated_memory_load', code: 'delegated_memory_decode_failed', error },
+        () => ports.logger.warn(`[委托记忆] 群 ${typeof scope === 'string' ? scope : scope.target.id} 数据损坏，按空处理`))
       return []
     }
   }

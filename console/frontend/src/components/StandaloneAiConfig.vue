@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { NAlert, NInput, NTab, NTabs, NTag } from 'naive-ui'
+import { NAlert, NButton, NInput, NSpace, NTab, NTabs, NTag } from 'naive-ui'
 import { api } from '../lib/api'
 import { consoleRestart, type ConfigSaveResult } from '../lib/consoleRestart'
 import type { StandaloneAiView, StandaloneModel } from '../lib/standaloneConfig'
 import { clone, equal } from '../lib/schemaState'
+import { modelGuidance } from '../lib/modelGuidance'
 import { useUnsavedGuard } from '../composables/useUnsavedGuard'
+import ModelGuidance from './ModelGuidance.vue'
 import SaveBar from './SaveBar.vue'
 const restartBlocked = consoleRestart.blocked
 const props = defineProps<{ initial: StandaloneAiView }>()
@@ -17,13 +19,31 @@ const saving = ref(false),
   error = ref(''),
   saved = ref('')
 let request: AbortController | undefined
+let probeRequest: AbortController | undefined
+const probeState = ref<Record<string, { loading: boolean; detail?: string; ok?: boolean }>>({})
 const provider = computed(() => drafts.value[active.value]?.[0])
+const selected = computed(() => view.value.definitions.find(item => item.configKey === active.value))
+const guidance = computed(() => modelGuidance[active.value])
+const fallback = computed(() => {
+  const key = selected.value?.fallbackConfigKey
+  return key ? baseline.value[key]?.[0] : undefined
+})
+const savedProvider = computed(() => baseline.value[active.value]?.[0])
+const effectiveProvider = computed(() => savedProvider.value ?? fallback.value)
+const activeProbe = computed(() => probeState.value[active.value])
+const canProbeDraft = computed(() => {
+  const saved = effectiveProvider.value, draft = provider.value
+  if (!saved || !draft) return false
+  try { return new URL(draft.baseUrl).href === new URL(saved.baseUrl).href && draft.apiKeyEnv === saved.apiKeyEnv }
+  catch { return false }
+})
 const dirty = computed(() =>
   equal(drafts.value[active.value], baseline.value[active.value]) ? 0 : 1
 )
 const anyDirty = computed(() => !equal(drafts.value, baseline.value))
 const validation = computed(() => {
   const item = provider.value
+  if (fallback.value && drafts.value[active.value]?.length === 0) return ''
   if (!item || drafts.value[active.value].length !== 1) return '此槽位需要一个模型配置'
   try {
     const url = new URL(item.baseUrl)
@@ -43,6 +63,10 @@ const validation = computed(() => {
   return ''
 })
 useUnsavedGuard(() => anyDirty.value || saving.value)
+function configureSeparateModel() {
+  const model = effectiveProvider.value
+  if (model) drafts.value[active.value] = [clone(model)]
+}
 function apply(next: StandaloneAiView, submitted?: Record<string, StandaloneModel[]>) {
   const previous = submitted || baseline.value
   const local = drafts.value
@@ -56,6 +80,30 @@ function apply(next: StandaloneAiView, submitted?: Record<string, StandaloneMode
   view.value = clone(next)
   if (!next.definitions.some((item) => item.configKey === active.value))
     active.value = next.definitions[0]?.configKey || ''
+}
+async function probe(draft: boolean) {
+  const key = active.value, model = draft ? provider.value : effectiveProvider.value
+  if (!model || probeRequest || restartBlocked.value || (draft && (!canProbeDraft.value || validation.value))) return
+  const controller = new AbortController()
+  probeRequest = controller
+  probeState.value[key] = { loading: true }
+  try {
+    const response = await api<{ results: { name: string; ok: boolean; ms: number; detail: string }[] }>(
+      draft ? '/api/ai/probe-provider' : '/api/ai/probe', {
+        method: 'POST', signal: controller.signal,
+        body: JSON.stringify({ configKey: key, ...(draft ? { provider: {
+          baseUrl: model.baseUrl, name: model.name.trim(), apiKeyEnv: model.apiKeyEnv
+        } } : {}) })
+      })
+    const result = response.results[0]
+    probeState.value[key] = result
+      ? { loading: false, ok: result.ok, detail: `${result.name} · ${result.detail} · ${result.ms} ms` }
+      : { loading: false, ok: false, detail: '未收到测试结果' }
+  } catch (cause: any) {
+    if (cause.name !== 'AbortError') probeState.value[key] = { loading: false, ok: false, detail: cause.message || '测试失败' }
+  } finally {
+    probeRequest = undefined
+  }
 }
 async function save() {
   if (!dirty.value || saving.value || consoleRestart.blocked.value || validation.value) return
@@ -102,7 +150,7 @@ watch(
     }
   }
 )
-onBeforeUnmount(() => request?.abort())
+onBeforeUnmount(() => { request?.abort(); probeRequest?.abort() })
 </script>
 <template>
   <div class="page-stack standalone-ai-config" :inert="restartBlocked">
@@ -114,18 +162,43 @@ onBeforeUnmount(() => request?.abort())
         item.title
       }}</NTab></NTabs
     >
-    <section v-if="provider" class="panel standalone-model">
+    <section v-if="selected" class="panel standalone-model">
       <div class="panel-heading">
-        <h2>{{ view.definitions.find((item) => item.configKey === active)?.title }}</h2>
-        <NTag :type="provider.apiKeyConfigured ? 'success' : 'warning'">{{
-          provider.apiKeyConfigured ? '凭据已配置' : '凭据尚未配置'
-        }}</NTag>
+        <h2>{{ selected.title }}</h2>
+        <NSpace align="center">
+          <NTag v-if="fallback && !savedProvider">沿用主对话</NTag>
+          <NTag v-else-if="savedProvider" :type="savedProvider.apiKeyConfigured ? 'success' : 'warning'">{{
+            savedProvider.apiKeyConfigured ? '凭据已配置' : '凭据尚未配置'
+          }}</NTag>
+          <template v-if="fallback">
+            <NButton v-if="provider" size="small" :disabled="restartBlocked || saving"
+              @click="drafts[active] = []">改用主对话</NButton>
+            <NButton v-else size="small" :disabled="restartBlocked || saving"
+              @click="configureSeparateModel">配置开发模型</NButton>
+          </template>
+        </NSpace>
       </div>
-      <div class="field-grid">
+      <ModelGuidance v-if="guidance" id="standalone-model-guidance" :guidance="guidance" />
+      <p v-if="fallback && effectiveProvider" class="field-help">
+        {{ restartBlocked ? '配置模型' : '当前模型' }} <strong>{{ effectiveProvider.name }}</strong>。
+      </p>
+      <p v-if="fallback && savedProvider && !provider" class="field-help">
+        保存并重启后使用主对话的 {{ fallback.name }}。
+      </p>
+      <NSpace v-if="selected.capabilities?.probe && effectiveProvider && !restartBlocked" class="probe-actions">
+        <NButton size="small" :loading="activeProbe?.loading" @click="probe(false)">测试已启用渠道</NButton>
+        <NButton v-if="provider && dirty" size="small" :disabled="!canProbeDraft || !!validation || activeProbe?.loading" @click="probe(true)">测试草稿模型</NButton>
+      </NSpace>
+      <p v-if="selected.capabilities?.probe && provider && dirty && !canProbeDraft" class="field-help">API 地址或凭据变更在保存并重启后可测试。</p>
+      <NAlert v-if="activeProbe?.detail" :type="activeProbe.ok ? 'success' : 'error'" role="status">{{ activeProbe.detail }}</NAlert>
+      <div v-if="provider" class="field-grid">
         <div class="form-field">
           <label for="standalone-model-name">模型名称</label
           ><NInput
-            id="standalone-model-name"
+            :input-props="{
+              id: 'standalone-model-name',
+              'aria-describedby': guidance ? 'standalone-model-guidance' : undefined
+            }"
             v-model:value="provider.name"
             :disabled="restartBlocked"
           />
@@ -164,5 +237,11 @@ onBeforeUnmount(() => request?.abort())
 <style scoped>
 .standalone-model {
   padding: 22px;
+}
+.standalone-model > .model-guidance {
+  margin-bottom: 18px;
+}
+.probe-actions {
+  margin-top: 16px;
 }
 </style>

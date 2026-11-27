@@ -112,6 +112,35 @@ test('a provider failure is recorded once and subsequent wakes bypass screening 
   } finally { f.runtime.stop(); await f.runtime.drain() }
 })
 
+test('wake screening distinguishes recalled sources from source-check errors', { timeout: 15000 }, async () => {
+  for (const [sourceState, expected] of [
+    ['recalled', ['cancelled', 'wake_gate_source_changed']],
+    ['read-error', ['failed', 'wake_gate_source_check_failed']],
+  ]) {
+    const events = []
+    const sourceId = `screened-source-${sourceState}`
+    let screened = false
+    const f = fixture({ diagnostics: { emit: event => events.push(event) },
+      async isMessageRecalled(_target, messageId) {
+        if (!screened || messageId !== sourceId) return false
+        if (sourceState === 'read-error') throw new Error('private read error')
+        return true
+      },
+      async wakeGateJudge() { screened = true; return { engage: true } },
+    })
+    try {
+      await f.emit(sourceId)
+      await until(() => events.some(event => event.operation === 'simulation_wake_gate')).catch(() => {
+        assert.fail(JSON.stringify({ sourceState, screened, operations: events.map(row => [row.operation, row.outcome, row.code]) }))
+      })
+      await f.runtime.drain()
+      assert.equal(screened, true)
+      assert.equal(f.models.length, 0)
+      assert.deepEqual(events.filter(event => event.operation === 'simulation_wake_gate').map(event => [event.outcome, event.code]), [expected])
+    } finally { f.runtime.stop(); await f.runtime.drain() }
+  }
+})
+
 test('meme extraction discards a late recalled result while preserving new ingress and its pending wake', { timeout: 10000 }, async () => {
   const entered = Promise.withResolvers(), held = Promise.withResolvers()
   const f = fixture({ meme: true, async memeExtract(_messages, current, context) {
@@ -175,6 +204,42 @@ test('a failed meme batch keeps its cursor, reports the HTTP failure once and re
     assert.equal(f.session().memeCursor.seq, 20)
     assert.equal(f.session().memeRetryAt, undefined)
   } finally { await f.runtime.stop() }
+})
+
+test('meme output validation retries once with current sources and accounts for both calls', async () => {
+  for (const recovers of [true, false]) {
+    const events = [], requests = [], usage = []
+    const f = fixture({ meme: true, diagnostics: { emit: event => events.push(event) },
+      recordTokens: record => usage.push(record),
+      async memeExtract(messages, current, context) {
+        await context.ensureCurrent()
+        assert.equal(current(), true)
+        requests.push(messages)
+        context.recordUsage('fixture', { total_tokens: 10 })
+        if (requests.length === 1 || !recovers) throw new AgentSimulationModelError('meme_output_schema_invalid')
+        return '[{"content":"蓝色星期八","source_id":1}]'
+      },
+    })
+    try {
+      await f.runtime.sweepOnce()
+      assert.equal(requests.length, 2)
+      assert.deepEqual(requests[0], requests[1])
+      assert.equal(usage.filter(row => row.stage === 'meme-extract').length, 2)
+      assert.ok(events.some(row => row.operation === 'simulation_meme_extract_response' &&
+        row.outcome === 'failed' && row.code === 'meme_output_schema_invalid' && row.details.result === 'retry_scheduled'))
+      if (recovers) {
+        assert.equal(f.session().memeCursor.seq, 20)
+        assert.equal(f.session().memeRetryAt, undefined)
+        assert.deepEqual((await f.store(binding).loadMemories(group)).map(row => row.content), ['蓝色星期八'])
+        assert.ok(events.some(row => row.operation === 'simulation_meme_extract_response' && row.outcome === 'succeeded' && row.code === 'meme_output_schema_recovered'))
+      } else {
+        assert.equal(f.session().memeCursor, undefined)
+        assert.equal(f.session().memeRetryAt, at + 600_000)
+        assert.deepEqual(events.filter(row => row.operation === 'simulation_meme_extract').map(row => [row.outcome, row.code]),
+          [['failed', 'meme_output_schema_invalid']])
+      }
+    } finally { await f.runtime.stop() }
+  }
 })
 
 test('style cache separates account and Agent, and revoked originals cannot replace a prior scoped cache', async () => {

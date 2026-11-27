@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createServer as createTcpServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -57,8 +57,10 @@ async function fixture(t, enabled = true) {
         let echo
         try {
           const request = JSON.parse(String(raw)); echo = request.echo; actions.push({ account: accounts[index], action: request.action })
-          assert.equal(request.action, 'get_login_info', 'console administration must never invoke native outgoing actions')
-          peer.send(JSON.stringify({ status: 'ok', retcode: 0, echo, data: { user_id: Number(accounts[index]), nickname: '本地控制台验收机器人' } }))
+          assert.ok(['get_login_info', 'get_group_list', 'get_group_info'].includes(request.action), 'console administration must never invoke native outgoing actions')
+          const data = request.action === 'get_login_info' ? { user_id: Number(accounts[index]), nickname: '本地控制台验收机器人' } :
+            request.action === 'get_group_list' ? [{ group_id: Number(GROUP), group_name: '验收群' }] : { group_id: Number(GROUP), group_name: '验收群' }
+          peer.send(JSON.stringify({ status: 'ok', retcode: 0, echo, data }))
         } catch (error) {
           errors.push(String(error)); if (echo && peer.readyState === peer.OPEN) peer.send(JSON.stringify({ status: 'failed', retcode: 1200, echo, data: null }))
         }
@@ -119,7 +121,7 @@ async function fixture(t, enabled = true) {
       assert.equal(JSON.parse(log.slice(offset)).mode, 'check')
       assert.deepEqual(await reader.keys('*'), [])
       await assert.rejects(stat(dataDir), { code: 'ENOENT' })
-      assert.equal(modelRequests, 0); assert.ok(actions.every(item => item.action === 'get_login_info'))
+      assert.equal(modelRequests, 0); assert.ok(actions.every(item => ['get_login_info', 'get_group_list', 'get_group_info'].includes(item.action)))
     },
     async rebind() { await writeFile(bindingsFile, JSON.stringify(bindings) + '\n') },
     async stop() {
@@ -136,6 +138,30 @@ async function fixture(t, enabled = true) {
     },
   }
 }
+
+test('packaged standalone console serves imported artwork through its host credential filter', { timeout: 30_000 }, async t => {
+  const f = await fixture(t)
+  await f.start()
+  const folder = path.join(f.dataDir, 'legacy-console', 'draw')
+  await mkdir(folder, { recursive: true })
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=', 'base64')
+  await writeFile(path.join(folder, 'imported.png'), bytes)
+  assert.equal((await f.request('/img/imported.png', { token: false })).status, 401)
+  const response = await fetch(f.base + '/img/imported.png', { headers: { 'x-console-token': CONSOLE_TOKEN } })
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('content-type'), 'image/png')
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes)
+  const contaminated = path.join(folder, 'with-test-credential.png')
+  await writeFile(contaminated, Buffer.concat([bytes, Buffer.from(MODEL_KEY)]))
+  try {
+    const blocked = await f.request('/img/with-test-credential.png')
+    assert.equal(blocked.status, 500)
+    assert.equal(blocked.text.includes(MODEL_KEY), false)
+  } finally {
+    await rm(contaminated)
+  }
+  await f.stop()
+})
 
 test('packaged standalone console checks without writes, serves authenticated APIs and manages exact bound simulation targets', { timeout: 45_000 }, async t => {
   const f = await fixture(t); await f.check(); await f.start()
@@ -188,7 +214,7 @@ test('packaged standalone console checks without writes, serves authenticated AP
   assert.equal((await f.request(`/api/forgetting/00000000-0000-4000-8000-000000000000?${new URLSearchParams(select(first))}`)).status, 404)
   const detail = item => f.request('/api/simulation/group?' + new URLSearchParams(select(item)))
   const overview = await f.request('/api/simulation/overview')
-  assert.equal(overview.status, 200); assert.equal(overview.data.enabled, false); assert.equal(overview.data.groups.length, 2)
+  assert.equal(overview.status, 200); assert.equal(overview.data.enabled, true); assert.equal(overview.data.groups.length, 2)
   assert.deepEqual(new Set(overview.data.groups.map(item => item.scopeKey)), new Set(entries.map(item => item.scopeKey)))
   assert.equal((await f.request('/api/tokens/summary')).status, 200)
   const mutate = (body, item = first) => f.request('/api/simulation/group', { method: 'POST', body: { ...select(item), ...body } })
@@ -199,16 +225,19 @@ test('packaged standalone console checks without writes, serves authenticated AP
   assert.equal(changed.status, 200); assert.equal(changed.data.replyMode, 'atOnly')
   assert.equal(changed.data.budget.dailyCostCny, 12.34); assert.equal(changed.data.budget.maxTurnsPerDay, 7)
   assert.equal(changed.data.budget.capOverridden, true); assert.equal(changed.data.budget.turnsCapOverridden, true)
-  assert.equal(untouched.status, 200); assert.equal(untouched.data.replyMode, 'auto')
+  assert.equal(untouched.status, 200); assert.equal(untouched.data.replyMode, 'atOnly')
   assert.equal(untouched.data.budget.capOverridden, false); assert.equal(untouched.data.budget.turnsCapOverridden, false)
   const storageKey = item => 'v2.' + Buffer.from(JSON.stringify(['qq', 'global', item.binding.target.account.id, 'group', GROUP])).toString('base64url')
   const overrides = JSON.parse(await f.reader.get(`${f.prefix}shiloh:sim:overrides`))
   assert.equal(overrides.budgetCaps[storageKey(first)], 12.34); assert.equal(overrides.turnCaps[storageKey(first)], 7)
-  assert.ok(overrides.atOnly.includes(storageKey(first))); assert.ok(overrides.disabled.includes(storageKey(first)))
+  assert.equal(overrides.proactive[storageKey(first)], false)
+  assert.equal(overrides.proactive[storageKey(second)], undefined)
   assert.equal(overrides.budgetCaps[storageKey(second)], undefined)
   assert.equal((await mutate({ action: 'enable' })).status, 200)
   const enabled = JSON.parse(await f.reader.get(`${f.prefix}shiloh:sim:overrides`))
-  assert.ok(enabled.explicitEnabled.includes(storageKey(first))); assert.equal(enabled.disabled.includes(storageKey(first)), false)
+  assert.equal(enabled.proactive[storageKey(first)], true)
+  assert.equal((await detail(first)).data.proactiveEnabled, true)
+  assert.equal((await detail(second)).data.proactiveEnabled, false)
   const beforeRejected = await f.reader.get(`${f.prefix}shiloh:sim:overrides`)
   for (const route of [`/api/simulation/group?group=${GROUP}`, '/api/simulation/group?' + new URLSearchParams({ scopeKey: GROUP, bindingToken: first.bindingToken })]) {
     assert.equal((await f.request(route)).status, 400)
@@ -250,5 +279,37 @@ test('omitted standalone console configuration starts no HTTP listener or consol
   const f = await fixture(t, false); await f.check(); await f.start()
   await assert.rejects(fetch(f.base + '/api/auth/state', { signal: AbortSignal.timeout(1000) }))
   await assert.rejects(stat(path.join(f.dataDir, 'console')), { code: 'ENOENT' })
+  await f.stop()
+})
+
+test('group policy is scoped to its QQ account and survives a new Core process', { timeout: 30_000 }, async t => {
+  const f = await fixture(t)
+  await f.start()
+  const { data: workspace } = await f.request('/api/workspace')
+  const first = workspace.agents.flatMap(agent => agent.conversations).find(row => row.binding.target.account.id === accounts[0])
+  const args = row => ({ scopeKey: row.scopeKey, bindingToken: row.bindingToken })
+  const route = '/api/groups/' + GROUP + '/admin'
+  const read = row => f.request(route + '?' + new URLSearchParams(args(row)))
+  const view = await read(first)
+  assert.equal(view.status, 200)
+  assert.equal(view.data.values.foldLongMessages, false)
+  const stats = await f.request('/api/overview/stats?days=1')
+  assert.equal(stats.status, 200)
+  assert.equal(stats.data.rows.length, 2)
+  assert.ok(stats.data.startedAt > 0)
+  const saved = await f.request(route, { method: 'PUT', body: { ...args(first), revision: view.data.revision,
+    values: { foldLongMessages: true, maxLength: 200 } } })
+  assert.equal(saved.status, 200, saved.text)
+  assert.equal(saved.data.requiresRestart, true)
+  assert.equal(saved.data.view.values.maxLength, 200)
+  assert.equal((await read(first)).status, 409)
+  await f.stop(); await f.start()
+  const { data: current } = await f.request('/api/workspace')
+  assert.notEqual(current.configState.processEpoch, workspace.configState.processEpoch)
+  for (const row of current.agents.flatMap(agent => agent.conversations)) {
+    const result = await read(row)
+    assert.equal(result.status, 200, result.text)
+    assert.equal(result.data.values.foldLongMessages, row.binding.target.account.id === accounts[0])
+  }
   await f.stop()
 })

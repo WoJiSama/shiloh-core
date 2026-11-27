@@ -41,10 +41,17 @@ export function createPersonMemorySourceFilter(store:PersonMemoryStore,identity:
   return Object.assign(filter,{refresh:() => {snapshots.clear()}})
 }
 
-export async function canReadUnattributedMemory(store:PersonMemoryStore,identity:PersonMemoryIdentity,scene:PersonMemoryScene) {
+export async function canReadUnattributedMemory(store:PersonMemoryStore,identity:PersonMemoryIdentity,scene:PersonMemoryScene,signal?:AbortSignal) {
+  const allowed = (state: Awaited<ReturnType<PersonMemoryStore['getRedactions']>>) => !state.disabled &&
+    !state.scenes.some(rule => rule.disabled && rule.scene.kind === scene.kind && rule.scene.id === scene.id)
+  signal?.throwIfAborted()
+  if (signal && store.getRedactionsBatch) {
+    const states = await store.getRedactionsBatch(identity, undefined, signal)
+    return [...states.values()].every(allowed)
+  }
   for (const subject of await store.listSubjects(identity)) {
-    const state = await store.getRedactions(subject)
-    if (state.disabled || state.scenes.some(rule => rule.disabled && rule.scene.kind === scene.kind && rule.scene.id === scene.id)) return false
+    signal?.throwIfAborted()
+    if (!allowed(await store.getRedactions(subject))) return false
   }
   return true
 }

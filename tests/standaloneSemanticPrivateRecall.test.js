@@ -10,6 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { createClient } from '@redis/client'
 import { WebSocketServer } from 'ws'
+import { readPersistedSemanticState } from './helpers/semanticMemoryStorage.js'
 
 const repo = fileURLToPath(new URL('../', import.meta.url))
 const entry = path.join(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo, 'scripts/start-agent.mjs')
@@ -167,7 +168,7 @@ async function fixture(t, instance) {
   const prefix = `bl-agent:${instance}:`
   async function states() {
     const keys = await reader.keys(`${prefix}agent:semantic-memory:v1:state:*`)
-    return await Promise.all(keys.map(async key => JSON.parse(await reader.get(key))))
+    return (await Promise.all(keys.map(key => readPersistedSemanticState(reader, prefix, key.split(':').at(-1))))).filter(Boolean)
   }
   async function privateDrained() {
     const queues = await reader.keys(`${prefix}agent:inbox:private-conversation:*`)

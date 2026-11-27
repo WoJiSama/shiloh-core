@@ -108,7 +108,6 @@ export function createAgentTrusteeshipManagement(ports:{
         for(const binding of allowed.values())await permission(operation,binding)
         check()
       }
-      await ensure()
       return {allowed,ensure}
     }
     return {check,isCurrent,permission,resolve,listing}
@@ -143,9 +142,10 @@ export function createAgentTrusteeshipManagement(ports:{
   async function overview(context:AgentManagementContext):Promise<AgentTrusteeshipOverview>{
     return run(async()=>{
       const req=request(context),{allowed,ensure}=await req.listing('trusteeship.read')
+      const check=async()=>{req.check()}
       const commitments:AgentTrusteeshipCommitment[]=[],delegated:AgentTrusteeshipOverview['delegated']=[],failures:AgentTrusteeshipFailure[]=[]
       if(allowed.size){
-        for(const task of await ports.store.listManagementCommitments(ensure)){
+        for(const task of await ports.store.listManagementCommitments(check)){
           const binding=originalBinding(task.scope,task.bindingIdentity,allowed)
           if(!binding)continue
           await req.permission('trusteeship.read',binding)
@@ -155,11 +155,11 @@ export function createAgentTrusteeshipManagement(ports:{
         }
         for(const binding of allowed.values()){
           if(binding.target.kind!=='group')continue
-          const entries=await memory.loadForManagement(binding,ensure)
+          const entries=await memory.loadForManagement(binding,check)
           if(entries.length)delegated.push({...scopeRow(binding),entries:entries.map(({id,owner,ownerName,content,dueAt,status,createdAt,updatedAt})=>
             ({id,owner,ownerName,content,dueAt,status,createdAt,updatedAt}))})
         }
-        for(const value of await ports.store.readManagementFailLog(ensure)){
+        for(const value of await ports.store.readManagementFailLog(check)){
           const proven=failureBinding(value,allowed)
           if(!proven)continue
           await req.permission('trusteeship.read',proven.binding)

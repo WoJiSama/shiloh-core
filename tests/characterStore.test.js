@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createCharacterStore } from '../dist/backend/modules/simulation/infrastructure/characterStore.js'
-import { addCharacterMemory, characterKey, createEmptyCharacterState, setCharacterDecision } from '../dist/backend/modules/simulation/domain/characterState.js'
+import { addCharacterMemory, characterKey, createCharacterGoal, createEmptyCharacterState, expireCharacterGoals, setCharacterDecision } from '../dist/backend/modules/simulation/domain/characterState.js'
 
 const SCOPE = { botId: 'robot-a', personaId: 'persona-a', groupId: 'group-a' }
 const AT = 1794200000000
@@ -132,6 +132,27 @@ test('Redis原子提交使用带token的NX租约，提交后释放自己的锁',
   assert.ok(acquisition.value)
   assert.equal(fake.kv.has(lock), false)
   assert.equal(fake.calls.eval[0].arguments[0], acquisition.value)
+})
+
+test('角色巡检无变化时绕开锁和工作区，到期时只提交一次', async () => {
+  const fake = memoryRedis({ atomic: true })
+  let workspaceReads = 0
+  const store = createCharacterStore({ redis: fake.redis, retainEvidenceRefs: async () => { workspaceReads++; return [] } })
+  const check = at => store.maintain(SCOPE, state => expireCharacterGoals(state, at))
+  assert.equal((await check(AT)).revision, 0)
+  assert.equal(fake.calls.set.length, 0)
+  const nextCheckAt = AT + 30 * 60_000, expiresAt = AT + 60 * 60_000
+  await store.update(SCOPE, state => createCharacterGoal(state, {
+    id: 'scheduled', title: '查公开资料', motivation: '想确认资料', nextStep: '检查来源', completionCriteria: '知道来源',
+    stopConditions: ['来源不可用'], evidenceRefs: ['message:1'], nextCheckAt, expiresAt,
+  }, ['message:1'], AT))
+  const lockCount = fake.calls.set.length
+  assert.equal((await check(nextCheckAt)).revision, 1)
+  assert.equal(fake.calls.set.length, lockCount)
+  const after = await Promise.all([check(expiresAt), check(expiresAt)])
+  assert.deepEqual(after.map(state => [state.revision, state.goals[0].status]), [[2, 'failed'], [2, 'failed']])
+  assert.equal(fake.calls.eval.filter(call => call.keys.length === 2).length, 2)
+  assert.equal(workspaceReads, 0)
 })
 
 test('Redis租约被占用超时不读取或提交角色状态，也不删除其他持有者的锁', async t => {

@@ -88,6 +88,80 @@ test('the standalone HTTP boundary serves existing static assets and exposes kno
   assert.equal((await f.request('/src/contracts/agentConsole.ts')).status, 404)
 })
 
+test('offline QQ login is scoped to the configured account and reports recovery from the OneBot connection', async t => {
+  const { createStandaloneAgentConsoleQqLogin } = await load('bootstrap/standaloneAgentConsoleQqLogin.js')
+  const { readStandaloneAgentConsoleConfig } = await load('bootstrap/standaloneAgentConsoleConfig.js')
+  const accountId = '23000101', connectionId = 'qq-main', port = 6099
+  const env = { NAPCAT_TOKEN: 'fixture-napcat-admin-secret' }
+  const entry = { accountId, connectionId, port, tokenEnv: 'NAPCAT_TOKEN' }
+  const configOptions = { directory: tmpdir(), dataDir: tmpdir(), env, requireCredentials: true }
+  const config = readStandaloneAgentConsoleConfig({ enabled: true, qqLogin: [entry] }, configOptions)
+  assert.throws(() => readStandaloneAgentConsoleConfig({ qqLogin: [entry, entry] }, configOptions), /重复/)
+  assert.throws(() => readStandaloneAgentConsoleConfig({ qqLogin: [{ ...entry, url: 'https://example.test' }] }, configOptions), /本机/)
+  let ready = false, now = 1000, loggedIn = false, uin = accountId, wrongOrigin = false
+  let phase = 'waiting_qrcode', providerQr = 'https://txz.qq.com/p?k=provider-stale-ticket&f=1'
+  let issued = 0
+  const upstream = []
+  const service = createStandaloneAgentConsoleQqLogin({ configs: config.qqLogin, env, now: () => now,
+    adapters: [{ id: connectionId, account: { platform: 'qq', namespace: 'global', id: accountId }, isReady: () => ready }],
+    async fetchImpl(input, init) {
+      const url = new URL(input)
+      assert.equal(url.origin, 'http://127.0.0.1:6099')
+      assert.equal(init.redirect, 'error')
+      assert.equal(init.method, 'POST')
+      upstream.push(url.pathname)
+      if (url.pathname === '/api/auth/login') {
+        assert.match(JSON.parse(init.body).hash, /^[a-f0-9]{64}$/)
+        assert.ok(!init.body.includes(env.NAPCAT_TOKEN))
+        return Response.json({ code: 0, data: { Credential: 'fixture-session-upstream' } })
+      }
+      assert.equal(init.headers.authorization, 'Bearer fixture-session-upstream')
+      if (url.pathname === '/api/QQLogin/CheckLoginStatus') {
+        return Response.json({ code: 0, data: { isLogin: loggedIn, loginPhase: phase, qrcodeurl: providerQr } })
+      }
+      if (url.pathname === '/api/QQLogin/GetQQLoginInfo') return Response.json({ code: 0, data: { uin } })
+      assert.equal(url.pathname, '/api/QQLogin/RefreshQRcode')
+      providerQr = (wrongOrigin ? 'https://example.test/' : 'https://txz.qq.com/p') + '?k=issued-ticket-' + ++issued + '&f=1'
+      return Response.json({ code: 0, data: { qrcodeurl: providerQr } })
+    },
+  })
+  const f = await fixture(t, service.services)
+  const route = `/api/connections/${connectionId}/qq-login/${accountId}`
+  const refresh = () => f.request(route, { method: 'POST', body: {} })
+  assert.ok(service.supports(connectionId))
+  assert.equal((await f.request(route, { token: false })).status, 401)
+  assert.equal((await f.request(route.replace(accountId, '23000102'))).status, 404)
+  assert.equal((await f.request(route, { method: 'POST', body: {}, headers: { origin: 'https://outside.test' } })).status, 403)
+  f.permissions.set('qq-login.refresh', 'denied')
+  assert.equal((await refresh()).status, 403)
+  f.permissions.delete('qq-login.refresh')
+  assert.deepEqual(upstream, [])
+  assert.deepEqual((await f.request(route)).data, { accountId, state: 'login-required' })
+  const scanned = await refresh()
+  assert.equal(scanned.response.headers.get('cache-control'), 'no-store')
+  assert.equal(scanned.data.state, 'awaiting-scan')
+  assert.match(scanned.data.qrImage, /^data:image\/png;base64,/)
+  for (const secret of [env.NAPCAT_TOKEN, 'fixture-session-upstream', providerQr]) assert.ok(!scanned.text.includes(secret))
+  assert.equal((await f.request(route)).data.qrImage, scanned.data.qrImage)
+  phase = 'qrcode_scanned'
+  assert.deepEqual((await refresh()).data, { accountId, state: 'awaiting-confirmation' })
+  assert.equal(issued, 1)
+  now += 100_001
+  phase = 'waiting_qrcode'
+  assert.deepEqual((await f.request(route)).data, { accountId, state: 'login-required' })
+  wrongOrigin = true
+  assert.equal((await refresh()).status, 503)
+  loggedIn = true
+  uin = '23000102'
+  assert.deepEqual((await f.request(route)).data, { accountId, state: 'account-mismatch' })
+  uin = accountId
+  assert.deepEqual((await f.request(route)).data, { accountId, state: 'connecting' })
+  const before = upstream.length
+  ready = true
+  assert.deepEqual((await f.request(route)).data, { accountId, state: 'connected' })
+  assert.equal(upstream.length, before)
+})
+
 test('the console observes real 5xx faults without reporting expected rejections or disabled features', async t => {
   const failures = []
   const f = await fixture(t, [custom('/api/broken', async () => { throw new Error('private API response') }),

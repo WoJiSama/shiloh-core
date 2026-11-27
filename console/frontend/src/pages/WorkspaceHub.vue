@@ -3,19 +3,21 @@ import { computed } from 'vue'
 import { NTag } from 'naive-ui'
 import { ArrowUpRight } from 'lucide-vue-next'
 import PageHeader from '../components/PageHeader.vue'
+import HostRestartButton from '../components/HostRestartButton.vue'
+import HostReadiness from '../components/HostReadiness.vue'
+import WorkspaceTraffic from '../components/WorkspaceTraffic.vue'
 import { workspace, capability, configurationLabel } from '../lib/workspace'
-import { workspaceFeatures } from '../lib/navigation'
+import { workspaceFeatureEntries, workspaceFeaturePath } from '../lib/navigation'
 import { statusLabel } from '../lib/workspaceModel'
-const props = defineProps<{ section: 'resources' | 'runtime' | 'system' }>()
+const props = defineProps<{ section: 'features' | 'resources' | 'runtime' | 'system' }>()
 const data = workspace.data
 const titles = {
+  features: ['功能'],
   resources: ['资源库', '可复用的人设、模型与创作资源。资源与引用它的机器人分别管理。'],
   runtime: ['运行中心', '查看现有任务、真实记录与实例用量。执行未知不计作成功。'],
   system: ['系统', '核对服务配置、管理能力与授权边界。']
 }
-const entries = computed(() =>
-  Object.entries(workspaceFeatures).filter(([, item]) => item.group === '/' + props.section)
-)
+const entries = computed(() => workspaceFeatureEntries('/' + props.section))
 </script>
 <template>
   <div class="page-stack">
@@ -28,6 +30,8 @@ const entries = computed(() =>
         }}</NTag>
       </div>
       <p class="field-help">配置保存后需重启服务。结果未知时保留草稿，禁止重复保存。</p>
+      <HostRestartButton v-if="!data.configState.requiresRestart" />
+      <HostReadiness />
       <details class="technical-details">
         <summary>技术详情</summary>
         <dl>
@@ -42,9 +46,9 @@ const entries = computed(() =>
     </section>
     <div class="resource-grid">
       <RouterLink
-        v-for="[path, item] in entries"
-        :key="path"
-        :to="'/' + path"
+        v-for="[feature, item] in entries"
+        :key="feature"
+        :to="workspaceFeaturePath(feature)"
         class="panel resource-card"
         ><div class="panel-heading">
           <h2>{{ item.label }}</h2>
@@ -60,6 +64,7 @@ const entries = computed(() =>
         }}</small></RouterLink
       >
     </div>
+    <WorkspaceTraffic v-if="section === 'runtime'" />
     <section v-if="section === 'system'" class="panel">
       <h2>能力与授权</h2>
       <p class="field-help">

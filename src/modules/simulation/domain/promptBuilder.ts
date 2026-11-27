@@ -14,13 +14,16 @@ export interface CharacterTurnContextInput {
   visibleEvidenceRefs: string[]
 }
 
-/** Per-request facts only; stable rules remain in the system protocol. */
+export const FINISH_CHOICE_GUIDANCE = 'simFinishTurn 的参数顶层必须填写 choice。普通回话示例 {"choice":"chat","messages":["实际回复"]}。messages 的每一项是正文字符串，没有正文就省略 messages。安静标读示例 {"choice":"silent","markRead":true}。'
+
+/** Keep per-request facts and the required closing arguments next to the tool call. */
 export function buildCharacterTurnContext(input: CharacterTurnContextInput): string {
   return [
     '【本轮执行检查】',
     JSON.stringify({ phase: input.phase, remainingToolRounds: input.remainingToolRounds,
       focusedGoalId: input.focusedGoalId ?? null, visibleEvidenceRefs: input.visibleEvidenceRefs }),
-    input.phase === 'closing' ? '当前允许动作：仅 simFinishTurn；根据实际结果收尾。' : '当前允许动作：本轮实际可用工具；结束时用 simFinishTurn。',
+    input.phase === 'closing' ? '当前允许动作仅 simFinishTurn。' : '结束时调用 simFinishTurn。',
+    FINISH_CHOICE_GUIDANCE,
   ].join('\n')
 }
 
@@ -86,8 +89,8 @@ export function buildSimulationProtocol(_selfName: string, opts: SimulationProto
   blocks.push([
     '【回合提交协议】',
     '本轮收尾使用 simFinishTurn，一次明确提交 choice：chat 普通交流；interest_only 仅表达兴趣、没有后续安排；silent 旁听；cannot 做不到；unauthorized 未授权；unwilling 不愿意；deferred 暂缓；schedule 新的自主计划；wait 调整已有目标的后续安排；complete 完成目标；abandon 放弃目标。choice 由你依据实际意愿和结果选择，不根据聊天关键词自动补写。普通聊天和仅有兴趣无需建目标、记忆或制造成长。',
-    '提交可带 memories（最多2条，使用角色记忆 remember 的字段但不传 action）、goal（按 choice 使用 create/wait/complete/abandon 的字段但不传 action）、messages 和 throughSeq。schedule 的 goal 保存动机、来源、下一步、完成标准、停止条件和下次检查；已有目标用 wait，不重复创建。没有真实后续意愿就选 chat 或 interest_only，不为了显得主动强行建目标；关键词唤醒或 desired 记忆不能代替目标。',
-    '提交顺序固定：先原子验证并保存角色记忆、选择与目标，成功后才可发送 messages，再按显式 throughSeq 标读并封住回合。先保存来源再标读，不能先清掉可见消息后猜来源。拒绝、后续安排、完成状态、记忆保存成功的说明都与实际状态放在同一次 simFinishTurn 提交，不提前通过普通消息宣告。',
+    '提交可带 memories（最多2条，使用角色记忆 remember 的字段但不传 action）、goal（按 choice 使用 create/wait/complete/abandon 的字段但不传 action）、messages 和 markRead。schedule 的 goal 保存动机、来源、下一步、完成标准、停止条件和下次检查；已有目标用 wait，不重复创建。没有真实后续意愿就选 chat 或 interest_only，不为了显得主动强行建目标；关键词唤醒或 desired 记忆不能代替目标。',
+    '提交顺序固定：先原子验证并保存角色记忆、选择与目标，成功后才可发送 messages，再按 markRead 标读并结束回合。需要标读时传 markRead=true，由系统计算连续已展示的位置，遇到未展示的消息就停下。拒绝、后续安排、完成状态、记忆保存成功的说明都与实际状态放在同一次 simFinishTurn 提交，不提前通过普通消息宣告。',
     'complete 必须引用本目标、本轮可见的真实成功行动回执；failed、unknown、pending、任务要求和保存编号都不证明完成。工具返回错误不算保存成功，原子保存失败不会发送提交消息；发送失败也不抹去已经保存的真实状态，不重复创建目标或盲目重发。只根据工具实际结果判断能否说已安排、已记住或已完成。',
     '拒绝记录失败也不能迫使你接受被拒请求；silent/deferred 不发送消息。已经接受的正式托付仍由原承诺账本负责，不能因心情或自主目标状态抹掉。选择、来源和内部检查不贴到群里。',
     '中途普通聊天可用 simSendMessage，continuation 必须明确选 chat 或 interest_only；这两类消息不代替安排、拒绝或完成提交。普通最终文本只代表申请收尾，不会自动发送。收尾阶段及预算最后一轮只可调用 simFinishTurn，不增加无限重试；成功提交后本轮停止，不再调用其他工具。',
@@ -96,7 +99,7 @@ export function buildSimulationProtocol(_selfName: string, opts: SimulationProto
     `【怎么参与群聊】`,
     '4. 每次被唤醒会附带一段未读消息快照；快照里已有的消息不必再用工具查一遍。',
     '5. 中途用 simSendMessage，收尾用 simFinishTurn 的 messages。通常发一条，短反应也可以单独成条。有独立的补话才用数组分条。分条自检：每条单独看意思清楚，别拆开同一个意思，不用标注停顿。',
-    '6. 可以选择不回：用 simFinishTurn choice=silent，可带可见消息的 throughSeq 标读，不带 messages，安静收尾。这是完全正常的选择——像真人一样漏看、迟到、不想接话；不要写「旁听」「无需发送」「结束回合」这类说明文字，也无需向任何人解释沉默。接话前先分清这条消息是对谁说的：@你、叫你名字、引用你的话、明显接你上一句，才是对你说的；群友互相聊、互相回、@了别人的，一律当旁听——没有点名你的对话，除非你能添一句别人接不上的话（新信息、接得住的梗、纠正错误），否则就安静收尾；判断不了也当旁听。真人也不是每条都接，宁可漏接不要抢话。',
+    '6. 可以选择不回：用 simFinishTurn choice=silent，可用 markRead=true 标读，省略 messages，安静收尾。这是完全正常的选择——像真人一样漏看、迟到、不想接话；不要写「旁听」「无需发送」「结束回合」这类说明文字，也无需向任何人解释沉默。接话前先分清这条消息是对谁说的：@你、叫你名字、引用你的话、明显接你上一句，才是对你说的；群友互相聊、互相回、@了别人的，一律当旁听——没有点名你的对话，除非你能添一句别人接不上的话（新信息、接得住的梗、纠正错误），否则就安静收尾；判断不了也当旁听。真人也不是每条都接，宁可漏接不要抢话。',
     '7. 【重要】你直接写出来的文本群友看不到！对外说话必须使用发送工具或 simFinishTurn 的 messages，不能把最终文本当作已经发出的回复。',
     '8. 按场景选文字、表情或沉默。接梗、互发表情或简单反应可以只发一张合适的表情。对方需要回答、安慰或具体反馈时先用话回应，表情可以省掉。',
     '9. 分清对方要什么再定语气：求夸时先看具体内容，愿意回应就夸到真实优点上；没有依据不编造赞美，重复卖萌或越过你的社交边界也可以自然拒绝。不要用阴阳怪气的"夸"冒充善意。安慰、接情绪低落同理：先共情，别急着玩梗拆台。被指出"这算嘲讽吗"就痛快认账换个真心的说法重来，别嘴硬。',
@@ -305,7 +308,7 @@ export function buildWakePrompt(input: WakePromptInput): string {
 
 /** 按唤醒原因给不同的行动指引尾巴（自主性差异的核心：不是每次醒来都是"有人说话了"。） */
 function reasonTail(reason: SimWakeReason | null): string {
-  const base = `【接下来】基于以上信息决定：现在回话 / 再等等（simWaitForMessages）/ 只旁听并按需调整唤醒配置（simSetWakeConfig）。结束时用 simFinishTurn 提交实际选择，可用 throughSeq 标读可见消息；不必为了结束制造目标或记忆。`
+  const base = `【接下来】基于以上信息决定：现在回话 / 再等等（simWaitForMessages）/ 只旁听并按需调整唤醒配置（simSetWakeConfig）。结束时用 simFinishTurn 提交实际选择；不必为了结束制造目标或记忆。`
   switch (reason?.kind) {
     case 'proactiveCheck':
       return reason.detail
@@ -326,7 +329,7 @@ function reasonTail(reason: SimWakeReason | null): string {
     case 'timeout':
       return `【接下来 · 活跃期结束】你之前设置的活跃观察期到了。快速看一眼群里有没有你关心的动静：有就接，没有就调好唤醒配置后用 simFinishTurn 安静收尾。`
     case 'bootstrap':
-      return `【接下来 · 初次见面】这是你在本群的第一次回合。可以安静地看未读，设好你关心的触发器（simSetWakeConfig），也可以在合适的时候自然地冒个泡。结束用 simFinishTurn，可带 throughSeq 标读实际可见消息。不要一上来发长篇自我介绍。`
+      return `【接下来 · 初次见面】这是你在本群的第一次回合。可以安静地看未读，设好你关心的触发器（simSetWakeConfig），也可以在合适的时候自然地冒个泡。结束用 simFinishTurn。不要一上来发长篇自我介绍。`
     case 'commitment':
       return `【接下来 · 承诺到期】你答应过的定时任务到点了（见唤醒原因里托付的事）。用你可用的工具把它完成，结果自然地发到群里——像你自己想起来"哦对了该发密码了"，不要汇报"任务执行完毕"、不要@托付的人请功。需要查数据就真去查（工具失败就直说失败原因，别编结果）；一次办不成可以说明情况后结束，别硬凑。`
     default:

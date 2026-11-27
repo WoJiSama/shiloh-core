@@ -17,6 +17,9 @@ export async function filesUnder(directory) {
   return files.sort()
 }
 export function run(command, args, options = {}) {
+  if (command === 'npm' && process.platform === 'win32' && process.env.npm_execpath) {
+    return run(process.execPath, [process.env.npm_execpath, ...args], options)
+  }
   const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', ...options })
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`${command} exited ${result.status}`)

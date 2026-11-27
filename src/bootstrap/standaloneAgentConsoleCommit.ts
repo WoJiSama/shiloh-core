@@ -1,17 +1,25 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { AgentConsoleError } from '../contracts/agentConsole.js'
 import type { AgentConsoleCommittedResponse, AgentConsoleCommitPort, AgentConsoleContext, AgentConsoleGuard, AgentConsoleJson, AgentConsoleRequest } from '../contracts/agentConsole.js'
+import { agentConversationKey } from '../modules/runtime/domain/agentBindings.js'
 
 const fail = (): never => { throw new AgentConsoleError('conflict') }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 const principal = (context: AgentConsoleContext) => JSON.stringify(context.principal)
 const requestDigest = (request: AgentConsoleRequest) => digest(JSON.stringify([request.method, request.pathname, request.params, request.query, request.body]))
-function targetFor(operation: string, request: AgentConsoleRequest): string {
+function targetFor(operation: string, request: AgentConsoleRequest, context: AgentConsoleContext): string {
+  if (context.binding) {
+    const { target } = context.binding
+    if (operation === 'group-admin.write' && request.method === 'PUT' && target.kind === 'group' &&
+        request.params.groupId === target.id && request.pathname === '/api/groups/' + target.id + '/admin') return 'group-admin:' + agentConversationKey(context.binding)
+    return fail()
+  }
   if (operation === 'config.write' && request.method === 'PUT' && request.pathname === '/api/config/' + request.params.kind) return 'config:' + request.params.kind
   if (operation === 'providers.write' && request.method === 'PUT' && request.pathname === '/api/ai/config') return 'provider:' + (request.body as Record<string, AgentConsoleJson>).configKey
   if (operation === 'persona.write' && request.method === 'PUT' && request.pathname === '/api/persona/library') return 'templates'
   if (operation === 'persona-assignments.write' && request.method === 'PUT' && request.pathname === '/api/persona/assignments') return 'assignments'
   if (operation === 'configuration.commit' && request.method === 'POST' && request.pathname === '/api/configuration/commit') return 'configuration'
+  if (operation === 'accounts.add' && request.method === 'POST' && request.pathname === '/api/accounts/add') return 'accounts:add'
   return fail()
 }
 interface RequestRecord {
@@ -61,7 +69,7 @@ export function createStandaloneAgentConsoleCommitCoordinator() {
     verify(value, context, consume = false) {
       const request = current(context), receipt = receipts.get(value)
       if (!receipt || receipt.consumed || receipt.context !== context || receipt.nonce !== request.nonce || receipt.principal !== request.principal ||
-          receipt.operation !== request.operation || receipt.target !== targetFor(request.operation, request.request) || receipt.before === receipt.after ||
+          receipt.operation !== request.operation || receipt.target !== targetFor(request.operation, request.request, context) || receipt.before === receipt.after ||
           receipt.digest !== digest(JSON.stringify([receipt.processEpoch, receipt.before, receipt.after, 200, 'application/json', receipt.body])) || !receipt.verifyTransition()) return fail()
       request.checkResponse(receipt.body)
       current(context)
@@ -81,7 +89,7 @@ export function createStandaloneAgentConsoleCommitCoordinator() {
     begin(context: AgentConsoleContext, operation: string, target: string, before: string, payload: unknown, release: () => void) {
       const record = current(context)
       context.ensureCurrent()
-      if (context.binding || record.writing || record.operation !== operation || targetFor(operation, record.request) !== target ||
+      if (record.writing || record.operation !== operation || targetFor(operation, record.request, context) !== target ||
           digest(JSON.stringify(payload)) !== digest(JSON.stringify(record.request.body))) return fail()
       record.writing = true; record.release = release
       let committed = false

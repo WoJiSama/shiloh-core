@@ -57,6 +57,7 @@ export function createGroupTextTools(options: {
   memory: InstanceType<ReturnType<typeof createDelegateMemoryRuntime>['DelegateMemoryTool']>
   knowledge?: ReturnType<typeof createGroupKnowledgeTool>
   diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'>
+  privateScheduling?: boolean
 }) {
   const instances: Partial<Record<GroupTextToolName, AbstractTool>> = { commitmentTool: options.commitment, delegateMemoryTool: options.memory,
     ...(options.knowledge ? { groupKnowledgeTool: options.knowledge } : {}) }
@@ -77,12 +78,20 @@ export function createGroupTextTools(options: {
   }))
   const privateSchema: Pick<AgentTool, 'parameters'> = { parameters: {
     type: 'object', properties: {
-      action: { type: 'string', enum: ['list', 'cancel'], description: 'list 查看，cancel 取消' },
+      action: { type: 'string', enum: options.privateScheduling ? ['create', 'list', 'cancel'] : ['list', 'cancel'], description: 'create 登记，list 查看，cancel 取消' },
       commitment_id: { type: 'string', description: '取消时填 list 返回的提醒编号' },
+      ...(options.privateScheduling ? {
+        schedule_kind: { type: 'string', enum: ['once'] },
+        schedule_time: { type: 'string', description: '一次性发送时间，ISO 8601 带北京时间 +08:00' },
+        target_group_id: { type: 'string', description: '两人同在的已绑定 QQ 群的群号，缺省时发回本私聊' },
+        static_message: { type: 'string', description: '此次请求明确指定要发送的原文，最多 300 字' },
+      } : {}),
     }, required: ['action'], additionalProperties: false,
   } }
   const privateDefinition: ChatTool = { type: 'function', function: {
-    name: 'commitmentTool', description: '查看或取消已接续到此私聊的本人一次性提醒。',
+    name: 'commitmentTool', description: options.privateScheduling
+      ? '接受明确的定时文字托付时，可登记、查看或取消本人任务。可在本私聊提醒，也可将指定的原文发到共同所在的已绑定群。群号、时间或原文有歧义就先问清。登记成功后再承诺。'
+      : '查看或取消已接续到此私聊的本人一次性提醒。',
     parameters: privateSchema.parameters,
   } }
 
@@ -127,7 +136,7 @@ export function createGroupTextTools(options: {
     if (!authorizeAgentToolContext({ effect: { actor: 'user', metadata: ['request'] } }, params, context)) return rejected()
     const { request, actor } = context
     if (!request || !actor.user) return rejected()
-    const validation = tool.instance.validateParameters(params)
+    const validation = privateChat ? true : tool.instance.validateParameters(params)
     if (validation !== true) return rejected(String(validation))
     const action = params.action
     immediateDelivery = name === 'groupKnowledgeTool' && action === 'notify'
@@ -164,7 +173,7 @@ export function createGroupTextTools(options: {
       group_id: context.binding.target.id, user_id: actor.user.id, self_id: context.binding.target.account.id,
       _agentBinding: context.binding, _isAgentBindingCurrent: context.isCurrent,
       _ensureAgentToolCurrent: ensureContextCurrent,
-      _agentToolRequest: { occurredAt: request.occurredAt ?? context.requestAt },
+      _agentToolRequest: { messageId: request.messageId, occurredAt: request.occurredAt ?? context.requestAt },
     }
     const owner = name === 'delegateMemoryTool' ? options.memory : options.commitment
     const execute = name === 'delegateMemoryTool' ? options.memory.executeForOwner
@@ -174,7 +183,7 @@ export function createGroupTextTools(options: {
       if (!await begin(false) || !context.isCurrent()) return undefined
       log('started', 'tool_execution_started')
       try {
-        const result = await execute.call(owner, params, event)
+        const result = await execute.call(owner, params, event, request.messageId)
         await ensureContextCurrent()
         if (typeof result !== 'string') return rejected()
         return reply(result)
@@ -195,7 +204,7 @@ export function createGroupTextTools(options: {
     log('started', 'tool_execution_started')
     try {
       if (name === 'commitmentTool') {
-        const result = await execute.call(owner, params, event)
+        const result = await execute.call(owner, params, event, request.messageId)
         await ensureContextCurrent()
         if (typeof result !== 'string') return reply(result.confirmation, true)
         return reply(result, true, action === 'create' ? 'failed' : undefined)

@@ -4,6 +4,7 @@ import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
+import { readPersistedSemanticState } from './helpers/semanticMemoryStorage.js'
 
 const { createAgentSemanticMemoryStore, agentSemanticMemoryId } = await load('modules/memory/infrastructure/agentSemanticMemoryStore.js')
 const { createAgentSemanticMemory } = await load('modules/memory/infrastructure/agentSemanticMemory.js')
@@ -23,6 +24,7 @@ const selector = (overrides = {}) => ({ agentId: 'writer', account, subjectId: '
 async function fixture(t, name, wrapped) {
   const redis = await createAgentRedisFixture(t, name), storage = wrapped ? wrapped(redis.storage) : redis.storage
   return { ...redis, storage, store: createAgentSemanticMemoryStore(storage),
+    persisted: id => readPersistedSemanticState(redis.reader, redis.prefix, id),
     raw: key => redis.reader.get(redis.prefix + key), set: (key, value) => redis.reader.set(redis.prefix + key, value) }
 }
 async function runtime(t, f, options = {}) {
@@ -50,15 +52,15 @@ test('purge physically removes bounded original rows and vectors, retires last-r
   const live = await runtime(t, f, { enabled: false, ports: { backend: undefined, resolve() { throw Error('cleanup must not resolve live binding') }, available: () => false } })
   const receipt = await live.api.purgeSubject(selector(), guard())
   assert.deepEqual(receipt, { usage: 'blocked', cleanup: 'completed', removedRows: 2, removedVectors: 2, removedPartitions: 1 })
-  assert.equal(await f.raw(stateKey(retired.id)), null)
-  assert.deepEqual(JSON.parse(await f.raw(stateKey(selected.id))).rows, selected.rows.slice(1))
+  assert.equal(await f.persisted(retired.id), undefined)
+  assert.deepEqual((await f.persisted(selected.id)).rows, selected.rows.slice(1))
   for (const value of [otherAgent, otherAccount]) assert.deepEqual(JSON.parse(await f.raw(stateKey(value.id))), value)
   const catalog = JSON.parse(await f.raw(catalogKey)); assert.equal(catalog.entries.length, 3); assert.equal(catalog.entries.some(entry => entry.id === retired.id), false)
   const fence = await f.raw(fenceKey); assert.equal(fence.includes('subject-a'), false); assert.equal(fence.includes('account-a'), false)
   const restarted = createAgentSemanticMemoryStore(f.storage)
   await restarted.update(retired.id, () => retired); assert.equal(await f.raw(stateKey(retired.id)), null)
   const replay = await restarted.purgeSubject(selector({ through: epoch - 1 }), guard()); assert.equal(replay.removedRows, 0)
-  assert.deepEqual(JSON.parse(await f.raw(stateKey(selected.id))).rows, selected.rows.slice(1))
+  assert.deepEqual((await f.persisted(selected.id)).rows, selected.rows.slice(1))
 })
 
 test('full target purge isolates conversation kinds and accounts while omitted target covers only this Agent and account subject', redisTest, async t => {
@@ -92,11 +94,11 @@ test('physical IO failure returns unknown only after publication, while reads an
   } })), original = state(scope(), [row('old', { vector: [1, 0], providerId })])
   await f.store.update(original.id, () => original); failState = true
   const receipt = await f.store.purgeSubject(selector(), guard()); assert.equal(receipt.cleanup, 'unknown'); assert.equal(receipt.usage, 'blocked')
-  assert.ok(await f.raw(fenceKey)); assert.deepEqual(JSON.parse(await f.raw(stateKey(original.id))), original)
+  assert.ok(await f.raw(fenceKey)); assert.deepEqual(await f.persisted(original.id), original)
   failState = false
   assert.equal(await createAgentSemanticMemoryStore(f.storage).read(original.id), undefined)
   const live = await runtime(t, f); assert.equal((await live.api.read(live.binding, 'orchard', () => true)).text, ''); assert.equal(live.requests.length, 0)
-  const retried = await live.api.purgeSubject(selector(), guard()); assert.equal(retried.cleanup, 'completed'); assert.equal(retried.removedRows, 1); assert.equal(await f.raw(stateKey(original.id)), null)
+  const retried = await live.api.purgeSubject(selector(), guard()); assert.equal(retried.cleanup, 'completed'); assert.equal(retried.removedRows, 1); assert.equal(await f.persisted(original.id), undefined)
 })
 
 test('publication failure and async authority rejection reject without a blocked receipt or raw changes', redisTest, async t => {
@@ -194,8 +196,8 @@ test('denied asynchronous cleanup authority cannot abort an ongoing index or pub
   assert.equal(await f.raw(fenceKey), null); assert.equal(live.requests[0].context.signal.aborted, false)
   await live.requests[0].context.ensureCurrent()
   gate.resolve([[1, 0]])
-  await wait(async () => JSON.parse(await f.raw(stateKey(original.id))).rows[0].vector)
-  assert.deepEqual(JSON.parse(await f.raw(stateKey(original.id))).rows[0].vector, [1, 0])
+  await wait(async () => (await f.persisted(original.id)).rows[0].vector)
+  assert.deepEqual((await f.persisted(original.id)).rows[0].vector, [1, 0])
 })
 
 test('durable fences invalidate retained recall after unknown deletion and reject an unstored stale private query proof', redisTest, async t => {
@@ -209,7 +211,7 @@ test('durable fences invalidate retained recall after unknown deletion and rejec
   const retained = await live.api.read(live.binding, 'orchard', () => true)
   assert.match(retained.text, /orchard original/); assert.equal(await retained.isCurrent(), true)
   failState = true; assert.equal((await live.api.purgeSubject(selector(), guard())).cleanup, 'unknown'); failState = false
-  assert.deepEqual(JSON.parse(await f.raw(stateKey(original.id))), original)
+  assert.deepEqual(await f.persisted(original.id), original)
   assert.equal(await retained.isCurrent(), false)
   const fresh = state(scope(), [row('fresh', { at: epoch + 1, vector: [1, 0], providerId })])
   await f.store.update(fresh.id, () => fresh)

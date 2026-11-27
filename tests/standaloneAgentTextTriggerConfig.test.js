@@ -171,9 +171,9 @@ test('strict and smart direct text-group configuration remain available without 
     assert.equal(config.textTrigger.mode, mode)
     assert.deepEqual(config.textTrigger.triggerPrefixes, ['小白'])
     assert.equal(config.textTriggerModel, undefined)
-    assert.equal(config.useTextGroup(target), true)
+    assert.deepEqual(config.migratedGroupToolNames(target), [])
     assert.ok(config.resolvePersona(target)?.binding)
-    assert.equal(config.checkBindings().get('main').textGroups, 1)
+    assert.equal(config.checkBindings().get('main').simulationGroups, 1)
     assert.deepEqual(reads, ['MAIN_KEY', 'BL_AGENT_REDIS_URL'])
     assert.equal(reads.includes(''), false)
   }

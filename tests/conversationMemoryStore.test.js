@@ -69,6 +69,28 @@ test('conversation summaries, episodes and original evidence survive store recre
   assert.equal(await f.store.update(input.id, () => undefined), true)
 })
 
+test('summary scheduling reads only changed partitions and keeps original text out of the cached schedule', redisTest, async t => {
+  const f = await fixture(t, 'conversation-schedule-snapshot')
+  const left = state(), right = state(binding({ conversationId: 'room-b' }))
+  for (const input of [left, right]) await f.store.update(input.id, () => input)
+  const payloads = []
+  const store = createConversationMemoryStore({ ...f.storage, async eval(script, options) {
+    const result = await f.storage.eval(script, options)
+    if (script.includes('sha1hex') && Array.isArray(result)) payloads.push(result.slice(1).filter(value => typeof value === 'string').length)
+    return result
+  } })
+  const first = await store.observeSchedule()
+  assert.equal(first.length, 2)
+  assert.doesNotMatch(JSON.stringify(first), /原始发言/u)
+  assert.deepEqual(await store.observeSchedule(), first)
+  await f.store.update(left.id, saved => ({ ...saved, dueAt: saved.dueAt + 1 }))
+  const updated = await store.observeSchedule()
+  assert.equal(updated.find(row => row.id === left.id).dueAt, left.dueAt + 1)
+  assert.deepEqual(payloads, [2, 0, 1])
+  await f.rawSet(stateKey(left.id), '{}')
+  await rejects(store.observeSchedule())
+})
+
 test('conversation IDs partition full platform accounts, Agents and scenes while binding revisions remain updateable', redisTest, async t => {
   const f = await fixture(t, 'conversation-store-identities')
   const entries = [state(), state(binding({ platform: 'matrix' })), state(binding({ namespace: 'tenant-b' })),

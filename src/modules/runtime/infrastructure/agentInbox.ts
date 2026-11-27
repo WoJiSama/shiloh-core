@@ -23,6 +23,8 @@ export interface AgentInboxGroupLogIngress {
 
 export interface AgentInboxRedis {
   get(key: string): Promise<string | null>
+  getMany?(keys: string[]): Promise<(string | null)[]>
+  matchesStringDigests?(keys: string[], digests: string[]): Promise<boolean>
   eval(script: string, options: { keys: string[]; arguments: string[] }): Promise<unknown>
 }
 
@@ -348,6 +350,33 @@ export function createAgentInbox(client: AgentInboxRedis) {
     return await client.get(eventKey('recall', target, messageId)) === '1'
       || (target.kind === 'group' && await client.get(recalledTextMessage(target, messageId)) === '1')
   }
+  async function recalledMessageIds(target: ConversationAddress, messageIds: readonly string[], signal: AbortSignal): Promise<Set<string>> {
+    const recalled = new Set<string>()
+    for (let offset = 0; offset < messageIds.length; offset += 128) {
+      signal.throwIfAborted()
+      const ids = messageIds.slice(offset, offset + 128)
+      if (!client.getMany) {
+        for (const messageId of ids) {
+          signal.throwIfAborted()
+          if (await isRecalled(target, messageId)) recalled.add(messageId)
+        }
+        continue
+      }
+      const stride = target.kind === 'group' ? 2 : 1
+      const keys = ids.flatMap(id => {
+        const native = eventKey('recall', target, id)
+        return stride === 2 ? [native, recalledTextMessage(target, id)] : [native]
+      })
+      const states = await client.getMany(keys)
+      signal.throwIfAborted()
+      if (states.length !== keys.length) throw new Error('撤回凭据读取结果无效')
+      for (const [index, id] of ids.entries()) {
+        const first = index * stride
+        if (states[first] === '1' || stride === 2 && states[first + 1] === '1') recalled.add(id)
+      }
+    }
+    return recalled
+  }
   async function transitionText(target: ConversationAddress, messageId: string, recallVersion: string, from: string, to: string): Promise<boolean> {
     const keys = [eventKey('message', target, messageId), recalledTextMessage(target, messageId), textRecallKey(target)]
     const result = await client.eval(transitionTextReceipt, { keys, arguments: [recallVersion, String(receiptSeconds), from, to] })
@@ -518,7 +547,13 @@ export function createAgentInbox(client: AgentInboxRedis) {
       })) === 1
     },
     async canReply(target: ConversationAddress, messageId: string): Promise<boolean> {
-      return await client.get(eventKey('message', target, messageId)) !== null && !await isRecalled(target, messageId)
+      const message = eventKey('message', target, messageId)
+      if (!client.getMany) return await client.get(message) !== null && !await isRecalled(target, messageId)
+      const keys = [message, eventKey('recall', target, messageId)]
+      if (target.kind === 'group') keys.push(recalledTextMessage(target, messageId))
+      const values = await client.getMany(keys)
+      if (values.length !== keys.length) throw new Error('回复来源读取结果无效')
+      return typeof values[0] === 'string' && values[1] !== '1' && values[2] !== '1'
     },
     async isTextReplyPending(target: ConversationAddress, messageId: string): Promise<boolean> {
       return await client.get(eventKey('message', target, messageId)) === '1'
@@ -575,6 +610,6 @@ export function createAgentInbox(client: AgentInboxRedis) {
       const expected = actionReceipt === undefined ? '1' : actionReceipt ? `action-result:${actionReceipt}` : 'action-attempted'
       return await transitionText(target, messageId, recallVersion, expected, 'attempted')
     },
-    isRecalled,
+    isRecalled, recalledMessageIds,
   }
 }

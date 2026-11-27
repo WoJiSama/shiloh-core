@@ -1,6 +1,8 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomBytes } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { isIP, type Socket } from 'node:net'
+import type { AgentDiagnostics } from '../modules/runtime/infrastructure/agentDiagnostics.js'
 import type { AgentMediaArtifact, AgentMediaArtifactLease, AgentMediaArtifactReader, AgentMediaResourceContext, AgentMediaResourcePort } from '../contracts/agentMediaRelay.js'
 import { validateAgentMediaArtifact } from '../modules/media/domain/agentMediaRelayPlan.js'
 import { createAgentMediaArtifactStore } from '../modules/media/infrastructure/agentMediaArtifactStore.js'
@@ -18,13 +20,14 @@ export interface QqMediaRelayBridgeOptions {
   readonly listen: { readonly host: string; readonly port: number }
   readonly advertisedOrigin: string
   readonly allowedPeers: readonly string[]
+  readonly diagnostics?: Pick<AgentDiagnostics, 'emit'>
   readonly maxTotalBytes?: number
   readonly maxArtifacts?: number
   /** Test/deployment callers may shorten the absolute capability lifetime. */
   readonly timeoutMs?: number
 }
 export interface QqMediaRelayBridge {
-  stage(artifact: AgentMediaArtifact, context: AgentMediaResourceContext): Promise<QqMediaRelayResourceLease>
+  stage(artifact: AgentMediaArtifact, context: AgentMediaResourceContext, callerMonitorsCurrent?: boolean): Promise<QqMediaRelayResourceLease>
   close(): Promise<void>
 }
 interface CapturedContext extends AgentMediaResourceContext {}
@@ -34,6 +37,7 @@ interface Route {
   readonly guard: ReturnType<typeof createGuard>
   readonly sockets: Set<Socket>
   readonly tasks: Set<Promise<void>>
+  readonly inScope: ReturnType<typeof AsyncLocalStorage.snapshot>
   readonly expiresAt: number
   readonly timer: ReturnType<typeof setTimeout>
   readonly abort: () => void
@@ -50,13 +54,14 @@ function captureContext(context: AgentMediaResourceContext): CapturedContext {
       ...(ensureCurrent ? { ensureCurrent: () => ensureCurrent.call(context) } : {}) })
   } catch { throw failure() }
 }
-function constructGuard(context: AgentMediaResourceContext, bridgeSignal: AbortSignal, extra?: AbortSignal) {
+function constructGuard(context: AgentMediaResourceContext, bridgeSignal: AbortSignal, extra?: AbortSignal, monitorCurrent = true) {
   const captured = captureContext(context), cancel = new AbortController()
   const signal = AbortSignal.any([captured.signal, bridgeSignal, cancel.signal, ...(extra ? [extra] : [])])
   const check = () => {
     try { if (signal.aborted || captured.isCurrent() !== true || signal.aborted) throw failure() } catch { throw failure() }
   }
-  const timer = setInterval(() => { try { check() } catch { cancel.abort() } }, 20); timer.unref()
+  const timer = monitorCurrent ? setInterval(() => { try { check() } catch { cancel.abort() } }, 20) : undefined
+  timer?.unref()
   const wait = <T>(promise: Promise<T>, late?: (value: T) => Promise<unknown>): Promise<T> => new Promise((resolve, reject) => {
     let settled = false
     const abort = () => { settled = true; signal.removeEventListener('abort', abort); reject(failure()) }
@@ -79,8 +84,8 @@ function constructGuard(context: AgentMediaResourceContext, bridgeSignal: AbortS
     check()
   }, dispose() { clearInterval(timer); cancel.abort() } }
 }
-function createGuard(context: AgentMediaResourceContext, bridgeSignal: AbortSignal, extra?: AbortSignal) {
-  try { return constructGuard(context, bridgeSignal, extra) } catch { throw failure() }
+function createGuard(context: AgentMediaResourceContext, bridgeSignal: AbortSignal, extra?: AbortSignal, monitorCurrent = true) {
+  try { return constructGuard(context, bridgeSignal, extra, monitorCurrent) } catch { throw failure() }
 }
 function bounded(value: number | undefined, maximum: number): number {
   if (value === undefined) return maximum
@@ -184,7 +189,9 @@ export async function openQqMediaRelayBridge(options: QqMediaRelayBridgeOptions)
   async function serve(request: IncomingMessage, response: ServerResponse): Promise<void> {
     let route: Route | undefined, reader: AgentMediaArtifactReader | undefined, current: ReturnType<typeof createGuard> | undefined
     let registered: Promise<void> | undefined, finish!: () => void
-    const cancel = new AbortController(), socket = request.socket
+    const cancel = new AbortController(), socket = request.socket, startedAt = performance.now()
+    let sent = 0, idleTimeout = false, step = 'bridge_request_authorization'
+    const socketTimedOut = () => { idleTimeout = true }
     const disconnected = () => { if (!response.writableFinished) cancel.abort() }
     response.once('close', disconnected); request.on('error', disconnected)
     try {
@@ -208,43 +215,72 @@ export async function openQqMediaRelayBridge(options: QqMediaRelayBridgeOptions)
         route.reservedBytes += size
       }
       registered = new Promise<void>(resolve => { finish = resolve }); route.tasks.add(registered); route.sockets.add(socket)
-      current = createGuard(route.guard.context, stop.signal, cancel.signal)
+      socket.once('timeout', socketTimedOut)
+      current = createGuard(route.guard.context, stop.signal, cancel.signal, false)
       await current.authorize(); route.guard.check()
-      if (request.method === 'GET') reader = await current.wait(store.open(route.lease.artifact, current.context), closeExternal)
+      if (request.method === 'GET') {
+        step = 'bridge_open_artifact'
+        reader = await current.wait(store.openStream(route.lease.artifact, current.context), closeExternal)
+      }
+      step = 'bridge_request_authorization'
       await current.authorize(); route.guard.check()
       response.writeHead(200, { 'Content-Type': route.lease.artifact.mime, 'Content-Length': String(size),
         'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Accept-Ranges': 'none', Connection: 'close' })
-      const end = () => current!.wait(new Promise<void>((resolve, reject) => {
+      const end = (chunk?: Uint8Array) => current!.wait(new Promise<void>((resolve, reject) => {
         const finish = () => { remove(); resolve() }, close = () => { remove(); reject(failure()) }
         const remove = () => { response.removeListener('finish', finish); response.removeListener('close', close) }
-        response.once('finish', finish); response.once('close', close); response.end()
+        response.once('finish', finish); response.once('close', close)
+        response.end(chunk)
+        sent += chunk?.byteLength ?? 0
       }))
+      step = 'bridge_finish'
       if (request.method === 'HEAD') { await end(); return }
-      let sent = 0
+      step = 'bridge_read_artifact'
+      let lastChunk: Uint8Array | undefined
       for await (const chunk of reader!.chunks) {
+        if (lastChunk || !(chunk instanceof Uint8Array) || !chunk.byteLength || chunk.byteLength > BLOCK || chunk.byteLength > size - sent) throw failure()
+        // Keep the final bytes until the reader has closed and the last authorization is complete.
+        // A Content-Length client can disconnect as soon as it has those bytes.
+        if (chunk.byteLength === size - sent) { lastChunk = chunk; continue }
+        step = 'bridge_request_authorization'
         await current.authorize(); route.guard.check()
-        if (!(chunk instanceof Uint8Array) || !chunk.byteLength || chunk.byteLength > BLOCK || chunk.byteLength > size - sent) throw failure()
+        step = 'bridge_write_socket'
+        const ready = response.write(chunk)
         sent += chunk.byteLength
-        if (!response.write(chunk)) await current.wait(new Promise<void>((resolve, reject) => {
+        if (!ready) await current.wait(new Promise<void>((resolve, reject) => {
           const drain = () => { remove(); resolve() }, close = () => { remove(); reject(failure()) }
           const remove = () => { response.removeListener('drain', drain); response.removeListener('close', close) }
           response.once('drain', drain); response.once('close', close)
         }))
+        step = 'bridge_read_artifact'
       }
-      if (sent !== size) throw failure()
-      await current.authorize(); route.guard.check(); await end()
-    } catch {
+      if (!lastChunk) throw failure()
+      step = 'bridge_request_authorization'
+      await current.authorize(); route.guard.check()
+      step = 'bridge_finish'
+      await end(lastChunk)
+    } catch (error) {
+      if (route && registered && !route.guard.signal.aborted) {
+        const code = idleTimeout ? 'media_bridge_socket_timeout' : cancel.signal.aborted ? 'media_bridge_peer_closed' : 'media_bridge_read_failed'
+        const bytesExpected = request.method === 'HEAD' ? 0 : route.lease.artifact.sizeBytes
+        try {
+          route.inScope(() => options.diagnostics?.emit({ stage: 'delivery', operation: 'qq_media_bridge', outcome: 'failed', code,
+            durationMs: performance.now() - startedAt, ...(response.headersSent ? { httpStatus: response.statusCode } : {}),
+            details: { step, bytesWritten: sent, bytesExpected }, error }))
+        } catch { /* Observers cannot change the response. */ }
+      }
       if (route && !cancel.signal.aborted) void revoke(route).catch(() => {})
       deny(response, 404)
     } finally {
       if (reader) await closeExternal(reader)
       current?.dispose(); response.removeListener('close', disconnected); request.removeListener('error', disconnected)
+      socket.removeListener('timeout', socketTimedOut)
       if (route) { route.sockets.delete(socket); if (registered) route.tasks.delete(registered) }
       finish?.()
     }
   }
-  async function stage(input: AgentMediaArtifact, context: AgentMediaResourceContext): Promise<QqMediaRelayResourceLease> {
-    const current = createGuard(context, stop.signal)
+  async function stage(input: AgentMediaArtifact, context: AgentMediaResourceContext, callerMonitorsCurrent = false): Promise<QqMediaRelayResourceLease> {
+    const current = createGuard(context, stop.signal, undefined, !callerMonitorsCurrent)
     let source: AgentMediaArtifactReader | undefined, lease: AgentMediaArtifactLease | undefined, committed = false, reserved = false
     let expected: Readonly<AgentMediaArtifact> | undefined, route: Route | undefined
     try {
@@ -284,7 +320,8 @@ export async function openQqMediaRelayBridge(options: QqMediaRelayBridgeOptions)
       const token = randomBytes(32).toString('hex'), expiresAt = Date.now() + timeoutMs
       const abort = () => { void revoke(route!).catch(() => {}) }
       const timer = setTimeout(abort, timeoutMs); timer.unref()
-      route = { token, lease, guard: current, expiresAt, timer, abort, sockets: new Set(), tasks: new Set(), requests: 0, reservedBytes: 0, revoked: false }
+      route = { token, lease, guard: current, inScope: AsyncLocalStorage.snapshot(), expiresAt, timer, abort,
+        sockets: new Set(), tasks: new Set(), requests: 0, reservedBytes: 0, revoked: false }
       routes.set(token, route); current.signal.addEventListener('abort', abort, { once: true })
       current.check(); committed = true
       const selected = route
@@ -320,6 +357,6 @@ export async function openQqMediaRelayBridge(options: QqMediaRelayBridgeOptions)
     if (!bound || typeof bound !== 'object') throw failure()
     if (advertised.port === '0') advertised.port = String(bound.port)
   } catch { await close().catch(() => {}); throw failure() }
-  const bridge: QqMediaRelayBridge = { stage: (artifact, context) => track(stage(artifact, context)), close }
+  const bridge: QqMediaRelayBridge = { stage: (artifact, context, callerMonitorsCurrent) => track(stage(artifact, context, callerMonitorsCurrent)), close }
   return Object.freeze(bridge)
 }

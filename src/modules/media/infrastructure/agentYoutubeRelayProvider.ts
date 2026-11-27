@@ -10,7 +10,7 @@ import { validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
 import { validateAgentMediaShare, agentMediaSharePageUrl } from './agentMediaRelayReference.js'
 import { parseAgentYoutubeReference } from './agentYoutubeRelayReference.js'
-import { createYoutubeHttp, youtubeFailure, youtubeGuard, youtubeOfficialUrl } from './agentYoutubeRelayHttp.js'
+import { createYoutubeHttp, youtubeCookieSecrets, youtubeFailure, youtubeGuard, youtubeOfficialUrl } from './agentYoutubeRelayHttp.js'
 import type { AgentYoutubeLookup, AgentYoutubeRequest } from './agentYoutubeRelayHttp.js'
 import { runAgentYoutubeMetadata } from './agentYoutubeRelayNative.js'
 import type { AgentYoutubeNative } from './agentYoutubeRelayNative.js'
@@ -41,7 +41,7 @@ const row = (value: unknown): Record<string, unknown> => value && typeof value =
 function text(value: unknown, limit: number, fallback = ''): string {
   if (value === undefined || value === null || value === '') return fallback
   if (typeof value !== 'string' || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) throw youtubeFailure()
-  return Array.from(value.replace(/\s+/gu, ' ').trim()).slice(0, limit).join('') || fallback
+  return Array.from(value.replace(/\s+/gu, ' ').trim()).slice(0, limit).join('').trimEnd() || fallback
 }
 const durationText = (seconds: number) => {
   const total = Math.round(seconds), minutes = Math.floor(total / 60)
@@ -63,19 +63,9 @@ export function createAgentYoutubeRelayProvider(options: AgentYoutubeRelayProvid
       typeof options.artifacts.stage !== 'function' || typeof options.artifacts.open !== 'function' || options.timeoutMs !== undefined &&
       (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 900_000)) throw youtubeFailure()
   const cookie = options.authCookie ?? '', token = options.poToken ?? '', secrets = [...(options.secrets ?? [])]
-  if (typeof cookie !== 'string' || cookie.length > 32768 || /[^\x20-\x7e]/u.test(cookie) ||
+  if (typeof cookie !== 'string' ||
       typeof token !== 'string' || token.length > 8192 || token && !/^[A-Za-z0-9_+./=-]+$/u.test(token)) throw youtubeFailure()
-  if (cookie) {
-    secrets.push(cookie)
-    const names = new Set<string>()
-    for (const part of cookie.split(';')) {
-      if (!part.trim()) continue
-      const at = part.indexOf('='), key = part.slice(0, at).trim(), value = part.slice(at + 1).trim()
-      if (at < 1 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}$/u.test(key) || !value || /\s/u.test(value) || names.has(key)) throw youtubeFailure()
-      names.add(key); secrets.push(value)
-    }
-    if (!names.size) throw youtubeFailure()
-  }
+  secrets.push(...youtubeCookieSecrets(cookie))
   if (token) secrets.push(token)
   if (options.proxyUrl) {
     secrets.push(options.proxyUrl)

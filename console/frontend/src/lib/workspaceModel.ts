@@ -5,9 +5,15 @@ export interface WorkspaceAccount {
   namespace: string
   id: string
 }
+export interface WorkspaceTarget {
+  account: WorkspaceAccount
+  kind: string
+  id: string
+}
 export interface WorkspaceConversation {
   scopeKey: string
   bindingToken: string
+  name?: string
   binding: {
     source: 'configured'
     id: string
@@ -15,7 +21,7 @@ export interface WorkspaceConversation {
     agentId: string
     personaId: string
     connectionId: string
-    target: { account: WorkspaceAccount; kind: string; id: string }
+    target: WorkspaceTarget
   }
 }
 export interface WorkspaceAgent {
@@ -28,6 +34,7 @@ export interface WorkspaceAgent {
 export interface WorkspaceConnection {
   id: string
   account: WorkspaceAccount
+  name?: string
   state: 'connected' | 'disconnected' | 'unknown'
   conversationCount: number
   capabilities: string[]
@@ -71,6 +78,11 @@ function account(value: unknown): WorkspaceAccount {
   const raw = record(value)
   return { platform: text(raw.platform), namespace: text(raw.namespace), id: text(raw.id) }
 }
+function displayName(value: unknown, id: string): string | undefined {
+  const name = typeof value === 'string' ? value.trim() : ''
+  return name && name !== id && name.length <= 128 &&
+    !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(name) ? name : undefined
+}
 function unique(values: string[]) {
   if (new Set(values).size !== values.length) fail()
 }
@@ -98,9 +110,11 @@ export function parseWorkspace(value: unknown): ConsoleWorkspace {
       item.conversationCount < 0
     )
       fail()
+    const identity = account(item.account), name = displayName(item.name, identity.id)
     return {
       id: text(item.id),
-      account: account(item.account),
+      account: identity,
+      ...(name ? { name } : {}),
       state: item.state,
       conversationCount: item.conversationCount,
       capabilities: list(item.capabilities, 1000).map((value) => text(value))
@@ -141,7 +155,8 @@ export function parseWorkspace(value: unknown): ConsoleWorkspace {
         JSON.stringify([id, a.platform, a.namespace, a.id, binding.target.kind, binding.target.id])
       )
         fail()
-      return { scopeKey, bindingToken, binding }
+      const name = displayName(row.name, binding.target.id)
+      return { scopeKey, bindingToken, binding, ...(name ? { name } : {}) }
     })
     return {
       id,
@@ -194,12 +209,6 @@ export function parseWorkspace(value: unknown): ConsoleWorkspace {
     cognition: { status: 'planned' }
   }
 }
-export const conversationLabel = (row: WorkspaceConversation) =>
-  `${({ group: '群聊', private: '私聊', channel: '频道', thread: '话题' } as Record<string, string>)[row.binding.target.kind] || row.binding.target.kind} ${row.binding.target.id}`
-export const accountLabel = (account: WorkspaceAccount) =>
-  `${account.platform} / ${account.namespace} / ${account.id}`
-export const conversationSourceLabel = (row: WorkspaceConversation) =>
-  `连接 ${row.binding.connectionId} · 账号 ${accountLabel(row.binding.target.account)} · ${conversationLabel(row)}`
 export function robotLabel(agent: WorkspaceAgent, agents: readonly WorkspaceAgent[]) {
   return agents.some((item) => item.id !== agent.id && item.name === agent.name)
     ? `${agent.name}（本人标识 · ${agent.id}）`

@@ -17,16 +17,17 @@ import {
 import { api, authState, clearToken } from '../lib/api'
 import { workspace } from '../lib/workspace'
 import {
-  workspaceFeatureEntries,
   workspaceFeaturePath,
   workspaceFeatures,
   workspaceNavigation,
   type WorkspaceFeature
 } from '../lib/navigation'
-import { accountLabel, conversationLabel, robotLabel, robotLocation } from '../lib/workspaceModel'
+import { robotLabel, robotLocation } from '../lib/workspaceModel'
+import { accountLabel, accountReference, conversationLabel, namedId } from '../lib/workspaceNames'
 import { confirmLeave, installUnsavedDialog } from '../composables/useUnsavedGuard'
 import { useOpsResource } from '../lib/operations'
 import { consoleRestart } from '../lib/consoleRestart'
+import WorkspaceNavigation from './WorkspaceNavigation.vue'
 
 defineProps<{ appearance: string }>()
 const emit = defineEmits<{ theme: []; logout: [] }>()
@@ -37,6 +38,7 @@ const data = workspace.data,
   workspaceError = workspace.error,
   loading = workspace.loading
 const menuOpen = ref(false),
+  expandedSection = ref<string | null>(null),
   searchOpen = ref(false),
   query = ref(''),
   passwordOpen = ref(false),
@@ -49,24 +51,44 @@ const build = __CONSOLE_BUILD__
 installUnsavedDialog()
 useOpsResource((signal) => workspace.load(signal), 30000)
 const sectionLabels = Object.fromEntries(workspaceNavigation.map((item) => [item.path, item.label]))
-function sectionForPath(path: string) {
-  if (path.startsWith('/robots')) return '/robots'
-  if (path.startsWith('/connections')) return '/connections'
-  if (path.startsWith('/observe')) return '/runtime'
-  const feature = workspaceFeatures[path.slice(1) as keyof typeof workspaceFeatures]
-  if (feature) return feature.group
-  return workspaceNavigation.some((item) => item.path === path) ? path : '/'
-}
+const currentPath = computed(() => route.path.replace(/\/$/, '') || '/')
+const activeFeature = computed<WorkspaceFeature | undefined>(() => {
+  const path = currentPath.value
+  if (path.startsWith('/robots/')) {
+    if (route.params.tab === 'self' && route.query.panel === 'person-profiles')
+      return 'person-profiles'
+    if (route.params.tab === 'actions' && route.query.panel === 'trusteeship') return 'trusteeship'
+  }
+  if (path === '/connections' || path.startsWith('/connections/')) return 'groups'
+  if (path === '/observe/details') return 'observe'
+  const feature = path.slice(1)
+  if (Object.hasOwn(workspaceFeatures, feature)) return feature as WorkspaceFeature
+})
 const active = computed(() => {
-  const path = sectionForPath(route.path)
-  return workspaceNavigation.find((item) => item.path === path) ?? workspaceNavigation[0]!
+  const path = activeFeature.value
+    ? workspaceFeatures[activeFeature.value].group
+    : currentPath.value
+  return (
+    workspaceNavigation.find((item) => path === item.path || path.startsWith(item.path + '/')) ??
+    workspaceNavigation[0]!
+  )
 })
 const selectedAgent = computed(() =>
   route.path.startsWith('/robots/')
     ? data.value?.agents.find((item) => item.id === route.params.id)
     : undefined
 )
-const subnavItems = computed(() => workspaceFeatureEntries(active.value.path))
+const selectedConnection = computed(() =>
+  route.path.startsWith('/connections/')
+    ? data.value?.connections.find((item) => item.id === route.params.id)
+    : undefined
+)
+const breadcrumbs = computed(() => [
+  active.value.label,
+  ...(selectedAgent.value ? [robotLabel(selectedAgent.value, data.value?.agents ?? [])] : []),
+  ...(selectedConnection.value ? [namedId(selectedConnection.value.id, selectedConnection.value.name)] : []),
+  ...(activeFeature.value ? [workspaceFeatures[activeFeature.value].label] : [])
+])
 function featureTarget(feature: WorkspaceFeature) {
   if ((feature === 'person-profiles' || feature === 'trusteeship') && selectedAgent.value) {
     return {
@@ -75,14 +97,6 @@ function featureTarget(feature: WorkspaceFeature) {
     }
   }
   return { path: workspaceFeaturePath(feature) }
-}
-function featureActive(feature: WorkspaceFeature) {
-  const path = workspaceFeaturePath(feature)
-  if (feature === 'person-profiles' && route.params.tab === 'self' && route.query.panel === feature)
-    return true
-  if (feature === 'groups' && route.path.startsWith('/connections')) return true
-  if (feature === 'observe' && route.path.startsWith('/observe')) return true
-  return route.path === path || route.path.startsWith(path + '/')
 }
 const results = computed(() => {
   const choices = [
@@ -105,15 +119,15 @@ const results = computed(() => {
       to: robotLocation(item)
     })),
     ...(data.value?.connections ?? []).map((item) => ({
-      label: item.id,
-      hint: `连接 · ${accountLabel(item.account)}`,
+      label: namedId(item.id, item.name),
+      hint: `连接 · ${accountReference(item.account)}`,
       keywords: '',
       to: { path: `/connections/${encodeURIComponent(item.id)}` }
     })),
     ...(data.value?.agents ?? []).flatMap((agent) =>
       agent.conversations.map((row) => ({
-        label: `${robotLabel(agent, data.value?.agents ?? [])} · ${conversationLabel(row)}`,
-        hint: `${row.binding.connectionId} · ${accountLabel(row.binding.target.account)}`,
+        label: conversationLabel(row),
+        hint: `${robotLabel(agent, data.value?.agents ?? [])} · ${row.binding.connectionId} · ${accountLabel(row.binding.target.account)}`,
         keywords: '',
         to: robotLocation(agent, 'conversations', row)
       }))
@@ -133,6 +147,12 @@ const results = computed(() => {
 function choose(target: RouteLocationRaw) {
   searchOpen.value = false
   void router.push(target)
+}
+function closeMenuOnCurrentLink(event: MouseEvent) {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
+  if (!(event.target instanceof Element)) return
+  const href = event.target.closest('a[href]')?.getAttribute('href')
+  if (href === router.resolve(route.fullPath).href) menuOpen.value = false
 }
 function keydown(event: KeyboardEvent) {
   const editing = (event.target as HTMLElement)?.closest('input,textarea,[contenteditable="true"]')
@@ -186,10 +206,22 @@ async function changePassword() {
   }
 }
 watch(
+  [currentPath, activeFeature],
+  () => {
+    expandedSection.value = active.value.path === '/' ? null : active.value.path
+  },
+  { immediate: true }
+)
+watch(
   () => route.fullPath,
   () => {
     menuOpen.value = false
-    document.title = `${selectedAgent.value ? robotLabel(selectedAgent.value, data.value?.agents ?? []) : active.value.label} · 机器人控制台`
+  }
+)
+watch(
+  breadcrumbs,
+  (labels) => {
+    document.title = [...labels, '机器人控制台'].join(' · ')
   },
   { immediate: true }
 )
@@ -208,21 +240,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keydown))
         ><span class="brand-mark"><Bot :size="22" /></span
         ><span>bl-chat<small>机器人控制台</small></span></RouterLink
       >
-      <nav class="navigation" aria-label="主导航">
-        <RouterLink
-          v-for="item in workspaceNavigation"
-          :key="item.path"
-          :to="item.path"
-          class="nav-item"
-          :class="{ active: active.path === item.path }"
-          :aria-current="active.path === item.path ? 'page' : undefined"
-          ><component :is="item.icon" :size="19" /><span>{{ item.label }}</span></RouterLink
-        >
-      </nav>
-      <div class="workspace-sidebar-note">
-        <span class="eyebrow">独立宿主</span>
-        <p>从本人出发，了解她的会话与行动。</p>
-      </div>
+      <WorkspaceNavigation
+        v-model:expanded="expandedSection"
+        label="主导航"
+        :current-path="currentPath"
+        :active-section="active.path"
+        :active-feature="activeFeature"
+        :feature-target="featureTarget"
+      />
       <div class="sidebar-user">
         <span class="avatar">{{ (authState?.username || 'T').slice(0, 1).toUpperCase() }}</span>
         <div>
@@ -247,11 +272,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keydown))
           @click="menuOpen = true"
           ><template #icon><Menu :size="21" /></template
         ></NButton>
-        <div class="breadcrumbs">
-          <span>{{ active.label }}</span
-          ><ChevronRight v-if="selectedAgent" :size="13" /><strong v-if="selectedAgent">{{
-            robotLabel(selectedAgent, data?.agents ?? [])
-          }}</strong>
+        <div class="breadcrumbs" aria-label="当前位置">
+          <template v-for="(label, index) in breadcrumbs" :key="index">
+            <ChevronRight v-if="index > 0" :size="13" aria-hidden="true" />
+            <strong v-if="index === breadcrumbs.length - 1">{{ label }}</strong>
+            <span v-else>{{ label }}</span>
+          </template>
         </div>
         <div class="topbar-tools">
           <button
@@ -283,36 +309,28 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keydown))
         </div>
       </header>
       <main id="main-content" class="workspace-content">
-        <nav v-if="subnavItems.length" class="workspace-subnav" aria-label="当前分类功能">
-          <RouterLink
-            v-for="[key, item] in subnavItems"
-            :key="key"
-            :to="featureTarget(key as WorkspaceFeature)"
-            :class="{ active: featureActive(key as WorkspaceFeature) }"
-            :aria-current="featureActive(key as WorkspaceFeature) ? 'page' : undefined"
-            >{{ item.label }}</RouterLink
-          >
-        </nav>
         <NAlert v-if="workspaceError" type="warning" title="工作区刷新失败" class="workspace-error"
           >{{ workspaceError }}。下方保留上次读取内容，请刷新后再操作。</NAlert
-        ><RouterView v-slot="{ Component, route: current }"
-          ><component :is="Component" :key="current.path"
-        /></RouterView>
+        >
+        <RouterView v-slot="{ Component, route: current }">
+          <div v-if="Component" :key="current.path" class="workspace-page">
+            <component :is="Component" />
+          </div>
+        </RouterView>
       </main>
     </div>
     <NDrawer v-model:show="menuOpen" placement="left" :width="260"
       ><NDrawerContent title="机器人控制台" closable
-        ><nav class="navigation" aria-label="移动主导航">
-          <RouterLink
-            v-for="item in workspaceNavigation"
-            :key="item.path"
-            :to="item.path"
-            class="nav-item"
-            :class="{ active: active.path === item.path }"
-            >{{ item.label }}</RouterLink
-          >
-        </nav>
-        <NButton @click="logout">退出登录</NButton></NDrawerContent
+        ><WorkspaceNavigation
+          v-model:expanded="expandedSection"
+          label="移动主导航"
+          :current-path="currentPath"
+          :active-section="active.path"
+          :active-feature="activeFeature"
+          :feature-target="featureTarget"
+          @click="closeMenuOnCurrentLink"
+        />
+        <NButton class="workspace-drawer-logout" @click="logout">退出登录</NButton></NDrawerContent
       ></NDrawer
     >
     <NModal
@@ -353,3 +371,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keydown))
     >
   </div>
 </template>
+
+<style scoped>
+.workspace-page {
+  min-width: 0;
+  animation: workspace-page-enter 180ms ease-out;
+}
+
+@keyframes workspace-page-enter {
+  from {
+    opacity: 0.65;
+    transform: translateY(4px);
+  }
+}
+</style>

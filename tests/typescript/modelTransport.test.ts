@@ -11,18 +11,32 @@ test('side channel transport preserves request fields and validates empty respon
   }
   const input = { url: 'https://fixture.invalid', apikey: 'fixture', model: 'fixture', messages: [{ role: 'user', content: 'test' }], maxTokens: 8 }
   assert.deepEqual(await sideLLMCall({ ...input, fetchImpl }), { ok: true, content: 'ok' })
-  assert.deepEqual(await sideLLMCall({ ...input, fetchImpl: async () => Response.json({ choices: [] }) }), { ok: false, error: '模型返回空', status: 200 })
+  const failureCases: [Response, string][] = [
+    [Response.json({ choices: [] }), 'model_response_envelope_invalid'],
+    [Response.json({ choices: [{ message: { content: '' } }] }), 'model_response_empty'],
+    [Response.json({ choices: [{ message: { content: null }, finish_reason: 'length' }] }), 'model_response_truncated'],
+    [Response.json({ choices: [{ message: { content: null, refusal: 'private-refusal' } }] }), 'model_response_refused'],
+    [new Response('invalid-private-response'), 'model_response_body_invalid'],
+  ]
+  for (const [response, code] of failureCases) {
+    const failure = await sideLLMCall({ ...input, fetchImpl: async () => response })
+    assert.ok(!failure.ok)
+    assert.equal(failure.status, 200)
+    assert.equal(failure.code, code)
+    if (failure.code === 'model_response_truncated') assert.equal(failure.limit, 8)
+    assert.doesNotMatch(JSON.stringify(failure), /private/)
+  }
 })
 test('pre-cancelled side channel requests never invoke transport', async () => {
   const controller = new AbortController()
   controller.abort()
   const result = await sideLLMCall({ url: 'https://fixture.invalid', apikey: 'fixture', model: 'fixture', messages: [{ role: 'user', content: 'test' }], signal: controller.signal,
     fetchImpl: async () => { assert.fail('cancelled request must not be sent') } })
-  assert.deepEqual(result, { ok: false, error: '模型请求已取消' })
+  assert.deepEqual(result, { ok: false, code: 'provider_cancelled', error: '模型请求已取消' })
 })
 test('side model transport checks a captured session after preparing the request and after reading the provider response', async () => {
   const input = { url: 'https://fixture.invalid', apikey: 'fixture', model: 'fixture' }
-  const revoked = { ok: false, error: '角色绑定已改变，模型请求已停止' }
+  const revoked = { ok: false, code: 'model_source_changed', error: '角色绑定已改变，模型请求已停止' }
   let current = true
   const result = await sideLLMCall({ ...input, isCurrent: () => current,
     messages: [{ role: 'user', content: { toJSON() { current = false; return 'test' } } }],

@@ -3,6 +3,7 @@ import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
+import { readPersistedSemanticState } from './helpers/semanticMemoryStorage.js'
 
 const [{ createAgentRuntime }, { createAgentBindingDirectory, agentPersonaScopeId, conversationAddressKey },
   { createAgentSemanticMemoryStore, agentSemanticMemoryId }, { createAgentInbox },
@@ -105,8 +106,7 @@ async function fixture(t, overrides = {}) {
     return saved
   }
   async function raw(target = group, agentId = 'daily') {
-    const value = await redis.storage.get(stateKey(target, agentId))
-    return value === null ? undefined : JSON.parse(value)
+    return readPersistedSemanticState(redis.reader, redis.prefix, agentSemanticMemoryId({ target, agentId }))
   }
   function message(target = group, command = 'forget', occurredAt = now) {
     const text = commands[command]

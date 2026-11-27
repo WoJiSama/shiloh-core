@@ -4,12 +4,16 @@ export interface ToolParameters {type:string;properties:Record<string,ParameterS
  * 抽象工具类，所有具体工具需继承此类并实现func方法
  */
 import { buildVisibleFailureDetail } from "../../models/domain/visibleFailure.js"
+import type { AgentDiagnosticDetails } from '../../../contracts/agentDiagnostics.js'
+type ParameterIssue = Pick<AgentDiagnosticDetails, 'field' | 'rule' | 'limit'>
 
 export class AbstractTool {
  /** Captured only by the platform-neutral host tool bridge. */
  agentDataPolicy?: 'ephemeral';
  /** Optional Core host admission before action receipts or temporary-data handling. */
- agentPreflight?(input: Record<string, unknown>, event: unknown): string | undefined;
+ agentPreflight?(input: Record<string, unknown>, event: unknown, onInvalid?: (issue: ParameterIssue) => void): string | undefined;
+ /** Core host tools can emit their own execution receipt. */
+ agentDiagnosesExecution = false;
  name:string;parameters:ToolParameters;description:string;skill:Record<string,unknown>|null;
   constructor() {
     this.name = '';
@@ -39,16 +43,20 @@ export class AbstractTool {
    * @param {Object} params - 参数对象
    * @returns {boolean|string} - 如果参数有效则返回true，否则返回错误信息
    */
-  validateParameters(params:Record<string,unknown>) {
+  validateParameters(params:Record<string,unknown>, onInvalid?: (issue: ParameterIssue) => void) {
+    const reject = (rule: string, message: string, field?: string, limit?: number) => {
+      onInvalid?.({ rule, ...(field && /^[A-Za-z][A-Za-z0-9_]{0,47}$/u.test(field) ? { field } : {}), ...(limit === undefined ? {} : { limit }) });
+      return message;
+    };
     if (!params || typeof params !== 'object') {
-      return '参数必须是一个对象';
+      return reject('type', '参数必须是一个对象');
     }
   
     const requiredFields = new Set(this.parameters.required || []);
     if (this.parameters.required) {
       for (const required of requiredFields) {
         if (!(required in params)) {
-          return `缺少必填参数: ${required}`;
+          return reject('required', `缺少必填参数: ${required}`, required);
         }
       }
     }
@@ -74,7 +82,7 @@ export class AbstractTool {
         
         // 验证是否为数组
         if (!Array.isArray(value)) {
-          return `参数 ${key} 类型错误，应为 array`;
+          return reject('type', `参数 ${key} 类型错误，应为 array`, key);
         }
   
         // 如果定义了数组元素类型，验证每个元素
@@ -82,7 +90,7 @@ export class AbstractTool {
           const invalidItem = value.some(item => schema.items?.type === 'integer'
             ? !Number.isSafeInteger(item) : typeof item !== schema.items?.type);
           if (invalidItem) {
-            return `参数 ${key} 的数组元素类型错误，应为 ${schema.items.type}`;
+            return reject('item_type', `参数 ${key} 的数组元素类型错误，应为 ${schema.items.type}`, key);
           }
         }
         continue;
@@ -90,7 +98,7 @@ export class AbstractTool {
   
       // 处理其他类型
       if (schema.type === 'integer' && (typeof value !== 'number' || !Number.isSafeInteger(value))) {
-        return `参数 ${key} 类型错误，应为 integer`;
+        return reject('integer', `参数 ${key} 类型错误，应为 integer`, key);
       }
       if (schema.type && schema.type !== 'integer' && typeof value !== schema.type) {
         // 自动类型转换
@@ -102,23 +110,23 @@ export class AbstractTool {
           params[key] = Number(value);
           continue;
         }
-        return `参数 ${key} 类型错误，应为 ${schema.type}`;
+        return reject('type', `参数 ${key} 类型错误，应为 ${schema.type}`, key);
       }
   
       if (schema.pattern && !new RegExp(schema.pattern).test(String(value))) {
-        return `参数 ${key} 格式不正确`;
+        return reject('pattern', `参数 ${key} 格式不正确`, key);
       }
 
       if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {
-        return `参数 ${key} 必须是以下值之一: ${schema.enum.join(', ')}`;
+        return reject('enum', `参数 ${key} 必须是以下值之一: ${schema.enum.join(', ')}`, key);
       }
   
       if (['number', 'integer'].includes(schema.type || '') && typeof value==='number') {
         if (schema.minimum !== undefined && value < schema.minimum) {
-          return `参数 ${key} 不能小于 ${schema.minimum}`;
+          return reject('minimum', `参数 ${key} 不能小于 ${schema.minimum}`, key, schema.minimum >= 0 && Number.isSafeInteger(schema.minimum) ? schema.minimum : undefined);
         }
         if (schema.maximum !== undefined && value > schema.maximum) {
-          return `参数 ${key} 不能大于 ${schema.maximum}`;
+          return reject('maximum', `参数 ${key} 不能大于 ${schema.maximum}`, key, schema.maximum >= 0 && Number.isSafeInteger(schema.maximum) ? schema.maximum : undefined);
         }
       }
     }
@@ -152,21 +160,25 @@ export class AbstractTool {
    * @param {Object} event - 事件对象
    * @returns {Promise<unknown>} - 工具执行的结果或错误信息
    */
-  async execute(params:unknown, event:unknown):Promise<unknown> {
+  async execute(params:unknown, event:unknown, observe?: { invalid(issue: ParameterIssue): void; failed(error: unknown): void }):Promise<unknown> {
     let normalizedParams;
     try {
       normalizedParams = this.normalizeParameters(params, { event });
     } catch (error) {
+      observe?.invalid({ rule: 'normalization' });
       return `error: 参数规范化失败: ${buildVisibleFailureDetail(error)}`;
     }
-    const validation = this.validateParameters(normalizedParams);
+    let reported = false;
+    const validation = this.validateParameters(normalizedParams, observe && (issue => { reported = true; observe.invalid(issue) }));
     if (validation !== true) {
+      if (!reported) observe?.invalid({ rule: 'business_rule' });
       // 返回错误信息而不是抛出错误
       return `error: ${validation}`;
     }
     try {
       return await this.func(normalizedParams, event);
     } catch (error) {
+      observe?.failed(error);
       if (error !== null && typeof error === 'object' && 'uncertain' in error && error.uncertain === true) {
         return {kind:'tool_outcome',status:'unknown',tool:this.name,error:{message:`执行结果未知，可能已产生外部动作；核实前不重复执行。${buildVisibleFailureDetail(error)}`}};
       }

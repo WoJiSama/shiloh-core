@@ -12,7 +12,7 @@ const schema: ConfigSchemaItem[] = [
     field: "groupGuard.enabled",
     label: "入群审核开关",
     component: "Switch",
-    bottomHelpMessage: "开启后，仅对下方群列表中的群生效；机器人必须是群主或管理员才会发起验证和踢人"
+    bottomHelpMessage: "开启后，仅对下方群列表中的群生效；机器人必须是群主或管理员才会发起验证"
   },
   {
     field: "groupGuard.enabledGroups",
@@ -52,20 +52,8 @@ const schema: ConfigSchemaItem[] = [
     field: "groupGuard.maxWrongTimes",
     label: "允许错误次数",
     component: "InputNumber",
-    bottomHelpMessage: "达到该次数后按配置踢出。默认 1 次，即答错一次就踢",
+    bottomHelpMessage: "达到该次数后提示验证失败",
     componentProps: { min: 1, max: 5, placeholder: "1" }
-  },
-  {
-    field: "groupGuard.kickOnTimeout",
-    label: "超时踢出",
-    component: "Switch",
-    bottomHelpMessage: "关闭后超时只取消验证，不踢人"
-  },
-  {
-    field: "groupGuard.kickOnWrongAnswer",
-    label: "答错踢出",
-    component: "Switch",
-    bottomHelpMessage: "关闭后答错达到次数只提示失败，不踢人"
   },
   {
     field: "groupGuard.promptTemplate",
@@ -87,13 +75,13 @@ const schema: ConfigSchemaItem[] = [
   },
   {
     field: "groupGuard.failMessage",
-    label: "答错踢出提示",
+    label: "答错提示",
     component: "InputTextArea",
     bottomHelpMessage: "答错达到上限后的提示。支持变量：{userId}、{question}"
   },
   {
     field: "groupGuard.timeoutMessage",
-    label: "超时踢出提示",
+    label: "超时提示",
     component: "InputTextArea",
     bottomHelpMessage: "超时后的提示。支持变量：{userId}、{question}、{timeout}"
   },
@@ -242,12 +230,6 @@ const schema: ConfigSchemaItem[] = [
     componentProps: { min: 0, max: 1, step: 0.01, placeholder: "0.90" }
   },
   {
-    field: "groupModeration.thresholds.kick",
-    label: "踢出阈值",
-    component: "InputNumber",
-    componentProps: { min: 0, max: 1, step: 0.01, placeholder: "0.97" }
-  },
-  {
     field: "groupModeration.actions.recallEnabled",
     label: "允许自动撤回",
     component: "Switch",
@@ -258,12 +240,6 @@ const schema: ConfigSchemaItem[] = [
     label: "允许自动禁言",
     component: "Switch",
     bottomHelpMessage: "默认关闭。开启后达到禁言阈值会尝试禁言"
-  },
-  {
-    field: "groupModeration.actions.kickEnabled",
-    label: "允许自动踢出",
-    component: "Switch",
-    bottomHelpMessage: "默认关闭。开启后达到踢出阈值会尝试踢人"
   },
   {
     field: "groupModeration.actions.muteSeconds",

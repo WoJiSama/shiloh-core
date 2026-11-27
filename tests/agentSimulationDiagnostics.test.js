@@ -4,6 +4,8 @@ import { createCharacterSharedSelf } from '../dist/backend/modules/simulation/in
 import { createCharacterWorkspace } from '../dist/backend/modules/simulation/infrastructure/characterWorkspace.js'
 import test from 'node:test'
 import { createAgentDiagnostics } from '../dist/backend/modules/runtime/infrastructure/agentDiagnostics.js'
+import { createAgentFailureAlerts } from '../dist/backend/modules/runtime/infrastructure/agentFailureAlerts.js'
+import { formatQqOwnerAlerts } from '../dist/backend/bootstrap/standaloneQqAlerts.js'
 import { createSimulationRuntime } from '../dist/backend/modules/simulation/infrastructure/simulationRuntime.js'
 import { createDefaultSimSession } from '../dist/backend/modules/simulation/domain/simConfig.js'
 import { CHARACTER_MIN_WAKE_MS, addCharacterMemory, beginCharacterGoalAttempt, characterKey, createCharacterGoal, createEmptyCharacterState, deleteCharacterMemory } from '../dist/backend/modules/simulation/domain/characterState.js'
@@ -53,7 +55,7 @@ function fixture({
   getStyleDigest, readSemanticMemory, getSemanticRecall, readConversationMemory, readGroupMemory, wakeGateJudge,
   recordGroupReply, recordEpisode,
   getSelf, handlesTarget, messageActions, getTodaySpendCny, durableIngress, isAccountReady, readFault,
-  describeImages, fetchImageBase64, getForwardContent, diagnostics, rawModel, failureNoticeFallback, ephemeralTools = false, withDiagnosticScope,
+  describeImages, fetchImageBase64, getForwardContent, allowsToolInput, diagnostics, rawModel, failureNoticeFallback, ephemeralTools = false, withDiagnosticScope, logger,
 } = {}) {
   if (seed) for (const groupId of groups) if (!kv.has(sessionKey(groupId))) seedSession(kv, groupId, botId, clock)
   const calls = []
@@ -84,7 +86,7 @@ function fixture({
   const runtime = createSimulationRuntime({
     redis, now: () => clock.value, random: () => 0.99,
     ...(diagnostics ? { diagnostics } : {}), ...(failureNoticeFallback ? { failureNoticeFallback } : {}), ...(withDiagnosticScope ? { withDiagnosticScope } : {}),
-    logger: { info() {}, warn(...args) { errors.push(args.join(' ')) }, error(...args) { errors.push(args.map(String).join(' ')) } },
+    logger: logger ?? { info() {}, warn(...args) { errors.push(args.join(' ')) }, error(...args) { errors.push(args.map(String).join(' ')) } },
     getSelf: getSelf ?? (() => ({ id: botId, name: identity.name })),
     getPersona: getPersona ?? (() => ({ personaId: identity.id, persona: { name: identity.name }, systemContent: identity.systemContent })),
     getSection: () => ({
@@ -118,6 +120,7 @@ function fixture({
     ...(describeImages ? { describeImages } : {}),
     ...(fetchImageBase64 ? { fetchImageBase64 } : {}),
     ...(getForwardContent ? { getForwardContent } : {}),
+    ...(allowsToolInput ? { allowsToolInput } : {}),
     getExtraTools: names => toolDefinitions.filter(tool => names.includes(tool.name)),
     async YTapi(request) {
       calls.push(structuredClone(request))
@@ -147,6 +150,53 @@ const notice = '这次没能取得结果，当前请求还没有完成。'
 const failedResponse = { error: { message: 'sk-private-should-never-leave' } }
 const reply = content => ({ choices: [{ message: { role: 'assistant', content } }], usage: { total_tokens: 7 } })
 const spy = () => { const events = []; return { events, emit(event) { const { error, ...safe } = event; events.push({ ...safe, ...(error ? { errorKind: error instanceof Error ? 'Error' : 'Unknown' } : {}) }) }, traceId: () => 'fixture-trace' } }
+
+test('session read failures, invalid stored state and health findings produce distinct redacted QQ alerts', async t => {
+  const rows = [], terminal = [], batches = []
+  const alerts = createAgentFailureAlerts({
+    channel: 'qq', logger: { error() {} },
+    async deliver(batch) { batches.push(batch); return { state: 'confirmed' } },
+  })
+  t.after(() => alerts.close())
+  const diagnostics = createAgentDiagnostics({
+    sink: { async append(row) { rows.push(row); return true } },
+    logger: { info() {}, warn() {}, error(line) { terminal.push(line) } }, onFailure: alerts.report,
+  })
+  let failRead = true
+  const h = fixture({ diagnostics, logger: diagnostics.logger, readFault(key) {
+    if (failRead && key === sessionKey(GROUP)) throw new TypeError('private-redis-error sk-test-placeholder')
+  } })
+  t.after(() => h.runtime.stop())
+  const valid = h.kv.get(sessionKey(GROUP))
+  await h.runtime.describeGroup(GROUP)
+  failRead = false
+  h.kv.set(sessionKey(GROUP), '{private-corrupted-state')
+  await h.runtime.describeGroup(GROUP)
+  h.kv.set(sessionKey(GROUP), valid)
+  h.kv.set(SIMULATION_KNOWN_GROUPS_KEY, JSON.stringify([GROUP]))
+  h.kv.set('bl-chat:commitment:faillog', JSON.stringify([{ id: 'private-task-id', intent: 'private-task-text', group_id: GROUP }]))
+  await h.runtime.sweepOnce()
+  await waitFor(() => rows.some(row => row.code === 'commitment_terminal_failure'), 'health classification is written')
+  await diagnostics.flush()
+  await alerts.close()
+
+  const read = rows.findLast(row => row.code === 'session_read_failed')
+  const decode = rows.find(row => row.code === 'session_decode_failed')
+  assert.equal(read.operation, 'simulation_session_load')
+  assert.equal(read.errorKind, 'TypeError')
+  assert.equal(decode.operation, read.operation)
+  assert.equal(decode.errorKind, 'SyntaxError')
+  assert.ok(terminal.some(line => line.includes(`session_read_failed trace=${read.traceId} errorKind=TypeError`)))
+  const text = batches.map(formatQqOwnerAlerts).join('\n')
+  assert.match(text, /读取群聊会话失败.*\n持久化的会话状态暂时无法读取/u)
+  assert.match(text, /读取群聊会话失败.*\n已保存的会话状态格式损坏/u)
+  assert.match(text, /后台健康检查失败.*\n托付账本中存在未完成或结果待确认的记录/u)
+  assert.ok(text.includes(`追踪编号 ${read.traceId}`))
+  assert.doesNotMatch(JSON.stringify({ rows, terminal, batches, text }),
+    /runtime_warning|private-redis-error|sk-test-placeholder|private-corrupted-state|private-task-(text|id)/u)
+  assert.doesNotMatch(text, new RegExp(`(?<![0-9A-Za-z-])${GROUP}(?![0-9A-Za-z-])`, 'u'))
+})
+
 async function settled(h, minCalls = 1) {
   await waitFor(async () => h.calls.length >= minCalls && !(await h.runtime.describeGroup(GROUP)).running,
     `simulation settles: ${h.errors.join(' | ')}`)
@@ -304,6 +354,148 @@ test('failed host tools remain one execution and return to the main model before
 })
 
 
+test('routine closing can omit its reason and confirmed read payloads succeed', async t => {
+  const diagnostics = spy()
+  const h = fixture({ diagnostics, script: (_request, index) => index === 0 ? tools(toolCall('simGetUnreadMessages', {}))
+    : tools(toolCall('simFinishTurn', { choice: 'chat', messages: ['正常收尾'], markRead: false })) })
+  t.after(() => h.runtime.stop())
+  await h.ingest()
+  await settled(h, 2)
+  assert.equal(h.sent.length, 1)
+  for (const operation of ['simGetUnreadMessages', 'simFinishTurn']) {
+    assert.deepEqual(diagnostics.events.filter(row => row.operation === operation).map(row => row.outcome), ['started', 'succeeded'])
+  }
+  const finish = h.calls[1].tools.find(tool => tool.function.name === 'simFinishTurn').function.parameters
+  assert.equal(finish.properties.markRead.type, 'boolean')
+  assert.equal(Object.hasOwn(finish.properties, 'throughSeq'), false)
+  assert.equal(JSON.parse(h.kv.get(sessionKey(GROUP))).lastReadThroughSeq, 0)
+})
+
+test('finish preflight reports fixed rejection reasons to QQ and allows a corrected call', async t => {
+  const params = { choice: 'chat', reason: '群聊收尾', messages: ['修改后成功发送'] }
+  const invalidJson = toolCall('simFinishTurn', params)
+  invalidJson.function.arguments = '{"reason":'
+  const cases = [
+    { code: 'tool_arguments_invalid', cause: /有效 JSON 对象/u, message: tools(invalidJson) },
+    { code: 'tool_schema_invalid', cause: /choice 缺少必填项/u, field: 'choice', rule: 'required',
+      message: tools(toolCall('simFinishTurn', { markRead: true })) },
+    { code: 'tool_schema_invalid', cause: /要求 字符串，收到 对象/u, field: 'messages.items', rule: 'type',
+      message: tools(toolCall('simFinishTurn', { ...params, messages: [{ text: 'PRIVATE-SHAPE-CONTENT' }] })) },
+    { code: 'tool_schema_invalid', cause: /要求 数组，收到 null/u, field: 'messages', rule: 'type',
+      message: tools(toolCall('simFinishTurn', { ...params, messages: null })) },
+    { code: 'tool_schema_invalid', cause: /reason 字符数不足/u, field: 'reason', rule: 'minLength', message: tools(toolCall('simFinishTurn', { ...params, reason: '' })) },
+    { code: 'tool_content_blocked', cause: /触发了宿主出站内容检查/u, message: tools(toolCall('simFinishTurn', { ...params, reason: 'fixture-private-value' })) },
+    { code: 'finish_read_range_invalid', cause: /throughSeq 超出本轮已读范围/u, field: 'throughSeq', rule: 'read_through',
+      message: tools(toolCall('simFinishTurn', { ...params, throughSeq: 999 })) },
+    { code: 'finish_reply_reference_invalid', cause: /replyToSeq 不在本轮可引用的序号内/u, field: 'replyToSeq', rule: 'visible_sequence',
+      message: tools(toolCall('simFinishTurn', { ...params, replyToSeq: 999 })) },
+    { code: 'finish_messages_missing', cause: /需要把正文放进 messages/u,
+      message: { ...tools(toolCall('simFinishTurn', { choice: 'chat', reason: '群聊收尾' })), content: '这一段正文在工具参数外。' } },
+  ]
+  for (const { code, cause, field, rule, message } of cases) {
+    await t.test(code, async t => {
+      const rows = [], batches = []
+      const alerts = createAgentFailureAlerts({ channel: 'qq', logger: { error() {} },
+        async deliver(batch) { batches.push(batch); return { state: 'confirmed' } },
+      })
+      const diagnostics = createAgentDiagnostics({
+        sink: { async append(row) { rows.push(row); return true } },
+        logger: { info() {}, warn() {}, error() {} }, onFailure: alerts.report,
+      })
+      const h = fixture({ diagnostics, logger: diagnostics.logger, allowsToolInput: value => !value.includes('fixture-private-value'),
+        script: (_request, index) => index === 0 ? message : tools(toolCall('simFinishTurn', params)) })
+      t.after(async () => { h.runtime.stop(); await diagnostics.flush(); await alerts.close() })
+      if (code === 'finish_read_range_invalid') await h.ingest('更早一条未展示的背景消息', '50000', { at: false })
+      await h.ingest()
+      await settled(h, 2)
+      await diagnostics.flush()
+      await alerts.close()
+      assert.equal(h.calls.length, 2)
+      if (field === 'choice') {
+        assert.match(h.calls[1].messages.find(row => row.role === 'tool').content, /"choice":"silent","markRead":true/u)
+      }
+      if (field?.startsWith('messages')) {
+        assert.match(h.calls[1].messages.find(row => row.role === 'tool').content, /"choice":"chat","messages":\["实际回复"\]/u)
+      }
+      assert.equal(h.sent.length, 1)
+      assert.ok(JSON.stringify(h.sent[0]).includes(params.messages[0]))
+      const finishRows = rows.filter(row => row.operation === 'simFinishTurn')
+      assert.deepEqual(finishRows.map(row => [row.outcome, row.code]), [['failed', code], ['started', undefined], ['succeeded', 'completed']])
+      if (field) assert.deepEqual([finishRows[0].details.field, finishRows[0].details.rule, finishRows[0].details.result], [field, rule, 'not_dispatched'])
+      const text = batches.map(formatQqOwnerAlerts).join('\n')
+      assert.match(text, cause)
+      if (code === 'finish_read_range_invalid') {
+        assert.equal(finishRows[0].details.limit, 0)
+        assert.match(text, /提交的已读序号 999.*最早未展示序号 1/u)
+      }
+      assert.ok(text.includes(`错误码 ${code}`))
+      assert.ok(text.includes(`追踪编号 ${finishRows[0].traceId}`))
+      assert.doesNotMatch(JSON.stringify({ rows, batches, text }), /fixture-private-value|PRIVATE-SHAPE-CONTENT|这一段正文在工具参数外|修改后成功发送/u)
+    })
+  }
+})
+
+test('finish accepts the serialized string array on the first call and sends only its text', async t => {
+  const diagnostics = spy()
+  const h = fixture({ diagnostics, script: () => tools(toolCall('simFinishTurn', {
+    choice: 'chat', messages: JSON.stringify(['直接完成收尾']),
+  })) })
+  t.after(() => h.runtime.stop())
+  await h.ingest()
+  await settled(h, 1)
+  assert.equal(h.calls.length, 1)
+  assert.equal(h.sent.length, 1)
+  assert.match(JSON.stringify(h.sent[0]), /直接完成收尾/u)
+  assert.doesNotMatch(JSON.stringify(h.sent[0]), /\[\\"直接完成收尾/u)
+  assert.deepEqual(diagnostics.events.filter(row => row.operation === 'simFinishTurn').map(row => row.outcome), ['started', 'succeeded'])
+})
+
+test('simSendMessage reports the invalid value type and accepts the corrected string array', async t => {
+  const diagnostics = spy()
+  const h = fixture({ diagnostics, script(_request, index) {
+    if (index === 0) return tools(toolCall('simSendMessage', { messages: [{ text: 'PRIVATE-TOOL-VALUE' }] }))
+    if (index === 1) return tools(toolCall('simSendMessage', { messages: ['已按数组发送'] }))
+    return tools(toolCall('simFinishTurn', { choice: 'silent', reason: '发送完成' }))
+  } })
+  t.after(() => h.runtime.stop())
+  await h.ingest()
+  await settled(h, 3)
+  const failed = diagnostics.events.find(row => row.operation === 'simSendMessage' && row.code === 'tool_schema_invalid')
+  assert.deepEqual(failed.details, { field: 'messages.items', rule: 'type', expectedType: 'string', actualType: 'object', result: 'not_dispatched', attempt: 1 })
+  assert.doesNotMatch(JSON.stringify(failed), /PRIVATE-TOOL-VALUE/u)
+  assert.match(h.calls[1].messages.find(row => row.role === 'tool').content, /"messages":\["你好"\]/u)
+  assert.equal(h.sent.length, 1)
+  assert.match(JSON.stringify(h.sent[0]), /已按数组发送/u)
+})
+
+test('markRead can finish a directed reply with an earlier unread gap', async t => {
+  for (const readInSameBatch of [false, true]) await t.test(readInSameBatch ? 'with a read in the same batch' : 'with only the directed message shown', async t => {
+    const diagnostics = spy(), h = fixture({ diagnostics, script(request) {
+      const wake = request.messages.find(message => message.role === 'user' && typeof message.content === 'string' && message.content.includes('本轮可引用的消息证据'))
+      assert.match(wake.content, /本轮可引用的消息证据：message:2866$/u)
+      const finish = toolCall('simFinishTurn', { choice: 'chat', messages: ['接着点名的话题'], markRead: true })
+      return readInSameBatch ? tools(toolCall('simGetUnreadMessages', {}), finish) : tools(finish)
+    } })
+    t.after(() => h.runtime.stop())
+    const stored = JSON.parse(h.kv.get(sessionKey(GROUP)))
+    h.kv.set(sessionKey(GROUP), JSON.stringify({ ...stored, seq: 2861, lastReadThroughSeq: 2861 }))
+    for (let n = 0; n < 4; n++) await h.ingest('背景消息', '50000', { at: false })
+    await h.ingest('被点名的话题')
+    await settled(h, 1)
+    assert.equal(h.calls.length, 1); assert.equal(h.sent.length, 1)
+    const state = JSON.parse(h.kv.get(sessionKey(GROUP)))
+    assert.equal(state.lastReadThroughSeq, 2861)
+    assert.deepEqual(state.unread.map(message => message.seq), [2862, 2863, 2864, 2865, 2866])
+    const result = JSON.parse(state.agentHistory.find(message => message.role === 'tool' && message.name === 'simFinishTurn').content)
+    assert.equal(result.readStatus, 'succeeded'); assert.equal(result.readThroughSeq, 2861)
+    if (readInSameBatch) {
+      const read = JSON.parse(state.agentHistory.find(message => message.role === 'tool' && message.name === 'simGetUnreadMessages').content)
+      assert.equal(read.readThroughSeq, 2866)
+    }
+    assert.deepEqual(diagnostics.events.filter(row => row.operation === 'simFinishTurn').map(row => row.outcome), ['started', 'succeeded'])
+  })
+})
+
 test('failed closing validation or review cannot be bypassed by a later failure explanation', async t => {
   for (const mode of ['parameters', 'review']) {
     const diagnostics = spy(), h = fixture({ diagnostics, consistencyEnabled: mode === 'review',
@@ -335,11 +527,13 @@ test('ephemeral tool reads stay inside the original model chain without an addit
 test('tool round exhaustion records a terminal diagnostic and attempts one tool-free persisted explanation', async t => {
   const diagnostics = spy(), h = fixture({ diagnostics, maxToolRounds: 4,
     rawModel(request, index) {
-      if (index < 4) return { choices: [{ message: tools(toolCall('missingTool', {})) }] }
+      if (index < 4) return { choices: [{ message: tools(toolCall('privateToolIdentifier123', {})) }] }
       assert.deepEqual(request.tools, []); assert.equal(request.tool_choice, 'none'); return reply(notice)
     } })
   t.after(() => h.runtime.stop()); await h.ingest(); await settled(h, 5)
   assert.equal(h.calls.length, 5); assert.equal(h.events.length, 0); assert.equal(h.sent.length, 1)
+  assert.ok(diagnostics.events.some(row => row.operation === 'simulation_tool' && row.outcome === 'failed' && row.code === 'tool_not_available'))
+  assert.doesNotMatch(JSON.stringify(diagnostics.events), /privateToolIdentifier123/u)
   assert.ok(diagnostics.events.some(row => row.operation === 'simulation_turn' && row.code === 'tool_budget_exhausted' && row.outcome === 'failed'))
 })
 

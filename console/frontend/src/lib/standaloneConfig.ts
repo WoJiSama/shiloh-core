@@ -8,7 +8,7 @@ export interface StandaloneAiView {
   mode: 'standalone'
   processEpoch: string
   configRevision: string
-  definitions: { configKey: string; title: string }[]
+  definitions: { configKey: string; title: string; fallbackConfigKey?: string; capabilities?: { probe?: boolean } }[]
   sections: Record<string, StandaloneModel[]>
   revisions: Record<string, string>
 }

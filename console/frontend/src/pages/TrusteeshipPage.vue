@@ -16,11 +16,8 @@ import { api } from '../lib/api'
 import type { ConsoleConversationSelector } from '../lib/consoleBindings'
 import { workspace, capability } from '../lib/workspace'
 import { consoleRestart } from '../lib/consoleRestart'
-import {
-  conversationSourceLabel,
-  robotLabel,
-  type WorkspaceConversation
-} from '../lib/workspaceModel'
+import { robotLabel, type WorkspaceConversation } from '../lib/workspaceModel'
+import { accountLabel, conversationAddressLabel, conversationSourceLabel, namedId, qqGroupName, scopedConversationLabel, workspaceRobotLabel } from '../lib/workspaceNames'
 const props = defineProps<{ conversationScopes?: WorkspaceConversation[]; embedded?: boolean }>()
 const canWrite = (operation: string, scopeKey?: string) =>
   alive &&
@@ -186,18 +183,19 @@ function fmtDue(at: number): string {
 }
 function renderConversation(row: ConversationScope): string {
   const id = row.conversation?.id || row.groupId
-  if (workspace.mode.value !== 'standalone')
-    return row.account
-      ? `${row.account.platform} / ${row.account.namespace} / ${row.account.id}\n${id}${row.agentId ? ' · ' + row.agentId : ''}`
-      : id
+  const target = row.conversation
+  const label = row.scopeKey && scopedConversationLabel(row.scopeKey) ||
+    (target ? conversationAddressLabel(target) : namedId(id, qqGroupName(id)))
+  const account = row.account ?? target?.account
+  if (!account) return label
   const robot = workspace.data.value?.agents.find((item) =>
     item.conversations.some(
       (scene) => scene.scopeKey === row.scopeKey && scene.bindingToken === row.bindingToken
     )
   )
-  return row.account
-    ? `${robot ? robotLabel(robot, workspace.data.value?.agents ?? []) + ' · ' : ''}${row.account.platform} / ${row.account.namespace} / ${row.account.id}\n${id}`
-    : id
+  const owner = robot ? robotLabel(robot, workspace.data.value?.agents ?? []) : undefined
+  const source = owner ? `${owner} · ${label}` : row.agentId ? `${label} · ${workspaceRobotLabel(row.agentId)}` : label
+  return `${accountLabel(account)}\n${source}`
 }
 function confirmationSource(row: ConversationScope): string {
   const scene = scopes.value?.find(
@@ -212,7 +210,7 @@ function cancelCommitment(row: Commitment) {
     selected = selectionVersion()
   dialog.warning({
     title: '取消承诺',
-    content: `仅作用于 ${confirmationSource(row)}。将取消 ${row.creatorName || row.creatorId} 托付的「${row.intent.slice(0, 60)}」，机器人不再执行。确定继续吗？`,
+    content: `仅作用于 ${confirmationSource(row)}。将取消 ${namedId(row.creatorId, row.creatorName)} 托付的「${row.intent.slice(0, 60)}」，机器人不再执行。确定继续吗？`,
     positiveText: '取消承诺',
     negativeText: '先不动',
     onPositiveClick: async () => {
@@ -256,7 +254,7 @@ function deleteDelegated(row: DelegatedRow) {
     selected = selectionVersion()
   dialog.warning({
     title: '删除托付记忆',
-    content: `仅作用于 ${confirmationSource(row)}。将删除 ${row.ownerName || row.owner} 托付的原话「${row.content.slice(0, 60)}」（被托付人的数据归被托付人，删除后不可恢复）。确定继续吗？`,
+    content: `仅作用于 ${confirmationSource(row)}。将删除 ${namedId(row.owner, row.ownerName)} 托付的原话「${row.content.slice(0, 60)}」（被托付人的数据归被托付人，删除后不可恢复）。确定继续吗？`,
     positiveText: '删除',
     negativeText: '先不动',
     onPositiveClick: async () => {
@@ -321,7 +319,7 @@ const commitmentColumns: DataTableColumns<Commitment> = [
     title: '托付人',
     key: 'creatorName',
     width: 110,
-    render: (row) => row.creatorName || row.creatorId
+    render: (row) => namedId(row.creatorId, row.creatorName)
   },
   { title: '托付内容（原话）', key: 'intent', minWidth: 220, ellipsis: { tooltip: true } },
   {
@@ -376,7 +374,7 @@ const delegatedRows = computed(() => {
 function delegatedColumnsFor(): DataTableColumns<DelegatedRow> {
   return [
     { title: '会话', key: 'groupId', minWidth: 155, render: renderConversation },
-    { title: '托付人', key: 'ownerName', width: 110, render: (row) => row.ownerName || row.owner },
+    { title: '托付人', key: 'ownerName', width: 110, render: (row) => namedId(row.owner, row.ownerName) },
     { title: '原话', key: 'content', minWidth: 240, ellipsis: { tooltip: true } },
     { title: '记于', key: 'createdAt', width: 140, render: (row) => fmtTime(row.createdAt) },
     {
@@ -454,7 +452,8 @@ function delegatedColumnsFor(): DataTableColumns<DelegatedRow> {
         </h3>
         <div v-for="(f, i) in overview.failures" :key="i" class="fail-line">
           <NTag size="small" type="error">失约</NTag>
-          群{{ f.group_id || '?' }} 「{{ (f.intent || f.id || '').slice(0, 50) }}」
+          {{ (f.scopeKey && scopedConversationLabel(f.scopeKey)) || (f.group_id ? namedId(f.group_id, qqGroupName(f.group_id)) : '会话未记录') }}
+          「{{ (f.intent || f.id || '').slice(0, 50) }}」
           {{ f.reason || '' }} · {{ fmtTime(f.at || 0) }}
         </div>
       </div>

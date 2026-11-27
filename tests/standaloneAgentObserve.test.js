@@ -191,6 +191,8 @@ test('reader obeys byte and record limits while keeping newest complete records 
   assert.deepEqual(limited.events.map(row => row.id), ['event-29', 'event-28']); assert.equal(limited.truncated, true)
   const bounded = await readAgentOperationJournal({ dataDir: f.dataDir, guard: f.context, maxReadBytes: 8192 })
   assert.ok(bounded.events.length < 30); assert.equal(bounded.events[0].id, 'event-29'); assert.equal(bounded.truncated, true); assert.equal(bounded.invalidRecords, 0)
+  const traced = await readAgentOperationJournal({ dataDir: f.dataDir, guard: f.context, traceId: 'trace-1', maxEvents: 2 })
+  assert.deepEqual(traced.events.map(row => row.id), ['event-1']); assert.equal(traced.truncated, false)
 })
 
 test('new journal receipt fields retain closed descriptor validation and no arbitrary content', async t => {

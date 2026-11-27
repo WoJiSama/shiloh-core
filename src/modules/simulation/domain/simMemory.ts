@@ -320,7 +320,7 @@ export function buildPersonCards(input: PersonCardInput): { section: string; omi
 export interface MemeExtractionMessage { name: string; text: string }
 
 /** 提取 prompt（纯函数）：群聊自身长出来的梗——重复出现的短语、口头禅、被反复引用的金句。不联网。 */
-export function buildMemeExtractionPrompt(messages: MemeExtractionMessage[]): string {
+export function buildMemeExtractionPrompt(messages: MemeExtractionMessage[], jsonObject = false): string {
   const lines = messages.map((m, index) => {
     const name = String(m.name || '群友').replace(/[<>&"']/g, '')
     const text = String(m.text || '').replace(/[\u0000-\u001f\u007f\u200b-\u200d]/g, '').slice(0, 160)
@@ -332,8 +332,10 @@ export function buildMemeExtractionPrompt(messages: MemeExtractionMessage[]): st
     '- 反复出现的短语/口头禅/口号（同一说法出现 ≥2 次，或明显被大家接梗）',
     '- 群友的原创金句、搞笑口误、被引用的梗',
     '- 只收 2~12 字的短梗；不收人名、@、表情、纯标点、网络通用梗（yyds 这种全网都用的不算这个群专属）',
-    '最多输出 5 个。只输出 JSON 数组，不要任何解释：[{"content":"梗本身","source_id":"首次出现的那条消息id","note":"一句话说明它怎么个梗法"}]',
-    '没有合适的就输出 []。',
+    '最多输出 5 个，每项只有 content、source_id、note 三个字段。source_id 只填写下方 <message id="…"> 中首次出现该梗的数字编号。',
+    jsonObject
+      ? '只输出一个 JSON 对象，例如 {"candidates":[{"content":"天晴站台","source_id":1,"note":"群友反复接梗"}]}。没有合适的就输出 {"candidates":[]}。'
+      : '只输出 JSON 数组，例如 [{"content":"天晴站台","source_id":1,"note":"群友反复接梗"}]。没有合适的就输出 []。',
     '',
     ...lines,
   ].join('\n')

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentRepositoryTools } from '../dist/backend/modules/tools/infrastructure/agentRepositoryTools.js'
+import { keepEventLoopAlive } from './helpers/keepEventLoopAlive.js'
 
 const token = 'ghp_private-fixture-token-123456'
 const otherSecret = 'onebot-private-fixture-token-654321'
@@ -273,7 +274,8 @@ test('permission changes after a primary response or during an optional response
   }
 })
 
-test('caller cancellation and a shortened total deadline release hung fetch, body and stored-permission waits', { timeout: 5000 }, async () => {
+test('caller cancellation and a shortened total deadline release hung fetch, body and stored-permission waits', { timeout: 5000 }, async t => {
+  keepEventLoopAlive(t)
   for (const phase of ['fetch', 'body', 'authority']) for (const interruption of ['caller', 'deadline']) {
     const controller = new AbortController(), entered = Promise.withResolvers()
     let requests = 0, signal, cancelled = false

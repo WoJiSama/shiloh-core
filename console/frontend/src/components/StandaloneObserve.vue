@@ -8,7 +8,8 @@ import { api } from '../lib/api'
 import { count, useOpsResource } from '../lib/operations'
 import { capability, workspace } from '../lib/workspace'
 import { consoleRestart } from '../lib/consoleRestart'
-import { accountLabel, robotLabel } from '../lib/workspaceModel'
+import { robotLabel } from '../lib/workspaceModel'
+import { accountLabel } from '../lib/workspaceNames'
 import {
   diagnosticLocation,
   diagnosticOutcomeLabel,
@@ -184,7 +185,7 @@ const visible = computed(() =>
     const search = query.value.trim().toLowerCase()
     return (
       (!search ||
-        `${event.traceId} ${event.operation} ${event.code ?? ''} ${diagnosticScopeLabel(event)} ${ownerLabel(event)} ${event.configurationRevision ?? ''} ${event.delivery?.messageId ?? ''}`
+        `${event.traceId} ${event.operation} ${event.code ?? ''} ${event.diagnosis?.reason ?? ''} ${event.diagnosis?.evidence ?? ''} ${diagnosticScopeLabel(event)} ${ownerLabel(event)} ${event.configurationRevision ?? ''} ${event.delivery?.messageId ?? ''}`
           .toLowerCase()
           .includes(search)) &&
       (agent.value === 'all' ||
@@ -408,8 +409,8 @@ function detail(event: DiagnosticEvent) {
                 <tr v-for="event in visible" :key="event.id" :data-event-id="event.id">
                   <td>
                     <time>{{ eventTime(event.at) }}</time
-                    ><strong>{{ event.operation }}</strong
-                    ><small>{{ event.stage }}</small>
+                    ><strong>{{ event.diagnosis?.operation || event.operation }}</strong
+                    ><small>{{ event.operation }}</small>
                   </td>
                   <td class="scope-cell">
                     <strong>{{ ownerLabel(event) }}</strong
@@ -420,6 +421,7 @@ function detail(event: DiagnosticEvent) {
                     <NTag :type="tagType(event)" size="small" :bordered="false">{{
                       diagnosticOutcomeLabel(event)
                     }}</NTag
+                    ><small v-if="event.diagnosis?.reason">{{ event.diagnosis.reason }}</small
                     ><small v-if="event.code">{{ event.code }}</small
                     ><small v-if="event.delivery?.messageId"
                       >平台消息 {{ event.delivery.messageId }}</small
@@ -470,7 +472,24 @@ function detail(event: DiagnosticEvent) {
               <dt>追踪编号</dt>
               <dd>
                 <code>{{ selected.traceId }}</code>
+                <NButton v-if="traceId !== selected.traceId" text size="small" @click="traceDraft = selected.traceId; lookupTrace()">查询此追踪</NButton>
               </dd>
+            </div>
+            <div v-if="selected.diagnosis?.reason">
+              <dt>失败原因</dt>
+              <dd>{{ selected.diagnosis.reason }}</dd>
+            </div>
+            <div v-if="selected.diagnosis?.evidence">
+              <dt>定位信息</dt>
+              <dd>{{ selected.diagnosis.evidence }}</dd>
+            </div>
+            <div v-if="selected.diagnosis?.result">
+              <dt>处理结果</dt>
+              <dd>{{ selected.diagnosis.result }}</dd>
+            </div>
+            <div v-if="selected.causeEventId">
+              <dt>关联失败事件</dt>
+              <dd><code>{{ selected.causeEventId }}</code></dd>
             </div>
             <div>
               <dt>来源</dt>
@@ -521,7 +540,7 @@ function detail(event: DiagnosticEvent) {
           <h2 class="section-title timeline-title">同一次追踪的记录</h2>
           <p class="field-help">仅包含本次返回范围内、完整来源身份一致的记录。</p>
           <ol class="trace-timeline">
-            <li v-for="event in timeline" :key="event.id">
+            <li v-for="event in timeline" :key="event.id" :data-trace-event-id="event.id">
               <div class="timeline-heading">
                 <strong>{{ event.operation }}</strong
                 ><NTag :type="tagType(event)" size="small" :bordered="false">{{
@@ -532,6 +551,8 @@ function detail(event: DiagnosticEvent) {
               ><code v-if="event.configurationRevision">配置 {{ event.configurationRevision }}</code
               ><small v-if="event.code || event.errorKind"
                 >{{ event.code }} {{ event.errorKind }}</small
+              ><small v-if="event.diagnosis?.reason">{{ event.diagnosis.reason }}</small
+              ><small v-if="event.diagnosis?.result">{{ event.diagnosis.result }}</small
               ><small v-if="event.delivery?.messageId"
                 >平台消息 {{ event.delivery.messageId }}</small
               >

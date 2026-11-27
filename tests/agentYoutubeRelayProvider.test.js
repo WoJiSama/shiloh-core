@@ -65,6 +65,15 @@ test('YouTube selected progressive MP4, cover and full metadata become one order
   await assert.rejects(f.artifacts.open(parts[2].artifact, context()))
 })
 
+test('YouTube keeps metadata when the description limit lands on whitespace', async t => {
+  const boundedDescription = '文'.repeat(239)
+  const f = await fixture(t, { metadata: { description: boundedDescription + ' 内容超出上限', url: undefined } })
+  const item = await f.prepare()
+  assert.equal(item.status, 'metadata-only')
+  assert.ok(item.infoText.split('\n').includes('简介：' + boundedDescription))
+  assert.equal(item.infoText.split('\n').at(-1), PAGE)
+})
+
 test('YouTube cover survives all pre-download metadata-only conditions without asking for video bytes', async t => {
   for (const [name, patch, notice] of [
     ['long', { duration: 1801 }, /超过30分钟/u], ['live', { is_live: true }, /直播中/u],

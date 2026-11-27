@@ -13,6 +13,9 @@ export interface AgentDouyinResolvedMedia {
   readonly music: string
   readonly stats: Readonly<Record<string, number>>
 }
+export function hasDouyinMedia(metadata: AgentDouyinResolvedMedia | undefined): boolean {
+  return !!metadata && (metadata.kind === 'note' ? metadata.images.length > 0 : !!metadata.video && metadata.duration > 0)
+}
 const row = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const first = (input: unknown) => Array.isArray(input) ? input.find(value => typeof value === 'string' && /^https?:\/\//u.test(value)) as string | undefined ?? '' : ''
 export function douyinDisplay(input: unknown, maximum: number): string {
@@ -82,7 +85,9 @@ export function douyinDocumentData(html: string): readonly unknown[] {
     const value = balanced(html, marker); if (value) result.push(value)
   }
   for (const match of html.matchAll(/<script\b[^>]*\bid=["'](?:RENDER_DATA|__NEXT_DATA__)["'][^>]*>([\s\S]*?)<\/script\s*>/giu)) {
-    try { result.push(JSON.parse(decodeURIComponent(match[1]!))) } catch { /* Another supported document encoding may work. */ }
+    const data = match[1]!
+    try { result.push(JSON.parse(data)); continue } catch { /* Some pages percent-encode the JSON. */ }
+    try { result.push(JSON.parse(decodeURIComponent(data))) } catch { /* Another supported document encoding may work. */ }
   }
   return result
 }

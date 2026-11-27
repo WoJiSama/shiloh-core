@@ -31,7 +31,24 @@ test('HostTool swallowed exceptions and AbstractTool validation failures remain 
   let invoked = false
   const validation = fixture(async () => { invoked = true; return { status: 'succeeded', content: '' } })
   assert.match(await validation.tool.execute({}, {}), /^error:/); await validation.diagnostics.flush()
-  assert.equal(invoked, false); assert.ok(validation.events.some(row => row.code === 'returned_failed'))
+  assert.equal(invoked, false)
+  assert.deepEqual(validation.events.find(row => row.code === 'tool_schema_invalid')?.details,
+    { field: 'query', rule: 'required', result: 'not_dispatched' })
+})
+
+test('schema diagnostics keep declared paths and discard field values and undeclared property names', async () => {
+  const f = fixture(async () => assert.fail('invalid arguments must not execute'), {}, {
+    parameters: { type: 'object', properties: { query: { type: 'array', items: { type: 'object',
+      additionalProperties: false, properties: { topic: { type: 'string', maxLength: 5 } }, required: ['topic'] } } }, required: ['query'] },
+  })
+  await f.tool.execute({ query: [{ topic: 'private_input_value' }] }, {})
+  await f.tool.execute({ query: [{ topic: 'ok', private_field_name: 'private_other_value' }] }, {})
+  await f.diagnostics.flush()
+  assert.deepEqual(f.events.filter(event => event.code === 'tool_schema_invalid').map(event => event.details), [
+    { field: 'query.topic', rule: 'maxLength', limit: 5, result: 'not_dispatched' },
+    { field: 'query', rule: 'additionalProperties', result: 'not_dispatched' },
+  ])
+  assert.doesNotMatch(JSON.stringify([f.events, f.lines]), /private_/)
 })
 test('diagnostic observers cannot interrupt tool success or its existing outcome semantics', async () => {
   const f = fixture(async () => ({ status: 'succeeded', content: 'ok' }), { diagnostics: { emit() { throw Error('observer unavailable') }, traceId() { throw Error('observer unavailable') } } })

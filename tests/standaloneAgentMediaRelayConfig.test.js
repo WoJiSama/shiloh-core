@@ -137,6 +137,16 @@ test('YouTube cookie and PO token values remain bounded and reject malformed or 
   assert.equal(config.youtube.poToken.length, 8192)
 })
 
+test('YouTube GPS preference leaves ordinary digits usable while cookie pairs and credentials stay guarded', () => {
+  const cookie = 'SID=TEST_PRIVATE_COOKIE; GPS=1'
+  const config = readStandaloneMediaRelayConfig(enabled({ youtube: { enabled: true, cookieEnv: 'YT' } }), connections, { YT: cookie })
+  const secrets = standaloneMediaRelaySecrets(config)
+  for (const expected of [cookie, 'TEST_PRIVATE_COOKIE', 'GPS=1']) assert.ok(secrets.includes(expected))
+  assert.ok(!secrets.includes('1'))
+  const shortCredential = readStandaloneMediaRelayConfig(enabled({ youtube: { enabled: true, cookieEnv: 'YT' } }), connections, { YT: 'SID=1' })
+  assert.ok(standaloneMediaRelaySecrets(shortCredential).includes('1'))
+})
+
 test('YouTube accepts only bounded HTTP or SOCKS host proxy URLs without arbitrary paths or query data', () => {
   const input = enabled({ youtube: { enabled: true, proxyEnv: 'YT_PROXY' } })
   for (const value of ['http://127.0.0.1:7890', 'https://proxy.example:8443', 'socks5://127.0.0.1:1080',
@@ -229,9 +239,10 @@ test('Pixiv supports referenced HTTP, HTTPS and SOCKS host proxies within the sa
   }
 })
 
-test('every hosted account has an explicit independent bridge with bounded literal peers and valid origin', () => {
+test('a new account may connect without a bridge while configured bridges retain literal peer checks', () => {
   const second = { id: 'second', account: { ...connections[0].account, id: '123456002' } }
-  assert.throws(() => readStandaloneMediaRelayConfig(enabled(), [...connections, second], {}))
+  const one = readStandaloneMediaRelayConfig(enabled(), [...connections, second], {})
+  assert.deepEqual(one.bridges.map(row => row.connectionId), ['main'])
   const both = readStandaloneMediaRelayConfig(enabled({ bridges: [bridge, { ...bridge, connectionId: 'second',
     listen: { host: '127.0.0.1', port: 31482 }, advertisedOrigin: 'http://192.168.1.4:31482' }] }), [...connections, second], {})
   assert.equal(both.bridges.length, 2)

@@ -86,6 +86,10 @@ export function shouldAskRenewal(c:CommitmentData,now:number):boolean {
   return !c.renewal_asked_at
 }
 
+export function isOneTimeGroupReminder(c: CommitmentData): boolean {
+  return c.scope?.target.kind === 'group' && c.schedule.kind === 'once' && c.deliver === 'static' && !c.deferredAction
+}
+
 /** 续约问询的仿真唤醒卡:agent 据此自然地问创建人,用户答应就 renew */
 export function renderRenewalCard(c:CommitmentData,now:number):string {
   const days=daysUntilExpiry(c,now)

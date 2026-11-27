@@ -7,6 +7,7 @@ import type { AgentMessageVideo, MessageVideoReadOptions } from './agentVideo.js
 import type { AgentGiftDeliveryPort } from './agentQqGift.js'
 import type { AgentQzoneProvider } from './agentQzone.js'
 import type { AgentRedPacketPort, AgentRedPacketSnapshot } from './agentQqRedPacket.js'
+import type { InteractionReceipt } from './agentInteraction.js'
 
 export type PlatformConversationEvent =
   | { kind: 'message'; message: IncomingMessage }
@@ -51,6 +52,13 @@ export interface OwnMessageSnapshot {
   readonly messageId: string
   readonly author: PlatformUserRef
   readonly occurredAt: number
+}
+
+export interface OwnTextDeliveryProof {
+  readonly sha256: string
+  readonly from: number
+  readonly until: number
+  readonly mentionId?: string
 }
 
 export interface MessageImageReadOptions extends MessageActionOptions {
@@ -114,6 +122,8 @@ export interface ConversationMemberReadOptions extends MessageActionOptions {
 export interface PlatformConnectionAdapter extends PlatformConnection {
   readonly botUserId: string
   readonly botName: string
+  /** Cached display metadata for one configured address. This does not attest membership or grant authority. */
+  conversationName?(target: ConversationAddress): string | undefined
   readonly actions: MessageActionPort
   /** Explicitly declared platform extensions; omission keeps each capability unavailable. */
   readonly gift?: AgentGiftDeliveryPort
@@ -124,10 +134,18 @@ export interface PlatformConnectionAdapter extends PlatformConnection {
   /** Synchronously resolve the verified and stable one-to-one peer for this account's private conversation.
    * Return undefined when unverified. Omission declares that private conversation IDs are the verified participant IDs. */
   resolvePrivatePeer?(target: ConversationAddress): PlatformUserRef | undefined
+  /** Prove an unprompted private send still goes to a current friend. */
+  verifyPrivateFriend?(target: ConversationAddress, options: ConversationMemberReadOptions): Promise<boolean>
+  /** The adapter verifies the bot's and member's current roles and the original source. */
+  moderateMessage?(source: IncomingMessage, action: 'recall' | 'mute' | 'unmute',
+    guard: { signal: AbortSignal; isCurrent(): boolean; ensureCurrent(): Promise<void> }): Promise<InteractionReceipt>
   /** Optional read of one already referenced message. The adapter must verify its full conversation address. */
   readMessage?(target: ConversationAddress, messageId: string, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<IncomingMessage | undefined>
   /** Verify an already referenced self-authored message in this exact conversation. */
   readOwnMessage?(target: ConversationAddress, messageId: string, options?: MessageActionOptions & { readonly signal?: AbortSignal }): Promise<OwnMessageSnapshot | undefined>
+  /** Bounded lookup for an uncertain self-authored text send, with a fresh conversation and exact body proof. */
+  findOwnTextDelivery?(target: ConversationAddress, proof: OwnTextDeliveryProof,
+    options: { readonly signal: AbortSignal; isCurrent(): boolean }): Promise<OwnMessageSnapshot | undefined>
   /** Read a forwarded bundle attached to a verified message in this conversation. */
   readForward?(target: ConversationAddress, source: ForwardReference, options?: MessageActionOptions): Promise<ForwardContent | undefined>
   /** Materialize image parts of one message after verifying its conversation and source. */

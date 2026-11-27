@@ -3,6 +3,7 @@ import type { AgentBindingSnapshot, AgentConversationScope, ConversationAddress 
 import type { AgentGroupMemoryCleanupGuard, AgentGroupMemoryCleanupReceipt, AgentGroupMemoryPurgeSubject, GroupMemoryEntry, GroupMemoryMessage, GroupMemoryState } from '../../../contracts/groupMemory.js'
 import { agentConversationKey, agentPersonaScopeId, conversationAddressKey, decodeAgentConversationKey, isConversationAddress, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
 import { personMemoryAddress } from './personMemoryContext.js'
+import { createMemoryScheduleSnapshot } from './memoryScheduleSnapshot.js'
 import { groupCleanupCurrent, groupCleanupMatchesScope, groupCleanupSelector, groupCleanupToken, ensureGroupCleanup, filterGroupMemoryState, groupMemoryContent, groupMemoryRetained, parseGroupCleanup, GROUP_CLEANUP_MAX_BYTES, GROUP_CLEANUP_MAX_SELECTORS, type GroupCleanupFences } from './groupMemoryCleanup.js'
 
 interface GroupMemoryRedis {
@@ -263,6 +264,16 @@ export function createGroupMemoryStore(redis: GroupMemoryRedis) {
     const projected = filterGroupMemoryState(state, cleanup)
     return groupMemoryContent(state) && !groupMemoryRetained(projected) ? undefined : projected
   }
+  const readSchedule = createMemoryScheduleSnapshot(redis, {
+    catalogKey: CATALOG_KEY, cleanupKey: CLEANUP_KEY, stateKey, parseCatalog, parseCleanup: parseGroupCleanup,
+    project(value, id, cleanup) {
+      const state = visible(parseState(value, id), cleanup)
+      if (!state) return
+      const agents = state.agents.filter(agent => agent.jobs.length > 0)
+        .map(({ agentId, binding, token, jobs }) => ({ agentId, binding, token, jobs }))
+      if (agents.length) return { id, target: state.target, agents }
+    },
+  })
   async function rawList() {
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const catalogRaw = raw(await redis.get(CATALOG_KEY)), catalog = parseCatalog(catalogRaw)
@@ -290,6 +301,15 @@ export function createGroupMemoryStore(redis: GroupMemoryRedis) {
     return result === 1
   }
   return {
+    async observeSchedule() {
+      try {
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+          const states = await readSchedule()
+          if (states) return states
+        }
+      } catch { return fail() }
+      return fail()
+    },
     async list(): Promise<GroupMemoryState[]> {
       try {
         const { states, cleanup } = await rawList()

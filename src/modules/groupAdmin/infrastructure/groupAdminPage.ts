@@ -27,11 +27,8 @@ const TOGGLE_FEATURES:ToggleFeature[] = [
   {names:["连发折叠","连发消息折叠","刷屏折叠"],module:"groupModeration",path:"burstMessage.enabled",label:"连发消息折叠"},
   {names:["自动撤回","允许撤回"],module:"groupModeration",path:"actions.recallEnabled",label:"广告自动撤回"},
   {names:["自动禁言","允许禁言"],module:"groupModeration",path:"actions.muteEnabled",label:"广告自动禁言"},
-  {names:["自动踢出","允许踢出"],module:"groupModeration",path:"actions.kickEnabled",label:"广告自动踢出"},
   {names:["低活跃检测","只测低活跃"],module:"groupModeration",path:"inspectLowLevelOnly",label:"只检测低活跃成员"},
   {names:["入群验证","入群审核","进群验证"],module:"groupGuard",path:"enabled",label:"入群验证"},
-  {names:["超时踢出"],module:"groupGuard",path:"kickOnTimeout",label:"验证超时踢出"},
-  {names:["答错踢出"],module:"groupGuard",path:"kickOnWrongAnswer",label:"验证答错踢出"},
   {names:["群通知","欢迎退群","退群通知"],module:"groupNotice",path:"enabled",label:"群通知"},
   {names:["欢迎通知","入群欢迎"],module:"groupNotice",path:"welcomeEnabled",label:"入群欢迎"},
   {names:["退群提示"],module:"groupNotice",path:"leaveEnabled",label:"退群提示"},
@@ -56,7 +53,6 @@ const SET_RULES:SetRule[] = [
   {names:["提醒阈值"],module:"groupModeration",path:"thresholds.report",label:"提醒阈值",kind:"number",min:0,max:1,decimal:true},
   {names:["撤回阈值"],module:"groupModeration",path:"thresholds.recall",label:"撤回阈值",kind:"number",min:0,max:1,decimal:true},
   {names:["禁言阈值"],module:"groupModeration",path:"thresholds.mute",label:"禁言阈值",kind:"number",min:0,max:1,decimal:true},
-  {names:["踢出阈值"],module:"groupModeration",path:"thresholds.kick",label:"踢出阈值",kind:"number",min:0,max:1,decimal:true},
   {names:["题目范围","数字范围"],module:"groupGuard",path:"questionMaxNumber",label:"题目数字范围",kind:"number",min:1,max:100},
   {names:["答题超时","验证超时"],module:"groupGuard",path:"timeoutSeconds",label:"答题超时(秒)",kind:"number",min:30,max:3600},
   {names:["错误次数","允许错误"],module:"groupGuard",path:"maxWrongTimes",label:"允许答错次数",kind:"number",min:1,max:5},
@@ -91,12 +87,10 @@ export const FEATURE_DEFS:FeatureDef[] = [
       {names:["低活跃"],path:"inspectLowLevelOnly",label:"只检测低活跃",kind:"boolean",help:"开=只检测低活跃成员，关=检测全员"},
       {names:["自动撤回"],path:"actions.recallEnabled",label:"自动撤回",kind:"boolean",help:"达到撤回阈值自动撤回"},
       {names:["自动禁言"],path:"actions.muteEnabled",label:"自动禁言",kind:"boolean",help:"达到禁言阈值自动禁言"},
-      {names:["自动踢出"],path:"actions.kickEnabled",label:"自动踢出",kind:"boolean",help:"达到踢出阈值自动踢出"},
       {names:["禁言秒数"],path:"actions.muteSeconds",label:"广告禁言秒数",kind:"number",min:60,max:2592000,help:"广告禁言时长"},
       {names:["提醒阈值"],path:"thresholds.report",label:"提醒阈值",kind:"number",min:0,max:1,decimal:true,help:"0-1，越低越敏感"},
       {names:["撤回阈值"],path:"thresholds.recall",label:"撤回阈值",kind:"number",min:0,max:1,decimal:true,help:"0-1"},
       {names:["禁言阈值"],path:"thresholds.mute",label:"禁言阈值",kind:"number",min:0,max:1,decimal:true,help:"0-1"},
-      {names:["踢出阈值"],path:"thresholds.kick",label:"踢出阈值",kind:"number",min:0,max:1,decimal:true,help:"0-1"}
     ],
     textParams:[]
   },
@@ -147,9 +141,7 @@ export const FEATURE_DEFS:FeatureDef[] = [
     params:[
       {names:["超时"],path:"timeoutSeconds",label:"答题超时(秒)",kind:"number",min:30,max:3600,help:"须在该时间内答对"},
       {names:["范围"],path:"questionMaxNumber",label:"题目数字范围",kind:"number",min:1,max:100,help:"0 到该数字的加减法"},
-      {names:["错误"],path:"maxWrongTimes",label:"允许答错次数",kind:"number",min:1,max:5,help:"答错次数用尽后按踢出设置处理"},
-      {names:["超时踢出"],path:"kickOnTimeout",label:"超时踢出",kind:"boolean",help:"开=超时移出群聊"},
-      {names:["答错踢出"],path:"kickOnWrongAnswer",label:"答错踢出",kind:"boolean",help:"开=答错次数用尽移出群聊"}
+      {names:["错误"],path:"maxWrongTimes",label:"允许答错次数",kind:"number",min:1,max:5,help:"答错次数用尽后提示验证失败"},
     ],
     textParams:[]
   },
@@ -403,7 +395,6 @@ export function buildGroupAdminPageData(settings:Data, groupId:unknown):GroupAdm
   const actionText = [
     moderation.actions.recallEnabled ? "撤回" : "",
     moderation.actions.muteEnabled ? `禁言${moderation.actions.muteSeconds}秒` : "",
-    moderation.actions.kickEnabled ? "踢出" : ""
   ].filter(Boolean).join(" · ")
   return {
     groupId: id,
@@ -441,12 +432,11 @@ export function buildGroupAdminPageData(settings:Data, groupId:unknown):GroupAdm
           },
           {
             label: "自动处置",
-            on: moderation.actions.recallEnabled || moderation.actions.muteEnabled || moderation.actions.kickEnabled,
-            detail: actionText ? `${actionText}（提醒${moderation.thresholds.report} / 撤回${moderation.thresholds.recall} / 禁言${moderation.thresholds.mute} / 踢出${moderation.thresholds.kick}）` : "全部关闭，仅提醒和私发证据",
+            on: moderation.actions.recallEnabled || moderation.actions.muteEnabled,
+            detail: actionText ? `${actionText}（提醒${moderation.thresholds.report} / 撤回${moderation.thresholds.recall} / 禁言${moderation.thresholds.mute}）` : "全部关闭，仅提醒和私发证据",
             commands: [
               `.群管 广告检测 自动撤回 ${moderation.actions.recallEnabled ? "关" : "开"}`,
               `.群管 广告检测 自动禁言 ${moderation.actions.muteEnabled ? "关" : "开"}`,
-              `.群管 广告检测 自动踢出 ${moderation.actions.kickEnabled ? "关" : "开"}`,
               `.群管 广告检测 禁言秒数 ${moderation.actions.muteSeconds}`
             ]
           },
@@ -537,18 +527,6 @@ export function buildGroupAdminPageData(settings:Data, groupId:unknown):GroupAdm
               `.群管 入群验证 范围 ${guard.questionMaxNumber}`,
               `.群管 入群验证 错误 ${guard.maxWrongTimes}`
             ]
-          },
-          {
-            label: "超时踢出",
-            on: guard.kickOnTimeout,
-            detail: guard.kickOnTimeout ? "超时未答对即移出群聊" : "超时仅取消验证，不踢人",
-            commands: [`.群管 入群验证 超时踢出 ${guard.kickOnTimeout ? "关" : "开"}`]
-          },
-          {
-            label: "答错踢出",
-            on: guard.kickOnWrongAnswer,
-            detail: guard.kickOnWrongAnswer ? "答错次数用尽即移出群聊" : "答错次数用尽仅提示失败",
-            commands: [`.群管 入群验证 答错踢出 ${guard.kickOnWrongAnswer ? "关" : "开"}`]
           }
         ]
       },

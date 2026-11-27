@@ -12,6 +12,7 @@ function binding(index = 1) {
 }
 function fixture() {
   const rows = [binding(1), binding(2)], decisions = new Map(), calls = [], controller = new AbortController()
+  const conversationNames = new Map()
   let hostCurrent = true, authCurrent = true, time = 1000, handlerCalls = 0
   const data = {
     agents: [1, 2, 3].map(index => ({ id: `agent-${index}`, name: `Agent ${index}`, personaId: 'shared-persona', personaName: 'Shared persona' })),
@@ -30,12 +31,13 @@ function fixture() {
         return decisions.get(`${operation}:${selected ? selected.target.account.id : 'global'}`) ?? 'allowed'
       } },
     agents: () => data.agents, connections: () => data.connections, services: () => data.services,
+    conversationName: selected => conversationNames.get(conversationAddressKey(selected.target)),
     configState: () => data.config, now: () => time++,
   }
   const service = createStandaloneAgentWorkspace(options)
   data.services.push(service)
   const call = async (override = {}, selectedContext = context) => (await service.handle({ method: 'GET', pathname: '/api/workspace', params: {}, query: {}, body: {}, ...override }, selectedContext)).value
-  return { rows, data, decisions, calls, controller, context, options, service, call,
+  return { rows, data, decisions, calls, controller, context, options, service, call, conversationNames,
     revokeHost: () => { hostCurrent = false }, revokeAuth: () => { authCurrent = false }, handlerCalls: () => handlerCalls }
 }
 const capability = (view, operation) => view.capabilities.find(row => row.operation === operation)
@@ -44,14 +46,22 @@ const hiddenUnbound = f => { f.decisions.set('agents.read:global', 'denied'); f.
 test('workspace separates Agents sharing a Persona and equal group IDs on different accounts in a detached frozen snapshot', async () => {
   const f = fixture(); hiddenUnbound(f)
   f.rows[0].revision = 'loaded:' + 'v'.repeat(200)
+  f.rows.forEach((row, index) => f.conversationNames.set(conversationAddressKey(row.target), `群名 ${index + 1}`))
+  f.data.connections.forEach((row, index) => { row.name = `QQ 昵称 ${index + 1}` })
   const result = await f.call()
   assert.deepEqual([f.service.operation, f.service.method, f.service.path, f.service.scope], ['workspace.read', 'GET', '/api/workspace', 'global'])
   assert.equal(result.mode, 'standalone'); assert.equal(result.version, 1); assert.equal(result.observedAt, 1000)
   assert.equal(result.agents.length, 2); assert.equal(result.agents[0].personaId, result.agents[1].personaId)
   assert.notEqual(result.agents[0].id, result.agents[1].id)
   const first = result.agents[0].conversations[0], second = result.agents[1].conversations[0]
+  assert.deepEqual([first.name, second.name], ['群名 1', '群名 2'])
+  assert.deepEqual(result.connections.map(row => row.name), ['QQ 昵称 1', 'QQ 昵称 2'])
   assert.notEqual(first.scopeKey, second.scopeKey); assert.equal(first.scopeKey, agentConversationKey(f.rows[0]))
   assert.equal(first.bindingToken, agentBindingToken(f.rows[0])); assert.deepEqual(first.binding, f.rows[0])
+  f.conversationNames.set(conversationAddressKey(f.rows[0].target), '已更新群名')
+  const renamed = (await f.call()).agents[0].conversations[0]
+  assert.equal(renamed.name, '已更新群名')
+  assert.equal(renamed.scopeKey, first.scopeKey); assert.equal(renamed.bindingToken, first.bindingToken)
   assert.deepEqual(result.connections.map(row => row.conversationCount), [1, 1]); assert.equal(result.connections[1].state, 'unknown')
   assert.deepEqual(result.cognition, { status: 'planned' }); assert.deepEqual(result.configState, f.data.config)
   for (const value of [result, result.agents, result.agents[0], first, first.binding, first.binding.target, first.binding.target.account, result.connections[0].capabilities, result.configState]) assert.equal(Object.isFrozen(value), true)
@@ -62,9 +72,13 @@ test('workspace separates Agents sharing a Persona and equal group IDs on differ
 
 test('workspace.read grants no binding or unbound Agent/connection visibility and conversation capabilities enumerate actual authorized scopes', async () => {
   const f = fixture(); hiddenUnbound(f)
+  f.conversationNames.set(conversationAddressKey(f.rows[1].target), '不可见群名')
+  f.data.connections[1].name = '不可见 QQ 昵称'
+  f.data.connections[2].name = '未绑定 QQ 昵称'
   f.decisions.set('bindings.read:account-2', 'denied')
   f.decisions.set('simulation.group-write:account-1', 'denied')
   const result = await f.call()
+  assert.doesNotMatch(JSON.stringify(result), /不可见群名|不可见 QQ 昵称|未绑定 QQ 昵称/u)
   assert.deepEqual(result.agents.map(row => row.id), ['agent-1']); assert.deepEqual(result.connections.map(row => row.id), ['connection-1'])
   assert.equal(capability(result, 'simulation.group-read').status, 'available')
   assert.deepEqual(capability(result, 'simulation.group-read').authorizedScopes, [agentConversationKey(f.rows[0])])
@@ -117,7 +131,12 @@ test('retired execution retains loaded metadata and config state while sealing e
   f.data.config = { ...f.data.config, storedRevision: 'stored-v2', requiresRestart: true, phase: 'restart-required' }
   const result = await f.call()
   assert.deepEqual(result.configState, f.data.config); assert.equal(result.agents[0].conversations[0].binding.revision, 'loaded-v1')
-  for (const row of result.capabilities) assert.equal(row.status, ['workspace.read', 'config-state.read'].includes(row.operation) ? 'available' : ['observe.read', 'pipeline.read'].includes(row.operation) ? 'unavailable' : 'restart-required')
+  const recoveryOperations = new Set(['observe.read', 'pipeline.read', 'host.readiness', 'host.restart'])
+  for (const { operation, status } of result.capabilities) {
+    if (['workspace.read', 'config-state.read'].includes(operation)) assert.equal(status, 'available', operation)
+    else if (recoveryOperations.has(operation) || operation.startsWith('auth.')) assert.equal(status, 'unavailable', operation)
+    else assert.equal(status, 'restart-required', operation)
+  }
   assert.deepEqual(capability(result, 'simulation.group-write').authorizedScopes, [])
   assert.equal(f.calls.some(row => row.operation === 'providers.probe'), false)
 })

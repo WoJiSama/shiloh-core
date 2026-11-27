@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { once } from 'node:events'
+import { createConnection, createServer } from 'node:net'
 import test from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { agentSemanticMemoryId, createAgentSemanticMemoryStore } from '../dist/backend/modules/memory/infrastructure/agentSemanticMemoryStore.js'
 import { agentConversationKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
+import { openAgentRedis } from '../dist/backend/modules/runtime/infrastructure/agentRedis.js'
+import { commitStandaloneTransfer } from '../dist/backend/bootstrap/standaloneAgentMigration.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
 
 const redisTest = { skip: !redisAvailable, timeout: 20_000 }
@@ -63,6 +68,274 @@ test('semantic sources and vectors survive store recreation with host-prefixed k
   assert.deepEqual(await restarted.list(), [])
   assert.deepEqual(await restarted.listScopes(), [])
   assert.equal(await f.store.update(input.id, () => undefined), true)
+})
+
+test('a legacy indexed corpus migrates once and later intake neither reads nor rewrites its packed vectors', redisTest, async t => {
+  const f = await fixture(t, 'semantic-store-vector-migration')
+  const vector = Array.from({ length: 1024 }, (_, index) => Math.sin(index + 1) / 32)
+  const input = state(scope(), Array.from({ length: 64 }, (_, index) => row(index + 1, { vector, providerId })))
+  await f.rawSet(catalogKey, catalog([input]))
+  await f.rawSet(stateKey(input.id), JSON.stringify(input))
+  let intakeReads = 0, intakeWrites = []
+  const store = createAgentSemanticMemoryStore({ ...f.storage, captureStorage: {
+    get: f.storage.get,
+    async eval(script, options) {
+      assert.ok(!/HGETALL|HKEYS|HMGET/u.test(script), 'intake may only read source metadata')
+      if (script.includes("redis.call('SET'")) intakeWrites.push(options.arguments.reduce((sum, arg) => sum + Buffer.byteLength(arg), 0))
+      else intakeReads++
+      return f.storage.eval(script, options)
+    },
+  } })
+  const append = index => store.updateSources(input.id, saved => ({ ...saved, rows: [...saved.rows, row(index)] }), () => true, () => {})
+  assert.equal(await append(65), true)
+  const text = await f.rawGet(stateKey(input.id))
+  assert.ok(Buffer.byteLength(text) < 16 * 1024)
+  assert.ok(JSON.parse(text).rows.every(row => !row.vector && !row.providerId))
+  const vectors = await f.reader.hGetAll(f.prefix + prefix + ':vectors:' + input.id)
+  assert.equal(Object.keys(vectors).length, input.rows.length)
+  assert.ok(Object.values(vectors).reduce((size, value) => size + Buffer.byteLength(value), 0) < Buffer.byteLength(JSON.stringify(input)) * 0.6)
+  intakeWrites = []
+  assert.equal(await append(66), true)
+  assert.equal(intakeReads, 2)
+  assert.equal(intakeWrites.length, 1)
+  assert.ok(intakeWrites[0] < 32 * 1024)
+  assert.deepEqual(await f.reader.hGetAll(f.prefix + prefix + ':vectors:' + input.id), vectors)
+  assert.deepEqual(await store.read(input.id), { ...input, rows: [...input.rows, row(65), row(66)] })
+})
+
+test('fresh source verification skips vector payloads and rejects changed or removed sources', redisTest, async t => {
+  const f = await fixture(t, 'semantic-store-source-verification')
+  const input = state(scope(), [row(1, { vector: [0.1, 0.9], providerId }), row(2)])
+  assert.equal(await f.store.update(input.id, () => input), true)
+  let vectorReads = 0
+  const store = createAgentSemanticMemoryStore({ ...f.storage, async eval(script, options) {
+    if (script.includes('HMGET')) vectorReads++
+    return f.storage.eval(script, options)
+  } })
+  const signal = new AbortController().signal
+  assert.equal(await store.hasSources(input.id, input.rows, signal), true)
+  assert.equal(vectorReads, 0)
+  await store.observe(input.id, signal)
+  assert.equal(vectorReads, 1)
+  assert.equal(await store.hasSources(input.id, [row(1, { text: 'different source' })], signal), false)
+  await f.store.updateSources(input.id, saved => ({ ...saved, rows: [row(2)] }), () => true)
+  assert.equal(await store.hasSources(input.id, [input.rows[0]], signal), false)
+  assert.equal(await store.hasSources(input.id, [input.rows[1]], signal), true)
+  const guard = { signal, isCurrent: () => true, async ensureCurrent() {} }
+  await f.store.purgeSubject({ account: input.scope.target.account, agentId: input.scope.agentId, target: input.scope.target,
+    subjectId: input.rows[1].authorId, through: input.rows[1].at }, guard)
+  assert.equal(await store.hasSources(input.id, [input.rows[1]], signal), false)
+  assert.equal(vectorReads, 1)
+})
+
+test('a confirmed vector write advances a warm observation without rereading other vectors', redisTest, async t => {
+  const f = await fixture(t, 'semantic-incremental-vector')
+  const input = state(scope(), Array.from({ length: 65 }, (_, index) => row(index + 1, { vector: [1, 0], providerId })))
+  await f.store.update(input.id, () => input)
+  const pages = []
+  const store = createAgentSemanticMemoryStore({ ...f.storage, async eval(script, args) {
+    if (script.includes('HMGET')) pages.push(args.arguments.length - 1)
+    return f.storage.eval(script, args)
+  } })
+  assert.deepEqual((await store.observe(input.id)).state, input)
+  assert.deepEqual(pages, [32, 32, 1])
+  pages.length = 0
+  const replacement = [0, 1]
+  await store.updateSources(input.id, current => ({
+    ...current, rows: current.rows.slice(1).map(item => item.messageId === row(33).messageId ? { ...item, vector: replacement, providerId } : item),
+  }), () => true)
+  const expected = input.rows.slice(1).map(item => item.messageId === row(33).messageId ? { ...item, vector: replacement } : item)
+  assert.deepEqual((await store.observe(input.id)).state.rows, expected)
+  assert.deepEqual(pages, [])
+  assert.equal(await store.hasSources(input.id, [input.rows[0]], new AbortController().signal), false)
+  const restarted = createAgentSemanticMemoryStore(f.storage)
+  assert.deepEqual((await restarted.observe(input.id)).state.rows, expected)
+  await f.store.updateSources(input.id, current => ({
+    ...current, rows: current.rows.map(item => item.messageId === row(33).messageId ? { ...item, vector: [1, 1], providerId } : item),
+  }), () => true)
+  assert.deepEqual((await store.observe(input.id)).state.rows.find(item => item.messageId === row(33).messageId).vector, [1, 1])
+  assert.deepEqual(pages, [32, 32])
+})
+
+test('a revision change between pages cannot mix vector generations', redisTest, async t => {
+  const f = await fixture(t, 'semantic-paged-vector-change')
+  const input = state(scope(), Array.from({ length: 33 }, (_, index) => row(index + 1, { vector: [1, 0], providerId })))
+  await f.store.update(input.id, () => input)
+  let updated = false, pages = 0
+  const store = createAgentSemanticMemoryStore({ ...f.storage, async eval(script, args) {
+    const result = await f.storage.eval(script, args)
+    if (script.includes('HMGET')) {
+      pages++
+      if (!updated) {
+        updated = true
+        await f.store.updateSources(input.id, current => ({ ...current, rows: current.rows.map(item => ({ ...item, vector: [0, 1], providerId })) }), () => true)
+      }
+    }
+    return result
+  } })
+  const observed = await store.observe(input.id)
+  assert.equal(pages, 4)
+  assert.equal(observed.state.rows.length, 33)
+  assert.ok(observed.state.rows.every(item => item.vector[0] === 0 && item.vector[1] === 1))
+})
+
+test('standalone semantic snapshot traffic cannot hold up the inbox socket or dispatch a revoked queued write', redisTest, async t => {
+  const f = await fixture(t, 'semantic-store-isolation')
+  const peers = []
+  const proxy = createServer(front => {
+    const back = createConnection({ path: new URL(f.url).pathname })
+    front.on('error', () => back.destroy()).once('close', () => back.destroy())
+    back.on('error', () => front.destroy()).once('close', () => front.destroy())
+    front.pipe(back).pipe(front)
+    peers.push({ front, back })
+  })
+  proxy.listen(0, '127.0.0.1')
+  await once(proxy, 'listening')
+  let redis
+  t.after(async () => {
+    await redis?.close()
+    for (const { front, back } of peers) { front.destroy(); back.destroy() }
+    await new Promise(resolve => proxy.close(resolve))
+  })
+  const events = []
+  redis = await openAgentRedis({ url: `redis://127.0.0.1:${proxy.address().port}`, instance: 'isolated-semantic-owner',
+    onLost() {}, onCommandFailure: event => events.push(event) })
+  const input = state(scope(), [row(1, { vector: [0.1, 0.9], providerId })])
+  const corpus = createAgentSemanticMemoryStore(redis.semanticStorage)
+  assert.equal(await corpus.update(input.id, () => input), true)
+  assert.equal(peers.length, 2)
+  await redis.storage.set('inbox', 'ready')
+  const socket = peers[1].back
+  socket.pause()
+  try {
+    const blocked = corpus.read(input.id)
+    let current = true
+    const write = redis.semanticStorage.eval("return redis.call('SET', KEYS[1], ARGV[1])",
+      { keys: ['revoked'], arguments: ['written'], isCurrent: () => current })
+    const remaining = Array.from({ length: 6 }, () => redis.semanticStorage.get('inbox'))
+    await assert.rejects(redis.semanticStorage.get('over-limit'))
+    assert.deepEqual(events.map(event => [event.operation, event.code]), [['semantic_redis_command', 'redis_command_queue_full']])
+    assert.equal(await redis.storage.get('inbox'), 'ready')
+    assert.equal(await corpus.updateSources(input.id, saved => ({ ...saved, rows: [...saved.rows, row(2)] }), () => true, () => {}), true)
+    assert.equal(peers.length, 3)
+    current = false
+    const pending = await Promise.race([blocked.then(() => false, () => false), delay(2_150, true)])
+    assert.equal(pending, true)
+    socket.resume()
+    assert.deepEqual(await blocked, input)
+    assert.deepEqual(await corpus.read(input.id), { ...input, rows: [...input.rows, row(2)] })
+    assert.equal(await write, 0)
+    assert.deepEqual(await Promise.all(remaining), Array(6).fill('ready'))
+    assert.equal(await redis.storage.get('revoked'), null)
+    await f.reader.lPush('bl-agent:isolated-semantic-owner:wrong-type', 'sample')
+    await assert.rejects(redis.semanticStorage.getSnapshot(['wrong-type']))
+    assert.equal(events.at(-1).code, 'redis_command_rejected')
+  } finally { socket.resume() }
+})
+
+test('unsent Redis commands report scheduler timing and only reads retry', redisTest, async t => {
+  const f = await fixture(t, 'redis-retry-test-fixture')
+  const events = [], recoveries = []
+  const schedule = globalThis.setImmediate
+  let holdNext = 0
+  const delayed = []
+  const resumeWrite = () => { for (const release of delayed.splice(0)) release() }
+  const redis = await openAgentRedis({ url: f.url, instance: 'redis-before-send-retry', onLost() {},
+    onCommandFailure(event) { events.push(event); resumeWrite() },
+    onReadRecovered(durationMs, step) { recoveries.push({ durationMs, step }) },
+  })
+  t.mock.method(globalThis, 'setImmediate', (callback, ...args) => {
+    const handle = schedule(callback, ...args)
+    if (holdNext > 0) {
+      holdNext--
+      clearImmediate(handle)
+      delayed.push(() => schedule(callback, ...args))
+    }
+    return handle
+  })
+  try {
+    await redis.storage.set('probe', 'saved')
+    holdNext = 1
+    const read = redis.storage.get('probe')
+    assert.equal(delayed.length, 1)
+    assert.equal(await read, 'saved')
+    assert.equal(events.length, 1)
+    const { dispatchTurnMs, timeoutOverrunMs, loopActiveMs, ...readDetails } = events[0].details
+    assert.deepEqual(readDetails, { step: 'get', limit: 2_000, attempt: 1, maxAttempts: 2, dispatched: false, result: 'retry_scheduled',
+      dispatchTurnPending: false })
+    assert.ok(Number.isSafeInteger(dispatchTurnMs) && dispatchTurnMs >= 0)
+    assert.ok(Number.isSafeInteger(timeoutOverrunMs) && timeoutOverrunMs >= 0)
+    assert.ok(Number.isSafeInteger(loopActiveMs) && loopActiveMs >= 0)
+    assert.deepEqual(recoveries.map(event => event.step), ['get'])
+
+    holdNext = 1
+    assert.deepEqual(await redis.storage.getMany(['probe', 'missing']), ['saved', null])
+    assert.equal(events.length, 2)
+    assert.equal(events[1].details.step, 'get_many')
+    assert.equal(events[1].details.dispatched, false)
+    assert.equal(events[1].details.result, 'retry_scheduled')
+    assert.deepEqual(recoveries.map(event => event.step), ['get', 'get_many'])
+
+    holdNext = 2
+    const write = redis.storage.set('probe', 'unsent')
+    assert.equal(delayed.length, 2)
+    await assert.rejects(write)
+    assert.equal(await redis.storage.get('probe'), 'saved')
+    assert.equal(events.length, 3)
+    const { dispatchTurnMs: pendingMs, timeoutOverrunMs: writeOverrunMs, loopActiveMs: writeActiveMs, ...writeDetails } = events[2].details
+    assert.deepEqual(writeDetails, { step: 'set', limit: 2_000, dispatched: false, result: 'not_dispatched', dispatchTurnPending: true })
+    assert.ok(Number.isSafeInteger(writeOverrunMs) && writeOverrunMs >= 0)
+    assert.ok(Number.isSafeInteger(pendingMs) && pendingMs >= 0)
+    assert.ok(Number.isSafeInteger(writeActiveMs) && writeActiveMs >= 0)
+  } finally {
+    resumeWrite()
+    await redis.close()
+  }
+})
+
+test('source import is read-only until CAS and a concurrent cleanup aborts the parent history commit', redisTest, async t => {
+  const f = await fixture(t, 'semantic-store-source-import')
+  const selected = scope(), id = agentSemanticMemoryId(selected)
+  const before = await f.store.planSourceImport(selected, [row(1), row(2, { authorId: 'another-author' }), row(3)], 2)
+  assert.equal(before.imported, 2)
+  assert.deepEqual(await f.store.list(), [])
+  const guard = { signal: new AbortController().signal, isCurrent: () => true, async ensureCurrent() {} }
+  await f.store.purgeSubject({ account: selected.target.account, agentId: selected.agentId,
+    target: selected.target, subjectId: 'real-author', through: epoch + 3 }, guard)
+  const witness = f.prefix + 'history-witness'
+  const commit = staged => commitStandaloneTransfer(f.reader, [
+    { key: witness, value: null, write: 'history' },
+    ...staged.checks.map(check => ({ ...check, key: f.prefix + check.key })),
+  ])
+  await assert.rejects(commit(before))
+  assert.equal(await f.reader.get(witness), null)
+  assert.deepEqual(await f.store.list(), [])
+  const after = await f.store.planSourceImport(selected, [row(1), row(2, { authorId: 'another-author' }), row(3)], 2)
+  assert.equal(after.imported, 1)
+  await commit(after)
+  assert.equal(await f.reader.get(witness), 'history')
+  assert.deepEqual((await f.store.read(id)).rows, [row(2, { authorId: 'another-author' })])
+})
+
+test('archive imports preserve the physical rows needed to finish an interrupted vector purge', redisTest, async t => {
+  const f = await fixture(t, 'semantic-store-import-hidden-vector')
+  const input = state(scope(), [row(1, { vector: [1, 0], providerId })])
+  await f.store.update(input.id, () => input)
+  const unavailable = createAgentSemanticMemoryStore({ get: f.storage.get, async eval(script, options) {
+    if (options.keys.includes(stateKey(input.id))) throw new Error('interrupted physical cleanup')
+    return f.storage.eval(script, options)
+  } })
+  const cleanup = { account: input.scope.target.account, agentId: input.scope.agentId, target: input.scope.target,
+    subjectId: input.rows[0].authorId, through: epoch + 1 }
+  const guard = { signal: new AbortController().signal, isCurrent: () => true, async ensureCurrent() {} }
+  assert.equal((await unavailable.purgeSubject(cleanup, guard)).cleanup, 'unknown')
+  const fresh = row(2)
+  const importPlan = await f.store.planSourceImport(input.scope, [fresh], 1)
+  assert.equal(importPlan.imported, 1)
+  await commitStandaloneTransfer(f.reader, importPlan.checks.map(check => ({ ...check, key: f.prefix + check.key })))
+  assert.deepEqual((await f.store.read(input.id)).rows, [fresh])
+  assert.equal((await f.store.purgeSubject(cleanup, guard)).removedVectors, 1)
+  assert.equal(await f.reader.exists(f.prefix + prefix + ':vectors:' + input.id), 0)
 })
 
 test('scope discovery reads only bounded catalog metadata without loading message or vector state bodies', redisTest, async t => {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h } from 'vue'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { NButton, NTabs } from 'naive-ui'
+import { AI_PROVIDER_DEFINITIONS } from '../../../../src/modules/config/domain/aiProviderConfig'
 import SchemaPage from '../pages/SchemaPage.vue'
 import PersonaPage from '../pages/PersonaPage.vue'
 import AiPage from '../pages/AiPage.vue'
@@ -118,6 +119,30 @@ describe('configuration draft lifecycle', () => {
     mounted.push(ai)
     await flushPromises()
     expect(ai.findAll('.n-tabs-tab').map((tab) => tab.text())).toEqual(['聊天'])
+  })
+
+  it('shows model selection guidance for each legacy provider group', async () => {
+    vi.mocked(api)
+      .mockResolvedValueOnce({
+        definitions: AI_PROVIDER_DEFINITIONS.map(({ configKey, title }) => ({ configKey, title })),
+        sections: Object.fromEntries(AI_PROVIDER_DEFINITIONS.map(({ configKey }) => [configKey, []]))
+      })
+      .mockResolvedValueOnce({ key: 'reasoning', title: '思考程度', revision: 'r1', groups: [] })
+    const wrapper = mount(AiPage)
+    mounted.push(wrapper)
+    await flushPromises()
+    const tabs = wrapper.findAllComponents(NTabs).find(
+      (item) => item.props('value') === AI_PROVIDER_DEFINITIONS[0]?.configKey
+    )!
+    for (const { configKey } of AI_PROVIDER_DEFINITIONS) {
+      tabs.vm.$emit('update:value', configKey)
+      await flushPromises()
+      const guidance = wrapper.get('#legacy-model-guidance')
+      expect(guidance.get('p').text()).not.toBe('')
+      expect(guidance.get('strong').text()).toMatch(/^建议选择 .+/)
+    }
+    expect(wrapper.get('#legacy-model-guidance').text()).toContain('文本向量模型')
+    expect(vi.mocked(api)).toHaveBeenCalledTimes(2)
   })
 
   it('retains an edit made while saving and only clears the submitted change', async () => {

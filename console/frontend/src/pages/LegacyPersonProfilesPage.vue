@@ -16,7 +16,8 @@ import PageState from '../components/PageState.vue'
 import { api } from '../lib/api'
 import type { ConsoleConversationSelector } from '../lib/consoleBindings'
 import { workspace, capability } from '../lib/workspace'
-import { accountLabel, conversationLabel, type WorkspaceConversation } from '../lib/workspaceModel'
+import type { WorkspaceConversation } from '../lib/workspaceModel'
+import { accountLabel, conversationLabel } from '../lib/workspaceNames'
 
 const props = defineProps<{ conversationScopes?: WorkspaceConversation[]; embedded?: boolean }>()
 const canDelete = (operation: string) =>

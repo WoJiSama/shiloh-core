@@ -1,6 +1,6 @@
-import {pixivRecord as record} from '../../../contracts/pixiv.js';
-export interface Deck {name:string;author:string;version:string;date:string;fileName:string;items:Record<string,string[]>;command:Record<string,boolean>}
-export interface DeckContext {playerName?:string;selfName?:string;pools?:Record<string,string[]>}
+import { executeDiceDeck, formatDiceDeck, normalizeDiceDeck, pickDeckCard } from '../domain/diceDeck.js'
+import type { Deck, DeckContext } from '../domain/diceDeck.js'
+export type { Deck, DeckContext } from '../domain/diceDeck.js'
 export interface DeckOptions {decksDir?:string;logger?:{warn?(message:string):void}|undefined}
 import fs from "fs"
 import path from "path"
@@ -12,9 +12,6 @@ import { secureDiceInt } from "./diceRandom.js"
 // 支持社区 seal 格式（JSON/YAML：顶层键=牌组名，_ 前缀为元数据或隐藏牌组）。
 // 抽取语义：{牌组}/{牌组} 嵌套不放回（单次命令内）、{%牌组} 放回、::N:: 权重、
 // {player}/{self} 特殊变量、[牌组] 方括号嵌套、深度上限防死循环。
-
-const DEPTH_LIMIT = 2000
-const WEIGHT_PREFIX = /^::(\d+)::/
 
 export class DeckManager {
 logger:DeckOptions["logger"];decksDir:string;decks:Deck[];loadedAt:number;lastError:string;
@@ -56,24 +53,8 @@ logger:DeckOptions["logger"];decksDir:string;decks:Deck[];loadedAt:number;lastEr
   }
 
   /** seal 格式归一化：_ 前缀键为元数据/隐藏牌组 */
-  normalizeDeck(data:unknown = {}, fileName = "") {
-    const items:Record<string,string[]> = {}
-    const command:Record<string,boolean> = {}
-    let meta = { name: fileName.replace(/\.(json|ya?ml)$/i, ""), author: "", version: "", date: "" }
-    for (const [key, value] of Object.entries(record(data))) {
-      if (!Array.isArray(value)) continue
-      if (key === "_name" || key === "_title") meta.name = String(value[0] ?? meta.name)
-      else if (key === "_author") meta.author = String(value[0] ?? "")
-      else if (key === "_version") meta.version = String(value[0] ?? "")
-      else if (key === "_date") meta.date = String(value[0] ?? "")
-      else {
-        items[key] = value.map(String)
-        command[key] = !key.startsWith("_")
-      }
-    }
-    const visible = Object.keys(command).filter(k => command[k])
-    if (!visible.length && !Object.keys(items).length) return null
-    return { ...meta, fileName, items, command }
+  normalizeDeck(data: unknown = {}, fileName = "") {
+    return normalizeDiceDeck(data, fileName)
   }
 
   ensureLoaded() {
@@ -150,91 +131,16 @@ logger:DeckOptions["logger"];decksDir:string;decks:Deck[];loadedAt:number;lastEr
     }
   }
 
-  pickFromList(list:string[] = []) {
-    const weighted = list.map(item => {
-      const match = String(item).match(WEIGHT_PREFIX)
-      return { weight: match ? Math.max(1, Number(match[1])) : 1, text: match ? String(item).slice(match[0].length) : String(item) }
-    })
-    const total = weighted.reduce((n, item) => n + item.weight, 0)
-    let cursor = secureDiceInt(Math.max(1, total))
-    for (const item of weighted) {
-      cursor -= item.weight
-      if (cursor <= 0) return item.text
-    }
-    return weighted[weighted.length - 1]?.text ?? ""
+  pickFromList(list: string[] = []) {
+    return pickDeckCard(list, secureDiceInt)
   }
 
-  executeDeck(deck:Deck, deckName:string, useShufflePool:boolean, ctx:DeckContext, depth:number):string {
-    if (depth > DEPTH_LIMIT) throw new Error("抽取嵌套超出上限，疑似死循环")
-    const group = deck.items[deckName] || []
-    if (!group.length) throw new Error(`牌组「${deckName}」为空，请检查格式`)
-    ctx.pools ||= {}
-    let text
-    if (useShufflePool) {
-      const poolKey = `${deck.name}/${deckName}`
-      if (!ctx.pools[poolKey] || !ctx.pools[poolKey]?.length) {
-        // 按权重展开后洗牌（sealdice ShuffleRandomPool 语义）
-        const expanded = []
-        for (const item of group) {
-          const match = String(item).match(WEIGHT_PREFIX)
-          const weight = match ? Math.max(1, Number(match[1])) : 1
-          const clean = match ? String(item).slice(match[0].length) : String(item)
-          for (let i = 0; i < weight; i += 1) expanded.push(clean)
-        }
-        ctx.pools[poolKey] = expanded
-      }
-      const pool = ctx.pools[poolKey] || []
-      const index = secureDiceInt(pool.length) - 1
-      text = pool.splice(index, 1)[0]
-    } else {
-      text = this.pickFromList(group)
-    }
-    return this.formatDeckString(deck, String(text), ctx, depth + 1)
+  executeDeck(deck: Deck, deckName: string, useShufflePool: boolean, ctx: DeckContext, depth: number): string {
+    return executeDiceDeck(deck, deckName, useShufflePool, ctx, depth, secureDiceInt)
   }
 
-  /** sealdice deckStringFormat 移植：{牌组}/{$牌组}=不放回 {%牌组}=放回 [牌组] 方括号嵌套 */
-  formatDeckString(deck:Deck, input = "", ctx:DeckContext = {}, depth = 0) {
-    let s = String(input)
-    const braces = [...s.matchAll(/\{[$%]?[^{}]+\}/g)]
-    for (let i = braces.length - 1; i >= 0; i -= 1) {
-      const match = braces[i];if(!match)continue
-      const token = match[0]
-      let replacement = ""
-      if (token === "{player}") {
-        replacement = ctx.playerName || "未知用户"
-      } else if (token === "{self}") {
-        replacement = ctx.selfName || "骰娘"
-      } else {
-        const sign = token[1]
-        const name = token.slice(sign === "$" || sign === "%" ? 2 : 1, -1)
-        if (!deck.items[name]) {
-          replacement = `<%未知牌组-${name}%>`
-        } else {
-          try {
-            replacement = this.executeDeck(deck, name, sign !== "%", ctx, depth)
-          } catch (error) {
-            replacement = `<%抽取错误-${name}%>`
-          }
-        }
-      }
-      s = s.slice(0, match.index) + replacement + s.slice(match.index + token.length)
-    }
-    // 方括号嵌套抽取（sealdice 在第二遍处理 [xxx]）
-    const brackets = [...s.matchAll(/\[[^\[\]{$}]+\]/g)]
-    for (let i = brackets.length - 1; i >= 0; i -= 1) {
-      const match = brackets[i];if(!match)continue
-      const name = match[0].slice(1, -1)
-      let replacement = `<%未知牌组-${name}%>`
-      if (deck.items[name]) {
-        try {
-          replacement = this.executeDeck(deck, name, true, ctx, depth)
-        } catch {
-          replacement = `<%抽取错误-${name}%>`
-        }
-      }
-      s = s.slice(0, match.index) + replacement + s.slice(match.index + match[0].length)
-    }
-    return s
+  formatDeckString(deck: Deck, input = "", ctx: DeckContext = {}, depth = 0) {
+    return formatDiceDeck(deck, String(input), ctx, depth, secureDiceInt)
   }
 }
 

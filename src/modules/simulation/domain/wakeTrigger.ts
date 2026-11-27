@@ -8,7 +8,7 @@ export const WAKE_PRIORITY: Record<SimWakeReasonKind, number> = {
   continuation: 78,
   speaker: 75,
   session: 72,
-  nameMention: 70,
+  nameMention: 85,
   commitment: 68,
   keyword: 60,
   anyMessage: 50,
@@ -48,6 +48,19 @@ function keywordPattern(keyword: string): RegExp | null {
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+export function directGroupAddress(message: SimMessage, names: readonly string[], acceptsQuote: boolean): SimWakeReason | null {
+  if (message.atSelf || (acceptsQuote && message.quoteToSelf)) return { kind: 'atMention', seq: message.seq }
+  const normalized = message.text.normalize('NFKC').toLowerCase()
+  const name = names.find(value => {
+    const candidate = value.trim().normalize('NFKC').toLowerCase()
+    if (!candidate) return false
+    return /^[a-z0-9_]+$/u.test(candidate)
+      ? new RegExp(`(?:^|[^a-z0-9_])${escapeRegExp(candidate)}(?=$|[^a-z0-9_])`, 'u').test(normalized)
+      : normalized.includes(candidate)
+  })
+  return name === undefined ? null : { kind: 'nameMention', seq: message.seq, detail: name }
 }
 
 export interface WakeTriggerContext {

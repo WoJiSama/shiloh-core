@@ -130,6 +130,14 @@ async function fixture(t,settings={}){
 
 const active=(snapshot,id='alice')=>{const user=snapshot.state.builtin.users[id];return user.cards[user.activeCard]}
 
+test('a slow QQ source and member list still allow a public result within its delivery budget',options,async t=>{
+ const f=await fixture(t,{engine:{deliveryTimeoutMs:750},beforeRead:()=>delay(85),beforeMembers:()=>delay(45)})
+ const message=await f.send('.r 1d6')
+ assert.equal(f.sendsFor(message).length,1,f.logs.slice(-10).join('\n'))
+ assert.equal((await f.operation(message)).state,'confirmed')
+ assert.equal(f.logs.some(line=>line.includes('effect_continuation_unconfirmed')),false)
+})
+
 test('actual Core inbox runs public dice and builtin card/check state with fresh members and explicit authority',options,async t=>{
  const f=await fixture(t),rolled=await f.send('.r 1d6')
  assert.equal(f.sendsFor(rolled).length,1,JSON.stringify(f.logs));assert.equal(f.requests.length,0)

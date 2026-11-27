@@ -51,10 +51,11 @@ export interface TurtleSoupStoreGuard {
 export class TurtleSoupStore {
   readonly dataDir:string
   private readonly guard:TurtleSoupStoreGuard|undefined
-  constructor({cwd = process.cwd(), baseDir = "data/turtle_soup", guard}:{cwd?:string;baseDir?:string;guard?:TurtleSoupStoreGuard} = {}) {
+  constructor({cwd = process.cwd(), baseDir = "data/turtle_soup", guard, createDirectory = true}:
+    {cwd?:string;baseDir?:string;guard?:TurtleSoupStoreGuard;createDirectory?:boolean} = {}) {
     this.guard = guard
     this.dataDir = resolveDataDir(cwd, baseDir)
-    ensureDir(this.dataDir)
+    if (createDirectory) ensureDir(this.dataDir)
   }
 
   private readJson(name:string,fallback:unknown):unknown {

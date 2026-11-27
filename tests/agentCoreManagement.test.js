@@ -168,6 +168,39 @@ test('an execution hook may synchronously audit a scoped management guard with a
   assert.ok(observed.every(value => value === true))
 })
 
+test('owned management checks share one synchronous configuration observation and recheck after authorization', settings, async t => {
+  const { createSynchronousGuard } = await load('modules/runtime/domain/synchronousGuard.js')
+  let inside = false, observations = 0, revision = 1, invalidate = false
+  const f = await fixture(t, {
+    isExecutionCurrent: () => revision === 1,
+    observeExecutionCurrent(check) {
+      if (inside) return check()
+      observations++
+      const before = revision
+      inside = true
+      try { return check() && revision === before } finally { inside = false }
+    },
+  })
+  await f.host.start()
+  const request = f.context()
+  const parent = { ...request.value, ...createSynchronousGuard(request.value.signal, () => {
+    assert.equal(inside, true)
+    request.value.ensureCurrent()
+  }, () => { throw new AgentManagementError('conflict') }) }
+  f.hooks.authorize = async (_operation, _binding, guard) => {
+    const before = observations
+    guard.ensureCurrent()
+    assert.equal(observations - before, 1)
+    if (invalidate) {
+      await Promise.resolve()
+      revision++
+    }
+  }
+  assert.deepEqual((await f.host.management.trusteeship.overview(parent)).commitments, [])
+  invalidate = true
+  await conflict(f.host.management.trusteeship.overview(parent))
+})
+
 test('real Core management reads existing person, commitment and delegated partitions across accounts and Agents', settings, async t => {
   const f = await fixture(t); await f.seed(); await f.host.start()
   const profiles = await f.host.management.profiles.list(f.context().value)

@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto'
 import type { AgentBindingSnapshot, AgentConversationScope } from '../../../contracts/agentBinding.js'
 import type { AgentConversationMemoryCleanupGuard, AgentConversationMemoryCleanupReceipt, AgentConversationMemoryPurgeSubject, ConversationMemoryRecord, ConversationMemoryState } from '../../../contracts/conversationMemory.js'
 import { agentConversationKey, agentPersonaScopeId, conversationAddressKey, decodeAgentConversationKey, isConversationAddress, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
+import { agentErrorDetails, annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { personMemoryAddress } from './personMemoryContext.js'
+import { createMemoryScheduleSnapshot } from './memoryScheduleSnapshot.js'
 import { conversationCleanupCurrent, conversationCleanupMatchesScope, conversationCleanupSelector, conversationCleanupToken, ensureConversationCleanup, filterConversationCleanupRows, filterConversationMemoryState, parseConversationCleanup, CONVERSATION_CLEANUP_MAX_BYTES, CONVERSATION_CLEANUP_MAX_SELECTORS, type ConversationCleanupFences } from './conversationMemoryCleanup.js'
 
 interface ConversationMemoryRedis {
@@ -177,6 +179,22 @@ export function createConversationMemoryStore(redis: ConversationMemoryRedis) {
     const projected = filterConversationMemoryState(state, cleanup)
     return content(state) && !content(projected) ? undefined : projected
   }
+  const readSchedule = createMemoryScheduleSnapshot(redis, {
+    catalogKey: CATALOG_KEY, cleanupKey: CLEANUP_KEY, stateKey, parseCatalog, parseCleanup: parseConversationCleanup,
+    project(value, id, cleanup) {
+      const state = visible(parseState(value, id), cleanup)
+      if (!state || state.scope.target.kind !== 'group') return
+      const { binding, scope, token, summary, dueAt, dueInvalidatedAt, dueCleanupToken, attempts, retryAt } = state
+      return {
+        id, binding, scope, token, dueAt, attempts, retryAt,
+        ...(dueInvalidatedAt === undefined ? {} : { dueInvalidatedAt }),
+        ...(dueCleanupToken === undefined ? {} : { dueCleanupToken }),
+        records: state.records.map(({ seq, at }) => ({ seq, at })),
+        summary: summary && { coveredSeq: summary.coveredSeq, updatedAt: summary.updatedAt,
+          invalidatedAt: summary.invalidatedAt, cleanupToken: summary.cleanupToken },
+      }
+    },
+  })
   async function rawList() {
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const catalogRaw = raw(await redis.get(CATALOG_KEY))
@@ -205,6 +223,15 @@ export function createConversationMemoryStore(redis: ConversationMemoryRedis) {
   }
 
   return {
+    async observeSchedule() {
+      try {
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+          const states = await readSchedule()
+          if (states) return states
+        }
+      } catch (cause) { throw annotateAgentError(new Error(FAILURE), agentErrorDetails(cause) ?? {}) }
+      return fail()
+    },
     async list(): Promise<ConversationMemoryState[]> {
       try {
         const { states, cleanup } = await rawList()
@@ -216,7 +243,7 @@ export function createConversationMemoryStore(redis: ConversationMemoryRedis) {
       try {
         if (!validScope({ agentId: scope.agentId, target: scope.target })) fail()
         return conversationCleanupToken(scope, parseConversationCleanup(raw(await redis.get(CLEANUP_KEY))))
-      } catch { return fail() }
+      } catch (cause) { throw annotateAgentError(new Error(FAILURE), agentErrorDetails(cause) ?? {}) }
     },
     async filterState(state: ConversationMemoryState): Promise<ConversationMemoryState> {
       try {
@@ -233,13 +260,18 @@ export function createConversationMemoryStore(redis: ConversationMemoryRedis) {
       } catch { return fail() }
     },
     async update(id: string, change: (state: ConversationMemoryState | undefined) => ConversationMemoryState | undefined, isCurrent?: () => boolean): Promise<boolean> {
+      let field = 'conversation_state_build', started = performance.now()
+      const advance = (next: string) => { field = next; started = performance.now() }
+      let attempt = 0
       try {
         if (!ID_PATTERN.test(id)) fail()
-        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        for (attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
           if (!current(isCurrent)) return false
+          advance('conversation_state_read')
           const saved = await read(id)
           const { stateRaw, state, cleanup } = saved
           if (!current(isCurrent)) return false
+          advance('conversation_state_build')
           const projected = state && filterConversationMemoryState(state, cleanup)
           const candidate = change(projected === undefined ? undefined : structuredClone(projected))
           const validated = parseState(candidate === undefined ? null : JSON.stringify(candidate), id)
@@ -259,10 +291,15 @@ export function createConversationMemoryStore(redis: ConversationMemoryRedis) {
           if (nextRaw === stateRaw || !state && !next) return true
           // No await separates the final synchronous scope check from commit.
           if (!current(isCurrent)) return false
+          advance('conversation_state_commit')
           if (await commit(saved, id, next)) return true
         }
-      } catch { fail() }
-      return fail()
+      } catch (cause) {
+        throw annotateAgentError(new Error(FAILURE), { ...agentErrorDetails(cause), field,
+          stepMs: Math.round(performance.now() - started), attempt, maxAttempts: MAX_ATTEMPTS })
+      }
+      throw annotateAgentError(new Error(FAILURE), { field, cause: 'conversation_state_conflict',
+        stepMs: Math.round(performance.now() - started), attempt: MAX_ATTEMPTS, maxAttempts: MAX_ATTEMPTS })
     },
     async purgeSubject(input: AgentConversationMemoryPurgeSubject, guard: AgentConversationMemoryCleanupGuard): Promise<AgentConversationMemoryCleanupReceipt> {
       const selector = conversationCleanupSelector(input)

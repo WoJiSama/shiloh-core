@@ -248,6 +248,26 @@ test('source catalog registers actual participant scenes without creating facts'
   assert.deepEqual(texts(await f.view(privateScene)), [])
 })
 
+test('repeated source registration skips locks and writes while checking current redactions', async t => {
+  const f = fixture(), redis = f.redis
+  redis.getMany = async keys => keys.map(key => f.values.get(key) ?? null)
+  const store = createPersonMemoryStore({ redis, now: f.now })
+  const source = f.source('shared-original', '同一段来源')
+  const subject = { identity, subjectId: person }
+  const input = { ...subject, source }
+  assert.equal(await store.registerSource(input), true)
+  const revision = (await store.getRedactions(subject)).revision
+  const writes = t.mock.method(redis, 'set', async () => assert.fail('known source cannot write'))
+  redis.eval = async () => assert.fail('known source cannot commit a write')
+  assert.equal(await store.registerSource(input), true)
+  await assert.rejects(store.registerSource(input, () => false), /绑定已改变/u)
+  assert.equal((await store.getRedactions(subject)).revision, revision)
+  assert.equal(writes.mock.callCount(), 0)
+  writes.mock.restore(); delete redis.eval
+  await store.revokeSource({ identity, scene: source.scene, messageId: source.messageId })
+  assert.equal(await store.registerSource(input), false)
+})
+
 test('deletion invalidates aggregate projections in every scene and ordinary writes cannot clear it', async () => {
   const f = fixture()
   const entry = await f.write('通用兴趣', { category: 'interest', sensitivity: 'ordinary', portable: true })

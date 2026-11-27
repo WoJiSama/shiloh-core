@@ -6,7 +6,7 @@ import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js
 import { agentBindingToken, conversationAddressKey, isConversationAddress, isPlatformAccount } from '../../runtime/domain/agentBindings.js'
 import { validateAgentMediaShare } from './agentBilibiliRelayReference.js'
 
-export type MediaOutboxEffect = 'forward' | 'forwardRetry' | 'directIntro' | 'directVideo' | 'link'
+export type MediaOutboxEffect = 'forward' | 'forwardRetry' | 'forwardCard' | 'directIntro' | 'directVideo' | 'link'
 export interface AgentMediaOutboxSource {
   readonly messageId: string
   readonly sender: PlatformUserRef
@@ -70,11 +70,11 @@ const PREFIX = 'agent:media-outbox:v1:', ACTIVE = `${PREFIX}active`, LANES = `${
 export const AGENT_MEDIA_OUTBOX_RETENTION_SECONDS = 7 * 86400
 export const AGENT_MEDIA_OUTBOX_LIFETIME_MS = 24 * 60 * 60 * 1000
 const RETENTION = AGENT_MEDIA_OUTBOX_RETENTION_SECONDS, LIFETIME = AGENT_MEDIA_OUTBOX_LIFETIME_MS, MAX_BYTES = 16384
-const effects = new Set<MediaOutboxEffect>(['forward', 'forwardRetry', 'directIntro', 'directVideo', 'link'])
+const effects = new Set<MediaOutboxEffect>(['forward', 'forwardRetry', 'forwardCard', 'directIntro', 'directVideo', 'link'])
 const terminal = new Set(['completed', 'failed', 'cancelled', 'unknown'])
 const states = new Set(['queued', 'preparing', 'sending', ...terminal])
 const ownership = new WeakMap<AgentInboxRedis, Map<string, string>>()
-const failure = () => new Error('媒体投递账本不可用或任务已失效')
+const failure = (cause?: unknown) => new Error('媒体投递账本不可用或任务已失效', { cause })
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 const recordKey = (id: string) => `${PREFIX}job:${id}`
 const ownerKey = (id: string) => `${PREFIX}owner:${id}`
@@ -406,9 +406,9 @@ export function createAgentMediaOutboxLedger(storage: AgentInboxRedis, options: 
         return result as 'created' | 'existing' | 'full'
       } catch { throw failure() }
     },
-    async listActive() { try { return await listActive() } catch { throw failure() } },
+    async listActive() { try { return await listActive() } catch (error) { throw failure(error) } },
     async inspect(id: string): Promise<AgentMediaOutboxRecord | undefined> { try { return (await load(id))?.record } catch { throw failure() } },
-    async recover() { try { await recover() } catch { throw failure() } },
+    async recover() { try { await recover() } catch (error) { throw failure(error) } },
     async cancelSource(input: ConversationAddress, messageId: string): Promise<void> {
       try {
         const selected = target(input), scope = agentMediaSourceScopeKey(selected)
@@ -442,7 +442,7 @@ export function createAgentMediaOutboxLedger(storage: AgentInboxRedis, options: 
         record = current.record; raw = current.raw
         const claimed = await storage.eval(claimScript, { keys: [recordKey(id), ownerKey(id), cancelKey(record.binding.target, record.source.messageId)], arguments: [raw, token, String(RETENTION)] })
         if (Number(claimed) !== 1) { abandon(); return undefined }
-      } catch { abandon(); throw failure() }
+      } catch (error) { abandon(); throw failure(error) }
       async function mutate(change: () => AgentMediaOutboxRecord, release = false) {
         if (!held || busy || owned.get(id) !== token || terminal.has(record.state)) throw failure()
         let next: AgentMediaOutboxRecord

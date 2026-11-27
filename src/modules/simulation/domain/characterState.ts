@@ -204,6 +204,10 @@ export function compactCharacterState(state: CharacterState, now: number, extern
   return validateCharacterState(next)
 }
 
+export function characterHistoryCanShrink(state: CharacterState): boolean {
+  return state.receipts.length > RETAIN_AUDIT_RECEIPTS || state.goals.filter(goal => TERMINAL.has(goal.status)).length > RETAIN_TERMINAL_GOALS
+}
+
 /** Capacity is a projection, not model-writable state or a new configuration knob. */
 export function characterCapacity(state: CharacterState) {
   const valid = validateCharacterState(state)

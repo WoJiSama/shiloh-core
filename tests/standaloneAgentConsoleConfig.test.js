@@ -55,7 +55,7 @@ test('explicit console paths resolve against the host directory and only the dec
     userFile: 'private/users.json', legacyUserFile: 'import/old-users.json', frontendDir: 'web/dist', allowSetup: true, secureCookies: true } }, env)
   assert.deepEqual(config.console, { enabled: true, host: '::1', port: 19088, tokenEnv: 'LOCAL_CONSOLE_TOKEN',
     userFile: path.join(f.directory, 'private/users.json'), legacyUserFile: path.join(f.directory, 'import/old-users.json'),
-    frontendDir: path.join(f.directory, 'web/dist'), allowSetup: true, secureCookies: true })
+    frontendDir: path.join(f.directory, 'web/dist'), allowSetup: true, secureCookies: true, qqLogin: [] })
   assert.deepEqual(reads, ['MAIN_KEY', 'LOCAL_CONSOLE_TOKEN', 'BL_AGENT_REDIS_URL'])
   assert.equal(JSON.stringify(config.console).includes(consoleToken), false)
   await assert.rejects(lstat(path.join(f.directory, 'private')), { code: 'ENOENT' })

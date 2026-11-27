@@ -1,11 +1,13 @@
 import fs from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
-import { constants } from 'node:fs'
+import { constants, type Stats } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { stderr } from 'node:process'
 import { isProxy } from 'node:util/types'
 import type { AgentBindingSnapshot, PlatformAccountRef } from '../../../contracts/agentBinding.js'
-import type { AgentDiagnosticEvent, AgentDiagnosticScope, AgentOperationJournal } from '../../../contracts/agentDiagnostics.js'
+import { agentDiagnosticResults, agentDiagnosticValueTypes, agentJournalWriteSteps, type AgentDiagnosticDetails, type AgentDiagnosticEvent, type AgentDiagnosticScope,
+  type AgentJournalWriteObserver, type AgentJournalWriteStep, type AgentOperationJournal } from '../../../contracts/agentDiagnostics.js'
 
 export type { AgentDiagnosticEvent, AgentDiagnosticScope, AgentDiagnosticSink, AgentOperationJournal } from '../../../contracts/agentDiagnostics.js'
 
@@ -68,13 +70,31 @@ function scope(value: unknown): AgentDiagnosticScope {
   }
   throw failure()
 }
+export function parseAgentDiagnosticDetails(value: unknown): Readonly<AgentDiagnosticDetails> {
+  const row = record(value, ['step', 'cause', 'field', 'rule', 'expectedType', 'actualType', 'limit', 'nativeCode', 'dispatched', 'result',
+    'retryInMs', 'attempt', 'maxAttempts', 'causeEventId', 'queueMs', 'stepMs', 'blockingStep', 'slowestCompletedStep', 'slowestCompletedStepMs',
+    'dispatchTurnPending', 'dispatchTurnMs', 'loopActiveMs', 'configReadCount', 'configReadMs', 'timeoutOverrunMs', 'outputTokens', 'reasoningTokens', 'requestedSeq', 'firstUnseenSeq', 'bytesWritten', 'bytesExpected'])
+  for (const key of ['step', 'cause', 'field', 'rule', 'causeEventId', 'slowestCompletedStep']) if (row[key] !== undefined) token(row[key])
+  for (const key of ['limit', 'retryInMs', 'attempt', 'maxAttempts', 'queueMs', 'stepMs', 'slowestCompletedStepMs',
+    'dispatchTurnMs', 'loopActiveMs', 'configReadCount', 'configReadMs', 'timeoutOverrunMs', 'outputTokens', 'reasoningTokens', 'requestedSeq', 'firstUnseenSeq', 'bytesWritten', 'bytesExpected']) if (row[key] !== undefined &&
+      (!Number.isSafeInteger(row[key]) || Number(row[key]) < 0)) throw failure()
+  if (row.blockingStep !== undefined && !agentJournalWriteSteps.some(step => step === row.blockingStep)) throw failure()
+  if (row.nativeCode !== undefined && (!Number.isInteger(row.nativeCode) || Math.abs(Number(row.nativeCode)) > 2_147_483_647)) throw failure()
+  for (const key of ['dispatched', 'dispatchTurnPending']) if (row[key] !== undefined && typeof row[key] !== 'boolean') throw failure()
+  if (row.result !== undefined && !agentDiagnosticResults.some(item => item === row.result)) throw failure()
+  for (const key of ['expectedType', 'actualType']) if (row[key] !== undefined &&
+      !agentDiagnosticValueTypes.some(type => type === row[key])) throw failure()
+  return Object.freeze(row) as AgentDiagnosticDetails
+}
+
 /** The writer and read view share the same closed metadata schema, including historical v1 records. */
 export function parseAgentDiagnosticEvent(value: unknown): Readonly<AgentDiagnosticEvent> {
-  const row = record(value, ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code', 'durationMs', 'errorKind', 'httpStatus', 'configurationRevision', 'delivery'])
+  const row = record(value, ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code', 'sourceTag', 'durationMs', 'errorKind', 'httpStatus', 'details', 'configurationRevision', 'delivery'])
   if (row.version !== 1 || !Number.isSafeInteger(row.at) || Number(row.at) < 0 || Number(row.at) > 8_640_000_000_000_000 ||
       typeof row.stage !== 'string' || !stages.includes(row.stage) || typeof row.outcome !== 'string' || !outcomes.includes(row.outcome) ||
       row.durationMs !== undefined && (!Number.isSafeInteger(row.durationMs) || Number(row.durationMs) < 0) ||
       row.errorKind !== undefined && (typeof row.errorKind !== 'string' || !errorKinds.includes(row.errorKind)) ||
+      row.sourceTag !== undefined && (typeof row.sourceTag !== 'string' || !/^[\p{Script=Han}\p{L}\p{N} _-]{1,24}$/u.test(row.sourceTag)) ||
       row.httpStatus !== undefined && (!Number.isInteger(row.httpStatus) || Number(row.httpStatus) < 100 || Number(row.httpStatus) > 599)) throw failure()
   let delivery: AgentDiagnosticEvent['delivery']
   if (row.delivery !== undefined) {
@@ -85,8 +105,10 @@ export function parseAgentDiagnosticEvent(value: unknown): Readonly<AgentDiagnos
   }
   return Object.freeze({ version: 1, id: token(row.id), traceId: token(row.traceId), at: row.at as number, scope: scope(row.scope),
     stage: row.stage as AgentDiagnosticEvent['stage'], operation: token(row.operation), outcome: row.outcome as AgentDiagnosticEvent['outcome'],
-    ...(row.code === undefined ? {} : { code: token(row.code) }), ...(row.durationMs === undefined ? {} : { durationMs: row.durationMs as number }),
+    ...(row.code === undefined ? {} : { code: token(row.code) }), ...(row.sourceTag === undefined ? {} : { sourceTag: row.sourceTag as string }),
+    ...(row.durationMs === undefined ? {} : { durationMs: row.durationMs as number }),
     ...(row.errorKind === undefined ? {} : { errorKind: row.errorKind as NonNullable<AgentDiagnosticEvent['errorKind']> }), ...(row.httpStatus === undefined ? {} : { httpStatus: row.httpStatus as number }),
+    ...(row.details === undefined ? {} : { details: parseAgentDiagnosticDetails(row.details) }),
     ...(row.configurationRevision === undefined ? {} : { configurationRevision: text(row.configurationRevision, 512) }), ...(delivery === undefined ? {} : { delivery }) })
 }
 
@@ -117,8 +139,12 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
   const allows = raw.allowsText as AgentOperationJournalOptions['allowsText'], emergency = raw.onEmergency as AgentOperationJournalOptions['onEmergency']
   const dataDir = path.resolve(raw.dataDir), directory = path.join(dataDir, 'operations')
   let degraded = false, written = 0, failed = 0, lastWrittenAt: number | undefined, closing = false
-  let tail: Promise<void> = Promise.resolve(), pending = 0, pendingBytes = 0
-  let closeResult: Promise<boolean> | undefined, latest: { name: string; size: number } | undefined
+  const queue: { safe: AgentDiagnosticEvent; line: string; size: number; resolve(ok: boolean): void; observe?: AgentJournalWriteObserver }[] = []
+  let draining: Promise<void> | undefined, pending = 0, pendingBytes = 0
+  let activeStep: AgentJournalWriteStep | undefined
+  let closeResult: Promise<boolean> | undefined
+  let latest: { name: string; size: number; dev: number; ino: number; needsDirectorySync: boolean } | undefined
+  let activeFile: FileHandle | undefined
   let rootIdentity: { dev: number; ino: number } | undefined, directoryIdentity: { dev: number; ino: number } | undefined
   let reporting = false
   let releaseWriter: (() => Promise<void>) | undefined
@@ -130,14 +156,17 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
       try { emergency?.(safe, code) } catch { /* Never feed emergency failures back into this journal. */ }
       finally { reporting = false }
     }
-    try { process.stderr.write(`[AgentDiagnostics] ${code}${safe ? ' ' + JSON.stringify(safe) : ''}\n`) } catch { /* No recursive logging. */ }
+    try { stderr.write(`[AgentDiagnostics] ${code}${safe ? ' ' + JSON.stringify(safe) : ''}\n`) } catch { /* No recursive logging. */ }
   }
   async function directories(initial = false): Promise<void> {
     if (initial) await fs.mkdir(dataDir, { recursive: true, mode: 0o700 })
-    const root = await fs.lstat(dataDir)
-    if (!root.isDirectory() || root.isSymbolicLink() || rootIdentity && (rootIdentity.dev !== root.dev || rootIdentity.ino !== root.ino)) throw failure()
+    if (initial) {
+      const root = await fs.lstat(dataDir)
+      if (!root.isDirectory()) throw failure()
+    }
     if (initial) await fs.mkdir(directory, { mode: 0o700 }).catch(error => { if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) throw error })
-    const own = await fs.lstat(directory)
+    const [root, own] = await Promise.all([fs.lstat(dataDir), fs.lstat(directory)])
+    if (!root.isDirectory() || root.isSymbolicLink() || rootIdentity && (rootIdentity.dev !== root.dev || rootIdentity.ino !== root.ino)) throw failure()
     if (!own.isDirectory() || own.isSymbolicLink() || (own.mode & 0o777) !== 0o700 || directoryIdentity && (directoryIdentity.dev !== own.dev || directoryIdentity.ino !== own.ino)) throw failure()
     rootIdentity ??= { dev: root.dev, ino: root.ino }; directoryIdentity ??= { dev: own.dev, ino: own.ino }
   }
@@ -146,16 +175,33 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
     const handle = await fs.open(directory, constants.O_RDONLY | constants.O_NOFOLLOW)
     try { await handle.sync() } finally { await handle.close() }
   }
+  function validateFile(stat: Stats) {
+    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.size > 64 * MiB) throw failure()
+  }
+  async function verifyPath(name: string, expected: { dev: number; ino: number; size: number }, advance?: (step: AgentJournalWriteStep) => void) {
+    advance?.('journal_verify_directories')
+    await directories()
+    advance?.('journal_verify_path')
+    const actual = await fs.lstat(path.join(directory, name))
+    validateFile(actual)
+    if (actual.dev !== expected.dev || actual.ino !== expected.ino || actual.size !== expected.size) throw failure()
+  }
+  async function verifyFile(name: string, handle: FileHandle, advance?: (step: AgentJournalWriteStep) => void) {
+    advance?.('journal_verify')
+    const stat = await handle.stat()
+    validateFile(stat)
+    await verifyPath(name, stat, advance)
+    return stat
+  }
   async function privateFile(name: string, flags: number): Promise<FileHandle> {
     const handle = await fs.open(path.join(directory, name), flags | constants.O_NOFOLLOW, 0o600)
-    try {
-      const stat = await handle.stat()
-      if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.size > 64 * MiB) throw failure()
-      await directories()
-      const actual = await fs.lstat(path.join(directory, name))
-      if (actual.isSymbolicLink() || actual.dev !== stat.dev || actual.ino !== stat.ino) throw failure()
-      return handle
-    } catch { await handle.close(); throw failure() }
+    try { await verifyFile(name, handle); return handle }
+    catch (error) { await handle.close(); throw error }
+  }
+  async function closeFile(): Promise<void> {
+    const handle = activeFile
+    activeFile = undefined
+    await handle?.close()
   }
   async function names(): Promise<string[]> {
     await directories()
@@ -176,7 +222,8 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
     for (const name of await names()) {
       const handle = await privateFile(name, constants.O_RDWR)
       try {
-        let size = (await handle.stat()).size
+        const stat = await handle.stat()
+        let { size } = stat
         if (size) {
           let cursor = size, boundary = -1
           while (cursor > 0 && boundary < 0) {
@@ -192,41 +239,136 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
             await handle.truncate(size); await handle.sync()
           }
         }
-        latest = { name, size }
+        latest = { name, size, dev: stat.dev, ino: stat.ino, needsDirectorySync: false }
       } finally { await handle.close() }
     }
     await prune()
   }
-  async function write(line: string): Promise<void> {
-    await directories()
+  function progress(observe: AgentJournalWriteObserver | undefined, step: AgentJournalWriteStep,
+    blockingStep?: () => AgentJournalWriteStep | undefined): void {
+    try { observe?.(step, blockingStep) } catch { /* Progress observers cannot obstruct writes. */ }
+  }
+
+  async function write(line: string, advance: (step: AgentJournalWriteStep) => void): Promise<void> {
     const bytes = Buffer.from(line, 'utf8'), today = day()
-    let created = false
-    if (!latest || !latest.name.startsWith(today + '.') || latest.size + bytes.length > maximum) {
-      const existing = (await names()).filter(name => name.startsWith(today + '.'))
-      const sequence = Number(existing.at(-1)?.match(filePattern)?.[2] ?? -1) + 1
-      if (sequence > 999999) throw failure()
-      latest = { name: `${today}.${String(sequence).padStart(6, '0')}.ndjson`, size: 0 }; created = true
-    }
-    const handle = await privateFile(latest.name, constants.O_WRONLY | constants.O_APPEND | (created ? constants.O_CREAT | constants.O_EXCL : 0))
+    let file = latest
     try {
-      if ((await handle.stat()).size !== latest.size) throw failure()
-      await handle.writeFile(bytes); await handle.sync(); latest.size += bytes.length
-    } finally { await handle.close() }
-    if (created) await syncDirectory()
-    await prune()
+      if (!file || !file.name.startsWith(today + '.') || file.size + bytes.length > maximum) {
+        if (activeFile) { advance('journal_close'); await closeFile() }
+        advance('journal_open')
+        const existing = (await names()).filter(name => name.startsWith(today + '.'))
+        const sequence = Number(existing.at(-1)?.match(filePattern)?.[2] ?? -1) + 1
+        if (sequence > 999999) throw failure()
+        const name = `${today}.${String(sequence).padStart(6, '0')}.ndjson`
+        activeFile = await fs.open(path.join(directory, name), constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT |
+          constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+        const stat = await verifyFile(name, activeFile, advance)
+        if (stat.size !== 0) throw failure()
+        latest = file = { name, size: 0, dev: stat.dev, ino: stat.ino, needsDirectorySync: true }
+      } else {
+        if (!activeFile) {
+          advance('journal_open')
+          await directories()
+          activeFile = await fs.open(path.join(directory, file.name), constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW, 0o600)
+          const stat = await verifyFile(file.name, activeFile, advance)
+          if (stat.size !== file.size || stat.dev !== file.dev || stat.ino !== file.ino) throw failure()
+        } else {
+          // An open descriptor keeps its inode. Recheck today's path and
+          // length against the confirmed inode before each durable append.
+          await verifyPath(file.name, file, advance)
+        }
+      }
+      const handle = activeFile
+      try {
+        advance('journal_write')
+        await handle.writeFile(bytes)
+        advance('journal_sync')
+        await handle.sync()
+        file.size += bytes.length
+      } catch (error) {
+        // A failed append can leave a partial line. Only truncate bytes from
+        // this writer's failed batch, keeping every acknowledged event.
+        advance('journal_recovery')
+        try { await handle.truncate(file.size); await handle.sync() } catch { /* Keep the last confirmed offset for recovery. */ }
+        throw error
+      }
+      if (file.needsDirectorySync) {
+        advance('journal_directory_sync')
+        await syncDirectory()
+        file.needsDirectorySync = false
+        advance('journal_retention')
+        await prune().catch(() => report(undefined, 'JOURNAL_RETENTION_FAILED'))
+      }
+    } catch (error) {
+      if (activeFile) { advance('journal_close'); await closeFile().catch(() => {}) }
+      throw error
+    }
+  }
+  function drain() {
+    if (draining) return
+    draining = Promise.resolve().then(async () => {
+      while (queue.length) {
+        const first = queue[0]!
+        const remaining = latest?.name.startsWith(day() + '.') ? maximum - latest.size : maximum
+        const budget = Math.min(64 * 1024, first.size <= remaining ? remaining : maximum)
+        let count = 0, batchBytes = 0
+        while (count < Math.min(queue.length, 64) && batchBytes + queue[count]!.size <= budget) {
+          batchBytes += queue[count]!.size
+          count++
+        }
+        const batch = queue.splice(0, count)
+        let committed = false
+        try {
+          await write(batch.map(item => item.line).join(''), step => {
+            activeStep = step
+            for (const item of batch) progress(item.observe, step)
+          })
+          committed = true
+          written += batch.length
+          lastWrittenAt = Date.now()
+        } catch (error) {
+          const code = error && typeof error === 'object' && Object.getOwnPropertyDescriptor(error, 'code')?.value === 'ENOSPC'
+            ? 'JOURNAL_NO_SPACE' : 'JOURNAL_WRITE_FAILED'
+          for (const item of batch) report(item.safe, code)
+        } finally {
+          activeStep = undefined
+          pending -= batch.length
+          pendingBytes -= batchBytes
+          for (const item of batch) item.resolve(committed)
+        }
+      }
+    }).finally(() => { draining = undefined; if (queue.length) drain() })
+  }
+  async function flush() {
+    while (draining) await draining
+    return !degraded
   }
   try { await directories(true); releaseWriter = await localWriterLock(dataDir); await recover(); await syncDirectory() }
   catch { await releaseWriter?.().catch(() => {}); report(undefined, 'JOURNAL_OPEN_FAILED'); throw failure() }
 
   return {
-    append(input: AgentDiagnosticEvent): Promise<boolean> {
+    append(input: AgentDiagnosticEvent, observe?: AgentJournalWriteObserver): Promise<boolean> {
       let safe: AgentDiagnosticEvent, line: string
       try {
         safe = parseAgentDiagnosticEvent(input); line = JSON.stringify(safe) + '\n'
-        let permitted = true; try { permitted = allows?.(line) !== false } catch { permitted = false }
-        if (!permitted) {
-          safe = Object.freeze({ version: 1, id: randomUUID(), traceId: randomUUID(), at: Date.now(), scope: Object.freeze({ kind: 'host' }), stage: 'runtime', operation: 'diagnostic.redacted', outcome: 'failed', code: 'DIAGNOSTIC_REDACTED' })
-          line = JSON.stringify(safe) + '\n'
+        if (allows) {
+          const permitted = (value: string) => { try { return allows(value) } catch { return false } }
+          if (!permitted(line)) {
+            const generatedId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(id) && permitted(id)
+            const keepTrace = generatedId(safe.id) && generatedId(safe.traceId)
+            const minimal = { version: 1 as const, id: keepTrace ? safe.id : randomUUID(), traceId: keepTrace ? safe.traceId : randomUUID(),
+              at: safe.at, scope: { kind: 'host' as const },
+              stage: safe.stage, operation: 'diagnostic.redacted', outcome: safe.outcome, code: 'DIAGNOSTIC_REDACTED' }
+            const metadata = Object.fromEntries(Object.entries(safe.details ?? {}).filter(([, value]) => permitted(String(value))))
+            const sanitized = { ...minimal, operation: safe.operation, code: safe.code ?? 'DIAGNOSTIC_REDACTED',
+              ...(safe.durationMs === undefined ? {} : { durationMs: safe.durationMs }),
+              ...(safe.httpStatus === undefined ? {} : { httpStatus: safe.httpStatus }),
+              details: { cause: 'diagnostic_metadata_redacted', ...metadata } }
+            const reduced = JSON.stringify(sanitized) + '\n'
+            line = keepTrace && permitted(reduced) ? reduced : JSON.stringify(minimal) + '\n'
+            if (!permitted(line)) line = JSON.stringify({ ...minimal, id: randomUUID(), traceId: randomUUID() }) + '\n'
+            safe = parseAgentDiagnosticEvent(JSON.parse(line))
+          }
         }
         if (Buffer.byteLength(line) > MAX_LINE_BYTES) throw failure()
       } catch { report(undefined, 'JOURNAL_INVALID_EVENT'); return Promise.resolve(false) }
@@ -234,18 +376,20 @@ export async function openAgentOperationJournal(options: AgentOperationJournalOp
       const size = Buffer.byteLength(line)
       if (pending >= MAX_PENDING || pendingBytes + size > MAX_PENDING_BYTES) { report(safe, 'JOURNAL_OVERFLOW'); return Promise.resolve(false) }
       pending++; pendingBytes += size
-      const result = tail.then(async () => {
-        try { await write(line); written++; lastWrittenAt = Date.now(); return true }
-        catch { report(safe, 'JOURNAL_WRITE_FAILED'); return false }
-        finally { pending--; pendingBytes -= size }
+      return new Promise(resolve => {
+        queue.push({ safe, line, size, resolve, ...(observe ? { observe } : {}) })
+        progress(observe, 'journal_queue', () => activeStep)
+        drain()
       })
-      tail = result.then(() => {}, () => {})
-      return result
     },
-    async flush(): Promise<boolean> { await tail; return !degraded },
+    flush,
     close(): Promise<boolean> {
       closing = true
-      closeResult ??= tail.then(async () => { try { await releaseWriter?.() } catch { report(undefined, 'JOURNAL_CLOSE_FAILED') } return !degraded })
+      closeResult ??= flush().then(async () => {
+        try { await closeFile() } catch { report(undefined, 'JOURNAL_CLOSE_FAILED') }
+        try { await releaseWriter?.() } catch { report(undefined, 'JOURNAL_CLOSE_FAILED') }
+        return !degraded
+      })
       return closeResult.then(result => result && !degraded)
     },
     health() { return { degraded, written, failed, ...(lastWrittenAt === undefined ? {} : { lastWrittenAt }) } },

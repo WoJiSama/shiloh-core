@@ -6,6 +6,7 @@ import test from 'node:test'
 import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
 
 const defaultTools = {
+  localEmoji: { enabled: false, config: {} },
   qqActions: {
     qzone: { enabled: false }, gift: { enabled: false },
     redPackets: { enabled: false, allowExplicit: false, allowRecentSearch: false, allowReferenceFallback: false,

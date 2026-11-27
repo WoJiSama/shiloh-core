@@ -69,7 +69,7 @@ const stageNames = new Set<AgentTorrentStage>(['notice', 'listing', 'archive', '
 const terminal = new Set<State>(['awaiting-selection', 'completed', 'failed', 'cancelled', 'unknown'])
 const states = new Set<State>(['queued', 'preparing', 'sending', ...terminal])
 const ownership = new WeakMap<AgentInboxRedis, Map<string, string>>()
-const fail = () => new Error('磁链下载账本不可用或任务已失效')
+const fail = (cause?: unknown) => new Error('磁链下载账本不可用或任务已失效', { cause })
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const hex = (value: unknown, length = 64): value is string => typeof value === 'string' && new RegExp(`^[a-f0-9]{${length}}$`, 'u').test(value)
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
@@ -463,11 +463,11 @@ export function createAgentTorrentLedger(storage: AgentInboxRedis, options: { no
         const binding = bindingValue(inputBinding), trigger = sourceValue(inputTrigger, binding), source = sourceValue(inputSource, binding)
         if (platformAccountKey(trigger.sender) !== platformAccountKey(source.sender)) throw fail()
         await recover(); return await claimInternal(binding, trigger, source)
-      } catch { throw fail() }
+      } catch (error) { throw fail(error) }
     },
     async inspect(id: string) { try { return (await load(id))?.record } catch { throw fail() } },
-    async listActive() { try { return await listActive() } catch { throw fail() } },
-    async recover() { try { await recover(); return await listActive() } catch { throw fail() } },
+    async listActive() { try { return await listActive() } catch (error) { throw fail(error) } },
+    async recover() { try { await recover(); return await listActive() } catch (error) { throw fail(error) } },
     async readSelection(inputBinding: AgentBindingSnapshot, inputSender: PlatformUserRef) {
       try {
         const binding = bindingValue(inputBinding), sender = user(inputSender), selected = await selection(binding, sender)

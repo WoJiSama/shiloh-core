@@ -10,7 +10,6 @@ import type { AgentDiagnostics } from '../modules/runtime/infrastructure/agentDi
 import { openQqMediaRelayBridge, type QqMediaRelayBridge } from '../adapters/qqMediaRelayBridge.js'
 import { createAgentMediaArtifactStore } from '../modules/media/infrastructure/agentMediaArtifactStore.js'
 import { createAgentBilibiliRelayProvider } from '../modules/media/infrastructure/agentBilibiliRelayProvider.js'
-import { createAgentBilibiliCardRenderer } from '../modules/media/infrastructure/agentBilibiliCardRenderer.js'
 import { createAgentBilibiliQualityProvider, createAgentBilibiliSearchAttachmentProvider } from '../modules/media/infrastructure/agentBilibiliQualityProvider.js'
 import { ownBilibiliQualityData } from '../modules/media/infrastructure/agentBilibiliQualityPolicy.js'
 import { createAgentDouyinRelayProvider } from '../modules/media/infrastructure/agentDouyinRelayProvider.js'
@@ -18,7 +17,7 @@ import { createAgentXiaohongshuRelayProvider } from '../modules/media/infrastruc
 import { createAgentYoutubeRelayProvider } from '../modules/media/infrastructure/agentYoutubeRelayProvider.js'
 import { createAgentPixivRelayProvider } from '../modules/media/infrastructure/agentPixivRelayProvider.js'
 import { normalizePixivCookie } from '../modules/media/infrastructure/agentPixivRelayHttp.js'
-import { validateYoutubeProxyUrl } from '../modules/media/infrastructure/agentYoutubeRelayHttp.js'
+import { validateYoutubeProxyUrl, youtubeCookieSecrets } from '../modules/media/infrastructure/agentYoutubeRelayHttp.js'
 import { validateAgentMediaShare } from '../modules/media/infrastructure/agentMediaRelayReference.js'
 import type { StandalonePixivToolsConfig } from './standalonePixiv.js'
 import type { AgentMediaRelayPrepareContext, AgentMediaRelayProvider, AgentMediaShare } from '../contracts/agentMediaRelayWorkflow.js'
@@ -109,14 +108,7 @@ export function readStandaloneMediaRelayConfig(input: unknown, connections: read
       const secret = env[reference]?.trim() ?? ''
       if (!secret) { if (requireCredentials) throw new Error(`环境变量 ${reference} 缺少 YouTube ${label}`); continue }
       if (resolved === 'authCookie') {
-        if (secret.length > 32768 || /[^\x20-\x7e]/u.test(secret)) throw failure()
-        const names = new Set<string>()
-        for (const part of secret.split(';').filter(part => part.trim())) {
-          const at = part.indexOf('='), key = part.slice(0, at).trim(), content = part.slice(at + 1).trim()
-          if (at < 1 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}$/u.test(key) || !content || /\s/u.test(content) || names.has(key)) throw failure()
-          names.add(key)
-        }
-        if (!names.size) throw failure()
+        youtubeCookieSecrets(secret)
       } else if (resolved === 'poToken') {
         if (secret.length > 8192 || !/^[A-Za-z0-9_+./=-]+$/u.test(secret)) throw failure()
       } else {
@@ -170,7 +162,7 @@ export function readStandaloneMediaRelayConfig(input: unknown, connections: read
       return Object.freeze({ connectionId: bridge.connectionId, listen: Object.freeze({ host, port }),
         advertisedOrigin: origin(bridge.advertisedOrigin), allowedPeers: Object.freeze(peers) })
     })
-    if (value.enabled && (bridges.length !== connections.length || connections.some(connection => !seen.has(connection.id)))) throw failure()
+    if (value.enabled && !bridges.length) throw failure()
     return Object.freeze({ enabled: value.enabled, bridges: Object.freeze(bridges),
       ...(douyin ? { douyin: Object.freeze({ enabled: douyin.enabled as boolean }) } : {}),
       ...(xhs ? { xiaohongshu: Object.freeze({ enabled: xhs.enabled as boolean, ...(xhsCookie ? { authCookie: xhsCookie } : {}) }) } : {}),
@@ -183,10 +175,11 @@ export function readStandaloneMediaRelayConfig(input: unknown, connections: read
   }
 }
 export function standaloneMediaRelaySecrets(config: StandaloneMediaRelayConfig): readonly string[] {
-  const secrets = [config.bilibili.authCookie, config.xiaohongshu?.authCookie, config.youtube?.authCookie, config.pixiv?.authCookie].flatMap(cookie => cookie ? [cookie, ...cookie.split(';').flatMap(part => {
+  const secrets = [config.bilibili.authCookie, config.xiaohongshu?.authCookie, config.pixiv?.authCookie].flatMap(cookie => cookie ? [cookie, ...cookie.split(';').flatMap(part => {
     const at = part.indexOf('='), content = part.slice(at + 1).trim()
     return at > 0 && content ? [content] : []
   })] : [])
+  if (config.youtube?.authCookie) secrets.push(...youtubeCookieSecrets(config.youtube.authCookie))
   if (config.youtube?.poToken) secrets.push(config.youtube.poToken)
   for (const value of [config.youtube?.proxyUrl, config.pixiv?.proxyUrl]) if (value) {
     secrets.push(value)
@@ -277,7 +270,7 @@ export async function openStandaloneMediaRelay(options: {
     const bilibili = options.config.enabled ? createAgentBilibiliRelayProvider({ directory: providerDirectory, artifacts,
       ...(options.config.bilibili.authCookie ? { authCookie: options.config.bilibili.authCookie } : {}),
       autoAuthorizedRetry: options.config.bilibili.autoAuthorizedRetry, secrets: options.secrets, allowsText: options.allowsText,
-      cardRenderer: createAgentBilibiliCardRenderer(),
+      cardRenderer: 'summary',
       ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}) }) : undefined
     let douyin: AgentMediaRelayProvider | undefined
     if (options.config.enabled && options.config.douyin?.enabled) {
@@ -337,7 +330,7 @@ export async function openStandaloneMediaRelay(options: {
       await mkdir(qualityDirectory, { mode: 0o700 })
     }
     const qualityProviderFor = (binding: AgentBindingSnapshot): AgentBilibiliQualityProvider | undefined => {
-      if (!qualityDirectory || !options.bilibiliQuality?.enabled) return undefined
+      if (!qualityDirectory || !options.bilibiliQuality?.enabled || !bridges.has(binding.connectionId)) return undefined
       current()
       if (closing) throw failure()
       const owned = ownBilibiliQualityData(binding)
@@ -356,8 +349,9 @@ export async function openStandaloneMediaRelay(options: {
       await ownedRoot()
       const directory = path.join(run, `bridge-${digest(config.connectionId)}`)
       await mkdir(directory, { mode: 0o700 }); await chmod(directory, 0o700)
-      const bridge = await openQqMediaRelayBridge({ directory, resources: artifacts, listen: config.listen,
-        advertisedOrigin: config.advertisedOrigin, allowedPeers: config.allowedPeers })
+      // The bridge verifies the full copy before publishing its capability.
+      const bridge = await openQqMediaRelayBridge({ directory, resources: { open: artifacts.openStream }, listen: config.listen,
+        advertisedOrigin: config.advertisedOrigin, allowedPeers: config.allowedPeers, ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}) })
       bridges.set(config.connectionId, bridge)
     }
     await ownedRoot()

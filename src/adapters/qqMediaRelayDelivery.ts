@@ -55,14 +55,25 @@ function messageId(value: unknown): value is number | string {
   return typeof value === 'number' && Number.isSafeInteger(value) && value !== 0 ||
     typeof value === 'string' && /^-?[1-9]\d{0,15}$/u.test(value) && Number.isSafeInteger(Number(value))
 }
-function preSendResourceFailure(message: unknown): boolean {
-  if (typeof message !== 'string' || message.length > 16_384) return false
+export function qqForwardVideoPreSendFailure(value: unknown): string | undefined {
+  let response
+  try { response = data(value, ['status', 'retcode', 'data', 'message', 'wording', 'echo', 'stream', 'self_id', 'group_id', 'user_id']) }
+  catch { return }
+  const message = response.message
+  if (response.status !== 'failed' || response.retcode !== 1200 || response.data !== null ||
+      typeof message !== 'string' || message !== response.wording || message.length > 16_384) return
   const lines = message.split('\n'), first = lines.shift()
+  if (lines.length < 1 || lines.length > 32 || !lines.every(line => /^    at (?:async )?(?:(?:new )?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)* \((?:[^()\r\n]{1,1024}:\d{1,8}:\d{1,8}|index \d{1,3})\)|[^()\s]{1,1024}:\d{1,8}:\d{1,8})$/u.test(line))) return
   const counts = /^发送伪造合并转发消息失败: AggregateError: 上传转发消息资源失败：([1-9]\d{0,2})\/([1-9]\d{0,2})$/u.exec(first ?? '')
-  if (!counts || Number(counts[1]) > Number(counts[2]) || Number(counts[2]) > 512 || lines.length < 1 || lines.length > 32) return false
-  // The inspected handler includes d.stack here. Reject nested error text and
-  // arbitrary suffixes; individual Highway reasons are absent from this stack.
-  return lines.every(line => /^    at (?:async )?(?:(?:new )?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)* \((?:[^()\r\n]{1,1024}:\d{1,8}:\d{1,8}|index \d{1,3})\)|[^()\s]{1,1024}:\d{1,8}:\d{1,8})$/u.test(line))
+  if (counts && Number(counts[1]) <= Number(counts[2]) && Number(counts[2]) <= 512) return 'media_resource_preprocessing_failed'
+  // NapCat loads the video from the bridge inside createSendElements, before
+  // uploading the forward packet and before sending the final group message.
+  if (first !== '发送伪造合并转发消息失败: Error: other side closed') return
+  const file = lines.findIndex(line => /\.handleOb11FileLikeMessage \(file:\/\/\/[^()]+\/napcat\.mjs:\d+:\d+\)$/u.test(line))
+  const video = lines.findIndex(line => /^    at async video \(file:\/\/\/[^()]+\/napcat\.mjs:\d+:\d+\)$/u.test(line))
+  const elements = lines.findIndex(line => /\.createSendElements \(file:\/\/\/[^()]+\/napcat\.mjs:\d+:\d+\)$/u.test(line))
+  const packet = lines.findIndex(line => /\.uploadForwardedNodesPacket \(file:\/\/\/[^()]+\/napcat\.mjs:\d+:\d+\)$/u.test(line))
+  if (file === 0 && file < video && video < elements && elements < packet) return 'media_resource_fetch_closed'
 }
 function receipt(value: unknown, address: ConversationAddress, mode: SendMediaRelayAction['mode'], hasVideo: boolean): DeliveryReceipt {
   try {
@@ -72,9 +83,10 @@ function receipt(value: unknown, address: ConversationAddress, mode: SendMediaRe
     if (response.retcode === 400 || response.retcode === 1400) return failed(String(response.retcode))
     // NapCat Bt serializes the same handler error into message and wording. Its
     // inspected packet resource AggregateError occurs before final native send.
-    if (mode === 'forward' && hasVideo && response.status === 'failed' && response.retcode === 1200 && response.data === null &&
-        typeof response.message === 'string' && response.message === response.wording &&
-        preSendResourceFailure(response.message)) return failed('media_resource_preprocessing_failed')
+    if (mode === 'forward' && hasVideo) {
+      const failure = qqForwardVideoPreSendFailure(value)
+      if (failure) return failed(failure)
+    }
     if (response.status !== 'ok' || response.retcode !== 0) return unknown()
     const detail = data(response.data, ['message_id', 'res_id', 'forward_id', 'self_id', 'group_id', 'user_id'])
     if (!messageId(detail.message_id)) return unknown()
@@ -95,7 +107,9 @@ export function createQqMediaRelayDeliveryPort(options: {
   readonly allowsText?: (text: string) => boolean
   /** Trusted host/testing override can shorten, never extend the 90 minute ceiling. */
   readonly timeoutMs?: number
-  sendApi(action: NativeAction, params: Record<string, unknown>, options: { readonly isCurrent: () => boolean; readonly signal: AbortSignal; readonly timeoutMs: number }): Promise<unknown>
+  sendApi(action: NativeAction, params: Record<string, unknown>, options: {
+    readonly isCurrent: () => boolean; readonly signal: AbortSignal; readonly timeoutMs: number; readonly videoForward: boolean
+  }): Promise<unknown>
 }): NonNullable<MessageActionPort['sendMediaRelay']> {
   const configuredAccount = options.account, accountKey = platformAccountKey(account(configuredAccount)), connectionId = options.connectionId
   const bridge = options.bridge, sendApi = options.sendApi, allowsText = options.allowsText
@@ -193,7 +207,8 @@ export function createQqMediaRelayDeliveryPort(options: {
             await ensure()
             const staging = Promise.resolve().then(() => {
               if (!isCurrent()) throw Error('QQ媒体转发已取消')
-              return bridge.stage(artifact, { signal, isCurrent })
+              // This delivery's watcher already aborts the shared signal on revocation.
+              return bridge.stage(artifact, { signal, isCurrent }, true)
             }).then(async lease => {
               if (!accepting || !isCurrent()) { await lease.release(); throw Error('QQ媒体转发已取消') }
               leases.push(lease)
@@ -214,14 +229,15 @@ export function createQqMediaRelayDeliveryPort(options: {
           const params = Object.freeze({ [group ? 'group_id' : 'user_id']: address.id, ...(mode === 'forward'
             ? { messages: Object.freeze(items.map(content => Object.freeze({ type: 'node', data: Object.freeze({ name: 'Agent', uin: address.account.id, content }) }))) }
             : { message: Object.freeze(items.flat()) }) })
+          const hasVideo = plan.items.some(item => item.parts.some(part => part.kind === 'video'))
           const result = await wait(Promise.resolve().then(async () => {
             await ensure()
             if (!isCurrent()) return failed('binding_changed')
             dispatched = true
-            return withDeliveryGuard(isCurrent, () => sendApi(nativeAction, params, { isCurrent, signal, timeoutMs }))
+            return withDeliveryGuard(isCurrent, () => sendApi(nativeAction, params, { isCurrent, signal, timeoutMs, videoForward: mode === 'forward' && hasVideo }))
           }))
           if (!isCurrent()) return dispatched ? unknown() : failed('binding_changed')
-          return receipt(result, address, mode, plan.items.some(item => item.parts.some(part => part.kind === 'video')))
+          return receipt(result, address, mode, hasVideo)
         } catch { return dispatched ? unknown() : failed(signal.aborted ? 'binding_changed' : 'media_relay_preparation_failed') }
         finally {
           accepting = false; cancel.abort()

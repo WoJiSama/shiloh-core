@@ -6,9 +6,11 @@ import { PERSON_MEMORY_CATEGORIES, normalizePersonMemoryText } from '../domain/p
 import { personMemoryAddress } from './personMemoryContext.js'
 import { createPersonMemoryStore } from './personMemoryStore.js'
 import { captureSynchronousGuardCheck, createSynchronousGuard } from '../../runtime/domain/synchronousGuard.js'
+import { captureAgentBindingDirectoryCheck } from '../../runtime/infrastructure/agentManagementBindings.js'
 
 interface ManagementRedis {
   get(key: string): Promise<unknown>
+  getMany?(keys: string[]): Promise<(string | null)[]>
   eval(script: string, options: { keys: string[]; arguments: string[] }): Promise<unknown>
 }
 export interface AgentManagedProfile {
@@ -57,7 +59,9 @@ export function createAgentProfileManagement({ redis, bindings, now = Date.now }
     const signature = JSON.stringify(directory.map(ownerKey).sort()), selected = context.binding && copyBinding(context.binding)
     if (scoped && !selected) return fail('invalid_request')
     const parentCheck = captureSynchronousGuardCheck(context, () => fail('conflict'))
-    const directoryCurrent = () => JSON.stringify(bindings.list().map(copyBinding).map(ownerKey).sort()) === signature &&
+    const sameDirectory = captureAgentBindingDirectoryCheck(bindings, directory) ??
+      (() => JSON.stringify(bindings.list().map(copyBinding).map(ownerKey).sort()) === signature)
+    const directoryCurrent = () => sameDirectory() &&
       (selected ? !!context.binding && ownerKey(copyBinding(context.binding)) === ownerKey(selected) : context.binding === undefined) &&
       (!selected || ownerKey(bindings.resolve(selected.target)!) === ownerKey(selected))
     const current = () => {
@@ -84,15 +88,30 @@ export function createAgentProfileManagement({ redis, bindings, now = Date.now }
     const store = (binding: AgentBindingSnapshot) => {
       const { botId, scene } = personMemoryAddress(binding.target), identity = { botId, personaId: agentPersonaScopeId(binding.agentId) }, base = memoryBase(identity)
       const allowedKey = (key: string) => key === DIRECTORY || key === DIRECTORY + ':lock' || key === base + ':lock' || key === base + ':scope' || key.startsWith(base + ':person:')
+      const scopeGrant = JSON.stringify([operation, ownerKey(binding)])
+      const checkRead = operation === 'profiles.read' ? () => {
+        ensureCurrent()
+        if (!authorized.has(scopeGrant)) fail('forbidden')
+      } : () => authorize(binding)
+      function capture(key: string, value: unknown) {
+        if (value !== null && value !== undefined && typeof value !== 'string') return fail('unavailable')
+        if (captured.has(key) && captured.get(key) !== (value ?? null)) return fail('conflict')
+        captured.set(key, value == null ? null : value)
+      }
       const get = async (key: string) => {
         if (!allowedKey(key)) return fail('unavailable')
-        await authorize(binding)
+        // The list can consult the same account's captured subject bytes for every scene.
+        // finish() reauthorizes each scene and compares the entire Redis read set before returning it.
+        if (operation === 'profiles.read' && captured.has(key)) {
+          if (context.signal.aborted) return fail('conflict')
+          if (!authorized.has(scopeGrant)) return fail('forbidden')
+          return captured.get(key)!
+        }
+        await checkRead()
         if (!captured.has(key)) {
           const value = await redis.get(key)
-          await authorize(binding)
-          if (value !== null && value !== undefined && typeof value !== 'string') return fail('unavailable')
-          if (captured.has(key) && captured.get(key) !== (value ?? null)) return fail('conflict')
-          captured.set(key, value == null ? null : value)
+          await checkRead()
+          capture(key, value)
         }
         ensureCurrent()
         return changes.has(key) ? changes.get(key)! : captured.get(key)!
@@ -106,6 +125,18 @@ export function createAgentProfileManagement({ redis, bindings, now = Date.now }
         async set(key, value) { stage(key, value); return 'OK' }, async del(key) { stage(key, null); return 1 } } })
       return { identity, scene, memory,
         async prepare() { for (const key of [base + ':lock', DIRECTORY + ':lock']) if (await get(key) !== null) fail('conflict') },
+        async loadSubjects(subjects: readonly { subjectId: string }[]) {
+          if (!redis.getMany || operation !== 'profiles.read') return
+          const keys = subjects.map(({ subjectId }) => base + ':person:' + encodeURIComponent(subjectId)).filter(key => !captured.has(key))
+          for (let offset = 0; offset < keys.length; offset += 64) {
+            const batch = keys.slice(offset, offset + 64)
+            await checkRead()
+            const values = await redis.getMany(batch)
+            await checkRead()
+            if (!Array.isArray(values) || values.length !== batch.length) return fail('unavailable')
+            batch.forEach((key, index) => capture(key, values[index]))
+          }
+        },
       }
     }
     async function finish() {
@@ -161,6 +192,7 @@ export function createAgentProfileManagement({ redis, bindings, now = Date.now }
         const owner = work.store(binding); await owner.prepare()
         const subjects = await owner.memory.listSubjects(owner.identity)
         if (subjects.length > MAXIMUM) return fail('unavailable')
+        await owner.loadSubjects(subjects)
         for (const { subjectId } of subjects) {
           const items = await entries(owner, subjectId)
           if (items.length) output.push({ binding, profile: profile(owner, subjectId, items) })

@@ -9,6 +9,7 @@ import {createCommitmentStore} from '../../commitments/infrastructure/commitment
 import {checkCommitmentCaps,resolvedCommitmentConfig} from '../../commitments/domain/commitments.js'
 import {sanitizeFinalReplyText} from '../../conversation/domain/replySanitizer.js'
 import {normalizeDeliveryReceipt} from '../../messaging/domain/deliveryReceipt.js'
+import type {AgentDiagnostics} from './agentDiagnostics.js'
 
 class Stopped extends Error {
   constructor(readonly code:'cancelled'|'unavailable'){super(code)}
@@ -32,8 +33,8 @@ export function createAgentDeferredReminderSender(actions:MessageActionPort):Age
   }
 }
 
-export function createAgentDeferredActionRuntime(ports:AgentDeferredActionRuntimePorts) {
-  const store=createCommitmentStore({redis:ports.redis,logger:ports.logger})
+export function createAgentDeferredActionRuntime(ports:AgentDeferredActionRuntimePorts & { diagnostics?: Pick<AgentDiagnostics, 'emit'> }) {
+  const store=createCommitmentStore(ports)
   const now=()=>ports.now?.()??Date.now(),ticks=new Map<string,Promise<void>>(),controllers=new Set<AbortController>()
   let stopped=false,recovery:Promise<void>|undefined
 

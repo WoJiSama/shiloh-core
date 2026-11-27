@@ -79,6 +79,60 @@ function clockFixture(t, statuses = []) {
   return { requests, logs, tick, report: diagnostics.emit, close: webhook.close }
 }
 
+test('validation alerts aggregate only matching declared fields and retain the most recent trace', async () => {
+  const batches = []
+  const queue = createAgentFailureAlerts({ channel: 'qq', logger: quiet,
+    async deliver(batch) { batches.push(batch); return { state: 'confirmed' } } })
+  let at = 1000
+  const diagnostics = createAgentDiagnostics({ logger: quiet, onFailure: queue.report, now: () => at++ })
+  const traces = ['reason', 'throughSeq', 'reason'].map(field => diagnostics.withScope({ kind: 'host' }, 'simFinishTurn', () => {
+    diagnostics.emit({ stage: 'tool', operation: 'simFinishTurn', outcome: 'failed', code: 'tool_schema_invalid',
+      details: { field, rule: 'type', result: 'not_dispatched' } })
+    return diagnostics.traceId()
+  }))
+  await queue.close()
+  const alerts = batches[0].alerts
+  assert.deepEqual(alerts.map(alert => [alert.details.field, alert.count]), [['reason', 2], ['throughSeq', 1]])
+  assert.deepEqual(alerts.map(alert => alert.traceId), [traces[2], traces[1]])
+  assert.match(formatQqOwnerAlerts({ alerts }), /字段 reason · 类型错误/u)
+})
+
+test('QQ journal alerts show the blocking phase without combining different blockers', async () => {
+  const batches = []
+  const queue = createAgentFailureAlerts({ channel: 'qq', logger: quiet,
+    async deliver(batch) { batches.push(batch); return { state: 'confirmed' } } })
+  const diagnostics = createAgentDiagnostics({ logger: quiet, onFailure: queue.report })
+  for (const blockingStep of ['journal_sync', 'journal_write']) {
+    diagnostics.emit({ stage: 'host', operation: 'operation_journal', outcome: 'unknown', code: 'diagnostic_journal_timeout',
+      details: { step: 'journal_queue', blockingStep, queueMs: 5_000, stepMs: 5_000, causeEventId: 'original-event' } })
+  }
+  await queue.close()
+  const message = formatQqOwnerAlerts(batches[0])
+  assert.equal(batches[0].alerts.length, 2)
+  assert.match(message, /前一批正在同步日志文件/u)
+  assert.match(message, /前一批正在写入日志文件/u)
+  assert.match(message, /排队 5000 ms.*关联记录 original-event/u)
+})
+
+test('Redis scheduling evidence stays distinct on both first-failure alerts', async () => {
+  const batches = []
+  const queue = createAgentFailureAlerts({ channel: 'qq', logger: quiet,
+    async deliver(batch) { batches.push(batch); return { state: 'confirmed' } } })
+  const diagnostics = createAgentDiagnostics({ logger: quiet, onFailure: queue.report })
+  for (const dispatchTurnPending of [true, false]) {
+    diagnostics.emit({ stage: 'host', operation: 'redis_command', outcome: 'failed', code: 'redis_command_queue_timeout',
+      details: { step: 'get', dispatched: false, dispatchTurnPending, timeoutOverrunMs: 900,
+        ...(dispatchTurnPending ? {} : { dispatchTurnMs: 4 }) } })
+  }
+  await queue.close()
+  assert.equal(batches[0].alerts.length, 2)
+  const message = formatQqOwnerAlerts(batches[0])
+  assert.match(message, /发送调度探针仍在等待/u)
+  assert.match(message, /已运行发送调度探针/u)
+  assert.match(message, /超时回调延后 900 ms/u)
+  assert.match(message, /调度探针 4 ms/u)
+})
+
 test('a new error pushes immediately and repeats flush after the cooldown even when no new error arrives', async t => {
   const f = clockFixture(t)
   f.report(toolFailure)
@@ -179,15 +233,42 @@ test('QQ alerts explain known failures and handle unknown or redacted diagnostic
     { ...common, stage: 'model', operation: 'conversation_summary', outcome: 'failed', code: 'http_error', httpStatus: 429 },
     { ...common, stage: 'delivery', operation: 'send_send', outcome: 'unknown' },
     { ...common, stage: 'runtime', operation: 'host_log', outcome: 'failed', code: 'runtime_warning' },
+    { ...common, stage: 'model', operation: 'group_teaching_extract', outcome: 'failed', code: 'group_learning_timeout' },
+    { ...common, stage: 'inbox', operation: 'consume_simulation', outcome: 'failed', code: 'semantic_capture_save_timeout' },
+    { ...common, stage: 'memory', operation: 'summary_response_authorization', outcome: 'failed', code: 'summary_timeout' },
     { ...common, stage: 'tool', operation: 'toString', outcome: 'failed', code: 'constructor', errorKind: 'TimeoutError' },
     { ...common, stage: 'runtime', operation: 'redacted', outcome: 'failed', code: 'redacted' },
   ] })
   assert.match(text, /^【助手运行告警】\n\n唤醒预判失败，共 2 次\n唤醒预判未在规定时间内完成。\n错误码 wake_gate_timeout · 操作标识 simulation_wake_gate\n追踪编号 wake-trace/u)
   assert.match(text, /会话摘要失败，共 1 次\n服务限制了请求频率或额度。\n错误码 http_error · HTTP 状态 429/u)
   assert.match(text, /发送消息结果待确认，共 1 次\n暂时无法确认操作是否完成。/u)
-  assert.match(text, /后台运行出现警告，共 1 次\n后台报告了警告，详情见运行日志。/u)
+  assert.match(text, /后台运行出现警告，共 1 次\n这条兼容日志缺少可确认的原因。/u)
+  assert.match(text, /提取群知识教学失败，共 1 次\n群记忆学习超过了任务执行时限。\n错误码 group_learning_timeout/u)
+  assert.match(text, /处理群消息队列失败，共 1 次\n保存群消息的语义原文长时间无进展，系统会重试。\n错误码 semantic_capture_save_timeout/u)
+  assert.match(text, /复核摘要模型输出的来源权限失败，共 1 次\n本阶段未能在摘要任务的时间预算内完成。\n错误码 summary_timeout/u)
   assert.match(text, /工具执行失败，共 1 次\n等待操作完成超时。\n错误码 constructor · 操作标识 toString/u)
   assert.doesNotMatch(text, /TimeoutError|redacted/u)
+})
+
+test('QQ summary alerts prefer the documented provider reason and keep unknown HTTP 400 generic', () => {
+  const common = { firstAt: 1000, lastAt: 1000, count: 1, stage: 'model', operation: 'summary_provider_http', outcome: 'failed', httpStatus: 400 }
+  const text = formatQqOwnerAlerts({ version: 1, id: 'batch', alerts: [
+    { ...common, code: 'glm_1301' }, { ...common, code: 'http_error' },
+  ] })
+  assert.match(text, /等待摘要模型响应失败，共 1 次\n智谱接口因内容审核拒绝了输入或生成结果。\n错误码 glm_1301 · HTTP 状态 400/u)
+  assert.match(text, /等待摘要模型响应失败，共 1 次\n服务拒绝了本次请求。\n错误码 http_error · HTTP 状态 400/u)
+})
+
+test('QQ semantic recall alerts show a confirmed downgrade and its local time limit', () => {
+  const text = formatQqOwnerAlerts({ version: 1, id: 'fixture', alerts: [{
+    firstAt: 1000, lastAt: 1000, count: 1, traceId: 'semantic-fixture', operation: 'semantic_memory_recall',
+    stage: 'memory', outcome: 'unknown', code: 'semantic_recall_local_fallback_embedding', durationMs: 1002,
+    details: { result: 'fallback_used', cause: 'semantic_recall_budget_elapsed', step: 'embedding', limit: 1000 },
+  }] })
+  assert.match(text, /语义记忆召回已降级.*\n查询向量未在本轮召回预算内完成/u)
+  assert.match(text, /环节 生成向量 · 界限 1000 ms/u)
+  assert.match(text, /耗时 1002 ms/u)
+  assert.doesNotMatch(text, /结果待确认/u)
 })
 
 test('a full QQ batch keeps explanations and trace identifiers within the transport limit', async () => {

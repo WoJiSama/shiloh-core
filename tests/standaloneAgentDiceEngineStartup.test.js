@@ -17,7 +17,8 @@ else process.env.BL_CHAT_AGENT_SOURCE_TEST = previousSourceTest
 const key = Symbol.for('bl-chat-test.dice-engine-startup'), state = 'globalThis[Symbol.for("bl-chat-test.dice-engine-startup")]'
 registerHooks({ load(url, context, next) {
   if (/\/src\/core\/index\.ts$/u.test(url)) return { format: 'module', shortCircuit: true,
-    source: `export function createAgentRuntime(options) { const g = ${state}; g.core = options; g.events.push('core_create'); return {
+    source: `export { createLinuxSystemdAgentDiceScriptRunner } from '../modules/dice/infrastructure/agentDiceScriptProcess.js'
+      export function createAgentRuntime(options) { const g = ${state}; g.core = options; g.events.push('core_create'); return {
       runtime: { async runAdministration(_guard, run) { return run() } },
       async start() { g.events.push('core_start'); await g.onStart(options); process.emit('SIGTERM') },
       async stop() { g.events.push('core_stop') } } }` }

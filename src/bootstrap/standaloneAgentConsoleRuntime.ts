@@ -2,6 +2,7 @@ import type { AgentBindingSnapshot, ConversationAddress } from '../contracts/age
 import { AgentConsoleError } from '../contracts/agentConsole.js'
 import type { AgentConsoleAuthPort, AgentConsoleContext } from '../contracts/agentConsole.js'
 import { agentBindingToken, agentConversationKey, decodeAgentConversationKey } from '../modules/runtime/domain/agentBindings.js'
+import { captureSynchronousGuardCheck, createSynchronousGuard } from '../modules/runtime/domain/synchronousGuard.js'
 import { simulationAddressKey } from '../modules/simulation/infrastructure/simulationAddress.js'
 import type { SimulationRuntime } from '../modules/simulation/infrastructure/simulationRuntime.js'
 import { SimulationAdministrationConflictError, type SimulationAdministrationGuard } from '../modules/simulation/infrastructure/simulationAdministration.js'
@@ -12,6 +13,7 @@ export interface StandaloneAgentConsoleRuntimePorts {
   readonly runtime: SimulationRuntime
   readonly bindings: { list(): readonly AgentBindingSnapshot[]; resolve(target: ConversationAddress): AgentBindingSnapshot | undefined }
   readonly auth: Pick<AgentConsoleAuthPort, 'authorize' | 'isCurrent'>
+  readonly observeCurrent?: (check: () => boolean) => boolean
 }
 const fail = (code: ConstructorParameters<typeof AgentConsoleError>[0]): never => { throw new AgentConsoleError(code) }
 function copy(binding: AgentBindingSnapshot): AgentBindingSnapshot {
@@ -23,6 +25,7 @@ function copy(binding: AgentBindingSnapshot): AgentBindingSnapshot {
 /** Real simulation management, with a lease at each Redis commit and complete address conversion. */
 export function createStandaloneAgentConsoleRuntime(ports: StandaloneAgentConsoleRuntimePorts): StandaloneAgentConsoleRuntime {
   if (typeof ports.runtime.runAdministration !== 'function') throw new TypeError('simulation administration is required')
+  const observe = ports.observeCurrent ?? ((check: () => boolean) => check())
   function current(binding: AgentBindingSnapshot): boolean {
     try {
       const live = ports.bindings.resolve(binding.target)
@@ -40,23 +43,28 @@ export function createStandaloneAgentConsoleRuntime(ports: StandaloneAgentConsol
   const directoryToken = (entries: readonly AgentBindingSnapshot[]) => JSON.stringify(entries.map(item => JSON.stringify([agentConversationKey(item), agentBindingToken(item)])).sort())
   function guard(context: AgentConsoleContext, operation: string, selected?: AgentBindingSnapshot, directory?: readonly AgentBindingSnapshot[]) {
     const expectedDirectory = directory && directoryToken(directory)
+    const stale = (): never => fail('conflict')
+    const parentCheck = captureSynchronousGuardCheck(context, stale)
+    const currentScope = () => ports.auth.isCurrent(context.principal) &&
+      (!context.binding || current(context.binding)) && (!selected || current(selected)) &&
+      (expectedDirectory === undefined || directoryToken(groups()) === expectedDirectory)
     const isCurrent = () => {
-      try {
-        return !context.signal.aborted && context.isCurrent() && ports.auth.isCurrent(context.principal) &&
-          (!context.binding || current(context.binding)) && (!selected || current(selected)) &&
-          (expectedDirectory === undefined || directoryToken(groups()) === expectedDirectory)
-      } catch { return false }
+      try { return !context.signal.aborted && context.isCurrent() && currentScope() }
+      catch { return false }
     }
-    const ensureCurrent = () => { context.ensureCurrent(); if (!isCurrent()) fail('conflict') }
-    const lease: SimulationAdministrationGuard = { signal: context.signal, isCurrent, ensureCurrent }
+    const parent = parentCheck ? createSynchronousGuard(context.signal, () => {
+      if (!observe(() => { parentCheck(); return currentScope() })) stale()
+    }, stale) : { signal: context.signal, isCurrent, ensureCurrent() { context.ensureCurrent(); if (!isCurrent()) stale() } }
+    const lease: SimulationAdministrationGuard = { ...parent, beforeWrite: async () => {
+      if (await authorize() !== 'allowed') fail('forbidden')
+    } }
     async function authorize(): Promise<'allowed' | 'denied'> {
-      ensureCurrent()
+      lease.ensureCurrent()
       const decision = await ports.auth.authorize(context.principal, operation, selected, lease)
-      ensureCurrent()
+      lease.ensureCurrent()
       if (decision === 'unavailable') return fail('unavailable')
       return decision === 'allowed' ? 'allowed' : 'denied'
     }
-    lease.beforeWrite = async () => { if (await authorize() !== 'allowed') fail('forbidden') }
     return { lease, authorize }
   }
   async function execute<T>(context: AgentConsoleContext, operation: string, action: () => Promise<T>, selected?: AgentBindingSnapshot,

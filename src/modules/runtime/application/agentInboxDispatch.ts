@@ -11,15 +11,17 @@ export function createAgentInboxDispatch(handlers: {
   readonly mediaRelay: MessageHandler
   readonly musicExtraction: MessageHandler
 }) {
-  // The first handler to claim a message owns it. Later handlers, including
-  // model dispatch in the inbox consumer, must not observe a claimed message.
-  const ordered = [handlers.games, handlers.bilibiliQuality, handlers.magnetSearch,
-    handlers.torrent, handlers.mediaRelay, handlers.musicExtraction]
+  const ordered = ['games', 'bilibiliQuality', 'magnetSearch', 'torrent', 'mediaRelay', 'musicExtraction'] as const
+
+  async function claim(message: IncomingMessage, binding: AgentBindingSnapshot) {
+    for (const name of ordered) if (await handlers[name](message, binding)) return name
+    return undefined
+  }
 
   return {
+    claim,
     async dispatch(message: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
-      for (const handle of ordered) if (await handle(message, binding)) return true
-      return false
+      return await claim(message, binding) !== undefined
     },
   }
 }

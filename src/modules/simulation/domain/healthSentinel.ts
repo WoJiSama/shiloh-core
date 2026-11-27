@@ -4,6 +4,7 @@
  */
 
 export interface HealthAlert {
+  code: 'style_summary_repeated_failure' | 'style_summary_stale' | 'expression_learning_repeated_failure' | 'commitment_terminal_failure'
   component: string
   severity: 'error' | 'warning'
   message: string
@@ -35,6 +36,7 @@ export function checkHealth(input: HealthCheckInput): HealthAlert[] {
     const lastSuccess = summary.lastAutoAt ? new Date(summary.lastAutoAt).getTime() : 0
     const daysSinceSuccess = lastSuccess > 0 ? Math.floor((now - lastSuccess) / 86400_000) : -1
     alerts.push({
+      code: 'style_summary_repeated_failure',
       component: '风格学习·自动总结',
       severity: 'error',
       message: `连续失败 ${summary.autoFailureCount} 次${daysSinceSuccess > 0 ? `，上次成功在 ${daysSinceSuccess} 天前` : '，从未成功过'}——大概率是模型接口配置或网络问题`,
@@ -49,6 +51,7 @@ export function checkHealth(input: HealthCheckInput): HealthAlert[] {
     if (Number.isFinite(lastAt) && (now - lastAt) > STALENESS_HOURS * 3600_000) {
       const hours = Math.floor((now - lastAt) / 3600_000)
       alerts.push({
+        code: 'style_summary_stale',
         component: '风格学习·自动总结',
         severity: 'warning',
         message: `已 ${hours} 小时未成功运行（正常应每 12 小时总结一次）——可能条件不满足或静默失败`,
@@ -61,6 +64,7 @@ export function checkHealth(input: HealthCheckInput): HealthAlert[] {
   // 3. 表达学习：连环失败
   if (input.expressionErrors !== null && input.expressionErrors !== undefined && input.expressionErrors >= FAILURE_STREAK_THRESHOLD) {
     alerts.push({
+      code: 'expression_learning_repeated_failure',
       component: '群表达学习·AI 提取',
       severity: 'error',
       message: `连续失败 ${input.expressionErrors} 次——大概率是模型接口配置问题`,
@@ -74,6 +78,7 @@ export function checkHealth(input: HealthCheckInput): HealthAlert[] {
   if (failures.length > 0) {
     const samples = failures.slice(0, 3).map(f => `「${String(f.intent || f.id).slice(0, 30)}」（群${f.group_id || '?'}）`).join('、')
     alerts.push({
+      code: 'commitment_terminal_failure',
       component: '承诺账本·失约',
       severity: 'error',
       message: `${failures.length} 个托付终态失败：${samples}——重试 3 次未成,失约明说消息也可能没送达,需人工核实原因`,

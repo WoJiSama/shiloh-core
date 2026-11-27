@@ -2,11 +2,11 @@ import { createQqInteractionDeliveryPort, QQ_INTERACTION_TIMEOUT_MS } from './qq
 import { captureQqOwnMessageTarget, isQqOwnMessageId, proveQqFriend, proveQqOwnMessage } from './qqOwnMessageProof.js'
 export { createQqInteractionDeliveryPort, QQ_INTERACTION_TIMEOUT_MS } from './qqInteractionDelivery.js'
 export type { QqInteractionApiAction, QqInteractionApiOptions } from './qqInteractionDelivery.js'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { types } from 'node:util'
 import WebSocket from 'ws'
 import type { ConversationAddress, PlatformConnection, PlatformUserRef } from '../contracts/agentBinding.js'
-import { QQ_OWNER_ALERT_MAX_LENGTH } from '../contracts/agentDiagnostics.js'
+import { QQ_OWNER_ALERT_MAX_LENGTH, type AgentDiagnosticDetails } from '../contracts/agentDiagnostics.js'
 import type { DeliveryReceipt } from '../contracts/delivery.js'
 import type { ConversationMember, ConversationMemberProfile, ConversationMemberReadOptions, ForwardContent, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
 import type { MessageActionOptions } from '../contracts/platformMessage.js'
@@ -22,6 +22,7 @@ import { personMemoryCommand } from '../modules/memory/domain/personMemoryComman
 import { safeTruncateUnicode } from '../modules/models/domain/unicodeText.js'
 import { queuedDeliveryAllowed } from '../modules/messaging/infrastructure/deliveryScope.js'
 import { qqId, resolveQqConversationAddress } from './qqIdentity.js'
+import { createQqConversationNames } from './qqConversationNames.js'
 import { decodeQqIncomingMessage, decodeQqNudge, opaqueMessageId } from './qqMessage.js'
 import { parseQqCqMessage as parseCqMessage } from './qqCqMessage.js'
 import { readQqMessageImage } from './qqMessageImage.js'
@@ -38,7 +39,7 @@ import { createQqVideoCardDeliveryPort, QQ_VIDEO_CARD_SEND_TIMEOUT_MS } from './
 import { createQqAudioFileDeliveryPort, QQ_AUDIO_FILE_SEND_TIMEOUT_MS } from './qqAudioFileDelivery.js'
 import { createQqMusicShareReader } from './qqMusicShare.js'
 import { createQqMediaShareReader, QQ_MEDIA_SHARE_GET_MESSAGE_TIMEOUT_MS } from './qqMediaShare.js'
-import { createQqMediaRelayDeliveryPort } from './qqMediaRelayDelivery.js'
+import { createQqMediaRelayDeliveryPort, qqForwardVideoPreSendFailure } from './qqMediaRelayDelivery.js'
 import type { QqMediaRelayBridge } from './qqMediaRelayBridge.js'
 import { createQqRequesterArchiveDeliveryPort } from './qqRequesterArchiveDelivery.js'
 import type { QqRequesterArchiveBridge } from './qqRequesterArchiveBridge.js'
@@ -330,13 +331,19 @@ const admissionLimit = { count: 1024, bytes: 32 * 1024 * 1024 }
 const controlAdmissionLimit = { count: 128, bytes: 2 * 1024 * 1024 }
 
 interface OneBotConnectionOptions extends OneBotEndpoint {
+  /** A running host keeps its reverse listener available until an authenticated peer arrives. */
+  keepReverseListenerWaiting?: boolean
+  /** Start the transport without making the rest of the host wait for QQ authentication. */
+  startOffline?: boolean
   onDisconnect(): void
   onReconnect(): void
   onError(): void
-  onEventError(error?: unknown, code?: 'event_not_queued' | 'onebot_inbox_overflow' | 'onebot_control_inbox_overflow'): void
   onAdmissionPressure?(): void
-  onApiFailure?(action: string, outcome: 'failed' | 'unknown', code: string): void
+  onEventError(event: { code: 'onebot_admission_queue_full' | 'onebot_admission_unconfirmed'; outcome: 'failed' | 'unknown';
+    details: AgentDiagnosticDetails; error?: unknown }): void
+  onApiFailure?(action: string, outcome: 'failed' | 'unknown', code: string, details: AgentDiagnosticDetails): void
   readonly alertOwner?: PlatformUserRef
+  readonly conversationNameTargets?: readonly ConversationAddress[]
 }
 
 interface OwnerAlertGuard { readonly signal: AbortSignal; isCurrent(): boolean }
@@ -363,9 +370,11 @@ function createOneBotSession(options: OneBotConnectionOptions) {
   let cancelFirstPeer: (() => void) | undefined
   let retry: ReturnType<typeof setTimeout> | undefined
   let heartbeat: ReturnType<typeof setInterval> | undefined
+  let nameRefresh: ReturnType<typeof setInterval> | undefined
   let stopped = true
   let verified = false
   let botName = connection.account.id
+  const conversationNames = createQqConversationNames(connection.account, options.conversationNameTargets ?? [])
   let accept: ((event: PlatformConversationEvent) => Promise<void>) | undefined
   const makeLane = () => ({ tail: Promise.resolve(), count: 0, bytes: 0 })
   let messages = makeLane(), controls = makeLane()
@@ -406,8 +415,8 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     }
   }
 
-  function reportAdmissionError(error: unknown, code: NonNullable<Parameters<OneBotConnectionOptions['onEventError']>[1]>) {
-    try { options.onEventError(error, code) } catch { /* Observers do not affect admission. */ }
+  function reportAdmissionError(event: Parameters<OneBotConnectionOptions['onEventError']>[0]) {
+    try { options.onEventError(event) } catch { /* Observers do not affect admission. */ }
   }
 
   function qqActionGuard(input: AgentQzoneGuard, extraKeys: string[] = []): AgentQzoneGuard | undefined {
@@ -454,9 +463,14 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       callApi: qqActionApi }) : undefined
   }
 
-  async function call(client: WebSocket, action: string, params: Record<string, unknown>, guard?: () => boolean, timeoutMs = 10_000, signal?: AbortSignal, onDispatch?: () => void, observeFailures = true): Promise<unknown> {
-    const report = (outcome: 'failed' | 'unknown', code: string) => {
-      try { if (observeFailures) options.onApiFailure?.(action, outcome, code) } catch { /* Observers do not affect API results. */ }
+  async function call(client: WebSocket, action: string, params: Record<string, unknown>, guard?: () => boolean, timeoutMs = 10_000, signal?: AbortSignal, onDispatch?: () => void, observeFailures = true, classifyRejection?: (value: unknown) => string | undefined): Promise<unknown> {
+    const report = (outcome: 'failed' | 'unknown', code: string, details: AgentDiagnosticDetails = { dispatched: false, result: 'not_dispatched' }) => {
+      try { if (observeFailures) options.onApiFailure?.(action, outcome, code, details) } catch { /* Observers do not affect API results. */ }
+    }
+    if (/^(?:set_group_kick|set_group_kick_members)(?:_async)?$/iu.test(action) ||
+        /^set_group_leave(?:_async)?$/iu.test(action) && params.is_dismiss === true) {
+      report('failed', 'onebot_action_forbidden')
+      return { state: 'failed', code: 'onebot_action_forbidden' }
     }
     if (socket !== client || client.readyState !== WebSocket.OPEN) {
       if (!stopped) report('failed', 'onebot_disconnected')
@@ -465,12 +479,13 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     if (signal?.aborted) return { state: 'unknown' }
     if (guard?.() === false) return { state: 'failed', code: 'binding_changed' }
     if (pending.size >= 128) {
-      report('failed', 'onebot_busy')
+      report('failed', 'onebot_busy', { dispatched: false, limit: 128, result: 'not_dispatched' })
       return { state: 'failed', code: 'onebot_busy' }
     }
     const echo = randomUUID()
     type DispatchFailure = 'onebot_timeout' | 'onebot_transport_unconfirmed'
-    const { value, failure, observeResult } = await new Promise<{ value: unknown; failure: DispatchFailure | undefined; observeResult: boolean }>(resolve => {
+    const { value, failure, dispatched, observeResult } = await new Promise<{ value: unknown; failure: DispatchFailure | undefined;
+      dispatched: boolean; observeResult: boolean }>(resolve => {
       let finished = false, dispatched = false
       const finish = (value?: unknown, failure?: DispatchFailure) => {
         if (finished) return
@@ -479,7 +494,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         signal?.removeEventListener('abort', abort)
         pending.delete(echo)
         updateAdmissionPressure()
-        resolve({ value, failure, observeResult: dispatched && !stopped && !signal?.aborted })
+        resolve({ value, failure, dispatched, observeResult: dispatched && !stopped && !signal?.aborted })
       }
       const abort = () => finish(undefined, signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError' ? 'onebot_timeout' : undefined)
       const timer = setTimeout(() => finish(undefined, 'onebot_timeout'), timeoutMs)
@@ -496,12 +511,20 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       catch { finish(undefined, 'onebot_transport_unconfirmed') }
     })
     // Continue in the caller's trace context after settling the WebSocket callback.
-    if (failure) report('unknown', failure)
+    if (failure) report(dispatched ? 'unknown' : 'failed', failure, { dispatched, result: dispatched ? 'confirmation_pending' : 'not_dispatched',
+      ...(failure === 'onebot_timeout' && !signal?.aborted ? { limit: timeoutMs } : {}) })
     else if (observeResult) {
       const response = record(value)
-      if (response.status === 'async') report('unknown', 'onebot_response_unconfirmed')
-      else if (response.status === 'failed' || Number.isInteger(response.retcode) && response.retcode !== 0) report('failed', 'onebot_rejected')
-      else if (response.status !== 'ok' || response.retcode !== 0) report('unknown', value === undefined ? 'onebot_transport_unconfirmed' : 'onebot_response_unconfirmed')
+      const nativeCode = typeof response.retcode === 'number' && Number.isInteger(response.retcode) &&
+        Math.abs(response.retcode) <= 2_147_483_647 ? response.retcode : undefined
+      const details: AgentDiagnosticDetails = { dispatched, ...(nativeCode === undefined ? {} : { nativeCode }) }
+      if (response.status === 'async') report('unknown', 'onebot_response_unconfirmed', { ...details, result: 'confirmation_pending' })
+      else if (response.status === 'failed' || Number.isInteger(response.retcode) && response.retcode !== 0) {
+        // The media delivery receipt records recognized pre-send errors with the same trace.
+        if (!classifyRejection?.(value)) report('failed', 'onebot_rejected', details)
+      }
+      else if (response.status !== 'ok' || response.retcode !== 0) report('unknown',
+        value === undefined ? 'onebot_transport_unconfirmed' : 'onebot_response_unconfirmed', { ...details, result: 'confirmation_pending' })
     }
     return value ?? { state: 'unknown' }
   }
@@ -568,6 +591,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         redPacketPort = undefined
         recalledWalletSources.clear()
         if (heartbeat) { clearInterval(heartbeat); heartbeat = undefined }
+        if (nameRefresh) { clearInterval(nameRefresh); nameRefresh = undefined }
         for (const request of pending.values()) request.finish()
       }
       client.on('error', () => {})
@@ -600,7 +624,8 @@ function createOneBotSession(options: OneBotConnectionOptions) {
         const limit = control ? controlAdmissionLimit : admissionLimit
         const bytes = Buffer.isBuffer(frame) ? frame.length : Buffer.byteLength(String(frame))
         if (lane.count >= limit.count || lane.bytes + bytes > limit.bytes) {
-          reportAdmissionError(undefined, control ? 'onebot_control_inbox_overflow' : 'onebot_inbox_overflow')
+          reportAdmissionError({ code: 'onebot_admission_queue_full', outcome: 'failed',
+            details: { step: control ? 'control_dispatch' : 'dispatch', limit: lane.count >= limit.count ? limit.count : limit.bytes, result: 'not_dispatched' } })
           updateAdmissionPressure()
           return
         }
@@ -624,7 +649,8 @@ function createOneBotSession(options: OneBotConnectionOptions) {
             return
           }
           await handle(event)
-        }).catch(error => reportAdmissionError(error, 'event_not_queued')).finally(() => {
+        }).catch(error => reportAdmissionError({ code: 'onebot_admission_unconfirmed', outcome: 'unknown',
+          details: { step: 'enqueue', result: 'confirmation_pending' }, error })).finally(() => {
           lane.count--
           lane.bytes -= bytes
           updateAdmissionPressure()
@@ -636,7 +662,11 @@ function createOneBotSession(options: OneBotConnectionOptions) {
           const identity = record(response.data)
           if (stopped || socket !== client) { client.terminate(); return }
           if (response.status !== 'ok' || response.retcode !== 0 || qqId(identity.user_id) !== connection.account.id) {
-            if (!initial && response.status === 'ok' && response.retcode === 0) { stopped = true; options.onError() }
+            if (response.status === 'ok' && response.retcode === 0) {
+              try { options.onApiFailure?.('get_login_info', 'failed', 'onebot_identity_mismatch',
+                { step: 'authorization', dispatched: true, nativeCode: 0, result: 'discarded' }) } catch { /* Preserve the verified identity check. */ }
+              if (!initial && !options.startOffline) { stopped = true; options.onError() }
+            }
             client.terminate()
             return
           }
@@ -652,6 +682,22 @@ function createOneBotSession(options: OneBotConnectionOptions) {
             client.ping()
           }, 15_000)
           heartbeat.unref()
+          if (conversationNames.enabled) {
+            const current = () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN
+            let refreshing = false
+            const refreshNames = async () => {
+              if (refreshing || !current()) return
+              refreshing = true
+              try {
+                await conversationNames.refresh((action, params) => call(client, action, params, current, 10_000, undefined, undefined, false), current)
+              } catch {
+                // QQ name availability does not determine connection health.
+              } finally { refreshing = false }
+            }
+            void refreshNames()
+            nameRefresh = setInterval(refreshNames, 5 * 60_000)
+            nameRefresh.unref()
+          }
           if (!initial) options.onReconnect()
           resolve()
         })().catch(() => client.terminate())
@@ -661,7 +707,11 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     })
   }
 
+  let reverseGeneration = 0
   async function listen(): Promise<void> {
+    const generation = ++reverseGeneration
+    const waiting = options.startOffline === true || options.keepReverseListenerWaiting === true
+    const live = () => !stopped && generation === reverseGeneration
     let firstPeer = true
     let complete!: () => void
     let fail!: (error: Error) => void
@@ -669,31 +719,36 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     // Register rejection handling before opening the listener, including when bind fails.
     void ready.catch(() => {})
     cancelFirstPeer = () => fail(new Error(`OneBot 连接 ${connection.id} 未能验证 QQ 账号`))
-    const timer = setTimeout(() => cancelFirstPeer?.(), 15_000)
+    const cancel = cancelFirstPeer
+    const timer = waiting ? undefined : setTimeout(cancel, 15_000)
     try {
-      listener = await listenOneBotReverseSocket({
+      const listening = await listenOneBotReverseSocket({
         url, accountId: connection.account.id, accessToken: options.accessToken!,
-        available: () => !stopped && !socket,
+        available: () => live() && !socket,
         accept(client) {
-          if (stopped) { client.terminate(); return }
+          if (!live()) { client.terminate(); return }
           const initial = firstPeer
-          void attach(client, initial).then(() => {
+          void attach(client, initial || waiting).then(() => {
+            if (!live()) return
             firstPeer = false
             complete()
-          }, error => { if (initial) fail(error instanceof Error ? error : new Error('OneBot 账号核验失败')) })
+            if (waiting && (!initial || options.startOffline)) options.onReconnect()
+          }, error => { if (live() && initial && !waiting) fail(error instanceof Error ? error : new Error('OneBot 账号核验失败')) })
         },
         onError: options.onError,
       })
-      if (stopped) { listener.close(); listener = undefined; throw new Error('OneBot 连接已停止') }
-      await ready
+      if (!live()) { listening.close(); throw new Error('OneBot 连接已停止') }
+      listener = listening
+      if (!options.startOffline) await ready
     } finally {
       clearTimeout(timer)
-      cancelFirstPeer = undefined
+      if (cancelFirstPeer === cancel) cancelFirstPeer = undefined
     }
   }
 
   function stop(): void {
     stopped = true
+    reverseGeneration++
     accept = undefined
     verified = false
     resumeAdmissions()
@@ -704,6 +759,7 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     cancelFirstPeer?.()
     if (retry) { clearTimeout(retry); retry = undefined }
     if (heartbeat) { clearInterval(heartbeat); heartbeat = undefined }
+    if (nameRefresh) { clearInterval(nameRefresh); nameRefresh = undefined }
     const client = socket
     const drainingAlerts = !!client && client === ownerDrainSocket
     for (const request of pending.values()) if (!drainingAlerts || !request.ownerAlert) request.finish()
@@ -857,8 +913,11 @@ function createOneBotSession(options: OneBotConnectionOptions) {
       // adapter queuing or resource preparation can await/reconnect.
       const isCurrent = () => !guard.signal.aborted && !stopped && verified && socket === client &&
         client.readyState === WebSocket.OPEN && guard.isCurrent() && queuedDeliveryAllowed()
-      const response = await call(client, action, params, isCurrent, guard.timeoutMs, guard.signal)
-      return isCurrent() ? response : { state: 'unknown' }
+      let dispatched = false
+      const response = await call(client, action, params, isCurrent, guard.timeoutMs, guard.signal, () => { dispatched = true }, true,
+        guard.videoForward ? qqForwardVideoPreSendFailure : undefined)
+      return isCurrent() && !(dispatched && Object.hasOwn(record(response), 'state'))
+        ? response : { state: 'unknown' }
     },
   })
   const sendRequesterArchive = options.requesterArchive && createQqRequesterArchiveDeliveryPort({
@@ -1065,6 +1124,15 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     if (!stopped) return
     stopped = false
     accept = handler
+    if (options.startOffline && !reverse) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        // Local peers often authenticate immediately. Give them a bounded initial
+        // window without blocking Core startup when NapCat is offline.
+        await Promise.race([connect(false).catch(reconnect), new Promise<void>(resolve => { timer = setTimeout(resolve, 1_000) })])
+      } finally { clearTimeout(timer) }
+      return
+    }
     try { await (reverse ? listen() : connect(true)) } catch (error) { stop(); throw error }
   }
 
@@ -1090,9 +1158,85 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     botUserId: connection.account.id,
     ...(alertTarget ? { sendOwnerAlert, beginOwnerAlertDrain } : {}),
     get botName() { return botName },
+    ...(conversationNames.enabled ? { conversationName: conversationNames.read } : {}),
     resolvePrivatePeer(target) {
       if (target.kind !== 'private' || !servesAccount(target) || qqId(target.id) !== target.id || target.id === connection.account.id) return undefined
       return { ...connection.account, id: target.id }
+    },
+    async verifyPrivateFriend(target, { signal, isCurrent: guard }) {
+      const client = socket
+      const isCurrent = () => !!client && socket === client && verified && !stopped && !signal.aborted && guard?.() !== false
+      if (!client || !isCurrent() || target.kind !== 'private' || !servesAccount(target)) return false
+      const friends = await call(client, 'get_friend_list', {}, isCurrent, 5000, signal, undefined, false)
+      return isCurrent() && proveQqFriend(friends, target)
+    },
+    async findOwnTextDelivery(target, proof, guard) {
+      const selected = captureQqOwnMessageTarget(target), client = socket
+      if (!selected || !client || !servesAccount(selected) || !/^[a-f0-9]{64}$/u.test(proof.sha256) ||
+          (proof.mentionId !== undefined && (selected.kind !== 'group' || qqId(proof.mentionId) !== proof.mentionId)) ||
+          !Number.isSafeInteger(proof.from) || !Number.isSafeInteger(proof.until) || proof.until <= proof.from ||
+          proof.until - proof.from > 60_000) return undefined
+      const key = conversationAddressKey(selected)
+      const current = () => !stopped && verified && socket === client && client.readyState === WebSocket.OPEN &&
+        !guard.signal.aborted && guard.isCurrent() && conversationAddressKey(target) === key
+      if (!current()) return undefined
+      if (selected.kind === 'private') {
+        const friends = await call(client, 'get_friend_list', {}, current, 5_000, guard.signal, undefined, false)
+        if (!current() || !proveQqFriend(friends, selected)) return undefined
+      }
+      const response = record(await call(client, selected.kind === 'group' ? 'get_group_msg_history' : 'get_friend_msg_history',
+        selected.kind === 'group' ? { group_id: selected.id, count: 50 } : { user_id: selected.id, count: 50 },
+        current, 3_000, guard.signal, undefined, false))
+      const messages = record(response.data).messages
+      if (!current() || response.status !== 'ok' || response.retcode !== 0 || !Array.isArray(messages) || messages.length > 50) return undefined
+      let match: Awaited<ReturnType<NonNullable<PlatformConnectionAdapter['findOwnTextDelivery']>>>
+      for (const raw of messages) {
+        const row = record(raw), id = opaqueMessageId(row.message_id)
+        if (!id) continue
+        const evidence = proveQqOwnMessage({ ...response, data: row }, selected, id)
+        if (!evidence || evidence.occurredAt < proof.from || evidence.occurredAt > proof.until) continue
+        let parts = typeof row.message === 'string' ? parseCqMessage(row.message) : row.message
+        if (proof.mentionId !== undefined) {
+          if (!Array.isArray(parts) || record(parts[0]).type !== 'at' || String(record(record(parts[0]).data).qq) !== proof.mentionId) continue
+          parts = parts.slice(1)
+        }
+        if (!Array.isArray(parts) || !parts.length || parts.some(part => record(part).type !== 'text' || typeof record(record(part).data).text !== 'string')) continue
+        const text = parts.map(part => String(record(record(part).data).text)).join('')
+        if (createHash('sha256').update(text).digest('hex') !== proof.sha256) continue
+        if (match && match.messageId !== evidence.messageId) return undefined
+        match = evidence
+      }
+      return current() ? match : undefined
+    },
+    async moderateMessage(source, action, guard) {
+      const { conversation, sender, messageId } = source
+      const scope = memberReadScope(conversation, guard, sender)
+      if (!scope || !messageId || source.sender.id === connection.account.id ||
+          !['recall', 'mute', 'unmute'].includes(action)) return { state: 'failed', code: 'moderation_scope_invalid' }
+      let dispatched = false
+      try {
+        await guard.ensureCurrent()
+        const bot = (await readConversationMembers(conversation, guard, connection.account))?.members[0]
+        const member = (await readConversationMembers(conversation, guard, sender))?.members[0]
+        if (!bot || !['owner', 'admin'].includes(bot.role) || member?.role !== 'member') return { state: 'failed', code: 'moderation_role_changed' }
+        const observed = action === 'unmute' ? source : await readMessage(conversation, messageId, guard)
+        if (!observed || observed.messageId !== messageId || observed.occurredAt !== source.occurredAt ||
+            platformAccountKey(observed.sender) !== platformAccountKey(sender) || observed.text !== source.text) {
+          return { state: 'failed', code: 'moderation_source_changed' }
+        }
+        await guard.ensureCurrent()
+        if (!scope.isCurrent()) return { state: 'failed', code: 'moderation_scope_changed' }
+        const result = record(await call(scope.client, action === 'recall' ? 'delete_msg' : 'set_group_ban',
+          action === 'recall' ? { message_id: messageId } : { group_id: conversation.id, user_id: sender.id, duration: action === 'mute' ? 120 : 0 },
+          scope.isCurrent, 8000, scope.signal, () => { dispatched = true }))
+        if (result.status === 'ok' && result.retcode === 0) return { state: 'confirmed' }
+        if (!dispatched || result.status === 'failed' || typeof result.retcode === 'number' && result.retcode !== 0) {
+          return { state: 'failed', code: 'moderation_rejected' }
+        }
+        return { state: 'unknown' }
+      } catch {
+        return dispatched ? { state: 'unknown' } : { state: 'failed', code: 'moderation_preflight_failed' }
+      }
     },
     readMessage,
     readOwnMessage,

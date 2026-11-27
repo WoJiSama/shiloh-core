@@ -5,7 +5,7 @@ import {AbstractTool} from '../../toolSupport/infrastructure/AbstractTool.js'
 import {createDelegatedMemoryStore} from './delegatedMemoryStore.js'
 import {checkDelegatedCaps,formatDelegatedLine,resolvedDelegatedConfig,scoreDelegatedMatch} from '../domain/delegatedMemory.js'
 import {parseOnceTime} from '../../commitments/domain/commitments.js'
-import type {DelegatedMemoryEntry,DelegatedMemoryPorts} from '../../../contracts/delegatedMemory.js'
+import type {DelegatedMemoryEntry} from '../../../contracts/delegatedMemory.js'
 import {ensureAgentBindingCurrent,isAgentBindingCurrent,type AgentBindingTurn,type AgentConversationScope} from '../../../contracts/agentBinding.js'
 
 interface DelegatedEvent extends AgentBindingTurn {
@@ -20,7 +20,7 @@ function event(value:unknown):DelegatedEvent {
   return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as DelegatedEvent:{}
 }
 
-export function createDelegateMemoryRuntime(ports:DelegatedMemoryPorts) {
+export function createDelegateMemoryRuntime(ports:Parameters<typeof createDelegatedMemoryStore>[0]) {
   const store=createDelegatedMemoryStore(ports)
   const now=()=>ports.now?ports.now():Date.now()
 

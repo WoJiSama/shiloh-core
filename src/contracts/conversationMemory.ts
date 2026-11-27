@@ -70,7 +70,13 @@ export interface ConversationSummaryInput {
   readonly messages: readonly { readonly at: number; readonly authorId: string; readonly name: string; readonly text: string }[]
   readonly maxChars: number
 }
-export type ConversationSummaryModel = (input: ConversationSummaryInput, context: PersonProfileExtractionContext) => Promise<string>
+export type ConversationSummaryModelPhase = 'request_prepare' | 'request_authorization' | 'provider_http' |
+  'provider_body' | 'response_authorization' | 'response_validation'
+export interface ConversationSummaryContext extends PersonProfileExtractionContext {
+  /** Host diagnostics only. HTTP status is present when the provider sends headers. */
+  observePhase?(phase: ConversationSummaryModelPhase, httpStatus?: number): void
+}
+export type ConversationSummaryModel = (input: ConversationSummaryInput, context: ConversationSummaryContext) => Promise<string>
 
 export interface ConversationEpisodeInput {
   binding: AgentBindingSnapshot

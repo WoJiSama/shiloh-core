@@ -3,9 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NAlert, NButton, NInput, NPagination, NTag } from 'naive-ui'
 import { workspace, capability } from '../lib/workspace'
+import { api } from '../lib/api'
 import {
-  accountLabel,
-  conversationLabel,
   connectionStateLabel,
   robotLabel,
   robotLocation,
@@ -13,6 +12,7 @@ import {
   statusLabel,
   type WorkspaceConversation
 } from '../lib/workspaceModel'
+import { accountLabel, conversationLabel, namedId } from '../lib/workspaceNames'
 import PageHeader from '../components/PageHeader.vue'
 import CapabilityGate from '../components/CapabilityGate.vue'
 import RobotScene from '../components/RobotScene.vue'
@@ -29,9 +29,61 @@ const tabs = [
   { id: 'boundaries', label: '能力与边界' }
 ]
 const agent = computed(() => data.value?.agents.find((item) => item.id === route.params.id))
+interface SelfProfileVersion {
+  revision: number
+  name: string
+  aliases: string[]
+  introduction: string
+  identity: string
+  reason: string
+  changedAt: number
+}
+interface PersonalWorkSummary {
+  goals: { id: string; title: string; nextAt: number; state: 'active' | 'completed' | 'abandoned'; waitingFor?: string
+    engineering?: { mode: 'investigate' | 'candidate'; status: 'queued' | 'running' | 'confirmed' | 'failed' | 'unknown'; result?: string }
+  }[]
+  actions: { id: string; kind: 'contact' | 'reserve' | 'research' | 'coding' | 'follow-share'; state: 'pending' | 'confirmed' | 'failed' | 'unknown'; at: number; goalId?: string; followId?: string }[]
+  tools: { name: string; description: string; activeRevision?: number; versions?: number[] }[]
+  followEnabled?: boolean
+  follows?: { id: string; title: string; url: string; state: 'active' | 'stopped'; nextAt: number; lastCheckedAt?: number;
+    failures: number; latest?: { text: string; url: string; at: number } }[]
+}
+const selfProfiles = ref<SelfProfileVersion[]>([])
+const personalWork = ref<PersonalWorkSummary>()
+const profileError = ref('')
+const profileLoading = ref(false)
+const selfProfile = computed(() => selfProfiles.value.at(-1))
 const tab = computed(() =>
   tabs.some((item) => item.id === route.params.tab) ? String(route.params.tab) : 'home'
 )
+watch(() => [tab.value, agent.value?.id, capability('self-profile.read').status] as const, async ([selected, id, status], _previous, cleanup) => {
+  const controller = new AbortController()
+  cleanup(() => controller.abort())
+  selfProfiles.value = []
+  personalWork.value = undefined
+  profileError.value = ''
+  profileLoading.value = false
+  if (!['self', 'actions'].includes(selected) || !id || status !== 'available') return
+  profileLoading.value = true
+  try {
+    const result = await api('/api/self-profile/' + encodeURIComponent(id), { signal: controller.signal }) as {
+      profiles: SelfProfileVersion[]; work?: PersonalWorkSummary
+    }
+    if (!controller.signal.aborted) {
+      selfProfiles.value = result.profiles
+      personalWork.value = result.work
+    }
+  } catch (error) {
+    if (!controller.signal.aborted) profileError.value = (error as Error).message
+  } finally {
+    if (!controller.signal.aborted) profileLoading.value = false
+  }
+}, { immediate: true })
+const goalStates = { active: '进行中', completed: '已完成', abandoned: '已放下' }
+const actionNames = { contact: '联系', reserve: '预约登记', research: '检索', coding: '编程候选', 'follow-share': '分享兴趣更新' }
+const actionStates = { pending: '待回执', confirmed: '已确认', failed: '失败', unknown: '待核实' }
+const engineeringStates = { queued: '等待开发工作器', running: '开发工作器处理中', confirmed: '结果已记录', failed: '失败', unknown: '结果待核实' }
+const beijingTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Asia/Shanghai' })
 const selection = computed(() => {
   try {
     return {
@@ -160,7 +212,7 @@ watch(
             <span class="eyebrow">本人</span>
             <h2>{{ robotLabel(agent, data?.agents ?? []) }}</h2>
             <p class="field-help">
-              当前使用人设「{{ agent.personaName }}」。经历与行动按这个本人的会话归属展示。
+              初始人设「{{ agent.personaName }}」。在「自我与记忆」中查看她现在的档案。
             </p>
             <details class="technical-details">
               <summary>技术详情</summary>
@@ -177,7 +229,7 @@ watch(
             <h2>接入连接</h2>
             <div v-for="connection in connections" :key="connection.id" class="workspace-list-row">
               <RouterLink :to="`/connections/${encodeURIComponent(connection.id)}`">{{
-                connection.id
+                namedId(connection.id, connection.name)
               }}</RouterLink
               ><NTag
                 size="small"
@@ -208,21 +260,94 @@ watch(
           </div>
           <p v-if="!agent.conversations.length" class="empty-note">本人尚未绑定会话。</p>
         </section>
-        <section class="panel cognition-note">
-          <NTag size="small">设计中</NTag>
-          <div>
-            <h3>连续自我与统一认知</h3>
-            <p class="muted">
-              当前仍是按会话保存的自我记录。这里不会把各群自我合并成已实现的统一认知。
-            </p>
-          </div>
-        </section></template
+        </template
       >
       <template v-else-if="['conversations', 'self', 'actions'].includes(tab)"
-        ><p class="context-note">
+        ><section v-if="tab === 'self' && (selfProfile || profileLoading || profileError)" class="panel">
+          <h3>本人档案</h3>
+          <NAlert v-if="profileError" type="error">{{ profileError }}</NAlert>
+          <p v-else-if="profileLoading">正在读取档案</p>
+          <template v-else-if="selfProfile">
+            <p><strong>{{ selfProfile.name }}</strong> <NTag size="small">版本 {{ selfProfile.revision }}</NTag></p>
+            <p v-if="selfProfile.aliases.length">也回应 {{ selfProfile.aliases.join('、') }}</p>
+            <p v-if="selfProfile.introduction">{{ selfProfile.introduction }}</p>
+            <p>{{ selfProfile.identity }}</p>
+            <details v-if="selfProfiles.length > 1">
+              <summary>档案修订记录</summary>
+              <ol>
+                <li v-for="entry in [...selfProfiles].reverse()" :key="entry.revision">
+                  <strong>{{ entry.name }}</strong> · {{ entry.changedAt ? new Date(entry.changedAt).toLocaleString() : '初始档案' }}
+                  <p>{{ entry.reason }}</p>
+                </li>
+              </ol>
+            </details>
+          </template>
+        </section>
+        <section v-if="tab === 'actions' && (personalWork || profileLoading || profileError)" class="panel">
+          <h3>自主工作</h3>
+          <NAlert v-if="profileError" type="error">{{ profileError }}</NAlert>
+          <p v-else-if="profileLoading">正在读取自主工作</p>
+          <template v-else-if="personalWork">
+            <div v-for="goal in personalWork.goals" :key="goal.id" class="workspace-row">
+              <span class="row-main">
+                <strong>{{ goal.title }}</strong>
+                <template v-if="goal.engineering">
+                  <small>{{ goal.engineering.mode === 'investigate' ? '工程调查' : '代码候选' }} · {{ goal.id }}</small>
+                  <p v-if="goal.engineering.result">{{ goal.engineering.result }}</p>
+                </template>
+                <small v-if="goal.state === 'active'">
+                  {{ goal.waitingFor || '下次检查' }} · {{ beijingTime.format(goal.nextAt) }}
+                </small>
+              </span>
+              <NTag size="small">{{ goal.engineering ? engineeringStates[goal.engineering.status] : goalStates[goal.state] }}</NTag>
+            </div>
+            <p v-if="!personalWork.goals.length" class="empty-note">暂无自主目标。</p>
+            <details v-if="personalWork.followEnabled || personalWork.follows?.length" open>
+              <summary>兴趣跟进</summary>
+              <p v-if="!personalWork.followEnabled" class="empty-note">兴趣跟进已停用。</p>
+              <p v-else-if="!personalWork.follows?.length" class="empty-note">还没有开始跟进。</p>
+              <div v-for="follow in personalWork.follows" :key="follow.id" class="workspace-row">
+                <div class="row-main">
+                  <a :href="follow.url" target="_blank" rel="noopener noreferrer"><strong>{{ follow.title }}</strong></a>
+                  <small v-if="follow.lastCheckedAt !== undefined">最近检查 {{ beijingTime.format(follow.lastCheckedAt) }}</small>
+                  <small v-if="follow.state === 'active' && personalWork.followEnabled">
+                    {{ follow.failures ? '检查失败，下次重试' : '下次检查' }} {{ beijingTime.format(follow.nextAt) }}
+                  </small>
+                  <template v-if="follow.latest">
+                    <p>{{ follow.latest.text }}</p>
+                    <small><a :href="follow.latest.url" target="_blank" rel="noopener noreferrer">查看原公告</a>
+                      · {{ beijingTime.format(follow.latest.at) }}</small>
+                  </template>
+                </div>
+                <NTag size="small">{{ follow.state === 'stopped' ? '已结束' : personalWork.followEnabled ? '跟进中' : '已停用' }}</NTag>
+              </div>
+            </details>
+            <details v-if="personalWork.actions.length">
+              <summary>行动回执</summary>
+              <ul>
+                <li v-for="entry in [...personalWork.actions].reverse()" :key="entry.id">
+                  {{ actionNames[entry.kind] }} · {{ actionStates[entry.state] }} · {{ beijingTime.format(entry.at) }}
+                  <span v-if="entry.goalId"> · {{ personalWork.goals.find(goal => goal.id === entry.goalId)?.title }}</span>
+                  <span v-else-if="entry.followId && personalWork.follows?.some(follow => follow.id === entry.followId)">
+                    · {{ personalWork.follows?.find(follow => follow.id === entry.followId)?.title }}</span>
+                </li>
+              </ul>
+            </details>
+            <details v-if="personalWork.tools.length">
+              <summary>自建工具</summary>
+              <ul>
+                <li v-for="tool in personalWork.tools" :key="tool.name">
+                  <strong>{{ tool.name }}</strong>
+                  <span v-if="tool.activeRevision !== undefined"> · {{ tool.activeRevision ? '版本 ' + tool.activeRevision : '已停用' }}</span>
+                  <small> · {{ tool.description }}</small>
+                </li>
+              </ul>
+            </details>
+          </template>
+        </section><p class="context-note">
           {{
             tab === 'self'
-              ? '以下自我与记忆按来源会话分开展示，不将局部记录合并为统一结论。'
+              ? '本人的档案在所有绑定会话生效。下方可以查看各会话的记忆。'
               : tab === 'actions'
                 ? '目标、承诺与实际回执分别展示，待确认和未知结果不计作成功。'
                 : '每个会话保留所属连接与完整平台地址。选择后再操作。'

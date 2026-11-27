@@ -8,7 +8,7 @@ import { personMemoryAddress } from '../dist/backend/modules/memory/infrastructu
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey } from '../dist/backend/modules/runtime/domain/agentBindings.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
 
-const { createAgentSemanticMemory } = await load('modules/memory/infrastructure/agentSemanticMemory.js')
+const { createAgentSemanticMemory, semanticMemoryFailureCode } = await load('modules/memory/infrastructure/agentSemanticMemory.js')
 
 const redisTest = { skip: !redisAvailable, timeout: 20_000 }
 const DAY = 86_400_000
@@ -40,7 +40,7 @@ async function fixture(t, options = {}) {
   const bindings = new Map(), unavailable = new Set(), recalled = new Set()
   const calls = { embed: [], rerank: [] }, warnings = []
   const store = createAgentSemanticMemoryStore(redis.storage)
-  const behavior = { embed: undefined, rerank: undefined }
+  const behavior = { embed: undefined, rerank: undefined, readQueryPrivacy: undefined }
   let serial = 0, acquired = 0, released = 0, composer, memory, backend
   let currentVector = options.vector ?? (() => [1, 0, 0])
   const config = { enabled: true, topK: 5, minScore: 0.8, timeoutMs: 5000, ...options.config }
@@ -106,11 +106,18 @@ async function fixture(t, options = {}) {
         },
       }
       composer = createAgentSemanticMemory({
-        redis: redis.storage, memory, backend, config: () => config, now: () => clock.at,
+        redis: redis.storage, memory: { ...memory, getRedactionsBatch(identity, subjects, signal) {
+          if (subjects === undefined && behavior.readQueryPrivacy) return behavior.readQueryPrivacy()
+          return memory.getRedactionsBatch(identity, subjects, signal)
+        } }, backend, config: () => config, now: () => clock.at,
         resolve: target => { const binding = f.binding(target); return binding && { binding } },
         available: target => !unavailable.has(conversationAddressKey(target)),
         privatePeer: target => target.kind === 'private' ? actor.id : undefined,
         isRecalled: async (target, messageId) => recalled.has(recallKey(target, messageId)),
+        ...(options.batchRecall ? { async recalledMessageIds(target, messageIds, signal) {
+          signal.throwIfAborted()
+          return new Set(messageIds.filter(id => recalled.has(recallKey(target, id))))
+        } } : {}),
         isRunning: () => redis.isCurrent(), allowsText: text => !text.includes('blocked-source'),
         async begin(binding) {
           const controller = new AbortController()
@@ -122,6 +129,7 @@ async function fixture(t, options = {}) {
           }
         },
         logger: { warn: message => warnings.push(message) },
+        ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
         ...(options.retrieval ? { retrieval: options.retrieval } : {}),
       })
       composers.push(composer)
@@ -131,6 +139,96 @@ async function fixture(t, options = {}) {
   await f.restart()
   return f
 }
+
+test('semantic intake can exceed the inactivity window in total when its storage steps keep making progress', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const reading = Promise.withResolvers(), writing = Promise.withResolvers()
+  const snapshot = Promise.withResolvers(), commit = Promise.withResolvers()
+  const binding = { source: 'configured', id: conversationAddressKey(room), revision: 'v1', agentId: 'writer',
+    personaId: 'same-persona', connectionId: 'fixture', target: room }
+  const composer = createAgentSemanticMemory({
+    redis: {
+      async get() { return null },
+      getSnapshot() { reading.resolve(); return snapshot.promise },
+      eval() { writing.resolve(); return commit.promise },
+    },
+    memory: { async getRedactions() { return { disabled: false, forgottenBefore: 0, scenes: [], revokedSources: [], tombstones: [] } },
+      async registerSource() { return true } },
+    backend: { id: providerA, async embed() { return [] } }, config: () => ({ enabled: true }),
+    resolve: () => ({ binding }), available: () => true, privatePeer: () => undefined, async isRecalled() { return false },
+    async begin() { return { signal: new AbortController().signal, isCurrent: () => true, release() {} } },
+    isRunning: () => true, allowsText: () => true, logger: { warn() {} },
+  })
+  t.after(() => composer.stop())
+  const result = composer.capture({ version: 1, conversation: room, sender: actor, messageId: 'slow-source', occurredAt: Date.now(),
+    text: 'slow capture', parts: [{ kind: 'text', text: 'slow capture' }], mentions: [], directedToAccount: false }, binding, () => true)
+  await reading.promise
+  t.mock.timers.tick(10_000)
+  snapshot.resolve([null, null, null, null])
+  await writing.promise
+  t.mock.timers.tick(10_000)
+  commit.resolve(1)
+  await result
+})
+
+test('batched source and privacy reads preserve missing, wrong-type, and changed-source behavior', redisTest, async t => {
+  const f = await fixture(t)
+  assert.deepEqual(await f.storage.getMany(['absent-a', 'absent-b']), [null, null])
+  await f.reader.lPush(f.prefix + 'list-instead-of-string', 'wrong type')
+  await assert.rejects(f.storage.getMany(['absent-a', 'list-instead-of-string']), /WRONGTYPE/u)
+  const incoming = await f.capture('first independent source')
+  const id = agentSemanticMemoryId(f.binding())
+  const before = await f.store.observe(id)
+  assert.equal(await before.isUnchanged(), true)
+  await f.capture('second independent source')
+  assert.equal(await before.isUnchanged(), false)
+  assert.equal((await f.store.observe(id)).state.rows.length, 2)
+  const author = f.subject()
+  const signal = new AbortController().signal
+  const batch = await f.memory.getRedactionsBatch(author.identity, [author.subjectId], signal)
+  assert.deepEqual(batch.get(author.subjectId), await f.memory.getRedactions(author))
+  await f.memory.setEnabled({ identity: author.identity, subjectId: author.subjectId, enabled: false })
+  assert.equal((await f.memory.getRedactionsBatch(author.identity, undefined, signal)).get(incoming.sender.id).disabled, true)
+})
+
+test('privacy batches tolerate ordinary intake and restart if an earlier subject opts out', redisTest, async t => {
+  const f = await fixture(t)
+  const authors = Array.from({ length: 33 }, (_, index) => ({ ...actor, id: `speaker-${index}` }))
+  for (const author of authors) await f.capture('initial source', { author })
+  const { identity } = f.subject(room, authors[0])
+  const subjects = authors.map(author => author.id)
+  const signal = new AbortController().signal
+  let readCount = 0, betweenBatches
+  const memory = createPersonMemoryStore({ redis: { ...f.storage, async getMany(keys) {
+    if (++readCount === 2) await betweenBatches()
+    return f.storage.getMany(keys)
+  } } })
+
+  betweenBatches = () => f.capture('new source during the scan', { author: authors[0] })
+  const snapshots = await memory.getRedactionsBatch(identity, subjects, signal)
+  assert.equal(snapshots.size, 33)
+  assert.equal(readCount, 2)
+  assert.equal(snapshots.get(subjects[0]).disabled, false)
+
+  readCount = 0
+  betweenBatches = () => f.memory.setEnabled({ identity, subjectId: subjects[0], enabled: false })
+  const refreshed = await memory.getRedactionsBatch(identity, undefined, signal)
+  assert.equal(refreshed.size, 33)
+  assert.equal(refreshed.get(subjects[0]).disabled, true)
+  assert.equal(readCount, 4)
+})
+
+test('the migrated group-only policy keeps private messages out of the semantic corpus', redisTest, async t => {
+  const f = await fixture(t, { config: { groupOnly: true } })
+  await f.capture('private observation', { target: privateRoom })
+  assert.equal(await f.state(privateRoom), undefined)
+  await f.capture('group observation')
+  const state = await f.indexed()
+  assert.deepEqual(state.rows.map(item => item.text), ['group observation'])
+  assert.deepEqual(f.calls.embed.flatMap(call => call.texts), ['group observation'])
+  const privateResult = await f.composer.read(f.binding(privateRoom), 'group observation', () => true)
+  assert.equal(privateResult.text, '')
+})
 
 test('capture persists independent original sources without model calls, while repeated background ticks persist every vector', redisTest, async t => {
   const f = await fixture(t)
@@ -250,26 +348,41 @@ test('opt-out, host recall and source revocation forbid capture and indexing bef
 })
 
 test('forget during pending indexing blocks a late vector commit and subsequent prompt injection', redisTest, async t => {
-  const f = await fixture(t)
+  const events = []
+  const f = await fixture(t, { diagnostics: { emit: event => events.push(event) } })
   const pending = Promise.withResolvers()
   f.behavior.embed = () => pending.promise
-  t.after(() => pending.resolve([[1, 0, 0]]))
+  t.after(() => pending.resolve([[1, 0, 0], [1, 0, 0]]))
   const original = await f.capture('forgotten pending source')
+  const retained = await f.capture('retained pending source', { author: otherActor })
   await f.composer.tick()
   await waitFor(() => f.calls.embed.length === 1, 'pending index provider call')
-  assert.deepEqual(f.calls.embed[0].texts, [original.text])
+  assert.deepEqual(f.calls.embed[0].texts, [original.text, retained.text])
   await f.memory.forget({ ...f.subject(), sourceMessageId: original.messageId })
-  pending.resolve([[1, 0, 0]])
+  pending.resolve([[1, 0, 0], [1, 0, 0]])
   await f.drained()
   assert.ok((await f.state()).rows.every(row => row.vector === undefined))
-  assert.equal((await f.read('forgotten pending source')).text, '')
+  await waitFor(() => events.length, 'index cancellation recorded')
+  assert.deepEqual(events.map(({ outcome, code }) => [outcome, code]), [['cancelled', 'semantic_index_source_changed']])
+  assert.equal((await f.read('forgotten pending source', room, { excludeMessageIds: [retained.messageId] })).text, '')
+  await f.composer.tick()
   assert.equal(f.calls.embed.length, 1)
+  f.behavior.embed = undefined
+  f.clock.at += 5000
+  assert.deepEqual((await f.indexed()).rows.map(row => row.messageId), [retained.messageId])
+  assert.deepEqual(f.calls.embed.map(call => call.texts), [[original.text, retained.text], [retained.text]])
 })
 
 test('source deletion during embedding invalidates the provider guard and cannot recreate a vector corpus', redisTest, async t => {
-  const f = await fixture(t)
+  const events = []
+  const f = await fixture(t, { diagnostics: { emit: event => events.push(event) } })
   const pending = Promise.withResolvers()
-  f.behavior.embed = () => pending.promise
+  f.behavior.embed = async ({ context }) => {
+    await pending.promise
+    try { await context.ensureCurrent() }
+    catch { throw new Error('embedding backend rejected the request') }
+    return [[1, 0, 0]]
+  }
   t.after(() => pending.resolve([[1, 0, 0]]))
   await f.capture('removed pending source')
   await f.composer.tick()
@@ -279,9 +392,22 @@ test('source deletion during embedding invalidates the provider guard and cannot
   await assert.rejects(() => request.context.ensureCurrent())
   pending.resolve([[1, 0, 0]])
   await f.drained()
+  await waitFor(() => events.length, 'wrapped cancellation recorded')
+  assert.deepEqual(events.map(({ outcome, code }) => [outcome, code]), [['cancelled', 'semantic_index_source_changed']])
   assert.equal(await f.state(), undefined)
   assert.equal((await f.read('removed pending source')).text, '')
   assert.equal(f.calls.embed.length, 1)
+})
+
+test('embedding provider errors still emit an index failure', redisTest, async t => {
+  const events = []
+  const f = await fixture(t, { diagnostics: { emit: event => events.push(event) } })
+  f.behavior.embed = () => { throw new Error('embedding backend unavailable') }
+  await f.capture('valid pending source')
+  await f.composer.tick()
+  await waitFor(() => events.length, 'provider failure recorded')
+  assert.deepEqual(events.map(({ outcome, code }) => [outcome, code]), [['failed', 'semantic_index_embedding_failed']])
+  assert.equal((await f.state()).rows[0].vector, undefined)
 })
 
 test('forget while reranking rejects the late recall instead of retaining erased documents', redisTest, async t => {
@@ -474,7 +600,50 @@ test('Core deadline is reported as a timeout and still releases the read lease',
   await f.capture('indexed source for the deadline')
   await f.indexed()
   f.behavior.embed = () => new Promise(() => {})
-  await assert.rejects(f.read('unresponsive semantic query'), { code: 'semantic_memory_timeout' })
+  await assert.rejects(f.read('unresponsive semantic query'), error => {
+    assert.equal(error.code, 'semantic_memory_timeout')
+    assert.equal(semanticMemoryFailureCode(error, 'recall'), 'semantic_recall_embedding_timeout')
+    return true
+  })
   await f.drained()
+  assert.equal(f.activeTurns, 0)
+})
+
+test('stalled group embedding still returns current keyword matches and marks recall incomplete', redisTest, async t => {
+  const f = await fixture(t, { batchRecall: true, config: { timeoutMs: 300 } })
+  const original = await f.capture('copper handbook source')
+  await f.indexed()
+  f.behavior.embed = () => new Promise(() => {})
+  const result = await f.read('copper')
+  assert.equal(result.incomplete, true)
+  assert.match(result.text, /copper handbook source/u)
+  assert.equal(await result.isCurrent(), true)
+  f.recall(room, original.messageId)
+  assert.equal(await result.isCurrent(), false)
+  assert.equal(f.activeTurns, 0)
+  assert.equal(f.warnings.length, 1)
+})
+
+test('group keyword fallback remains usable when outbound query authorization stalls', redisTest, async t => {
+  const events = []
+  const f = await fixture(t, { batchRecall: true, config: { timeoutMs: 300 }, diagnostics: { emit: event => events.push(event) } })
+  const original = await f.capture('copper handbook source')
+  await f.indexed()
+  const indexedCalls = f.calls.embed.length
+  f.behavior.readQueryPrivacy = () => new Promise(() => {})
+  const result = await f.read('copper')
+  assert.equal(result.incomplete, true)
+  assert.match(result.text, /copper handbook source/u)
+  assert.equal(await result.isCurrent(), true)
+  assert.equal(f.calls.embed.length, indexedCalls)
+  assert.deepEqual(events.map(({ outcome, code }) => [outcome, code]), [['unknown', 'semantic_recall_local_fallback_authorization']])
+  assert.equal(events[0].error.budgetMs, 300)
+  const { agentErrorDetails } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
+  assert.equal(agentErrorDetails(events[0].error).field, 'semantic_query_privacy')
+  assert.equal(events[0].details.cause, 'semantic_recall_budget_elapsed')
+  assert.equal(events[0].details.result, 'fallback_used')
+  assert.ok(Number.isFinite(events[0].durationMs))
+  f.recall(room, original.messageId)
+  assert.equal(await result.isCurrent(), false)
   assert.equal(f.activeTurns, 0)
 })

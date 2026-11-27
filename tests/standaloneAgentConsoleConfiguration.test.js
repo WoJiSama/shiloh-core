@@ -275,7 +275,7 @@ test('second QQ commits host and bindings once and a fresh process configuration
   const extraTarget = { ...target, account: { ...target.account, id: '19002912' } }
   assert.equal(reloaded.resolvePersona(extraTarget).binding.agentId, 'daily')
   assert.equal(reloaded.resolvePersona({ ...extraTarget, kind: 'private', id: '23002911' }).binding.agentId, 'daily')
-  assert.equal(reloaded.useTextGroup(extraTarget), false)
+  assert.equal(reloaded.migratedGroupToolNames(extraTarget), undefined)
   assert.equal(reloaded.privateChatEnabled, false)
   const fresh = createStandaloneAgentConsolePersistence({ enabled: true, hostFile: f.hostFile, loaded: reloaded.sourceSnapshot,
     authority: { signal: new AbortController().signal, isCurrent: () => true },

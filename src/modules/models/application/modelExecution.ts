@@ -24,6 +24,9 @@ const bindingChanged = '角色绑定已改变，模型请求已停止'
 
 export function createModelExecutor(ports: ModelExecutionPorts) {
  const { fetch, logger, removeToolPromptsFromMessages, resolveChatCompletionUrl, resolveAgentBackend, shouldAcceptPlannerTextResponse, summarizeToolResultForAgent } = ports
+ const observe = (event: Parameters<NonNullable<ModelExecutionPorts['observe']>>[0], legacy: () => void) => {
+    try { if (ports.observe) ports.observe(event); else legacy() } catch { /* Observation cannot change the request. */ }
+ }
 
 async function fetchWithGenerationCompatibility(url: string, headers: Record<string, string>, requestData: ProviderChatRequestData, options: ExecutionOptions) {
     const sendRequest = async () => {
@@ -51,9 +54,14 @@ async function fetchWithGenerationCompatibility(url: string, headers: Record<str
         !/thinking mode does not support this tool_choice/i.test(errorText) &&
         /(?:unsupported|unknown|unrecognized|not support|invalid parameter|max_tokens|max_completion_tokens|reasoning_effort|temperature|response_format)/i.test(errorText)
     if (mayRetryWithoutOptions) {
-        logger.warn(`[API兼容] 可选生成参数不受支持，移除后在同一后端重试 fields=${optionalFields.join(',')}${optionalFields.includes("reasoning_effort") ? " effort=provider_default" : ""}`)
+        observe({ operation: 'provider_recovery', outcome: 'failed', code: 'model_generation_options_rejected', httpStatus: response.status,
+            details: { step: 'provider_request', result: 'retry_scheduled', retryInMs: 0,
+                ...(optionalFields.length === 1 && optionalFields[0] ? { field: optionalFields[0] } : {}) } },
+        () => logger.warn(`[API兼容] 可选生成参数不受支持，移除后在同一后端重试 fields=${optionalFields.join(',')}${optionalFields.includes("reasoning_effort") ? " effort=provider_default" : ""}`))
         for (const field of optionalFields) delete requestData[field]
         response = await sendRequest()
+        if (response.ok) observe({ operation: 'provider_recovery', outcome: 'succeeded', code: 'model_generation_options_retry_accepted',
+            httpStatus: response.status, details: { step: 'provider_request', result: 'recovered' } }, () => {})
         errorText = response.ok ? "" : await response.text().catch(() => '无法读取错误内容')
     }
     return { response, errorText }
@@ -126,14 +134,14 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
 
                 if (!openaiResponse.ok) {
                     const failure = sourceFailure(openaiUrl, config.toolsAiConfig?.toolsAiModel, `OpenAI API 请求失败：${openaiResponse.status} ${openaiResponse.statusText} - ${sent.errorText}`);
-                    logger.error(failure);
+                    if (!ports.observe) logger.error(failure);
                     return await fallbackFromToolsBackend(requestData, config, toolContent, toolName, options, failure);
                 }
             } catch (openaiFetchError) {
                 options.signal?.throwIfAborted()
                 if (!current()) return { error: bindingChanged }
                 const failure = sourceFailure(openaiUrl, config.toolsAiConfig?.toolsAiModel, `OpenAI API 请求失败：${errorMessage(openaiFetchError)}`);
-                logger.error("OpenAI API 请求失败:", openaiFetchError);
+                if (!ports.observe) logger.error("OpenAI API 请求失败:", openaiFetchError);
                 return await fallbackFromToolsBackend(requestData, config, toolContent, toolName, options, failure);
             }
 
@@ -144,7 +152,9 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
                 logger.info('工具模型响应已接收');
             } catch (openaiJsonError) {
                 if (!current()) return { error: bindingChanged }
-                logger.error("解析 OpenAI 响应 JSON 失败:", openaiJsonError);
+                observe({ operation: 'provider_response_body', outcome: 'failed', code: openaiJsonError instanceof SyntaxError ?
+                    'model_response_body_invalid' : 'model_response_body_read_failed', httpStatus: openaiResponse.status, error: openaiJsonError,
+                    details: { step: 'response_body', result: 'discarded' } }, () => logger.error("解析 OpenAI 响应 JSON 失败:", openaiJsonError));
                 return { error: sourceFailure(openaiUrl, config.toolsAiConfig?.toolsAiModel, `解析 OpenAI 响应 JSON 失败：${errorMessage(openaiJsonError)}`) };
             }
 
@@ -230,7 +240,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
 
             if (!response.ok) {
                 const failure = sourceFailure(selectedTextBackend?.apiUrl || url, selectedTextBackend?.model || finalRequestData.model, `API 请求失败：${response.status} ${response.statusText} - ${sent.errorText}`);
-                logger.error(failure);
+                if (!ports.observe) logger.error(failure);
                 const fallback = await fallbackFromTextBackend(
                     requestData,
                     config,
@@ -246,7 +256,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
             options.signal?.throwIfAborted()
             if (!current()) return { error: bindingChanged }
             const failure = sourceFailure(selectedTextBackend?.apiUrl || url, selectedTextBackend?.model || finalRequestData.model, `${provider || 'API'} 请求失败：${errorMessage(fetchError)}`);
-            logger.error(`${provider || 'API'} 请求失败:`, fetchError);
+            if (!ports.observe) logger.error(`${provider || 'API'} 请求失败:`, fetchError);
             const fallback = await fallbackFromTextBackend(
                 requestData,
                 config,
@@ -266,7 +276,9 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
             logger.info('回答模型响应已接收');
         } catch (jsonError) {
             if (!current()) return { error: bindingChanged }
-            logger.error(`解析 ${provider || 'API'} 响应 JSON 失败:`, jsonError);
+            observe({ operation: 'provider_response_body', outcome: 'failed', code: jsonError instanceof SyntaxError ?
+                'model_response_body_invalid' : 'model_response_body_read_failed', httpStatus: response.status, error: jsonError,
+                details: { step: 'response_body', result: 'discarded' } }, () => logger.error(`解析 ${provider || 'API'} 响应 JSON 失败:`, jsonError));
             return { error: sourceFailure(selectedTextBackend?.apiUrl || url, selectedTextBackend?.model || finalRequestData.model, `解析 ${provider || 'API'} 响应 JSON 失败：${errorMessage(jsonError)}`) };
         }
         return processResponse(responseData);
@@ -274,7 +286,8 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
     } catch (error) {
         options.signal?.throwIfAborted()
         if (!current()) return { error: bindingChanged }
-        logger.error('YTapi 异常:', error);
+        observe({ operation: 'provider_request', outcome: 'failed', code: 'model_request_failed', error },
+            () => logger.error('YTapi 异常:', error));
         return { error: `发生异常：${errorMessage(error)}` };
     }
 }
@@ -297,7 +310,8 @@ async function fallbackFromToolsBackend(requestData: ChatRequestData, config: Ex
     let lastFailure: ChatResponse = { error: failure };
     for (const candidate of candidates) {
         if (!isModelRequestCurrent(options.isCurrent)) return { error: bindingChanged }
-        logger.warn(`[Agent路由] 工具模型不可用，当前请求不强制工具调用，降级到 ${candidate.label}: ${failure}`);
+        observe({ operation: 'provider_fallback', outcome: 'started', code: 'tool_backend_fallback' },
+            () => logger.warn(`[Agent路由] 工具模型不可用，当前请求不强制工具调用，降级到 ${candidate.label}: ${failure}`));
         const response = await YTapi(requestData, {
             ...config,
             useTools: false,
@@ -309,7 +323,11 @@ async function fallbackFromToolsBackend(requestData: ChatRequestData, config: Ex
             textBackendFallback: true
         });
         if (!isModelRequestCurrent(options.isCurrent)) return { error: bindingChanged }
-        if (response?.choices?.[0]?.message?.content) return response;
+        if (response?.choices?.[0]?.message?.content) {
+            observe({ operation: 'provider_fallback', outcome: 'succeeded', code: 'tool_backend_fallback',
+                details: { result: 'fallback_used' } }, () => {})
+            return response;
+        }
         lastFailure = response?.error ? response : lastFailure;
     }
     return lastFailure;
@@ -327,7 +345,8 @@ async function fallbackFromTextBackend(requestData: ChatRequestData, config: Exe
     for (const candidate of resolveToolsBackendFallbacks(config)) {
         if (hasSameBackend(candidate, selectedBackend)) continue;
         if (!isModelRequestCurrent(options.isCurrent)) return { error: bindingChanged }
-        logger.warn(`[Agent路由] 回答模型不可用，降级到 ${candidate.label}: ${failure}`);
+        observe({ operation: 'provider_fallback', outcome: 'started', code: 'text_backend_fallback' },
+            () => logger.warn(`[Agent路由] 回答模型不可用，降级到 ${candidate.label}: ${failure}`));
         const response = await YTapi(requestData, {
             ...config,
             useTools: false,
@@ -338,7 +357,11 @@ async function fallbackFromTextBackend(requestData: ChatRequestData, config: Exe
             textBackendFallback: true
         });
         if (!isModelRequestCurrent(options.isCurrent)) return { error: bindingChanged }
-        if (response?.choices?.[0]?.message?.content) return response;
+        if (response?.choices?.[0]?.message?.content) {
+            observe({ operation: 'provider_fallback', outcome: 'succeeded', code: 'text_backend_fallback',
+                details: { result: 'fallback_used' } }, () => {})
+            return response;
+        }
         if (response?.error) lastFailure = response;
     }
     return lastFailure;

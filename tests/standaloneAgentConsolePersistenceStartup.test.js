@@ -53,9 +53,11 @@ async function fixture(t, enabled = true, { holdLogin = false, automaticRestart 
       peer.on('message', data => {
         try {
           const request = JSON.parse(String(data)); actions.push(request.action)
-          assert.equal(request.action, 'get_login_info', 'configuration administration must not send native QQ actions')
-          const reply = () => { if (peer.readyState === peer.OPEN) peer.send(JSON.stringify({ status: 'ok', retcode: 0, echo: request.echo, data: { user_id: Number(BOT), nickname: '离线持久化验收' } })) }
-          if (holdLogin) heldLogins.push(reply)
+          assert.ok(['get_login_info', 'get_group_list', 'get_group_info'].includes(request.action), 'configuration administration must not send native QQ actions')
+          const result = request.action === 'get_login_info' ? { user_id: Number(BOT), nickname: '离线持久化验收' } :
+            request.action === 'get_group_list' ? [{ group_id: Number(GROUP), group_name: '验收群' }] : { group_id: Number(GROUP), group_name: '验收群' }
+          const reply = () => { if (peer.readyState === peer.OPEN) peer.send(JSON.stringify({ status: 'ok', retcode: 0, echo: request.echo, data: result })) }
+          if (holdLogin && request.action === 'get_login_info') heldLogins.push(reply)
           else reply()
         } catch (error) { errors.push(String(error)) }
       })
@@ -150,7 +152,7 @@ async function fixture(t, enabled = true, { holdLogin = false, automaticRestart 
     async clean() {
       const output = log + responses.join('\n') + await readTree(dataDir)
       for (const value of [MODEL_KEY, SECOND_KEY, QQ_TOKEN, ADMIN_TOKEN, PASSWORD]) assert.equal(output.includes(value), false, 'persistent files, logs and HTTP responses exclude private credential values')
-      assert.equal(modelRequests, 0); assert.deepEqual(errors, []); assert.ok(actions.every(action => action === 'get_login_info'))
+      assert.equal(modelRequests, 0); assert.deepEqual(errors, []); assert.ok(actions.every(action => ['get_login_info', 'get_group_list', 'get_group_info'].includes(action)))
     },
   }
 }

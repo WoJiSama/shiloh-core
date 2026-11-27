@@ -7,6 +7,7 @@ import type { createGroupMemoryManagement, GroupMemoryManagementContext } from '
 export interface GroupKnowledgeRequest extends GroupMemoryManagementContext {
   readonly userText: string
   allowsText(text: string): boolean
+  reportOutcome?(status: 'succeeded' | 'failed'): void
 }
 
 /** The current main model selects intent; persisted teaching never authorizes a send. */
@@ -39,6 +40,7 @@ export function createGroupKnowledgeTool(ports: {
         _agentRequestMessageId?: string
         _agentUserText?: string
         _agentAllowsText?: (text: string) => boolean
+        simulationReportOutcome?: GroupKnowledgeRequest['reportOutcome']
         simulationActor?: { kind?: string; userId?: string; userName?: string }
       } : {}
       const binding = value._agentBinding
@@ -57,6 +59,7 @@ export function createGroupKnowledgeTool(ports: {
         isCurrent,
         ensureCurrent: async () => { await value._ensureAgentToolCurrent?.(); if (!isCurrent()) throw new Error('仿真回合已失效') },
         allowsText: value._agentAllowsText ?? (() => true),
+        ...(value.simulationReportOutcome ? { reportOutcome: value.simulationReportOutcome } : {}),
       })
     }
 
@@ -109,6 +112,9 @@ export function createGroupKnowledgeTool(ports: {
             ...entry.targetUserIds.map(id => ({ kind: 'mention' as const, user: { ...context.binding.target.account, id } })),
             { kind: 'text', text: content },
           ] }, { isCurrent: () => !context.signal.aborted && context.isCurrent() })
+        if (receipt.state === 'sent' || receipt.state === 'failed') {
+          context.reportOutcome?.(receipt.state === 'sent' ? 'succeeded' : 'failed')
+        }
         return receipt.state === 'sent' ? '已按本条请求通知工作流中的成员。' : receipt.state === 'failed'
           ? '本次通知未发送成功。' : '本次通知结果未确认，可能已经发送，请先核实，不要重复执行。'
       } catch { return '本次操作未获有效确认，请先核实，不要重复执行。' }

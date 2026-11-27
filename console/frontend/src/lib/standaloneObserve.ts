@@ -1,11 +1,10 @@
 import {
-  accountLabel,
-  conversationLabel,
   robotLocation,
   type ConsoleWorkspace,
   type WorkspaceAccount,
   type WorkspaceConversation
 } from './workspaceModel'
+import { accountLabel, conversationAddressLabel, workspaceRobotLabel } from './workspaceNames'
 
 export type DiagnosticOutcome = 'started' | 'succeeded' | 'failed' | 'unknown' | 'cancelled'
 export interface DiagnosticEvent {
@@ -30,6 +29,8 @@ export interface DiagnosticEvent {
   durationMs?: number
   errorKind?: string
   httpStatus?: number
+  diagnosis?: { operation: string; reason?: string; evidence: string; result: string }
+  causeEventId?: string
   scopeKey?: string
   bindingToken?: string
   currentBinding?: boolean
@@ -159,6 +160,19 @@ function event(value: unknown): DiagnosticEvent {
     result.httpStatus = integer(row.httpStatus, 599)
     if (result.httpStatus < 100) return fail()
   }
+  if (row.diagnosis !== undefined) {
+    const diagnosis = object(row.diagnosis)
+    result.diagnosis = {
+      operation: text(diagnosis.operation, 128),
+      ...(diagnosis.reason === undefined ? {} : { reason: text(diagnosis.reason, 512) }),
+      evidence: text(diagnosis.evidence, 1024, true),
+      result: text(diagnosis.result, 256, true)
+    }
+  }
+  if (row.details !== undefined) {
+    const related = object(row.details).causeEventId
+    if (related !== undefined) result.causeEventId = text(related, 128)
+  }
   if (row.errorKind !== undefined)
     result.errorKind = choice(row.errorKind, [
       'Error',
@@ -269,7 +283,7 @@ export function diagnosticScopeLabel(event: DiagnosticEvent): string {
   if (event.scope.kind === 'host') return '宿主'
   if (event.scope.kind === 'account') return `账号 ${accountLabel(event.scope.account)}`
   const { binding } = event.scope
-  return `本人 ${binding.agentId} · 连接 ${binding.connectionId} · 账号 ${accountLabel(binding.target.account)} · ${conversationLabel({ binding } as WorkspaceConversation)}`
+  return `本人 ${workspaceRobotLabel(binding.agentId)} · 连接 ${binding.connectionId} · 账号 ${accountLabel(binding.target.account)} · ${conversationAddressLabel(binding.target)}`
 }
 export function diagnosticLocation(event: DiagnosticEvent, workspace: ConsoleWorkspace | null) {
   if (

@@ -11,10 +11,15 @@ import { fileURLToPath } from 'node:url'
 import { createClient } from '@redis/client'
 import { WebSocketServer } from 'ws'
 import { agentHostModuleUrl } from './helpers/bilibiliQualitySource.mjs'
+import { readPersistedSemanticState } from './helpers/semanticMemoryStorage.js'
 
 const repo = fileURLToPath(new URL('../', import.meta.url))
 const entry = path.join(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo, 'scripts/start-agent.mjs')
 const sourceLoader = new URL('./helpers/bilibiliQualitySource.mjs', import.meta.url).href
+const [{ simulationAddressKey }, { simulationSessionKey, SIMULATION_OVERRIDES_KEY }] = await Promise.all([
+  import(agentHostModuleUrl('modules/simulation/infrastructure/simulationAddress.js').href),
+  import(agentHostModuleUrl('modules/simulation/infrastructure/simSessionStore.js').href),
+])
 function cliArgs(args) {
   return process.env.BL_CHAT_AGENT_SOURCE_TEST === '1' ? ['--import', sourceLoader, '--input-type=module', '-e',
     `const {main}=await import(${JSON.stringify(agentHostModuleUrl('bootstrap/standaloneAgent.js').href)}); await main(process.argv.slice(1))`, '--', ...args] : [entry, ...args]
@@ -45,7 +50,10 @@ async function waitFor(probe, description, timeoutMs = 8000) {
   assert.fail(`timed out waiting for ${description}`)
 }
 function completion(content) {
-  return JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 } })
+  return JSON.stringify({ choices: [{ finish_reason: 'tool_calls', message: { role: 'assistant', content: '', tool_calls: [
+    { id: 'semantic-finish', type: 'function', function: { name: 'simFinishTurn',
+      arguments: JSON.stringify({ choice: 'chat', reason: '回复当前群消息', messages: [content] }) } },
+  ] } }], usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 } })
 }
 function vector(text) {
   if ([source, query, otherGroupSource].includes(text)) return [1, 0, 0]
@@ -99,7 +107,11 @@ async function fixture(t, { instance, enabled = true }) {
         const { action, params, echo } = JSON.parse(String(message))
         let data = {}
         if (action === 'get_login_info') data = { user_id: botId, nickname: '语义历史合成验收账号' }
-        else if (action.startsWith('send_')) {
+        else if (action === 'get_msg' && Number(params.message_id) === 88000) {
+          data = { self_id: botId, message_type: 'group', group_id: groupId, message_id: 88000,
+            time: Math.floor(Date.now() / 1000) - 60, sender: { user_id: authorId + 100, nickname: '被引用的发言者' },
+            message: [{ type: 'text', data: { text: quotedText } }] }
+        } else if (action.startsWith('send_')) {
           const messageId = 97400 + deliveries.length
           deliveries.push({ epoch, action, params, messageId })
           data = { message_id: messageId }
@@ -137,7 +149,8 @@ async function fixture(t, { instance, enabled = true }) {
     midtermMemory: { enabled: false }, episodicMemory: { enabled: false }, memorySystem: { enabled: false }, groupMemory: { enabled: false },
     textGroups: [groupId, otherGroupId].map(id => ({ connectionId: 'qq-semantic', conversationId: String(id) })),
     connections: [{ id: 'qq-semantic', url: `ws://127.0.0.1:${port}/onebot`, accessTokenEnv: 'TEST_SEMANTIC_ONEBOT_TOKEN' }],
-    simulation: { wake: { probability: 0, proactiveProbability: 0 }, reflection: { enabled: false }, rhythm: { enabled: false },
+    simulation: { wake: { probability: 0, proactiveProbability: 0, batchWindowMs: 1000 }, wakeGate: { enabled: false },
+      reflection: { enabled: false }, rhythm: { enabled: false },
       personProfile: { enabled: false }, turn: { minSendGapMs: 0 }, budget: { dailyCostCny: 0 } },
   }))
   await writeFile(path.join(directory, 'agent-bindings.yaml'), JSON.stringify({
@@ -151,9 +164,23 @@ async function fixture(t, { instance, enabled = true }) {
   // Disabled fixtures deliberately have no semantic-service credentials.
   if (!enabled) { delete env.TEST_SEMANTIC_EMBEDDING_KEY; delete env.TEST_SEMANTIC_RERANK_KEY }
   const prefix = `bl-agent:${instance}:`
+  const groupAddress = simulationAddressKey({ account: { platform: 'qq', namespace: 'global', id: String(botId) },
+    kind: 'group', id: String(groupId) })
+  const sessionKey = prefix + simulationSessionKey(groupAddress)
+  const session = async () => JSON.parse(await reader.get(sessionKey) ?? 'null')
+  async function resumeWithUnreadQuery(messageId) {
+    assert.equal(child, undefined, 'stage a durable wake in the stopped fixture')
+    const saved = await session()
+    const unread = saved?.unread?.find(row => row.messageId === String(messageId))
+    assert.ok(unread)
+    // Model a restored session with the older messages already read.
+    await reader.multi().set(prefix + SIMULATION_OVERRIDES_KEY, JSON.stringify({ proactive: { [groupAddress]: true } }))
+      .set(sessionKey, JSON.stringify({ ...saved, unread: [unread], recent: [unread], lastReadThroughSeq: unread.seq - 1,
+        queuedIngressWake: { kind: 'session', seq: unread.seq } })).exec()
+  }
   async function states() {
     const keys = await reader.keys(`${prefix}agent:semantic-memory:v1:state:*`)
-    return await Promise.all(keys.map(async key => JSON.parse(await reader.get(key))))
+    return (await Promise.all(keys.map(key => readPersistedSemanticState(reader, prefix, key.split(':').at(-1))))).filter(Boolean)
   }
   async function state(id = groupId) { return (await states()).find(row => row.scope.target.id === String(id)) }
   async function start() {
@@ -227,7 +254,8 @@ async function fixture(t, { instance, enabled = true }) {
       for (const secret of [mainKey, embeddingKey, rerankKey, oneBotToken]) assert.ok(!output.includes(secret))
     }
   }
-  return { start, stop, send, sendPrivate, disableForPrivateCleanup, sources, state, states, check, assertClean, mainRequests, embeddings, rerankings, deliveries,
+  return { start, stop, send, sendPrivate, disableForPrivateCleanup, sources, state, states, check, session, resumeWithUnreadQuery,
+    assertClean, mainRequests, embeddings, rerankings, deliveries,
     async catalog() { return JSON.parse(await reader.get(`${prefix}agent:semantic-memory:v1:catalog`) || '{"version":1,"entries":[]}') },
     diagnostics: async () => JSON.stringify({ entry, keys: await reader.keys(`${prefix}*`), states: await states(), inputs: embeddings.map(row => row.body.input), log: completeLog }) }
 }
@@ -264,13 +292,16 @@ test('standalone CLI indexes undirected originals, preserves quote/forward attri
     assert.deepEqual(Object.keys(request.body).sort(), ['input', 'model'])
     assert.doesNotMatch(JSON.stringify(request.body), /agentId|personaId|connectionId|namespace|合成发言者/u)
   }
+  run.send(query, 88107, { author: authorId + 1 })
+  await waitFor(async () => (await run.session())?.unread?.some(row => row.messageId === '88107'), 'unread recall query persisted')
   await run.stop()
+  await run.resumeWithUnreadQuery(88107)
   await run.start()
-  assert.deepEqual((await run.state()).rows, indexed.rows, 'restart loads the same persisted source vectors')
+  assert.deepEqual((await run.state()).rows.slice(0, indexed.rows.length), indexed.rows, 'restart loads the same persisted source vectors')
   const bigrams = text => new Set([...text.replace(/[。？]/gu, '')].slice(1).map((_char, index) => text.slice(index, index + 2)))
   assert.deepEqual([...bigrams(source)].filter(term => bigrams(query).has(term)), [], 'query shares no lexical bigrams with the desired historical sentence')
-  run.send(query, 88107, { directed: true, author: authorId + 1 })
-  const requested = await waitFor(() => run.mainRequests.find(row => row.epoch === 2 && row.body.messages.at(-1).content === query), 'post-restart semantic recall in the main prompt')
+  const requested = await waitFor(() => run.mainRequests.find(row => row.epoch === 2 &&
+    row.body.messages.some(message => message.role === 'user' && message.content?.includes(query))), 'post-restart semantic recall in the main prompt')
   const section = requested.body.messages.find(row => row.content?.includes('【相关历史原文】'))
   assert.ok(section?.content.includes(source), 'the main model receives the original sentence for a synonym-only query')
   for (const excluded of [distractor, otherGroupSource, quotedText, forwardedText]) assert.ok(!JSON.stringify(requested.body.messages).includes(excluded))
@@ -302,7 +333,8 @@ test('standalone disabled semantic memory and --check need no semantic credentia
   await run.start()
   run.sources()
   run.send(query, 88107, { directed: true, author: authorId + 1 })
-  const requested = await waitFor(() => run.mainRequests.find(row => row.body.messages.at(-1).content === query), 'ordinary reply while semantic memory is disabled')
+  const requested = await waitFor(() => run.mainRequests.find(row =>
+    row.body.messages.some(message => message.role === 'user' && message.content?.includes(query))), 'ordinary reply while semantic memory is disabled')
   await waitFor(() => run.deliveries.length === 1, 'disabled semantic memory ordinary delivery')
   assert.ok(!requested.body.messages.some(row => row.content?.includes('【相关历史原文】')))
   assert.ok(!JSON.stringify(requested.body.messages).includes(source))

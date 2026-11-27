@@ -200,9 +200,12 @@ for(const kind of ['recall','global-purge','scene-purge','authority-change','sou
 }
 
 test('a timed-out remote wait stays unknown, ignores the late result and does not continue or retry',options,async t=>{
- let release
- const f=await fixture(t,{config:{deliveryTimeoutMs:100},ignoreGuard:true,receipt:()=>new Promise(resolve=>{release=resolve})}),message=f.message('.r 1d6 .r 1d6')
+ let release, deliverySignal
+ const f=await fixture(t,{config:{deliveryTimeoutMs:100},ignoreGuard:true,receipt:(_request,guard)=>new Promise(resolve=>{release=resolve;deliverySignal=guard.signal})}),message=f.message('.r 1d6 .r 1d6')
  await f.handle(message);assert.equal(f.attempts.length,1);assert.equal(f.archives.length,0);assert.equal((await f.operation(message)).state,'unknown')
+ assert.equal(deliverySignal.reason.name,'TimeoutError')
+ const failure=f.diagnostics.find(event=>event.code==='effect_continuation_unconfirmed')
+ assert.equal(failure.details.step,'dice_effect_delivery');assert.equal(failure.details.field,'public');assert.equal(failure.delivery.state,'unknown')
  release({state:'sent',messageId:'late-native-result'});await delay(10);await f.handle(message,binding(),f.rebuild());assert.equal(f.attempts.length,1);assert.equal(f.seeds.length,1);assert.equal(f.archives.length,0)
 })
 

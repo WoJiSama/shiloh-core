@@ -20,6 +20,7 @@ try {
     ['旧默认人格长期记忆迁移需要 --source-root、--backup-dir、--connection 和 --group', '旧默认人格长期记忆迁移需要 --source-root、--backup-dir、--connection 和 --group'],
     ['旧默认人格来源参数需要 --migrate-legacy-qq-memory', '旧默认人格来源参数需要 --migrate-legacy-qq-memory'],
     ['旧默认人格记忆来源：', '旧默认人格长期记忆迁移未完成，请核对来源证明、离线状态和迁移回执'],
+    ['旧群原文接续：', '旧群原文接续未完成，请核对冻结来源、连接和离线状态'],
   ]
   const known = typeof value === 'string' ? safeFailures.find(([needle]) => value.includes(needle))?.[1] : undefined
   console.error(startupStage === 'artifacts'

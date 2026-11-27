@@ -185,6 +185,28 @@ test('only inspected NapCat packet resource AggregateError proves final forward 
   ]) assert.deepEqual(await direct(response).sendMediaRelay(action()), { state: 'unknown' })
 })
 
+test('only the NapCat video preprocessing stack permits retry when the media connection closes', async () => {
+  const stack = [
+    '发送伪造合并转发消息失败: Error: other side closed',
+    '    at async x.handleOb11FileLikeMessage (file:///app/napcat.mjs:912:17)',
+    '    at async video (file:///app/napcat.mjs:1047:14)',
+    '    at async x.createSendElements (file:///app/napcat.mjs:1056:9)',
+    '    at async x.uploadForwardedNodesPacket (file:///app/napcat.mjs:4920:24)',
+    '    at async x._handle (file:///app/napcat.mjs:5054:10)',
+  ]
+  const captured = resourceError(stack.join('\n'))
+  assert.deepEqual(await direct(captured).sendMediaRelay(action()), { state: 'failed', code: 'media_resource_fetch_closed' })
+  for (const response of [
+    resourceError(stack.filter(line => !line.includes('.createSendElements')).join('\n')),
+    resourceError([stack[0], stack[2], stack[1], ...stack.slice(3)].join('\n')),
+    resourceError([stack[0], '    at async x.sendGroup (file:///app/napcat.mjs:6:1)', ...stack.slice(1)].join('\n')),
+    { ...captured, wording: 'other side closed' },
+  ]) assert.deepEqual(await direct(response).sendMediaRelay(action()), { state: 'unknown' })
+  assert.deepEqual(await direct(captured).sendMediaRelay(action({ mode: 'direct-video' })), { state: 'unknown' })
+  const onlyCard = { version: 1, items: [{ parts: [{ kind: 'image', artifact: cover }] }] }
+  assert.deepEqual(await direct(captured).sendMediaRelay(action({ plan: onlyCard })), { state: 'unknown' })
+})
+
 test('preparation failure releases already staged resources and exposes no source URL/path/error', async () => {
   const released = [], f = bridgeFixture(async (value, _context, index) => {
     if (index === 2) throw Error('/private/secret Cookie=secret https://signed.example/a?token=secret')

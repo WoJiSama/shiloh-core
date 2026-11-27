@@ -1,5 +1,6 @@
 import puppeteer from 'puppeteer'
 import type { Browser, LaunchOptions, Page } from 'puppeteer'
+import sharp from 'sharp'
 import type { AgentToolContext } from '../../../contracts/agentTool.js'
 import { validateAgentToolImageBytes } from '../../image/infrastructure/agentToolImage.js'
 
@@ -16,6 +17,7 @@ const MAX_HEIGHT = 8192
 const MAX_FIELD_LENGTH = 16_384
 const MAX_HTML_LENGTH = 256 * 1024
 const MAX_COVER_BYTES = 8 * 1024 * 1024
+const MAX_INLINE_COVER_BYTES = 160 * 1024
 const CSP = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
 
 export interface AgentBilibiliCardView {
@@ -32,6 +34,11 @@ export interface AgentBilibiliCardView {
   readonly cover?: Readonly<{ readonly mime: string; readonly bytes: Uint8Array }>
 }
 
+export class AgentBilibiliCardError extends Error {
+  constructor(readonly code: 'card_cover_invalid' | 'card_browser_failed' | 'card_render_failed' | 'card_render_timeout' | 'card_render_cancelled',
+    message: string, cause?: unknown) { super(message, { cause }) }
+}
+
 function text(value: unknown, fallback = ''): string {
   if (value === undefined || value === null || value === '') return fallback
   if (typeof value !== 'string') throw new Error('B站卡片字段必须是文本')
@@ -40,11 +47,28 @@ function text(value: unknown, fallback = ''): string {
   return value.replace(/[&<>"'\r]/gu, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '\r': '&#13;' })[char]!)
 }
 
-function coverDataUri(cover: AgentBilibiliCardView['cover']): string {
-  if (!cover) return ''
+function validateCover(cover: NonNullable<AgentBilibiliCardView['cover']>) {
   if (typeof cover.mime !== 'string' || !/^image\/(?:png|jpeg|gif|webp)$/u.test(cover.mime) || !(cover.bytes instanceof Uint8Array) || !cover.bytes.byteLength || cover.bytes.byteLength > MAX_COVER_BYTES)
     throw new Error('B站卡片封面数据无效')
+}
+
+function coverDataUri(cover: AgentBilibiliCardView['cover']): string {
+  if (!cover) return ''
+  validateCover(cover)
   return `data:${cover.mime};base64,${Buffer.from(cover.bytes).toString('base64')}`
+}
+
+async function fitCover(cover: AgentBilibiliCardView['cover']): Promise<AgentBilibiliCardView['cover']> {
+  if (!cover) return
+  try {
+    validateCover(cover)
+    if (cover.bytes.byteLength <= MAX_INLINE_COVER_BYTES) return cover
+    const bytes = await sharp(cover.bytes, { limitInputPixels: 16 * 1024 * 1024 }).rotate()
+      .resize({ width: 960, height: 520, fit: 'inside', withoutEnlargement: true })
+      .flatten({ background: '#171e26' }).jpeg({ quality: 65 }).toBuffer()
+    if (bytes.byteLength > MAX_INLINE_COVER_BYTES) throw new Error('B站卡片封面无法缩小至嵌入上限')
+    return { mime: 'image/jpeg', bytes }
+  } catch (cause) { throw new AgentBilibiliCardError('card_cover_invalid', 'B站卡片封面处理失败', cause) }
 }
 
 /** A self-contained document: no host template, scripts, or network resources. */
@@ -112,12 +136,12 @@ export function createAgentBilibiliCardRenderer(options: AgentBilibiliCardRender
       rejectStopped(error)
       void cleanup()
     }
-    const onAbort = () => stop(new Error('B站卡片渲染已取消'))
-    const timer = setTimeout(() => stop(new Error('B站卡片渲染超时')), timeoutMs)
+    const onAbort = () => stop(new AgentBilibiliCardError('card_render_cancelled', 'B站卡片渲染已取消'))
+    const timer = setTimeout(() => stop(new AgentBilibiliCardError('card_render_timeout', 'B站卡片渲染超时')), timeoutMs)
     context.signal.addEventListener('abort', onAbort, { once: true })
     const checkCurrent = () => {
       if (stoppedError) throw stoppedError
-      if (context.signal.aborted || !context.isCurrent()) throw new Error('B站卡片渲染授权已失效')
+      if (context.signal.aborted || !context.isCurrent()) throw new AgentBilibiliCardError('card_render_cancelled', 'B站卡片渲染授权已失效')
     }
     const ensureCurrent = async () => {
       checkCurrent()
@@ -125,12 +149,14 @@ export function createAgentBilibiliCardRenderer(options: AgentBilibiliCardRender
       checkCurrent()
     }
     const work = async () => {
-      const html = buildAgentBilibiliCardHtml(view)
       await ensureCurrent()
-      browser = await launch({ headless: true, timeout: remaining(), protocolTimeout: timeoutMs, args: [
+      const cover = await fitCover(view.cover)
+      const html = buildAgentBilibiliCardHtml({ ...view, ...(cover ? { cover } : {}) })
+      await ensureCurrent()
+      try { browser = await launch({ headless: true, timeout: remaining(), protocolTimeout: timeoutMs, args: [
         '--disable-background-networking', '--disable-component-update', '--disable-default-apps', '--disable-sync',
         '--metrics-recording-only', '--no-first-run', '--no-default-browser-check', '--disable-breakpad', '--disable-extensions',
-      ] })
+      ] }) } catch (cause) { throw new AgentBilibiliCardError('card_browser_failed', 'B站卡片浏览器启动失败', cause) }
       if (stoppedError) { void cleanup(); throw stoppedError }
       await ensureCurrent()
       page = await browser.newPage()
@@ -164,6 +190,9 @@ export function createAgentBilibiliCardRenderer(options: AgentBilibiliCardRender
       await Promise.race([cleanup(), stopped])
       checkCurrent()
       return image
+    } catch (cause) {
+      if (cause instanceof AgentBilibiliCardError) throw cause
+      throw new AgentBilibiliCardError('card_render_failed', 'B站卡片渲染失败', cause)
     } finally {
       clearTimeout(timer)
       context.signal.removeEventListener('abort', onAbort)

@@ -2,11 +2,14 @@
 import {createHash,randomUUID} from 'node:crypto'
 import type {CommitmentData,CommitmentRedisLike} from '../../../contracts/commitments.js'
 import type {AgentDeferredActionData} from '../../../contracts/agentDeferredAction.js'
-import {agentConversationKey,decodeAgentConversationKey} from '../../runtime/domain/agentBindings.js'
+import {agentConversationKey,decodeAgentConversationKey,isPlatformIdentifier} from '../../runtime/domain/agentBindings.js'
+import {reportAgentFailure,type AgentDiagnostics} from '../../runtime/infrastructure/agentDiagnostics.js'
 import {assertDeferredGrant,decodeAgentDeferredAction} from './agentDeferredActionData.js'
 import type {AgentSourceMemoryCleanupGuard,AgentSourceMemoryPurgeSubject} from '../../../contracts/sourceMemoryCleanup.js'
 import {conversationCleanupAllows,parseConversationCleanup,type ConversationCleanupSelector} from '../../memory/infrastructure/conversationMemoryCleanup.js'
 import {cleanupExpected,createSubjectMemoryCleanup} from '../../memory/infrastructure/subjectMemoryCleanup.js'
+import {createAgentTaskClaim,hasLiveTaskClaim} from '../../runtime/infrastructure/agentTaskScheduler.js'
+import {isOneTimeGroupReminder} from '../domain/commitments.js'
 
 const REDIS_KEY_PREFIX='bl-chat:commitment:'
 export const COMMITMENT_PENDING_KEY=`${REDIS_KEY_PREFIX}pending:list`
@@ -49,14 +52,42 @@ export function decodeCommitment(data:string):CommitmentData {
   const scope=typeof r.scopeKey==='string'?decodeAgentConversationKey(r.scopeKey):null
   const bindingIdentity=r.bindingIdentity
   const importedReminder=r.importedReminder===true
+  const origin=record(r.privateRequest)
+  const privateRequest=r.privateRequest===undefined?undefined:(()=>{
+    if(typeof origin.messageId!=='string'||!origin.messageId||origin.messageId.length>128||
+      (origin.groupId===undefined)!==(origin.destinationBindingIdentity===undefined)||
+      origin.groupId!==undefined&&(typeof origin.groupId!=='string'||!/^\d{5,12}$/u.test(origin.groupId)||
+        typeof origin.destinationBindingIdentity!=='string'||!origin.destinationBindingIdentity||origin.destinationBindingIdentity.length>8192))
+      throw new Error('私聊承诺来源损坏')
+    return { messageId:origin.messageId, ...(typeof origin.groupId==='string'?{
+      groupId:origin.groupId,destinationBindingIdentity:String(origin.destinationBindingIdentity)}:{}) }
+  })()
+  const ownedReservation=r.ownedReservation===undefined?undefined:(()=>{
+    const value=record(r.ownedReservation), source=record(value.source)
+    if(typeof value.goalId!=='string'||!value.goalId||value.goalId.length>64||
+      typeof source.messageId!=='string'||!source.messageId||source.messageId.length>128||
+      !isPlatformIdentifier(source.authorId)||typeof source.at!=='number'||!Number.isSafeInteger(source.at)||source.at<0||
+      value.attemptedAt!==undefined&&(typeof value.attemptedAt!=='number'||!Number.isSafeInteger(value.attemptedAt)||value.attemptedAt<0)||
+      value.verifiedMessageId!==undefined&&(typeof value.verifiedMessageId!=='string'||!value.verifiedMessageId||value.verifiedMessageId.length>128)||
+      scope?.target.kind!=='group'||r.creator_id!==r.bot_id||source.authorId===r.bot_id||
+      deliver!=='static'||normalizedSchedule.kind!=='once'||typeof r.static_message!=='string'||!r.static_message.trim()||
+      r.mentionCreator!==false||r.expiry_at!==0||importedReminder||privateRequest||r.deferredAction!==undefined) {
+      throw new Error('自主预约来源损坏')
+    }
+    return {goalId:value.goalId,source:{messageId:source.messageId,authorId:source.authorId,at:source.at},
+      ...(typeof value.attemptedAt==='number'?{attemptedAt:value.attemptedAt}:{}),
+      ...(typeof value.verifiedMessageId==='string'?{verifiedMessageId:value.verifiedMessageId}:{})}
+  })()
   if(r.sourceAt!==undefined&&(!Number.isSafeInteger(r.sourceAt)||Number(r.sourceAt)<0))throw new Error('承诺来源时间损坏')
+  if(r.mentionCreator!==undefined&&typeof r.mentionCreator!=='boolean')throw new Error('承诺提醒方式损坏')
   const deferredAction=r.deferredAction===undefined?undefined:decodeAgentDeferredAction(r.deferredAction)
   const scopeMatches=scope?.target.account.id===r.bot_id && (scope?.target.kind==='group' ? scope.target.id===r.group_id :
-    importedReminder&&scope?.target.kind==='private'&&scope.target.id===r.creator_id&&r.group_id==='')
+    (importedReminder||privateRequest)&&scope?.target.kind==='private'&&scope.target.id===r.creator_id&&r.group_id==='')
   if((r.scopeKey!==undefined&&(!scope||!scopeMatches))||
     (bindingIdentity!==undefined&&(typeof bindingIdentity!=='string'||!bindingIdentity||bindingIdentity.length>8192))||
     (scope&&!bindingIdentity)||
-    (importedReminder&&(!scope||deliver!=='static'||normalizedSchedule.kind!=='once'||typeof r.static_message!=='string'||!r.static_message.trim()))) {
+    ((importedReminder||privateRequest)&&(!scope||deliver!=='static'||normalizedSchedule.kind!=='once'||typeof r.static_message!=='string'||!r.static_message.trim())) ||
+    (privateRequest&&(scope?.target.kind!=='private'||!Number.isSafeInteger(r.sourceAt)||importedReminder||deferredAction))) {
     throw new Error('承诺会话分区损坏')
   }
   if(deferredAction){
@@ -65,11 +96,37 @@ export function decodeCommitment(data:string):CommitmentData {
     if(deferredAction.grant.dueAt!==normalizedSchedule.time)throw new Error('延期委托授权与排期不符')
     if(deferredAction.state==='unknown'&&status==='active')throw new Error('未知延期动作不能处于待执行状态')
   }
+  const groupSource=r.groupSource===undefined?undefined:(()=>{
+    const source=record(r.groupSource)
+    if(!isPlatformIdentifier(source.messageId)||source.authorId!==r.creator_id||source.authorId===r.bot_id||
+      !Number.isSafeInteger(source.at)||Number(source.at)<0||source.at!==r.sourceAt||scope?.target.kind!=='group'||
+      normalizedSchedule.kind!=='once'||deliver!=='static'||importedReminder||ownedReservation||deferredAction)throw new Error('群提醒来源损坏')
+    return {messageId:source.messageId,authorId:String(source.authorId),at:Number(source.at)}
+  })()
+  const groupDispatch=r.groupDispatch===undefined?undefined:(()=>{
+    const dispatch=record(r.groupDispatch)
+    if(scope?.target.kind!=='group'||normalizedSchedule.kind!=='once'||deliver!=='static'||deferredAction||
+      !Number.isSafeInteger(dispatch.at)||Number(dispatch.at)<0||typeof dispatch.sha256!=='string'||!/^[a-f0-9]{64}$/u.test(dispatch.sha256)||
+      (dispatch.mentionId!==undefined&&dispatch.mentionId!==r.creator_id)||
+      (dispatch.nextCheckAt!==undefined&&(!Number.isSafeInteger(dispatch.nextCheckAt)||Number(dispatch.nextCheckAt)<Number(dispatch.at)))||
+      (dispatch.checks!==undefined&&(!Number.isSafeInteger(dispatch.checks)||Number(dispatch.checks)<0||Number(dispatch.checks)>3))||
+      (dispatch.messageId!==undefined&&!isPlatformIdentifier(dispatch.messageId)))throw new Error('群提醒投递记录损坏')
+    return {at:Number(dispatch.at),sha256:dispatch.sha256,
+      ...(typeof dispatch.mentionId==='string'?{mentionId:dispatch.mentionId}:{}),
+      ...(typeof dispatch.nextCheckAt==='number'?{nextCheckAt:dispatch.nextCheckAt}:{}),
+      ...(typeof dispatch.checks==='number'?{checks:dispatch.checks}:{}),
+      ...(typeof dispatch.messageId==='string'?{messageId:dispatch.messageId}:{})}
+  })()
   return {
     id:r.id,group_id:r.group_id,creator_id:r.creator_id,creator_name:String(r.creator_name||''),
     intent:r.intent,schedule:normalizedSchedule,deliver,
     static_message:typeof r.static_message==='string'?r.static_message:null,
+    ...(typeof r.mentionCreator==='boolean'?{mentionCreator:r.mentionCreator}:{}),
     ...(importedReminder?{importedReminder:true as const}:{}),
+    ...(privateRequest?{privateRequest}:{}),
+    ...(ownedReservation?{ownedReservation}:{}),
+    ...(groupSource?{groupSource}:{}),
+    ...(groupDispatch?{groupDispatch}:{}),
     ...(deferredAction?{deferredAction}:{}),
     expiry_at:Number(r.expiry_at)||0,renewal_asked_at:Number(r.renewal_asked_at)||0,
     next_run_at:Number(r.next_run_at)||0,status:status as CommitmentData['status'],
@@ -119,7 +176,7 @@ export interface CommitmentFailure {
   id?:string;intent?:string;group_id?:string;reason?:string;at?:number
 }
 
-export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{warn(message:string):void}}) {
+export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{warn(message:string):void};diagnostics?:Pick<AgentDiagnostics,'emit'>}) {
   const {redis,logger}=ports
   async function withLock<T>(operation:(token:string)=>Promise<T>,ensureCurrent?:()=>Promise<void>):Promise<T> {
     const token=randomUUID(),end=Date.now()+LOCK_ACQUIRE_TIMEOUT
@@ -149,10 +206,13 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
     return {raw:result[0] as string|null,fenceRaw:result[1] as string|null,retired:result[2]!==null,fences:parseConversationCleanup(result[1] as string|null)}
   }
   const sourceAt=(c:CommitmentData)=>c.deferredAction?.grant.source.at??c.sourceAt??c.created_at
-  const permitted=(c:CommitmentData,fences:ReturnType<typeof parseConversationCleanup>)=>!c.scope||conversationCleanupAllows(c.scope,{authorId:c.creator_id,at:sourceAt(c)},fences)
+  const permitted=(c:CommitmentData,fences:ReturnType<typeof parseConversationCleanup>)=>!c.scope||(
+    conversationCleanupAllows(c.scope,{authorId:c.creator_id,at:sourceAt(c)},fences)&&
+    (!c.ownedReservation||conversationCleanupAllows(c.scope,c.ownedReservation.source,fences)))
   function sameSource(left:CommitmentData,right:CommitmentData):boolean{
     return left.creator_id===right.creator_id&&left.created_at===right.created_at&&sourceAt(left)===sourceAt(right)&&left.bot_id===right.bot_id&&
-      (left.scope?agentConversationKey(left.scope):'')===(right.scope?agentConversationKey(right.scope):'')&&left.bindingIdentity===right.bindingIdentity
+      (left.scope?agentConversationKey(left.scope):'')===(right.scope?agentConversationKey(right.scope):'')&&left.bindingIdentity===right.bindingIdentity&&
+      left.groupSource?.messageId===right.groupSource?.messageId
   }
   async function getCommitment(id:string,ensureCurrent?:()=>Promise<void>):Promise<CommitmentData|null>{
     const saved=await snapshot(id,ensureCurrent)
@@ -167,14 +227,16 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
       if(snapshotValue.retired||!permitted(c,snapshotValue.fences))return false
       if(snapshotValue.raw&&!sameSource(decodeCommitment(snapshotValue.raw),c))throw new Error('承诺来源不可改变')
       const list=(await getPendingList(ensureCurrent)).filter(item=>item.id!==c.id)
-      if(c.status==='active')list.push({id:c.id,next_run_at:c.run_id?c.lease_until||0:c.next_run_at})
+      const due=c.status==='active'?(c.run_id?c.lease_until||0:c.next_run_at):
+        c.status==='unknown'?c.groupDispatch?.nextCheckAt:undefined
+      if(due!==undefined)list.push({id:c.id,next_run_at:due})
       list.sort((a,b)=>a.next_run_at-b.next_run_at)
       const data=encodeCommitment(c)
       decodeCommitment(data)
       await ensureCurrent?.()
       if(isCurrent?.()===false)return false
       const saved=await redis.eval(WRITE_STATE,{keys:[COMMITMENT_LOCK_KEY,commitmentDetailKey(c.id),COMMITMENT_PENDING_KEY,COMMITMENT_CLEANUP_KEY,cleanupIdKey(c.id)],
-        arguments:[token,data,JSON.stringify(list),c.status==='active'||c.deferredAction?'0':'86400',...cleanupExpected(snapshotValue.fenceRaw),...cleanupExpected(snapshotValue.raw)]})
+        arguments:[token,data,JSON.stringify(list),due!==undefined||c.deferredAction?'0':'86400',...cleanupExpected(snapshotValue.fenceRaw),...cleanupExpected(snapshotValue.raw)]})
       if(Number(saved)===1)return true
       if(Number(saved)===-1)return false
       await ensureCurrent?.()
@@ -233,7 +295,7 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
         if(item.next_run_at>at)continue
         const c=await getCommitment(item.id)
         if(!c||c.status!=='active'||canClaim?.(c)===false)continue
-        if(c.run_id&&(c.lease_until||0)>at)continue
+        if(c.run_id&&hasLiveTaskClaim(c.lease_until,at))continue
         if(c.run_id&&c.execution_state==='executing'){
           const reason='上次执行中断且结果未知，已停止自动重发'
           await persist({...withoutRun(c),status:'unknown',last_result:reason,next_run_at:0,revision:(c.revision||0)+1,
@@ -241,7 +303,8 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
           await appendFailLogUnlocked({id:c.id,intent:c.intent,group_id:c.group_id,reason,at},token)
           continue
         }
-        const claimed:CommitmentData={...c,run_id:randomUUID(),lease_until:at+COMMITMENT_LEASE_MS,execution_state:'claimed',revision:(c.revision||0)+1}
+        const claim=createAgentTaskClaim(at,COMMITMENT_LEASE_MS)
+        const claimed:CommitmentData={...c,run_id:claim.id,lease_until:claim.leaseUntil,execution_state:'claimed',revision:(c.revision||0)+1}
         if(await persist(claimed,token))out.push(claimed)
         if(out.length>=limit)break
       }
@@ -252,7 +315,8 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
     return withLock(async token=>{
       const current=await getCommitment(c.id)
       if(!current||current.status!=='active'||!c.run_id||current.run_id!==c.run_id||(current.lease_until||0)<=at)return false
-      return await persist({...current,lease_until:at+COMMITMENT_LEASE_MS,...(begin?{execution_state:'executing' as const}:{})},token,isCurrent)
+      return await persist({...current,lease_until:at+COMMITMENT_LEASE_MS,...(begin?{execution_state:'executing' as const,
+        ...(current.ownedReservation?{ownedReservation:{...current.ownedReservation,attemptedAt:at}}:{})}:{})},token,isCurrent)
     })
   }
   async function expireClaim(c:CommitmentData,at:number):Promise<'expired'|'current'|'cancelled'>{
@@ -271,12 +335,70 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
       return await persist({...withoutRun(current),revision:(current.revision||0)+1},token)
     })
   }
-  async function commitRunOutcome(c:CommitmentData):Promise<boolean>{
+  async function beginGroupDispatch(c:CommitmentData,dispatch:NonNullable<CommitmentData['groupDispatch']>,isCurrent:()=>boolean):Promise<boolean>{
     return withLock(async token=>{
       const current=await getCommitment(c.id)
-      if(!current||current.status!=='active'||!c.run_id||current.run_id!==c.run_id)return false
+      if(!current||!isOneTimeGroupReminder(current)||current.status!=='active'||!c.run_id||current.run_id!==c.run_id||
+        current.revision!==c.revision||current.execution_state!=='claimed'||!hasLiveTaskClaim(current.lease_until,dispatch.at)||!isCurrent())return false
+      return persist({...current,groupDispatch:dispatch,execution_state:'executing',lease_until:dispatch.at+COMMITMENT_LEASE_MS,
+        ...(current.ownedReservation?{ownedReservation:{...current.ownedReservation,attemptedAt:dispatch.at}}:{})},token,isCurrent)
+    })
+  }
+  async function isGroupDispatchCurrent(c:CommitmentData,at:number):Promise<boolean>{
+    const current=await getCommitment(c.id)
+    return !!current&&current.status==='active'&&current.revision===c.revision&&!!c.run_id&&
+      current.run_id===c.run_id&&hasLiveTaskClaim(current.lease_until,at)
+  }
+  async function listDueGroupDispatches(at:number,handles:(c:CommitmentData)=>boolean,limit:number):Promise<CommitmentData[]>{
+    const out:CommitmentData[]=[]
+    for(const entry of await getPendingList()){
+      if(entry.next_run_at>at)break
+      const c=await getCommitment(entry.id)
+      if(c?.status!=='unknown'||c.groupDispatch?.nextCheckAt===undefined||c.groupDispatch.nextCheckAt>at||!handles(c))continue
+      out.push(c)
+      if(out.length>=limit)break
+    }
+    return out
+  }
+  async function settleGroupDispatchCheck(c:CommitmentData,messageId:string|undefined,nextCheckAt:number,isCurrent:()=>boolean):Promise<void>{
+    await withLock(async token=>{
+      const current=await getCommitment(c.id)
+      if(current?.status!=='unknown'||current.revision!==c.revision||current.groupDispatch?.nextCheckAt===undefined||!isCurrent())return
+      const {nextCheckAt:_previous,...dispatch}=current.groupDispatch
+      const checks=(dispatch.checks??0)+1
+      const next:CommitmentData={...current,revision:(current.revision||0)+1,
+        groupDispatch:{...dispatch,checks,...(messageId?{messageId}:checks<3?{nextCheckAt}:{})}}
+      if(messageId){
+        next.status='completed'
+        next.last_result='sent'
+        if(current.ownedReservation)next.ownedReservation={...current.ownedReservation,verifiedMessageId:messageId}
+      }
+      await persist(next,token,isCurrent)
+    })
+  }
+  async function commitRunOutcome(c:CommitmentData,messageId?:string):Promise<boolean>{
+    return withLock(async token=>{
+      const current=await getCommitment(c.id)
+      if(!current||current.status!=='active'||!c.run_id||current.run_id!==c.run_id||
+        current.groupDispatch&&current.revision!==c.revision)return false
       // Preserve concurrent renewal fields. Only the owner of this run may settle it.
-      return await persist({...withoutRun(c),...(current.deferredAction?{deferredAction:current.deferredAction}:{}),expiry_at:current.expiry_at,renewal_asked_at:current.renewal_asked_at||0,revision:(current.revision||0)+1},token)
+      const next={...withoutRun(c),...(current.deferredAction?{deferredAction:current.deferredAction}:{}),
+        ...(current.ownedReservation?{ownedReservation:current.ownedReservation}:{}),
+        expiry_at:current.expiry_at,renewal_asked_at:current.renewal_asked_at||0,revision:(current.revision||0)+1}
+      if(current.groupDispatch&&c.status!=='active'){
+        const {nextCheckAt,...dispatch}=current.groupDispatch
+        next.groupDispatch={...dispatch,...(c.status==='unknown'&&nextCheckAt!==undefined?{nextCheckAt}:{}),...(messageId?{messageId}:{})}
+      }else delete next.groupDispatch
+      return await persist(next,token)
+    })
+  }
+  async function confirmOwnedReservation(c:CommitmentData,messageId:string,isCurrent:()=>boolean):Promise<CommitmentData|undefined>{
+    return withLock(async token=>{
+      const current=await getCommitment(c.id)
+      if(!current?.ownedReservation||current.status!=='unknown'||current.revision!==c.revision||!isCurrent())return undefined
+      const verified:CommitmentData={...current,status:'completed',last_result:'sent',revision:(current.revision||0)+1,
+        ownedReservation:{...current.ownedReservation,verifiedMessageId:messageId}}
+      return await persist(verified,token,isCurrent)?verified:undefined
     })
   }
   /** A cancellation fence shared by local workers using this same storage port. */
@@ -351,7 +473,14 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
   async function readFailLog():Promise<CommitmentFailure[]>{
     const raw=await redis.get(FAILLOG_KEY)
     if(!raw)return []
-    try{const parsed:unknown=JSON.parse(raw);return Array.isArray(parsed)?parsed.filter(v=>v!==null&&typeof v==='object'):[]}catch{logger.warn('[承诺] 失败日志损坏，按空处理');return []}
+    try {
+      const parsed:unknown=JSON.parse(raw)
+      return Array.isArray(parsed)?parsed.filter(v=>v!==null&&typeof v==='object'):[]
+    } catch (error) {
+      reportAgentFailure(ports.diagnostics, { stage: 'runtime', operation: 'commitment_failure_log', code: 'commitment_failure_log_invalid', error },
+        () => logger.warn('[承诺] 失败日志损坏，按空处理'))
+      return []
+    }
   }
   async function readManagementFailLog(ensureCurrent?:()=>Promise<void>):Promise<unknown[]>{
     return (await readFailureDocument(ensureCurrent)).entries
@@ -409,7 +538,7 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
   async function purgeSubject(input:AgentSourceMemoryPurgeSubject,guard:AgentSourceMemoryCleanupGuard){
     const cleanup=createSubjectMemoryCleanup(redis,COMMITMENT_CLEANUP_KEY,'commitments')
     return cleanup.purge(input,guard,async(selector,authorize,counts)=>{
-      const selected=(c:CommitmentData)=>!!c.scope&&!conversationCleanupAllows(c.scope,{authorId:c.creator_id,at:sourceAt(c)},{version:1,entries:[selector]})
+      const selected=(c:CommitmentData)=>!permitted(c,{version:1,entries:[selector]})
       const selectedFailure=(value:unknown)=>{
         const row=record(value),scope=typeof row.scopeKey==='string'?decodeAgentConversationKey(row.scopeKey):null
         return !!scope&&typeof row.bindingIdentity==='string'&&typeof row.creator_id==='string'&&Number.isSafeInteger(row.sourceAt)&&Number(row.sourceAt)>=0&&
@@ -492,5 +621,6 @@ export function createCommitmentStore(ports:{redis:CommitmentRedisLike;logger:{w
       }
     }
   }
-  return {createCommitment,getCommitment,cancelCommitment,takeDueCommitments,commitRunOutcome,requeueForRetry,listActiveCommitments,appendFailLog,readFailLog,clearFailLog,updateActive,refreshClaim,releaseUnstartedClaim,expireClaim,recoverLegacyIndex,onInvalidated,isClaimCurrent,updateDeferredActionClaim,listDeferredActions,listManagementCommitments,readManagementFailLog,clearManagementFailLog,purgeSubject}
+  return {createCommitment,getCommitment,cancelCommitment,takeDueCommitments,commitRunOutcome,confirmOwnedReservation,requeueForRetry,listActiveCommitments,appendFailLog,readFailLog,clearFailLog,updateActive,refreshClaim,releaseUnstartedClaim,expireClaim,recoverLegacyIndex,onInvalidated,isClaimCurrent,updateDeferredActionClaim,listDeferredActions,listManagementCommitments,readManagementFailLog,clearManagementFailLog,purgeSubject,
+    beginGroupDispatch,isGroupDispatchCurrent,listDueGroupDispatches,settleGroupDispatchCheck}
 }

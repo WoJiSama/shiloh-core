@@ -24,8 +24,8 @@ const connections = accounts.map((account, index) => ({ id: `qq-${index}`, platf
 const bindings = { version: 1, agents: [{ id: 'daily', personaId: 'default' }], connections,
   bindings: connections.map(connection => ({ connectionId: connection.id, kind: 'group', conversationId: targets[0].id, agentId: 'daily' })) }
 
-async function waitFor(condition, description) {
-  const deadline = performance.now() + 5_000
+async function waitFor(condition, description, timeout = 5_000) {
+  const deadline = performance.now() + timeout
   while (performance.now() < deadline) {
     if (await condition()) return
     await delay(15)
@@ -189,7 +189,13 @@ test('two verified OneBot accounts in the same host settle reminders in the same
   let log = ''
   for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { log += chunk })
   const detail = async index => JSON.parse(await reader.get(childPrefix + commitmentDetailKey(`queued-onebot-${index}`)))
-  await waitFor(() => sends[0].length === 1, 'first OneBot account awaits its send receipt')
+  try {
+    await waitFor(() => child.exitCode !== null || sends[0].length >= 1, 'first OneBot account awaits its send receipt', 10_000)
+    assert.equal(sends[0].length, 1, log)
+  } catch (error) {
+    t.diagnostic(log)
+    throw error
+  }
   await waitFor(async () => (await detail(1)).status === 'completed', 'the second OneBot account was blocked by another account')
   assert.equal((await detail(0)).execution_state, 'executing')
   replyPending.resolve()

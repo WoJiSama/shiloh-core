@@ -6,6 +6,7 @@ import { conversationAddressKey, isConversationAddress, isPlatformAccount, isPla
 
 export const SEMANTIC_CLEANUP_MAX_SELECTORS = 4096
 export const SEMANTIC_CLEANUP_MAX_BYTES = 2 * 1024 * 1024
+export const SEMANTIC_CLEANUP_KEY = 'agent:semantic-memory:v1:cleanup'
 const fail = (): never => { throw new Error('语义记忆清理权限、水位或存储不可用') }
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const identifier = /^[a-f0-9]{64}$/u

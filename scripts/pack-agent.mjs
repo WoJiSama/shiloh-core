@@ -1,11 +1,15 @@
 import fs from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
 import path from 'node:path'
 import { isBuiltin } from 'node:module'
+import { pipeline } from 'node:stream/promises'
+import { createGzip } from 'node:zlib'
+import tar from 'tar-stream'
 import ts from 'typescript'
 import { root, digestFiles, filesUnder, run, verifyBackend } from './lib/build-support.mjs'
 
 const backend = path.join(root, 'dist/backend')
-const runtimeEntries = ['bootstrap/standaloneAgent.js', 'modules/platform/infrastructure/admin/backendArtifactGuard.js', 'modules/content/infrastructure/agentExcelWorker.js', 'modules/content/infrastructure/agentFileTextChild.js', 'modules/memory/infrastructure/agentSemanticEvaluation.js']
+const runtimeEntries = ['bootstrap/standaloneAgent.js', 'bootstrap/standaloneAgentToolPublisher.js', 'modules/platform/infrastructure/admin/backendArtifactGuard.js', 'modules/content/infrastructure/agentExcelWorker.js', 'modules/content/infrastructure/agentFileTextChild.js', 'modules/memory/infrastructure/agentSemanticEvaluation.js']
 const exports = {
   '.': 'core/index.js',
   './qq': 'adapters/oneBotConnection.js',
@@ -86,6 +90,13 @@ function collectImports(file, text, isDeclaration, add) {
 
 const manifest = await verifyBackend(backend, { source: true })
 if (!/^[a-f0-9]{40}$/.test(manifest.commit)) throw new Error('Agent release requires a backend build from a Git checkout')
+const withCodingSource = process.argv.includes('--with-coding-source')
+const codingSourceFiles = ['src', 'tsconfig.backend.json', 'package.json', 'package-lock.json']
+if (withCodingSource) {
+  run('git', ['diff', '--quiet', manifest.commit, '--', ...codingSourceFiles])
+  const untracked = run('git', ['ls-files', '--others', '--exclude-standard', '--', ...codingSourceFiles], { encoding: 'utf8', stdio: 'pipe' })
+  if (untracked.stdout.trim()) throw new Error('Coding snapshot requires committed source and lockfiles')
+}
 for (const [files, isDeclaration] of [[runtimeFiles, false], [declarations, true]]) {
   for (const file of files) {
     if (!Object.hasOwn(manifest.files, file)) throw new Error(`Missing Agent dependency ${file}`)
@@ -105,7 +116,7 @@ const [project, projectLock] = await Promise.all(['package.json', 'package-lock.
 const packageJson = {
   name: 'bl-chat-agent', version: project.version, private: true, type: 'module', license: project.license, engines: project.engines,
   scripts: { start: 'node scripts/start-agent.mjs', 'eval:memory': 'node scripts/semantic-memory-eval.mjs' },
-  files: ['dist/backend', 'console/frontend/dist', 'console/README.md', 'docs', 'scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'scripts/import-cognition.mjs', 'scripts/semantic-memory-eval.mjs', 'scripts/examples/semantic-evaluation-backend.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json', 'utils/backendArtifactGuard.js', 'release-manifest.json', 'npm-shrinkwrap.json'],
+  files: ['dist/backend', 'console/frontend/dist', 'console/README.md', 'docs', 'scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'scripts/import-cognition.mjs', 'scripts/import-legacy-console-resources.py', 'scripts/import-legacy-token-usage.py', 'scripts/archive-legacy-data.py', 'scripts/semantic-memory-eval.mjs', 'scripts/examples/semantic-evaluation-backend.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json', 'utils/backendArtifactGuard.js', 'release-manifest.json', 'npm-shrinkwrap.json'],
   exports: Object.fromEntries(Object.entries(exports).map(([key, name]) => [key, {
     types: `./dist/backend/${name.replace(/\.js$/, '.d.ts')}`, import: `./dist/backend/${name}`,
   }])),
@@ -121,12 +132,38 @@ const packageJson = {
 const releaseRoot = path.join(root, '.release')
 await fs.mkdir(releaseRoot, { recursive: true })
 const output = await fs.mkdtemp(path.join(releaseRoot, 'agent-'))
+const archivePath = output + '.tar.gz'
+const chromiumLauncherName = 'scripts/start-sandboxed-chromium.mjs'
 async function copy(source, relative) {
   const target = path.join(output, relative)
   await fs.mkdir(path.dirname(target), { recursive: true })
   await fs.copyFile(source, target)
 }
 const writeJson = (relative, data) => fs.writeFile(path.join(output, relative), JSON.stringify(data, null, 2) + '\n')
+
+async function archiveRelease() {
+  const files = await filesUnder(output)
+  const archive = tar.pack()
+  const file = await fs.open(archivePath, 'wx', 0o600)
+  const writing = pipeline(archive, createGzip(), file.createWriteStream())
+  const append = async () => {
+    for (const filename of files) {
+      const name = path.relative(output, filename).replaceAll('\\', '/')
+      const stat = await fs.stat(filename)
+      // Win32 chmod cannot set the Unix execute bit. Set it in the tar header.
+      const mode = name === chromiumLauncherName || (stat.mode & 0o111) !== 0 ? 0o755 : 0o644
+      await pipeline(createReadStream(filename), archive.entry({ name, mode, size: stat.size, mtime: stat.mtime }))
+    }
+    archive.finalize()
+  }
+  try { await Promise.all([append(), writing]) }
+  catch (error) {
+    archive.destroy()
+    await writing.catch(() => {})
+    await fs.rm(archivePath, { force: true })
+    throw error
+  }
+}
 
 try {
   const frontend = path.join(root, 'console/frontend'), frontendOutput = path.join(frontend, 'dist')
@@ -144,18 +181,20 @@ try {
   for (const name of frontendFiles) await copy(name, path.posix.join('console/frontend/dist', path.relative(frontendOutput, name)))
   const files = Object.fromEntries([...new Set([...runtimeFiles, ...declarations])].sort().map(file => [file, manifest.files[file]]))
   for (const name of Object.keys(files)) await copy(path.join(backend, name), `dist/backend/${name}`)
-  for (const name of ['scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'scripts/import-cognition.mjs', 'scripts/semantic-memory-eval.mjs', 'scripts/examples/semantic-evaluation-backend.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json', 'utils/backendArtifactGuard.js', 'LICENSE']) await copy(path.join(root, name), name)
+  for (const name of ['scripts/start-agent.mjs', 'scripts/bl-chat-agent.service', 'scripts/start-sandboxed-chromium.mjs', 'scripts/migrate-agent-emoji.mjs', 'scripts/import-cognition.mjs', 'scripts/import-legacy-console-resources.py', 'scripts/import-legacy-token-usage.py', 'scripts/archive-legacy-data.py', 'scripts/semantic-memory-eval.mjs', 'scripts/examples/semantic-evaluation-backend.mjs', 'tests/fixtures/semantic-retrieval-benchmark.v2.json', 'utils/backendArtifactGuard.js', 'LICENSE']) await copy(path.join(root, name), name)
   // Linux must execute this shebang even when the package is built from a Windows checkout.
-  const chromiumLauncher = path.join(output, 'scripts/start-sandboxed-chromium.mjs')
+  const chromiumLauncher = path.join(output, chromiumLauncherName)
   const launcherSource = await fs.readFile(chromiumLauncher, 'utf8')
   await fs.writeFile(chromiumLauncher, launcherSource.replaceAll('\r\n', '\n'))
   await fs.chmod(chromiumLauncher, 0o755)
   for (const name of ['docs/project-status.md', 'docs/architecture/agent-bindings.md', 'docs/architecture/agent-bindings-history.md',
-    'docs/architecture/message-pipeline.md', 'docs/architecture/ai-brain-construction-2026-11-17.md', 'docs/evals/semantic-retrieval.md', 'console/README.md']) await copy(path.join(root, name), name)
+    'docs/architecture/core-scheduling-and-actions-v1.md',
+    'docs/architecture/message-pipeline.md', 'docs/architecture/legacy-core-migration.md', 'docs/architecture/ai-brain-construction-2026-11-17.md', 'docs/evals/semantic-retrieval.md', 'console/README.md']) await copy(path.join(root, name), name)
   const agentReadme = await fs.readFile(path.join(root, 'docs/architecture/agent-bindings.md'), 'utf8')
   await fs.writeFile(path.join(output, 'README.md'), agentReadme
     .replaceAll('](../project-status.md', '](docs/project-status.md')
     .replaceAll('](agent-bindings-history.md', '](docs/architecture/agent-bindings-history.md')
+    .replaceAll('](core-scheduling-and-actions-v1.md', '](docs/architecture/core-scheduling-and-actions-v1.md')
     .replaceAll('](../evals/semantic-retrieval.md', '](docs/evals/semantic-retrieval.md')
     .replaceAll('](../../console/README.md', '](console/README.md'))
   await writeJson('package.json', packageJson)
@@ -172,8 +211,12 @@ try {
     import { ensureBackendArtifacts } from './utils/backendArtifactGuard.js'
     await ensureBackendArtifacts()
   `], { cwd: output })
+  if (withCodingSource) run('git', ['archive', '--format=tar.gz', '--output=' + output + '.coding-source.tar.gz',
+    manifest.commit, ...codingSourceFiles])
+  await archiveRelease()
   console.log(output)
 } catch (error) {
   await fs.rm(output, { recursive: true, force: true })
+  if (withCodingSource) await fs.rm(output + '.coding-source.tar.gz', { force: true })
   throw error
 }

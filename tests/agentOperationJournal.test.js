@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import { constants } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 
 const { openAgentOperationJournal } = await load('modules/runtime/infrastructure/agentOperationJournal.js')
+const { createAgentDiagnostics } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
 const { createAgentSecretTextCheck } = await load('modules/messaging/infrastructure/agentSecretText.js')
 const account = { platform: 'qq', namespace: 'global', id: '19000001' }
 const binding = () => ({ id: 'binding', revision: 'revision', source: 'configured', agentId: 'daily', personaId: 'default', connectionId: 'main', target: { account: { ...account }, kind: 'group', id: '310001' } })
@@ -41,6 +43,94 @@ test('successful append waits for file fsync and a newly created directory entry
   assert.equal(await pending, true); assert.equal(fileSyncs, 1); assert.ok(directorySyncs >= 1)
 })
 
+test('a blocked file sync identifies both the syncing event and the queued event, then records both late receipts', async t => {
+  const f = await fixture(t), journal = await f.open(), original = fs.open
+  const entered = gate(), released = gate(), alerts = [], late = []
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.method(console, 'error', () => {})
+  t.mock.method(console, 'info', line => { late.push(line) })
+  t.mock.method(fs, 'open', async (...args) => {
+    const handle = await original(...args), sync = handle.sync.bind(handle)
+    if (String(args[0]).endsWith('.ndjson')) handle.sync = async () => {
+      entered.resolve()
+      await released.promise
+      await sync()
+    }
+    return handle
+  })
+  const diagnostics = createAgentDiagnostics({ sink: journal, onFailure: event => alerts.push(event),
+    logger: { info() {}, warn() {}, error() {} } })
+  try {
+    diagnostics.emit({ stage: 'inbox', operation: 'first_ingest', outcome: 'succeeded' })
+    await entered.promise
+    diagnostics.emit({ stage: 'inbox', operation: 'queued_ingest', outcome: 'succeeded' })
+    await new Promise(resolve => setImmediate(resolve))
+    t.mock.timers.tick(5_000)
+    await diagnostics.flush()
+    assert.equal(late.length, 0)
+    assert.deepEqual(alerts.map(row => [row.code, row.outcome, row.details.step, row.details.blockingStep]), [
+      ['diagnostic_journal_timeout', 'unknown', 'journal_sync', undefined],
+      ['diagnostic_journal_timeout', 'unknown', 'journal_queue', 'journal_sync'],
+    ])
+    assert.ok(alerts.every(row => row.details.limit === 5_000 && row.details.queueMs >= 0 && row.details.stepMs >= 0))
+  } finally {
+    released.resolve()
+    await journal.flush()
+  }
+  await new Promise(resolve => setImmediate(resolve))
+  const stored = await rows(f.directory)
+  assert.deepEqual(stored.map(row => row.operation), ['first_ingest', 'queued_ingest'])
+  assert.deepEqual(alerts.map(row => row.details.causeEventId), stored.map(row => row.id))
+  assert.equal(late.length, 2)
+  for (const [index, line] of late.entries()) {
+    assert.match(line, /diagnostic_journal_late_confirmed/u)
+    assert.ok(line.includes(`causeEventId=${stored[index].id}`))
+  }
+})
+
+test('concurrent events share a durable file sync and keep their order', async t => {
+  const f = await fixture(t), journal = await f.open(), original = fs.open
+  let fileSyncs = 0
+  t.mock.method(fs, 'open', async (...args) => {
+    const handle = await original(...args), sync = handle.sync.bind(handle)
+    if (String(args[0]).endsWith('.ndjson')) handle.sync = async () => { fileSyncs++; await sync() }
+    return handle
+  })
+  const events = Array.from({ length: 24 }, (_, index) => event(index))
+  assert.ok((await Promise.all(events.map(item => journal.append(item)))).every(Boolean))
+  assert.equal(fileSyncs, 1)
+  assert.deepEqual((await rows(f.directory)).map(item => item.id), events.map(item => item.id))
+})
+
+test('separate batches reuse one descriptor, sync each append and reject a replaced file', async t => {
+  const f = await fixture(t), journal = await f.open(), original = fs.open
+  captureEmergency(t)
+  let opened = 0, synced = 0, closed = 0
+  t.mock.method(fs, 'open', async (...args) => {
+    const handle = await original(...args)
+    if (String(args[0]).endsWith('.ndjson')) {
+      opened++
+      const sync = handle.sync.bind(handle), close = handle.close.bind(handle)
+      handle.sync = async () => { synced++; await sync() }
+      handle.close = async () => { closed++; await close() }
+    }
+    return handle
+  })
+  assert.equal(await journal.append(event(1)), true)
+  assert.equal(await journal.append(event(2)), true)
+  assert.deepEqual([opened, synced, closed], [1, 2, 0])
+  const filename = path.join(f.directory, (await files(f.directory))[0])
+  await fs.rename(filename, filename + '.original')
+  const contents = await fs.readFile(filename + '.original')
+  await fs.writeFile(filename, contents, { mode: 0o600 })
+  assert.equal(await journal.append(event(3)), false)
+  assert.equal(await journal.append(event(4)), false)
+  assert.deepEqual([opened, synced, closed], [2, 2, 2])
+  assert.deepEqual(await fs.readFile(filename), contents)
+  assert.deepEqual(await fs.readFile(filename + '.original'), contents)
+  assert.equal(await journal.close(), false)
+})
+
 test('date and size rotation applies global maxFiles and retention while keeping complete bounded records', async t => {
   const f = await fixture(t); await fs.mkdir(f.directory, { mode: 0o700 })
   const expired = path.join(f.directory, '2000-01-01.000000.ndjson'); await fs.writeFile(expired, JSON.stringify(event()) + '\n', { mode: 0o600 })
@@ -61,6 +151,23 @@ test('secret-bearing records become fresh safe host events across common encodin
   for (const item of stored) { assert.deepEqual(item.scope, { kind: 'host' }); assert.equal(item.code, 'DIAGNOSTIC_REDACTED'); assert.equal(item.operation, 'diagnostic.redacted'); assert.ok(!item.id.startsWith('event-')); assert.equal(allowsText(JSON.stringify(item)), true); assert.equal(JSON.stringify(item).includes('310001'), false) }
 })
 
+test('redaction keeps an internal trace and safe failure metadata when only the scope contains protected data', async t => {
+  const f = await fixture(t), secret = 'JOURNAL_PRIVATE_FIXTURE_123456'
+  const journal = await f.open({ allowsText: createAgentSecretTextCheck([secret]) })
+  const traceId = randomUUID(), id = randomUUID()
+  const item = event(1, { id, traceId, outcome: 'failed', operation: 'simFinishTurn', code: 'tool_schema_invalid',
+    details: { field: 'reason', rule: 'minLength', limit: 1, result: 'not_dispatched' } })
+  item.scope.binding.personaId = secret
+  assert.equal(await journal.append(item), true)
+  const [row] = await rows(f.directory)
+  assert.deepEqual(row.scope, { kind: 'host' })
+  assert.equal(row.traceId, traceId)
+  assert.equal(row.operation, item.operation)
+  assert.equal(row.code, item.code)
+  assert.equal(row.details.field, 'reason')
+  assert.doesNotMatch(JSON.stringify(row), /JOURNAL_PRIVATE_FIXTURE|310001/u)
+})
+
 test('closed descriptor validation never evaluates getters or persists free-form errors, unsafe tokens or arbitrary fields', async t => {
   const f = await fixture(t), emergency = [], stderr = captureEmergency(t), journal = await f.open({ onEmergency: (...args) => emergency.push(args) }); let accessed = false
   const getter = event(); Object.defineProperty(getter, 'operation', { get() { accessed = true; throw Error('PRIVATE_GETTER') } })
@@ -68,6 +175,9 @@ test('closed descriptor validation never evaluates getters or persists free-form
   for (const item of [getter, nested, { ...event(), detail: 'PRIVATE_ERROR_BODY' }, { ...event(), error: new Error('PRIVATE') }, event(1, { operation: 'https://private/path' }), event(1, { code: 'bad\nline' }), event(1, { durationMs: -1 }), event(1, { httpStatus: 999 }), event(1, { scope: { kind: 'host', account } }), Object.assign(Object.create({}), event())]) assert.equal(await journal.append(item), false)
   assert.equal(accessed, false); assert.deepEqual(await rows(f.directory), []); assert.equal(journal.health().failed, 10); assert.equal(journal.health().degraded, true); assert.equal(await journal.flush(), false)
   assert.ok(emergency.every(([safe, code]) => safe === undefined && code === 'JOURNAL_INVALID_EVENT')); assert.equal(stderr.join('').includes('PRIVATE'), false)
+  assert.equal(await journal.append(event(2, { outcome: 'failed', code: 'runtime_warning', sourceTag: '海龟汤' })), true)
+  assert.equal((await rows(f.directory)).find(row => row.id === 'event-2').sourceTag, '海龟汤')
+  for (const badTag of ['bad<script>', 'x'.repeat(25), 42]) assert.equal(await journal.append(event(3, { sourceTag: badTag })), false)
 })
 
 test('factory and nested event proxies fail without invoking any proxy trap', async t => {
@@ -93,12 +203,20 @@ test('bounded pending queue reports overflow safely without abandoning admitted 
 
 test('write and fsync failures return false, expose fixed emergency metadata and keep health and close degraded', async t => {
   const f = await fixture(t), stderr = captureEmergency(t), emergency = [], journal = await f.open({ onEmergency(safe, code) { emergency.push([safe, code]); throw Error('PRIVATE_EMERGENCY') } }), original = fs.open
+  let rejectSync = true, fileOpens = 0
   t.mock.method(fs, 'open', async (...args) => {
     if (!String(args[0]).endsWith('.ndjson')) return original(...args)
-    const handle = await original(...args)
-    return new Proxy(handle, { get(owner, key) { if (key === 'sync') return async () => { throw Error('PRIVATE_FS_KEY /private/local/path') }; const value = Reflect.get(owner, key, owner); return typeof value === 'function' ? value.bind(owner) : value } })
+    const handle = await original(...args), sync = handle.sync.bind(handle)
+    fileOpens++
+    handle.sync = async () => { if (rejectSync) throw Error('PRIVATE_FS_KEY /private/local/path'); await sync() }
+    return handle
   })
-  assert.equal(await journal.append(event()), false); assert.equal(await journal.flush(), false); assert.equal(await journal.close(), false); assert.equal(journal.health().written, 0); assert.equal(journal.health().failed, 1)
+  assert.equal(await journal.append(event()), false); assert.equal(await journal.flush(), false)
+  rejectSync = false
+  assert.equal(await journal.append(event(2)), true)
+  assert.equal(fileOpens, 2)
+  assert.deepEqual((await rows(f.directory)).map(item => item.id), ['event-2'])
+  assert.equal(await journal.close(), false); assert.equal(journal.health().written, 1); assert.equal(journal.health().failed, 1)
   assert.equal(emergency.length, 1); assert.equal(emergency[0][1], 'JOURNAL_WRITE_FAILED'); assert.equal(stderr.join('').includes('PRIVATE'), false); assert.equal(stderr.join('').includes('/private/local'), false)
 })
 

@@ -4,6 +4,7 @@ import { NButton, NInput, NPagination, NTag } from 'naive-ui'
 import { ArrowUpRight, MessageCircle, Cable } from 'lucide-vue-next'
 import { workspace, capability } from '../lib/workspace'
 import { robotLabel, robotLocation, connectionStateLabel } from '../lib/workspaceModel'
+import { accountLabel, conversationLabel, namedId } from '../lib/workspaceNames'
 import PageHeader from '../components/PageHeader.vue'
 import WorkspaceOnboarding from '../components/WorkspaceOnboarding.vue'
 const data = workspace.data,
@@ -18,7 +19,7 @@ const createCapability = computed(() =>
 const rows = computed(
   () =>
     data.value?.agents.filter((item) =>
-      `${item.name} ${item.personaName} ${item.id} ${item.conversations.map((row) => row.binding.connectionId + ' ' + row.binding.target.id).join(' ')}`
+      `${item.name} ${item.personaName} ${item.id} ${item.conversations.map((row) => row.binding.connectionId + ' ' + accountLabel(row.binding.target.account) + ' ' + conversationLabel(row)).join(' ')}`
         .toLowerCase()
         .includes(query.value.toLowerCase())
     ) ?? []
@@ -80,7 +81,7 @@ watch(query, () => (page.value = 1))
             :key="connection.id"
             size="small"
             :type="connection.state === 'connected' ? 'success' : 'default'"
-            >{{ connection.id }} · {{ connectionStateLabel(connection.state) }}</NTag
+            >{{ namedId(connection.id, connection.name) }} · {{ connectionStateLabel(connection.state) }}</NTag
           >
         </div></RouterLink
       >

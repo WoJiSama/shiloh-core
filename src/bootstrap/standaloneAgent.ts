@@ -4,11 +4,12 @@ import { readFile } from 'node:fs/promises'
 import { createOneBotConnection, verifyOneBotLogin } from '../adapters/oneBotConnection.js'
 import { createAgentQzoneLedger } from '../modules/runtime/infrastructure/agentQzoneLedger.js'
 import { sideLLMCall } from '../adapters/sideLLM.js'
+import { normalizeUsage } from '../modules/models/domain/modelPrices.js'
 import { createAgentRuntime, createLinuxSystemdAgentDiceScriptRunner } from '../core/index.js'
 import { openStandaloneTorrent } from './standaloneTorrent.js'
 import { openStandaloneGroupLog } from './standaloneGroupLog.js'
 import { createStandaloneDiceRuntime } from './standaloneDice.js'
-import { createStandaloneGroupGames } from './standaloneGames.js'
+import { createStandaloneGroupGames, type StandaloneGroupGamesOptions } from './standaloneGames.js'
 import type { AgentRuntimeOptions } from '../core/index.js'
 import { awaitModelRequestAuthority, isModelRequestCurrent, type ExecutionOptions } from '../contracts/modelExecution.js'
 import type { ChatRequestData, ChatResponse } from '../contracts/modelGateway.js'
@@ -30,7 +31,7 @@ import { createAgentModrinthTools } from '../modules/tools/infrastructure/agentM
 import { createAgentDeltaForceTools } from '../modules/games/infrastructure/agentDeltaForceTools.js'
 import { createAgentDeltaForceReportRenderer } from '../modules/games/infrastructure/agentDeltaForceReportRenderer.js'
 import { createAgentModrinthCardRenderer } from '../modules/media/infrastructure/agentModrinthCardRenderer.js'
-import { agentImageBackends, createAgentImageTools } from '../modules/tools/infrastructure/agentImageTools.js'
+import { createAgentImageTools } from '../modules/tools/infrastructure/agentImageTools.js'
 import { createAgentImageSearchTools } from '../modules/content/infrastructure/agentImageSearchTools.js'
 import { createAgentLocalEmojiRuntime } from '../modules/emoji/infrastructure/agentLocalEmojiRuntime.js'
 import { createAgentLifeThreadProvider } from '../modules/simulation/infrastructure/agentLifeThreadProvider.js'
@@ -45,9 +46,7 @@ import { createAgentBilibiliSearchProvider } from '../modules/media/infrastructu
 import { createAgentVideoSearchTools } from '../modules/media/infrastructure/agentVideoSearchTools.js'
 import { createAgentMagnetSearchProvider } from '../modules/media/infrastructure/agentMagnetSearchProvider.js'
 import { createAgentMagnetSearchTools } from '../modules/tools/infrastructure/agentMagnetSearchTools.js'
-import { standaloneMagnetSearchSecrets } from './standaloneMagnetSearch.js'
 import { createAgentPixivSearchProvider } from '../modules/media/infrastructure/agentPixivSearchProvider.js'
-import { standalonePixivToolsSecrets } from './standalonePixiv.js'
 import { openAgentMusicCookieStore } from './agentMusicCookieStore.js'
 import { createAgentSecretTextCheck } from '../modules/messaging/infrastructure/agentSecretText.js'
 import { createAgentRenderingTools } from '../modules/tools/infrastructure/agentRenderingTools.js'
@@ -58,7 +57,8 @@ import { connectAgentRedis, openAgentRedis } from '../modules/runtime/infrastruc
 import { createStandaloneAgentCandidateValidator, readStandaloneAgentConfig } from './standaloneAgentConfig.js'
 import { runStandaloneQqMigration } from './standaloneAgentMigration.js'
 import { runStandaloneLegacyQqMemoryMigration } from './standaloneAgentLegacyMemoryMigration.js'
-import { openStandaloneMediaRelay, standaloneMediaRelaySecrets } from './standaloneMediaRelay.js'
+import { openStandaloneMediaRelay } from './standaloneMediaRelay.js'
+import { standaloneAgentSecrets } from './standaloneAgentSecrets.js'
 import { openStandaloneBilibiliAuth } from './standaloneBilibiliQuality.js'
 import { createAgentAlertWebhook, parseAgentAlertWebhookUrl } from '../modules/runtime/infrastructure/agentAlertWebhook.js'
 import { createAgentFailureAlerts } from '../modules/runtime/infrastructure/agentFailureAlerts.js'
@@ -71,17 +71,30 @@ import { createStandaloneAgentPipeline } from './standaloneAgentPipeline.js'
 import { createStandaloneAgentConsole } from './standaloneAgentConsole.js'
 import { openStandaloneAgentConsoleAuth } from './standaloneAgentConsoleAuth.js'
 import { createStandaloneAgentConsoleServices } from './standaloneAgentConsoleServices.js'
+import { createStandaloneAgentConsoleImages } from './standaloneAgentConsoleImages.js'
+import { createStandaloneAgentConsoleGames } from './standaloneAgentConsoleGames.js'
+import { createStandaloneAgentConsoleStyle } from './standaloneAgentConsoleStyle.js'
+import { createStandaloneAgentConsoleSemantic } from './standaloneAgentConsoleSemantic.js'
+import { createStandaloneAgentConsoleDirectory } from './standaloneAgentConsoleDirectory.js'
+import { createStandaloneAgentConsoleQzone } from './standaloneAgentConsoleQzone.js'
+import { createStandaloneAgentConsoleQqLogin } from './standaloneAgentConsoleQqLogin.js'
+import { runStandaloneLegacyGroupArchiveMigration } from './standaloneAgentLegacyGroupArchive.js'
 import { createStandaloneAgentConsoleRuntime } from './standaloneAgentConsoleRuntime.js'
 import { createStandaloneAgentConsolePersistence } from './standaloneAgentConsolePersistence.js'
-import { inspectStandaloneAgentConfigTransaction, isStandaloneAgentSourceSnapshotCurrent, recoverStandaloneAgentConfigTransaction } from './standaloneAgentConfigSources.js'
+import { inspectStandaloneAgentConfigTransaction, isStandaloneAgentSourceSnapshotCurrent, recoverStandaloneAgentConfigTransaction, standaloneConfigReadWork } from './standaloneAgentConfigSources.js'
 import { createStandaloneAgentConsoleManagement } from './standaloneAgentConsoleManagement.js'
 import { createStandaloneAgentForgetOperations } from './standaloneAgentForgetOperations.js'
 import { createStandaloneAgentWorkspace } from './standaloneAgentWorkspace.js'
-import { AGENT_CONSOLE_SERVICES, type AgentConsoleService } from '../contracts/agentConsole.js'
+import { AGENT_CONSOLE_SERVICES, AgentConsoleError, type AgentConsoleService } from '../contracts/agentConsole.js'
+import { createAgentTraffic } from '../modules/runtime/infrastructure/agentTraffic.js'
+import { createStandaloneAgentOperations } from './standaloneAgentOperations.js'
+import { createStandaloneAgentConsoleAccounts } from './standaloneAgentConsoleAccounts.js'
 import { createAgentManagementBindings } from '../modules/runtime/infrastructure/agentManagementBindings.js'
-import type { AgentManagementBindings } from '../contracts/agentManagement.js'
-import { conversationAddressKey } from '../modules/runtime/domain/agentBindings.js'
 import { createForgetOperationStore } from '../modules/runtime/infrastructure/forgetOperationStore.js'
+import { createStandaloneAgentCodingWorker, resolveStandaloneAgentCodingSnapshot } from './standaloneAgentCodingWorker.js'
+import { createStandaloneAgentToolAuthor } from './standaloneAgentToolAuthor.js'
+import { readPersonalFollowFeed } from '../modules/simulation/infrastructure/agentPersonalFollow.js'
+import type { AgentBindingSnapshot } from '../contracts/agentBinding.js'
 
 const logger = {
   info: (message: string) => console.info(message),
@@ -103,7 +116,7 @@ async function checkStandaloneQq(config: ReturnType<typeof readStandaloneAgentCo
   config.checkBindings()
   return {
     mode: 'check', instance: config.instance, redis: 'reachable',
-    simulationEnabled: config.simulation.enabled !== false,
+    simulationEnabled: true,
     privateChatEnabled: config.privateChatEnabled,
     connections: config.connections.map(({connection}) => ({
       id: connection.id, accountId: connection.account.id, loginVerified: true, ...bindings.get(connection.id),
@@ -117,6 +130,7 @@ export async function main(argv: string[], options?: { readonly restartOnConfigS
     'inspect-config-transaction': { type: 'boolean' }, 'recover-config': { type: 'boolean' },
     'migrate-qq-state': { type: 'boolean' }, 'source-bindings': { type: 'string' }, 'source-config': { type: 'string' },
     'migrate-legacy-qq-memory': { type: 'boolean' }, 'source-root': { type: 'string' }, 'backup-dir': { type: 'string' },
+    'migrate-legacy-group-archive': { type: 'boolean' },
     'source-data-dir': { type: 'string' }, 'include-agent-commitments': { type: 'boolean' },
     'include-character-state': { type: 'boolean' }, 'include-group-teaching': { type: 'boolean' }, connection: { type: 'string' },
     group: { type: 'string' }, friend: { type: 'string' }, apply: { type: 'boolean' }, 'deferred-reminders': { type: 'string' },
@@ -135,6 +149,7 @@ export async function main(argv: string[], options?: { readonly restartOnConfigS
     console.log('用 --deferred-reminders /path/to/explicit-selections.json 指定延期提醒工具映射和迁移授权；缺授权继续留源，默认仅预览')
     console.log('用 --include-message-archive 接续有完整账号、角色和隐私证据的群或私聊原文；缺来源角色证据继续留源，可用 --source-archive-dir 显式覆盖旧归档目录')
     console.log('旧默认人格长期记忆  node scripts/start-agent.mjs --config /path/to/agent-host.yaml --migrate-legacy-qq-memory --source-root /path/to/plugin --backup-dir /path/to/verified-cutover-backup --connection qq-main --group 111111 [--apply]；只接续来源闭包可核验的记忆及已结回执，不迁移执行状态')
+    console.log('旧群原文  node scripts/start-agent.mjs --config /path/to/agent-host.yaml --migrate-legacy-group-archive --backup-dir /path/to/verified-cutover-backup --connection qq-main [--apply]；写入前停止 Core')
     return
   }
   const configPath = path.resolve(values.config ?? 'config/agent-host.yaml')
@@ -174,6 +189,17 @@ export async function main(argv: string[], options?: { readonly restartOnConfigS
     const config = readStandaloneAgentConfig(configPath, process.env, { requireCredentials: false })
     const report = await runStandaloneLegacyQqMemoryMigration(config, { sourceRoot, backupDir, connectionId, groupId, apply: values.apply === true })
     console.log(JSON.stringify(report))
+    return
+  }
+  if (values['migrate-legacy-group-archive']) {
+    if (Object.entries(values).some(([key, value]) =>
+      !['config', 'migrate-legacy-group-archive', 'backup-dir', 'connection', 'apply'].includes(key) && value !== undefined && value !== false)) {
+      throw new Error('旧群原文接续：须与其他命令分别运行')
+    }
+    const backupDir = values['backup-dir'], connectionId = values.connection
+    if (!backupDir || !connectionId) throw new Error('旧群原文接续：需要备份目录和连接 ID')
+    const config = readStandaloneAgentConfig(configPath, process.env)
+    console.log(JSON.stringify(await runStandaloneLegacyGroupArchiveMigration(config, { backupDir, connectionId, apply: values.apply === true })))
     return
   }
   if (values['source-root'] !== undefined || values['backup-dir'] !== undefined) throw new Error('旧默认人格来源参数需要 --migrate-legacy-qq-memory')
@@ -274,7 +300,8 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
   sessions: unknown
   setAlertLabelCheck(check: (label: string) => boolean): void
 }): Promise<{ revision: string; sessions: unknown } | undefined> {
-  const { qqAlertOwner, qqAlertConnection } = options
+  const { qqAlertOwner, qqAlertConnection, reloading } = options
+  const managedRestart = process.env.BL_AGENT_MANAGED_RESTART === '1' && !!process.env.INVOCATION_ID
   let alerts = options.alerts, allowsAlertLabel: ((label: string) => boolean) | undefined
   let restartRevision: string | undefined, shutdownRequested = false, ready = !options.reloading
   let restartSessions: unknown
@@ -296,8 +323,19 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
     logger.info('[AgentAlerts] qq_owner_enabled')
   }
   let journal: Awaited<ReturnType<typeof openAgentOperationJournal>> | undefined
-  const diagnostics = createAgentDiagnostics({ sink: { append: event => journal ? journal.append(event) : Promise.resolve(false) }, logger,
+  let traffic: ReturnType<typeof createAgentTraffic> | undefined
+  const diagnostics = createAgentDiagnostics({ sink: { async append(event, observe) {
+    const counters = traffic?.record(event).catch(() => {})
+    const saved = await journal?.append(event, observe) ?? false
+    if (!saved) return false
+    if (counters) {
+      observe?.('traffic_counter')
+      await counters
+    }
+    return true
+  } }, logger,
     ...(alerts ? { onFailure: alerts.report } : {}),
+    allowsLabel: label => allowsAlertLabel?.(label) !== false,
     configurationRevision: config.sourceSnapshot.revision })
   const safeLogger = diagnostics.logger
   const stop = () => termination.abort()
@@ -329,19 +367,32 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
   let consoleHost: ReturnType<typeof createStandaloneAgentConsole> | undefined
   let consolePersistence: ReturnType<typeof createStandaloneAgentConsolePersistence> | undefined
   let adapters: ReturnType<typeof createOneBotConnection>[] = []
-  const ledger = createTokenLedger({ dataDir: config.dataDir, logger: safeLogger })
-  const words = createForbiddenWordGuard(safeLogger)
+  const ledger = createTokenLedger({ dataDir: config.dataDir, diagnostics })
+  const words = createForbiddenWordGuard({
+    warn() { diagnostics.emit({ stage: 'host', operation: 'forbidden_word_config', outcome: 'failed', code: 'forbidden_regex_invalid' }) },
+  })
+  let startupStep = 'connect_redis'
   try {
-    storage = await openAgentRedis({ url: config.redisUrl, instance: config.instance, onLost: () => fail('[Agent] Redis 执行租约丢失，停止处理') })
+    storage = await openAgentRedis({ url: config.redisUrl, instance: config.instance,
+      onLost: () => fail('[Agent] Redis 执行租约丢失，停止处理'),
+      sampleConfigReadWork: standaloneConfigReadWork,
+      onCommandFailure: event => diagnostics.emit({ stage: 'host', ...event }),
+      onReadRecovered: (durationMs, step) => diagnostics.emit({ stage: 'host', operation: 'redis_command', outcome: 'succeeded',
+        code: 'redis_read_recovered', durationMs, details: { step, result: 'recovered', attempt: 2, maxAttempts: 2 } }),
+    })
+    if (config.console.enabled) {
+      traffic = createAgentTraffic(storage.storage)
+      await traffic.start().catch(error => diagnostics.emit({ stage: 'host', operation: 'traffic_start', outcome: 'failed', error }))
+    }
     const forgetOperationsStore = createForgetOperationStore({ redis: storage.storage })
     // Console authentication outlives execution retirement, while the process keeps its Redis lease.
     const consoleAuthority = { signal: termination.signal,
       isCurrent: () => !termination.signal.aborted && storage?.isCurrent() === true }
     if (config.console.enabled) {
       consolePersistence = createStandaloneAgentConsolePersistence({ enabled: true, hostFile: configPath,
-        loaded: config.sourceSnapshot, authority: consoleAuthority,
+        loaded: config.sourceSnapshot, authority: consoleAuthority, providerEnv: process.env,
         isStartupReady: () => ready,
-        ...(options.restartOnConfigSave ? { onCommitted(revision: string) {
+        ...(options.restartOnConfigSave && !managedRestart ? { onCommitted(revision: string) {
           restartRevision = revision
           void Promise.resolve(consoleHost?.close('restart')).catch(error => {
             diagnostics.emit({ stage: 'host', operation: 'config_restart', outcome: 'failed', code: 'console_drain_failed', error })
@@ -398,7 +449,8 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
       }),
       summarizeToolResultForAgent, removeToolPromptsFromMessages,
       // Model responses and provider error bodies can carry chat content or keys.
-      logger: { info() {}, warn() { diagnostics.emit({ stage: 'model', operation: 'provider_recovery', outcome: 'failed', code: 'provider_warning' }) }, error() { diagnostics.emit({ stage: 'model', operation: 'provider_request', outcome: 'failed', code: 'provider_error' }) } },
+      logger: { info() {}, warn() {}, error() {} },
+      observe: event => diagnostics.emit({ stage: 'model', ...event }),
       fetch: (url, init) => providerFetch(url, { ...init, redirect: 'error' }),
     })
     async function runModel(request: ChatRequestData, options: ExecutionOptions = {}) {
@@ -409,40 +461,18 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
         diagnostics.emit({ stage: 'model', operation: 'model_request', outcome: 'failed', code: 'model_response_error' })
         return { error: '模型请求失败' }
       }
-      ledger.record({ scope: 'global', stage: 'api', model: String(result.model ?? config.execution.chatAiConfig?.chatApiModel ?? ''), usage: result.usage })
+      const taskModel = options.taskBackend ? config.execution.taskAiConfig?.[options.taskBackend]?.model : undefined
+      ledger.record({ scope: 'global', stage: 'api', model: String(result.model ?? taskModel ?? config.execution.chatAiConfig?.chatApiModel ?? ''), usage: result.usage })
       return result
     }
     const reviewBackend = config.characterConsistency
-    const musicSeedCookie = config.tools.music?.cookie ?? ''
-    const musicSeedSecrets = musicSeedCookie ? [musicSeedCookie, ...musicSeedCookie.split(';').flatMap(part => {
-      const at = part.indexOf('='), key = part.slice(0, at).trim(), value = part.slice(at + 1).trim()
-      return at > 0 && value && !['uin', 'wxuin', 'login_type', 'tmeLoginType', 'psrf_musickey_createtime'].includes(key) ? [value] : []
-    })] : []
-    const torrentProxy = config.torrentDownload.proxyUrl ? new URL(config.torrentDownload.proxyUrl) : undefined
-    const torrentProxySecrets = torrentProxy ? [torrentProxy.href, torrentProxy.username, torrentProxy.password].flatMap(value => {
-      try { return [value, decodeURIComponent(value)] } catch { return [value] }
-    }) : []
-    const hostSecrets = [reviewBackend?.apiKey, config.execution.chatAiConfig?.chatApiKey, config.vision?.apiKey,
-      config.tools.localEmoji.analysis?.apiKey, config.tools.localEmoji.embedding?.apiKey, config.tools.localEmoji.tools?.apiKey,
-      config.tools.search?.apiKey, config.tools.deltaForce?.apiKey, config.tools.github?.token, config.tools.modrinth?.translation.apiKey, config.personMemoryExtraction?.apiKey, config.midtermSummary?.apiKey, config.groupMemoryExtraction?.apiKey,
-      ...[config.tools.images?.generation, config.tools.images?.edit].flatMap(value => agentImageBackends(value).map(backend => backend.apiKey)),
-      config.tools.rendering?.mindMap?.apiKey,
-      config.semanticMemory.embedding?.apiKey, config.semanticMemory.rerank?.apiKey, config.tools.voice?.accessToken, config.tools.voice?.authorization,
-      ...musicSeedSecrets, config.tools.videoAnalysis?.apiKey, config.textTriggerModel?.apiKey,
-      config.console.tokenEnv ? process.env[config.console.tokenEnv] : undefined,
-      ...standaloneMediaRelaySecrets(config.mediaRelay),
-      ...(config.tools.pixiv ? standalonePixivToolsSecrets(config.tools.pixiv) : []),
-      ...torrentProxySecrets,
-      ...(config.tools.magnetSearch ? standaloneMagnetSearchSecrets(config.tools.magnetSearch) : []),
-      ...Object.values(config.tools.mcp?.servers ?? {}).flatMap(server => [...Object.values(server.headers ?? {}), ...Object.values(server.env ?? {})]),
-      ...config.connections.map(connection => 'accessToken' in connection ? connection.accessToken : undefined)]
-      .filter((key): key is string => typeof key === 'string' && !!key)
-    if (alerts) {
-      allowsAlertLabel = label => createAgentSecretTextCheck(hostSecrets)(label)
-      options.setAlertLabelCheck(allowsAlertLabel)
-    }
+    const hostSecrets = standaloneAgentSecrets(config, process.env)
+    allowsAlertLabel = label => createAgentSecretTextCheck(hostSecrets)(label)
+    options.setAlertLabelCheck(allowsAlertLabel)
+    startupStep = 'open_journal'
     journal = await openAgentOperationJournal({ dataDir: config.dataDir, ...config.operationLogging, allowsText: text => createAgentSecretTextCheck(hostSecrets)(text) })
     diagnostics.emit({ stage: 'host', operation: 'host_start', outcome: 'started' })
+    startupStep = 'initialize_services'
     let musicProvider: ReturnType<typeof createAgentMusicProvider> | undefined
     const registerHostSecrets = (values: readonly string[]) => { for (const value of values) if (value && !hostSecrets.includes(value)) hostSecrets.push(value) }
     const musicContext = {
@@ -482,6 +512,8 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
       const groupLogBridge = groupLogHost?.bridgeFor(options.connection.id)
       const alertOwner = options.connection.id === qqAlertConnection ? qqAlertOwner : undefined
       const adapter = createOneBotConnection({ ...options, ...(bridge ? { mediaRelay: { bridge, allowsText: allowsMediaText } } : {}),
+        startOffline: !reloading,
+        ...(config.console.enabled ? { conversationNameTargets: config.loadedBindings.filter(binding => binding.connectionId === options.connection.id).map(binding => binding.target) } : {}),
         ...(alertOwner ? { alertOwner } : {}),
         dicePrivate: { allowsText: allowsMediaText },
         qzoneOwnPost: (account, postId) => qzoneLedger.readOwnPost(account, postId),
@@ -495,8 +527,8 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
           void host?.resumePendingWork().catch(error => diagnostics.emit({ stage: 'host', operation: 'onebot_recovery', outcome: 'failed', error }))
         },
         onAdmissionPressure: () => diagnostics.emit({ stage: 'inbox', operation: 'onebot_admission', outcome: 'started', code: 'onebot_inbox_backpressure' }),
-        onEventError: (_error, code) => diagnostics.emit({ stage: 'inbox', operation: 'onebot_admission', outcome: 'failed', code: code ?? 'event_not_queued' }),
-        onApiFailure: (action, outcome, code) => diagnostics.emit({ stage: 'host', operation: `onebot.${action}`, outcome, code }),
+        onEventError: event => diagnostics.emit({ stage: 'inbox', operation: 'onebot_admission', ...event }),
+        onApiFailure: (action, outcome, code, details) => diagnostics.emit({ stage: 'host', operation: `onebot.${action}`, outcome, code, details }),
       })
       if (alertOwner) qqAlertAdapter = adapter
       return adapter
@@ -572,7 +604,7 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
       diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: 'started' })
       const result = await sideLLMCall({
         url: vision.apiUrl, apikey: vision.apiKey, model: vision.model,
-        signal: signal ? AbortSignal.any([executionSignal, signal]) : executionSignal, timeoutMs: 15_000, maxTokens: 250,
+        signal: signal ? AbortSignal.any([executionSignal, signal]) : executionSignal, timeoutMs: 15_000, maxTokens: 250, disableThinking: true,
         fetchImpl: (url, init) => visionFetch(url, { ...init, redirect: 'error' }),
         messages: [{
           role: 'user', content: [
@@ -581,18 +613,30 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
           ],
         }],
       })
+      const durationMs = performance.now() - began
+      if (result.ok || result.usage !== undefined) {
+        ledger.record({ scope: groupId, stage: 'sim-vision', model: vision.model, usage: result.usage, ms: Math.round(durationMs) })
+      }
       if (!result.ok) {
-        diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: 'failed',
-          code: result.status === undefined ? 'image_model_unavailable' : 'image_model_response_error',
-          ...(result.status === undefined ? {} : { httpStatus: result.status }), durationMs: performance.now() - began })
+        const cancelled = result.code === 'provider_cancelled' || result.code === 'model_source_changed'
+        const usage = result.usage === undefined ? undefined : normalizeUsage(result.usage)
+        diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: cancelled ? 'cancelled' : 'failed',
+          code: result.code, details: { step: result.status === undefined || result.code === 'http_error' ? 'provider_request' :
+            result.code.startsWith('model_response_body') || result.code === 'provider_timeout' ? 'response_body' : 'response_validation',
+            result: 'discarded', ...(result.limit === undefined ? {} : { limit: result.limit }),
+            ...(usage && Number.isSafeInteger(usage.output) && Number.isSafeInteger(usage.reasoning)
+              ? { outputTokens: usage.output, reasoningTokens: usage.reasoning } : {}) },
+          ...(result.status === undefined ? {} : { httpStatus: result.status }), durationMs })
         return null
       }
-      ledger.record({ scope: groupId, stage: 'sim-vision', model: vision.model, usage: result.usage, ms: Math.round(performance.now() - began) })
-      const rejected = isCurrent?.() === false || /(?:data:image\/|base64:\/\/)/iu.test(result.content) ||
-        images.some(({base64}) => result.content.includes(base64)) || words.findForbiddenWord(result.content, config.forbiddenWords)
-      diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: rejected ? 'failed' : 'succeeded',
-        code: rejected ? 'image_description_rejected' : 'image_description_completed', durationMs: performance.now() - began })
-      return rejected ? null : result.content
+      const current = isCurrent?.() !== false
+      const containsImage = /(?:data:image\/|base64:\/\/)/iu.test(result.content) || images.some(({base64}) => result.content.includes(base64))
+      const code = !current ? 'model_source_changed' : containsImage ? 'image_description_contains_image_data' :
+        words.findForbiddenWord(result.content, config.forbiddenWords) ? 'image_description_forbidden_content' : undefined
+      diagnostics.emit({ stage: 'model', operation: 'simulation_image_description', outcome: !current ? 'cancelled' : code ? 'failed' : 'succeeded',
+        code: code ?? 'image_description_completed', ...(code ? { details: { step: 'response_validation', result: 'discarded' } } : {}),
+        durationMs })
+      return code ? null : result.content
     })
     const extractionBackend = config.personMemoryExtraction
     const personProfileExtract = extractionBackend && createAgentPersonExtractor({
@@ -624,6 +668,7 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
       embedding: config.semanticMemory.embedding,
       ...(config.semanticMemory.rerank ? { rerank: config.semanticMemory.rerank } : {}), secrets: hostSecrets,
       fetchFn: observeModelFetch('semantic_memory_provider_http'),
+      diagnostics,
     })
     const pixivTools = config.tools.pixiv?.enabled && mediaRelayHost?.pixivToolProvider ? createAgentPixivTools(config.tools.pixiv, {
           provider: createAgentPixivSearchProvider({ ...config.tools.pixiv, secrets: hostSecrets, allowsText: allowsMediaText }),
@@ -676,9 +721,46 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
     const diceRuntime = await createStandaloneDiceRuntime(config.diceEngineConfig,
       () => !executionSignal.aborted && storage?.isCurrent() === true && config.isConfigCurrent(),
       diceScriptRunner ? { scriptRunner: diceScriptRunner } : {})
-    const managementBindings = createAgentManagementBindings(() => config.listBindings())
+    // Console execution retires on any change to the loaded configuration and binding read set.
+    const managementBindings = createAgentManagementBindings(config.console.enabled ? config.loadedBindings : config.listBindings)
+    const sourceRoot = process.env.BL_AGENT_CODING_SOURCES
+    const legacySource = process.env.BL_AGENT_CODING_SOURCE
+    const codingSnapshot = sourceRoot
+      ? await resolveStandaloneAgentCodingSnapshot(sourceRoot, new URL('../manifest.json', import.meta.url)).catch(error => {
+        diagnostics.emit({ stage: 'host', operation: 'coding_snapshot', outcome: 'failed', code: 'coding_snapshot_unavailable', error })
+        return undefined
+      })
+      : legacySource ? { source: legacySource } : undefined
+    const development = config.execution.taskAiConfig?.development
+    const runDevelopmentModel = (request: ChatRequestData, signal: AbortSignal) => runModel(request, {
+      signal, isCurrent: config.isConfigCurrent, routeLabel: '开发',
+      ...(development ? { taskBackend: 'development' } : { forceChatBackend: true }),
+    })
+    const codingWorker = codingSnapshot ? createStandaloneAgentCodingWorker({
+      ...codingSnapshot, jobs: path.join(config.dataDir, 'coding-candidates'),
+      model: runDevelopmentModel,
+      allowsText: allowsSecretText,
+    }) : undefined
+    const personalToolAuthor = createStandaloneAgentToolAuthor({
+      allowsText: allowsSecretText,
+      async model(agentId, request, signal) {
+        const result = await runDevelopmentModel(request, signal)
+        ledger.record({ scope: 'agent:' + agentId, stage: 'personal_tool_author',
+          model: String(result.model ?? development?.model ?? config.execution.chatAiConfig?.chatApiModel ?? ''), usage: result.usage })
+        return result
+      },
+    })
+    const gamePorts: StandaloneGroupGamesOptions = {
+      config: config.games, dataDir: config.dataDir, execution: config.execution, executionSignal,
+      isCurrent: () => !executionSignal.aborted && storage?.isCurrent() === true && config.isConfigCurrent(),
+      allowsText: text => allowsSecretText(text) && !words.findForbiddenWord(text, config.forbiddenWords),
+      execute: (request, execution, options) => diagnostics.run(diagnostics.scope(), 'turtle_soup_model',
+        () => executor.YTapi(request, execution, undefined, undefined, options), 'model'),
+      recordTokens: input => ledger.record({ ...input, usage: input.usage }), logger: safeLogger,
+    }
     host = createAgentRuntime({
       storage: storage.storage, adapters, logger: safeLogger, diagnostics,
+      ...(config.semanticMemory.enabled ? { semanticRedis: storage.semanticStorage } : {}),
       managementBindings,
       featureSwitches: config.featureSwitches,
       toolRegistry: {
@@ -695,15 +777,7 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
       allowsToolInput: allowsSecretText,
       resolvePersona: config.resolvePersona,
       getSection: () => config.simulation,
-      createGroupGames: ({ authorizeBackground }) => createStandaloneGroupGames({
-        config: config.games, dataDir: config.dataDir, execution: config.execution,
-        executionSignal,
-        isCurrent: () => !executionSignal.aborted && storage?.isCurrent() === true && config.isConfigCurrent(),
-        allowsText: text => allowsSecretText(text) && !words.findForbiddenWord(text, config.forbiddenWords),
-        execute: (request, execution, options) => diagnostics.run(diagnostics.scope(), 'turtle_soup_model',
-          () => executor.YTapi(request, execution, undefined, undefined, options), 'model'),
-        recordTokens: input => ledger.record({ ...input, usage: input.usage }), authorizeBackground, logger: safeLogger,
-      }),
+      createGroupGames: ({ authorizeBackground }) => createStandaloneGroupGames({ ...gamePorts, authorizeBackground }),
       memorySystem: config.memorySystem,
       midtermMemory: config.midtermMemory,
       episodicMemory: config.episodicMemory,
@@ -757,7 +831,14 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
       ...(semanticBackend ? { semanticMemoryBackend: semanticBackend } : {}),
       privateChatEnabled: config.privateChatEnabled,
       privateTextTools: config.privateTextTools,
-      ...(config.useTextGroup ? { useTextGroup: config.useTextGroup, textGroupRevision: config.textGroupRevision, groupTextTools: config.groupTextTools } : {}),
+      unifiedGroupChat: true,
+      groupPolicy: binding => config.groupPolicy.effective(binding.connectionId, binding.target.id),
+      personalSeeds: config.personalSeeds,
+      personalToolAuthor,
+      ...(config.personalFollow.enabled ? { personalFollowFeed: (url: string, current: () => boolean, signal: AbortSignal) =>
+        readPersonalFollowFeed(url, current, { signal }) } : {}),
+      ...(codingWorker ? { codingWorker } : {}),
+      ...(config.migratedGroupToolNames ? { migratedGroupToolNames: config.migratedGroupToolNames, groupTextTools: config.groupTextTools, textGroupRevision: config.textGroupRevision } : {}),
       getExecutionConfig: () => config.execution,
       YTapi: (request, _config, signal, isCurrent, ensureCurrent) => runModel(request, { ...(signal ? { signal } : {}), ...(isCurrent ? { isCurrent } : {}), ...(ensureCurrent ? { ensureCurrent } : {}) }),
       reflectCharacter: (request, _config, signal, isCurrent, ensureCurrent) => runModel(request, { forceChatBackend: true, signal, ...(isCurrent ? { isCurrent } : {}), ...(ensureCurrent ? { ensureCurrent } : {}) }),
@@ -795,10 +876,15 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
         ...(config.console.legacyUserFile ? { legacyUserFile: config.console.legacyUserFile } : {}),
         allowSetup: config.console.allowSetup,
         secureCookies: config.console.secureCookies,
-        policy: { operations, authorize: async () => 'allowed' },
+        policy: { operations, authorize: async (_principal, operation, binding) =>
+          binding?.target.kind !== 'group' && (operation.startsWith('turtle-soup.') || operation.startsWith('group-admin.') ||
+            (operation === 'semantic.records' || operation === 'semantic.recall') && config.semanticMemory.groupOnly === true)
+            ? 'denied' : 'allowed' },
       }, options.sessions)
-      const runtime = createStandaloneAgentConsoleRuntime({ runtime: host.runtime, bindings, auth: consoleAuth })
-      const management = host.management && createStandaloneAgentConsoleManagement({ management: host.management, auth: consoleAuth })
+      const runtime = createStandaloneAgentConsoleRuntime({ runtime: host.runtime, bindings, auth: consoleAuth,
+        observeCurrent: persistence.execution.observeCurrent })
+      const management = host.management && createStandaloneAgentConsoleManagement({ management: host.management, auth: consoleAuth,
+        observeCurrent: persistence.execution.observeCurrent })
       const profilePort = management?.profiles
       const forgetting = profilePort?.list && profilePort.remove && profilePort.removeField
         ? createStandaloneAgentForgetOperations({ store: forgetOperationsStore, bindings,
@@ -811,35 +897,151 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
           sourceMemoryCleanup: host.sourceMemoryCleanup,
           characters: { describeGroup: runtime.describeGroup, controlCharacter: runtime.controlCharacter } })
         : undefined
+      const directory = createStandaloneAgentConsoleDirectory({ bindings, adapters, auth: consoleAuth,
+        dataDir: config.dataDir, allowsText: allowsSecretText })
+      const accountsService = AGENT_CONSOLE_SERVICES.find(service => service.operation === 'accounts.read')!
+      const qqLogin = createStandaloneAgentConsoleQqLogin({ configs: config.console.qqLogin, adapters, env: process.env })
+      const accounts = createStandaloneAgentConsoleAccounts({ configs: config.console.qqLogin, dataDir: config.dataDir,
+        enabled: process.env.BL_AGENT_DOCKER_ACCOUNTS === '1',
+        ...(process.env.BL_AGENT_NAPCAT_IMAGE ? { image: process.env.BL_AGENT_NAPCAT_IMAGE } : {}),
+        ...(process.env.BL_AGENT_MANAGED_QQ_TOKEN ? { token: process.env.BL_AGENT_MANAGED_QQ_TOKEN } : {}) })
       const installed = createStandaloneAgentConsoleServices({ bindings, auth: consoleAuth, runtime, ledger, ...management, ...(forgetting ? { forgetting } : {}),
-        config: persistence.config, persona: persistence.persona, providers: persistence.providers,
-        assignments: persistence.assignments, configuration: persistence.configuration, configState: persistence.state, commits: persistence.commits })
+        config: persistence.config, groupAdmin: persistence.groupAdmin, persona: { ...persistence.persona, accounts: directory.accounts },
+        providers: persistence.providers, identities: directory,
+        assignments: persistence.assignments, configuration: persistence.configuration, configState: persistence.state, commits: persistence.commits,
+        extra: [
+          { ...accountsService, handle: async (_request, context) =>
+            ({ kind: 'json', value: { accounts: (await directory.accounts(context)).map(account =>
+              ({ ...account, account: { ...account.account } })) } }) },
+          ...createStandaloneAgentConsoleImages({ ...config.tools.images, secrets: hostSecrets, dataDir: config.dataDir,
+            recordUsage: (model, usage) => ledger.record({ scope: 'global', stage: 'api', model, usage }) }),
+          ...createStandaloneAgentConsoleGames(gamePorts),
+          ...createStandaloneAgentConsoleQzone({ adapters, bindings, auth: consoleAuth, ledger: qzoneLedger, allowsText: allowsMediaText }),
+          ...qqLogin.services,
+          ...createStandaloneAgentOperations({ directory, traffic: traffic!, dataDir: config.dataDir,
+            readiness: host.readiness, journal: () => journal!.health(), apps: {
+              '会话仿真': true, '好友私聊': config.privateChatEnabled, '历史记录': config.history.enabled === true,
+              '语义记忆': config.semanticMemory.enabled, '统一认知': config.cognition.enabled, '兴趣跟进': config.personalFollow.enabled,
+              '自动搬运': config.mediaRelay.enabled, 'B 站': config.mediaRelay.enabled,
+              '抖音': config.mediaRelay.douyin?.enabled === true, '小红书': config.mediaRelay.xiaohongshu?.enabled === true,
+              'YouTube': config.mediaRelay.youtube?.enabled === true, 'Pixiv': config.mediaRelay.pixiv?.enabled === true,
+              '磁链': config.torrentDownload.enabled, '骰子': config.dice.enabled, '团录': config.groupLog.enabled,
+              '海龟汤': config.games.turtleSoup?.enabled === true, '赛马娘': config.games.umaRace?.enabled === true,
+            } }),
+          ...createStandaloneAgentConsoleStyle({ dataDir: config.dataDir, bindings, auth: consoleAuth, allowsText: allowsSecretText }),
+          ...createStandaloneAgentConsoleSemantic({ dataDir: config.dataDir, enabled: config.semanticMemory.enabled,
+            admin: host.semanticMemoryAdmin, allowsText: allowsSecretText }),
+        ] })
       // The workspace describes this process's loaded configuration, including after execution retires.
-      const loadedByAddress = new Map(config.loadedBindings.map(binding => [conversationAddressKey(binding.target), binding]))
-      const loadedBindings: AgentManagementBindings = { list: () => config.loadedBindings,
-        resolve: target => loadedByAddress.get(conversationAddressKey(target)) }
+      const loadedBindings = managementBindings
       const services: AgentConsoleService[] = [...installed]
+      if (accounts.available) {
+        const operation = (name: string) => AGENT_CONSOLE_SERVICES.find(item => item.operation === name)!
+        services.push({ ...operation('accounts.managed'), async handle(request, context) {
+          if (Object.keys(request.query).length) throw new AgentConsoleError('invalid_request')
+          const visible = new Set((await directory.accounts(context)).map(row => row.connectionId))
+          const rows = await accounts.list(context, visible)
+          return { kind: 'json', value: { ...persistence.enrollmentState(context), accounts: rows, canProvision: accounts.provisionAvailable } }
+        } }, { ...operation('accounts.action'), maxBodyBytes: 512, async handle(request, context) {
+          const input = request.body as Record<string, unknown>
+          if (Object.keys(request.query).length || Object.keys(input).length !== 3 ||
+              typeof input.connectionId !== 'string' || typeof input.accountId !== 'string' ||
+              input.action !== 'start' && input.action !== 'stop' && input.action !== 'restart') throw new AgentConsoleError('invalid_request')
+          const visible = await directory.accounts(context)
+          if (!visible.some(row => row.connectionId === input.connectionId && row.id === input.accountId)) throw new AgentConsoleError('not_found')
+          return { kind: 'json', value: await accounts.action(input.connectionId, input.accountId, input.action, context) }
+        } })
+        if (accounts.provisionAvailable) services.push({ ...operation('accounts.add'), maxBodyBytes: 512, async handle(request, context) {
+          if (Object.keys(request.query).length) throw new AgentConsoleError('invalid_request')
+          const result = await persistence.enrollAccount(request.body as Record<string, unknown>, context, accounts.provision)
+          if (persistence.commits.isCommitted(result)) return result
+          return { kind: 'json', value: result as import('../contracts/agentConsole.js').AgentConsoleJson }
+        } })
+      }
+      let restartRequested = false
+      function requestRestart() {
+        if (restartRequested || termination.signal.aborted) return
+        restartRequested = true
+        setImmediate(() => {
+          process.exitCode = 75
+          diagnostics.emit({ stage: 'host', operation: 'operator_restart', outcome: 'succeeded' })
+          gracefulStop()
+        })
+      }
+      services.push({ ...AGENT_CONSOLE_SERVICES.find(item => item.operation === 'host.readiness')!,
+        async handle(request, context) {
+          if (Object.keys(request.query).length) throw new AgentConsoleError('invalid_request')
+          const state = persistence.state(context)
+          const visible = new Set((await directory.accounts(context)).map(row => row.connectionId))
+          const readiness = host!.readiness()
+          return { kind: 'json', value: { ready: ready && readiness.ready, accounts: readiness.accounts.filter(row => visible.has(row.connectionId)),
+            configuration: state, managedRestart } }
+        } })
+      if (managedRestart) services.push({ ...AGENT_CONSOLE_SERVICES.find(item => item.operation === 'host.restart')!, maxBodyBytes: 512,
+        async handle(request, context) {
+          const input = request.body as Record<string, unknown>
+          const state = persistence.state(context)
+          if (Object.keys(request.query).length || Object.keys(input).length !== 2 ||
+              typeof input.processEpoch !== 'string' || typeof input.storedRevision !== 'string') throw new AgentConsoleError('invalid_request')
+          if (state.recoveryRequired) throw new AgentConsoleError('configuration_recovery_required')
+          if (restartRequested || !state.storedRevision || state.processEpoch !== input.processEpoch ||
+              state.storedRevision !== input.storedRevision) throw new AgentConsoleError('conflict')
+          context.ensureCurrent()
+          return { kind: 'json', status: 202, value: { accepted: true } }
+        } })
+      services.push({
+        method: 'GET', path: '/api/self-profile/:agentId', operation: 'self-profile.read', scope: 'global',
+        async handle(request, context) {
+          const id = request.params.agentId
+          if (!id || !config.workspaceAgents.some(agent => agent.id === id) || Object.keys(request.query).length) {
+            return { kind: 'json', status: 404, value: { code: 'not_found' } }
+          }
+          const related = config.loadedBindings.filter(binding => binding.agentId === id)
+          const visible: AgentBindingSnapshot[] = []
+          for (const binding of related) {
+            if (await consoleAuth!.authorize(context.principal, 'bindings.read', binding, context) === 'allowed') visible.push(binding)
+          }
+          const permitted = related.length ? visible.length > 0
+            : await consoleAuth!.authorize(context.principal, 'bindings.list', undefined, context) === 'allowed'
+          context.ensureCurrent()
+          if (!permitted) return { kind: 'json', status: 403, value: { code: 'forbidden' } }
+          const work = host!.personalWork(id, visible)
+          return { kind: 'json', value: { profiles: host!.selfProfiles(id).map(profile => ({ ...profile })), ...(work ? { work } : {}) } }
+        },
+      })
       services.push(createStandaloneAgentPipeline({ bindings: loadedBindings, auth: consoleAuth, storage: storage.storage,
         inboxBindingToken: host.inboxBindingToken, configState: persistence.state }))
       services.push(createStandaloneAgentObserve({ bindings: loadedBindings, auth: consoleAuth,
-        read: guard => readAgentOperationJournal({ dataDir: config.dataDir, maxFiles: config.operationLogging.maxFiles, guard, allowsText: allowsSecretText }),
+        read: (guard, traceId) => readAgentOperationJournal({ dataDir: config.dataDir, maxFiles: config.operationLogging.maxFiles, guard, allowsText: allowsSecretText,
+          ...(traceId ? { traceId } : {}) }),
         health: () => journal!.health(), configState: persistence.state }))
       services.push(createStandaloneAgentWorkspace({ bindings: loadedBindings, auth: consoleAuth,
-        agents: () => config.workspaceAgents,
-        connections: () => adapters.map(adapter => ({ id: adapter.id, account: adapter.account,
-          state: adapter.isReady() ? 'connected' as const : 'disconnected' as const,
-          capabilities: ['message.send', ...(adapter.readMessage ? ['message.read'] : []),
-            ...(adapter.readConversationMember ? ['member.read'] : []), ...(adapter.listConversationMembers ? ['members.read'] : []),
-            ...(adapter.gift ? ['qq.gift'] : []), ...(adapter.qzone ? ['qq.qzone'] : []), ...(adapter.redPackets ? ['qq.red-packet'] : [])],
-        })), services: () => services, configState: persistence.state }))
+        conversationName: directory.conversationName,
+        agents: () => config.workspaceAgents.map(agent => {
+          const current = host!.selfProfiles(agent.id).at(-1)
+          return current?.revision && allowsSecretText(current.name) ? { ...agent, name: current.name } : agent
+        }),
+        connections: () => adapters.map(adapter => {
+          const name = directory.accountName(adapter)
+          return { id: adapter.id, account: adapter.account, ...(name ? { name } : {}),
+            state: adapter.isReady() ? 'connected' as const : 'disconnected' as const,
+            capabilities: ['message.send', ...(qqLogin.supports(adapter.id) ? ['qq.login'] : []), ...(adapter.readMessage ? ['message.read'] : []),
+              ...(adapter.readConversationMember ? ['member.read'] : []), ...(adapter.listConversationMembers ? ['members.read'] : []),
+              ...(adapter.gift ? ['qq.gift'] : []), ...(adapter.qzone ? ['qq.qzone'] : []), ...(adapter.redPackets ? ['qq.red-packet'] : [])],
+          }
+        }), services: () => services, configState: persistence.state }))
       consoleHost = createStandaloneAgentConsole({ frontendDir: config.console.frontendDir, host: config.console.host, port: config.console.port,
-        authority, bindings, auth: consoleAuth, services, execution: persistence.execution, commits: persistence.commits, allowsResponse: allowsSecretText,
+        authority, bindings, auth: consoleAuth, services, execution: persistence.execution, commits: persistence.commits,
+        ...(managedRestart ? { requestRestart } : {}),
+        allowsResponse: body => allowsSecretText(typeof body === 'string' ? body : Buffer.from(body).toString('utf8')),
         onRequestFailure: (httpStatus, code) => diagnostics.emit({ stage: 'host', operation: 'console_request',
           outcome: code === 'commit_outcome_unknown' ? 'unknown' : 'failed', httpStatus, code }) })
+      startupStep = 'start_console'
       await consoleHost.listen()
       diagnostics.emit({ stage: 'host', operation: 'console_start', outcome: 'succeeded' })
     }
     if (!executionSignal.aborted) {
+      startupStep = 'start_core'
       try { await host.start() }
       catch (error) {
         // A save may retire execution while OneBot is still connecting. Keep the console and lease available for restart.
@@ -861,7 +1063,8 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
     }
     if (!termination.signal.aborted) await new Promise<void>(resolve => termination.signal.addEventListener('abort', () => resolve(), { once: true }))
   } catch (error) {
-    diagnostics.emit({ stage: 'host', operation: 'host_run', outcome: 'failed', code: 'host_exception', error })
+    diagnostics.emit({ stage: 'host', operation: 'host_run', outcome: 'failed', code: 'host_exception', error,
+      details: { step: startupStep } })
     if (!termination.signal.aborted) throw error
   } finally {
     stop()

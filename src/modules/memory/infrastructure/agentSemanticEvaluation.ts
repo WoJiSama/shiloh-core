@@ -173,7 +173,8 @@ function frozenStorage(data: SemanticEvaluationDataset, vectors: ReadonlyMap<str
     async get(key: string) { return records.get(key) ?? null },
     async eval(script: string, options: { keys: string[]; arguments: string[] }): Promise<unknown> {
       if (/redis\.call\('(SET|DEL|INCR|EXPIRE|LPUSH|RPUSH)'/u.test(script)) return forbiddenWrite()
-      if (script === "return {redis.call('GET', KEYS[1]) or false, redis.call('GET', KEYS[2]) or false, redis.call('GET', KEYS[3]) or false}" && options.keys.length === 3 && !options.arguments.length) {
+      if (script === "return {redis.call('GET', KEYS[1]) or false, redis.call('GET', KEYS[2]) or false, redis.call('GET', KEYS[3]) or false, redis.call('GET', KEYS[4]) or false}" &&
+          options.keys.length === 4 && !options.arguments.length) {
         return options.keys.map(key => records.get(key) ?? null)
       }
       throw new Error('Unsupported evaluation storage operation')

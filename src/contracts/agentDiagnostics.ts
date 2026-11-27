@@ -2,6 +2,50 @@ import type { AgentBindingSnapshot, PlatformAccountRef } from './agentBinding.js
 
 export const QQ_OWNER_ALERT_MAX_LENGTH = 3_000
 
+export const agentDiagnosticResults = ['not_dispatched', 'not_saved', 'discarded', 'fallback_used', 'retry_scheduled', 'retry_exhausted', 'recovered', 'confirmation_pending'] as const
+export type AgentDiagnosticResult = typeof agentDiagnosticResults[number]
+export const agentDiagnosticValueTypes = ['missing', 'null', 'array', 'object', 'string', 'number', 'boolean', 'other'] as const
+export type AgentDiagnosticValueType = typeof agentDiagnosticValueTypes[number]
+export const agentJournalWriteSteps = ['journal_queue', 'journal_open', 'journal_verify', 'journal_verify_directories', 'journal_verify_path', 'journal_write', 'journal_sync', 'journal_close',
+  'journal_directory_sync', 'journal_retention', 'journal_recovery', 'traffic_counter'] as const
+export type AgentJournalWriteStep = typeof agentJournalWriteSteps[number]
+export type AgentJournalWriteObserver = (step: AgentJournalWriteStep, blockingStep?: () => AgentJournalWriteStep | undefined) => void
+
+export interface AgentDiagnosticDetails {
+  /** Fixed names from the operation or its declared schema. */
+  readonly step?: string
+  readonly cause?: string
+  readonly field?: string
+  readonly rule?: string
+  readonly expectedType?: AgentDiagnosticValueType
+  readonly actualType?: AgentDiagnosticValueType
+  readonly limit?: number
+  readonly nativeCode?: number
+  readonly dispatched?: boolean
+  readonly result?: AgentDiagnosticResult
+  readonly retryInMs?: number
+  readonly attempt?: number
+  readonly maxAttempts?: number
+  readonly causeEventId?: string
+  readonly queueMs?: number
+  readonly stepMs?: number
+  readonly blockingStep?: AgentJournalWriteStep
+  readonly slowestCompletedStep?: string
+  readonly slowestCompletedStepMs?: number
+  readonly dispatchTurnPending?: boolean
+  readonly dispatchTurnMs?: number
+  readonly loopActiveMs?: number
+  readonly configReadCount?: number
+  readonly configReadMs?: number
+  readonly timeoutOverrunMs?: number
+  readonly outputTokens?: number
+  readonly reasoningTokens?: number
+  readonly requestedSeq?: number
+  readonly firstUnseenSeq?: number
+  readonly bytesWritten?: number
+  readonly bytesExpected?: number
+}
+
 export type AgentDiagnosticScope =
   | { readonly kind: 'host' }
   | { readonly kind: 'conversation'; readonly binding: AgentBindingSnapshot; readonly messageId?: string }
@@ -18,9 +62,12 @@ export interface AgentDiagnosticEvent {
   readonly operation: string
   readonly outcome: 'started' | 'succeeded' | 'failed' | 'unknown' | 'cancelled'
   readonly code?: string
+  /** Leading bracketed label of a runtime logger message, e.g. "[海龟汤]"; never the message body. */
+  readonly sourceTag?: string
   readonly durationMs?: number
   readonly errorKind?: 'Error' | 'TypeError' | 'RangeError' | 'SyntaxError' | 'AbortError' | 'TimeoutError' | 'Unknown'
   readonly httpStatus?: number
+  readonly details?: AgentDiagnosticDetails
   /** The immutable configuration loaded by the process that produced this event. */
   readonly configurationRevision?: string
   /** Native action metadata only. An unknown result never becomes a confirmed delivery. */
@@ -33,7 +80,7 @@ export interface AgentDiagnosticEvent {
 
 export interface AgentDiagnosticSink {
   /** True confirms that this event, or its safe redacted replacement, was committed. */
-  append(event: AgentDiagnosticEvent): Promise<boolean>
+  append(event: AgentDiagnosticEvent, observe?: AgentJournalWriteObserver): Promise<boolean>
 }
 
 export interface AgentOperationJournal extends AgentDiagnosticSink {

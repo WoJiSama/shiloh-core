@@ -69,12 +69,17 @@ test('固定协议不含角色名，人格变化和工具变化保留相同前�
   assert.ok(first.indexOf('【希洛口吻优先规则】') < first.indexOf('【本轮工具使用说明】'))
 })
 
-test('每轮尾部只传阶段、剩余轮数、聚焦目标和实际可见来源', () => {
+test('每轮尾部包含当前阶段、可见来源和简短的收尾必填项提示', () => {
   const acting = buildCharacterTurnContext({ phase: 'acting', remainingToolRounds: 3, focusedGoalId: 'goal-a', visibleEvidenceRefs: ['message:8', 'receipt:actual'] })
   const closing = buildCharacterTurnContext({ phase: 'closing', remainingToolRounds: 1, visibleEvidenceRefs: ['memory:old'] })
   assert.deepEqual(JSON.parse(acting.split('\n')[1]), { phase: 'acting', remainingToolRounds: 3, focusedGoalId: 'goal-a', visibleEvidenceRefs: ['message:8', 'receipt:actual'] })
   assert.deepEqual(JSON.parse(closing.split('\n')[1]), { phase: 'closing', remainingToolRounds: 1, focusedGoalId: null, visibleEvidenceRefs: ['memory:old'] })
   assert.match(closing, /仅 simFinishTurn/)
+  for (const context of [acting, closing]) {
+    assert.match(context, /顶层必须填写 choice/u)
+    assert.match(context, /"choice":"chat","messages":/u)
+    assert.match(context, /"choice":"silent","markRead":true/u)
+  }
   assert.doesNotMatch(acting + closing, /原子验证|完成标准|experience\+reported|【回合提交协议】/)
   assert.ok(acting.length < 400 && closing.length < 400)
   assert.notEqual(acting, closing)
@@ -109,7 +114,8 @@ test('资料和人格示例不能改写固定执行协议，注入内容保留�
 
 test('结构化收尾要求保存成功才发送，完成回执失败不能提前宣告', () => {
   const protocol = buildSimulationProtocol('希洛')
-  assert.match(protocol, /先原子验证并保存角色记忆、选择与目标，成功后才可发送 messages，再按显式 throughSeq 标读并封住回合/)
+  assert.match(protocol, /先原子验证并保存角色记忆、选择与目标，成功后才可发送 messages，再按 markRead 标读并结束回合/)
+  assert.match(protocol, /markRead=true.*遇到未展示的消息就停下/u)
   assert.match(protocol, /拒绝、后续安排、完成状态、记忆保存成功的说明都与实际状态放在同一次 simFinishTurn 提交/)
   assert.match(protocol, /complete 必须引用本目标、本轮可见的真实成功行动回执/)
   assert.match(protocol, /原子保存失败不会发送提交消息/)

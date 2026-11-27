@@ -5,6 +5,7 @@ import { AGENT_CONSOLE_SERVICES, AgentConsoleError } from '../contracts/agentCon
 import type { AgentConsoleAuthPort, AgentConsoleContext, AgentConsoleGuard, AgentConsoleJson, AgentConsoleRequest, AgentConsoleService } from '../contracts/agentConsole.js'
 import type { AgentManagementBindings } from '../contracts/agentManagement.js'
 import { agentBindingToken, agentConversationKey, conversationAddressKey, platformAccountKey } from '../modules/runtime/domain/agentBindings.js'
+import { captureAgentBindingDirectoryCheck } from '../modules/runtime/infrastructure/agentManagementBindings.js'
 
 export interface StandaloneAgentWorkspaceAgent {
   readonly id: string
@@ -16,6 +17,7 @@ export interface StandaloneAgentWorkspaceAgent {
 export interface StandaloneAgentWorkspaceConnection {
   readonly id: string
   readonly account: PlatformAccountRef
+  readonly name?: string
   readonly state: 'connected' | 'disconnected' | 'unknown'
   readonly capabilities: readonly string[]
 }
@@ -26,6 +28,7 @@ export interface StandaloneAgentWorkspaceOptions {
   readonly auth: Pick<AgentConsoleAuthPort, 'authorize' | 'isCurrent'>
   readonly agents: () => readonly StandaloneAgentWorkspaceAgent[]
   readonly connections: () => readonly StandaloneAgentWorkspaceConnection[]
+  readonly conversationName?: (binding: AgentBindingSnapshot) => string | undefined
   /** Include only installed services. A declaration without a handler is unavailable. */
   readonly services: () => readonly AgentConsoleService[]
   readonly configState: (context: AgentConsoleContext) => Record<string, unknown>
@@ -107,7 +110,9 @@ function connections(input: unknown): readonly StandaloneAgentWorkspaceConnectio
   const rows = array(input, maximumRows, input => {
     const row = object(input), state = own(row, 'state'), capabilities = array(own(row, 'capabilities'), 64, value => label(value))
     if (state !== 'connected' && state !== 'disconnected' && state !== 'unknown') return fail('unavailable')
-    return Object.freeze({ id: identifier(own(row, 'id')), account: account(own(row, 'account')), state, capabilities: Object.freeze([...new Set(capabilities)].sort()) })
+    const name = own(row, 'name', true)
+    return Object.freeze({ id: identifier(own(row, 'id')), account: account(own(row, 'account')), state, capabilities: Object.freeze([...new Set(capabilities)].sort()),
+      ...(name === undefined ? {} : { name: label(name) }) })
   })
   unique(rows, row => row.id); unique(rows, row => platformAccountKey(row.account))
   return sort(rows, row => row.id)
@@ -165,6 +170,8 @@ export function createStandaloneAgentWorkspace(options: StandaloneAgentWorkspace
         return rows
       }
       const rows = directory(), expectedDirectory = fingerprint(rows), agentRows = agents(options.agents()), connectionRows = connections(options.connections())
+      const directoryCurrent = captureAgentBindingDirectoryCheck(options.bindings, rows, options) ??
+        (() => fingerprint(directory()) === expectedDirectory)
       const serviceRows = installed(options.services()), configState = state(options.configState(context))
       const expectedMetadata = fingerprint([agentRows, connectionRows, serviceRows.map(row => ({ ...row, handler: !!row.handler })), configState])
       const agentMap = new Map(agentRows.map(row => [row.id, row])), connectionMap = new Map(connectionRows.map(row => [row.id, row]))
@@ -174,7 +181,7 @@ export function createStandaloneAgentWorkspace(options: StandaloneAgentWorkspace
         if (!owner || owner.personaId !== row.personaId || !connection || platformAccountKey(connection.account) !== platformAccountKey(row.target.account)) return fail('conflict')
       }
       function isCurrent(): boolean {
-        try { return baseCurrent() && fingerprint(directory()) === expectedDirectory } catch { return false }
+        try { return baseCurrent() && directoryCurrent() } catch { return false }
       }
       function ensureCurrent(): void { baseEnsure(); if (!isCurrent()) fail('conflict') }
       const guard: AgentConsoleGuard = Object.freeze({ signal: context.signal, isCurrent, ensureCurrent })
@@ -211,9 +218,11 @@ export function createStandaloneAgentWorkspace(options: StandaloneAgentWorkspace
       const showUnboundConnections = await globalVisibility('connections.read', connectionRows.some(row => !visibleConnections.has(row.id)))
       ensureCurrent()
       const outputAgents = Object.freeze(agentRows.filter(row => showUnboundAgents || visibleAgents.has(row.id)).map(row => Object.freeze({ ...row,
-        conversations: Object.freeze(visible.filter(selected => selected.agentId === row.id).map(selected => Object.freeze({
-          scopeKey: agentConversationKey(selected), bindingToken: agentBindingToken(selected), binding: selected,
-        }))),
+        conversations: Object.freeze(visible.filter(selected => selected.agentId === row.id).map(selected => {
+          const name = options.conversationName?.(selected)
+          return Object.freeze({ scopeKey: agentConversationKey(selected), bindingToken: agentBindingToken(selected), binding: selected,
+            ...(name === undefined ? {} : { name: label(name) }) })
+        })),
       })))
       const outputConnections = Object.freeze(connectionRows.filter(row => showUnboundConnections || visibleConnections.has(row.id)).map(row => Object.freeze({ ...row,
         conversationCount: visible.filter(selected => selected.connectionId === row.id).length,
@@ -222,7 +231,7 @@ export function createStandaloneAgentWorkspace(options: StandaloneAgentWorkspace
       for (const definition of AGENT_CONSOLE_SERVICES) {
         const base = { operation: definition.operation, scope: definition.scope, effect: definition.method === 'GET' ? 'read' as const : 'write' as const }
         const service = services.get(definition.operation), matching = service?.method === definition.method && service.path === definition.path && service.scope === definition.scope
-        if (configState.requiresRestart && !['workspace.read', 'config-state.read', 'observe.read', 'pipeline.read'].includes(definition.operation) && !definition.operation.startsWith('auth.')) {
+        if (configState.requiresRestart && !['workspace.read', 'config-state.read', 'observe.read', 'pipeline.read', 'host.readiness', 'host.restart'].includes(definition.operation) && !definition.operation.startsWith('auth.')) {
           capabilities.push(Object.freeze({ ...base, status: 'restart-required', reason: 'execution-retired', ...(definition.scope === 'conversation' ? { authorizedScopes: Object.freeze([]) } : {}) }))
         } else if (!matching || !service.handler) {
           capabilities.push(Object.freeze({ ...base, status: 'unavailable', reason: 'handler-unavailable', ...(definition.scope === 'conversation' ? { authorizedScopes: Object.freeze([]) } : {}) }))

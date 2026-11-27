@@ -150,7 +150,7 @@ test("扩展命令：刷屏/处置/阈值/文案全覆盖", () => {
   assert.equal(parseGroupAdminCommand(".群管 设置 刷屏等级 10").rule?.path, "floodMaxLevel")
   // 处置动作与阈值
   assert.equal(parseGroupAdminCommand(".群管 开启 自动禁言").feature?.path, "actions.muteEnabled")
-  assert.equal(parseGroupAdminCommand(".群管 关闭 自动踢出").feature?.path, "actions.kickEnabled")
+  assert.equal(parseGroupAdminCommand(".群管 开启 自动踢出").ok, false)
   assert.equal(parseGroupAdminCommand(".群管 设置 广告禁言秒数 120").rule?.path, "actions.muteSeconds")
   const threshold = parseGroupAdminCommand(".群管 设置 撤回阈值 0.8")
   assert.equal(threshold.ok, true, "阈值允许小数")
@@ -158,7 +158,7 @@ test("扩展命令：刷屏/处置/阈值/文案全覆盖", () => {
   assert.equal(parseGroupAdminCommand(".群管 设置 撤回阈值 0.85 0.9").ok, false, "数值规则只收一个值")
   // 入群验证细节与通知文案
   assert.equal(parseGroupAdminCommand(".群管 设置 错误次数 2").rule?.path, "maxWrongTimes")
-  assert.equal(parseGroupAdminCommand(".群管 开启 答错踢出").feature?.path, "kickOnWrongAnswer")
+  assert.equal(parseGroupAdminCommand(".群管 开启 答错踢出").ok, false)
   const text = parseGroupAdminCommand(".群管 设置 欢迎语 {at} 欢迎加入本群，先看群公告！")
   assert.equal(text.ok, true)
   assert.equal(text.value, "{at} 欢迎加入本群，先看群公告！", "文本规则支持整行含空格")
@@ -174,7 +174,7 @@ test("面板展示扩展：刷屏/处置/验证细节/文案行", () => {
   for (const expected of ["广告与刷屏检测", "刷屏检测", "检测范围", "自动处置", "超长消息折叠", "连发消息折叠"])
     assert.ok(labels.includes(expected), `应有「${expected}」行`)
   const guard = data.sections.find(section => section.label === "入群验证")
-  assert.ok(guard.rows.some(row => row.label === "超时踢出"))
+  assert.ok(guard.rows.every(row => !row.label.includes("踢出")))
   const notice = data.sections.find(section => section.label === "群通知")
   assert.ok(notice.rows.some(row => row.label === "入群欢迎"))
 })

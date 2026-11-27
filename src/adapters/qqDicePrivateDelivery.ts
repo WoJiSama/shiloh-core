@@ -197,7 +197,7 @@ export function createQqDicePrivateDeliveryPort(options: {
       platformAccountKey(account(data(options).account)) === botKey && data(options).connectionId === connectionId &&
       JSON.stringify(request(input, connectionId, botKey)) === identity && allowsText?.(selected.text) !== false } catch { return false } }
     const ensureCurrent = async () => { if (!current()) throw invalid(); await ensure(); if (!current()) throw invalid() }
-    const live = (): QqDicePrivateApiOptions => Object.freeze({ signal, isCurrent: current, ensureCurrent, timeoutMs: Math.max(1, deadline - Date.now()) })
+    const live = (verify = ensureCurrent): QqDicePrivateApiOptions => Object.freeze({ signal, isCurrent: current, ensureCurrent: verify, timeoutMs: Math.max(1, deadline - Date.now()) })
     let dispatched = false, timedOut = false
     const timer = setTimeout(() => { timedOut = true; cancel.abort() }, QQ_DICE_PRIVATE_TIMEOUT_MS), watch = setInterval(() => { if (!current()) cancel.abort() }, 25)
     const wait = <R>(run: () => Promise<R>): Promise<R> => new Promise((resolve, reject) => {
@@ -206,9 +206,10 @@ export function createQqDicePrivateDeliveryPort(options: {
         .finally(() => signal.removeEventListener('abort', abort)).catch(() => {})
       if (signal.aborted) abort()
     })
-    const read = (action: Parameters<typeof readApi>[0], params: Record<string, unknown>) => wait(async () => {
-      await ensureCurrent(); return readApi(action, Object.freeze(params), live())
-    })
+    // These native reads establish evidence inside one relay attempt. Check
+    // the complete host authority before this batch and again before dispatch.
+    const read = (action: Parameters<typeof readApi>[0], params: Record<string, unknown>) => wait(() =>
+      readApi(action, Object.freeze(params), live(async () => { if (!current()) throw invalid() })))
     try {
       await wait(ensureCurrent)
       const sourceProof = evidence(await read('get_msg', { message_id: selected.source.messageId! }), selected.binding,

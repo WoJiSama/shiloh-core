@@ -23,7 +23,7 @@ function numbers(raw: Record<string, unknown>, ranges: Readonly<Record<string, R
       (typeof raw[key] !== 'number' || !Number.isFinite(raw[key]) || !fractional.includes(key) && !Number.isSafeInteger(raw[key]) ||
         Number(raw[key]) < min || Number(raw[key]) > max)) throw invalid()
 }
-const TURTLE_NUMBERS = {
+export const TURTLE_NUMBERS = {
   minPlayers: [1, 50], joinWindowMinutes: [1, 60], idleTimeoutMinutes: [1, 240], guessCooldownSeconds: [0, 3600],
   similarityHitThreshold: [0.5, 1], similarityMissThreshold: [0, 0.9], freshPoolTarget: [1, 150],
   freshEasy: [0, 50], freshNormal: [0, 50], freshHard: [0, 50], ratingWindowMinutes: [1, 120],
@@ -31,7 +31,7 @@ const TURTLE_NUMBERS = {
   generationCallBudget: [4, 100], maxPending: [1, 100],
 } satisfies Record<string, Range>
 const TURTLE_TEXT = { generationModel: 200, reviewModel: 200, contentPolicy: 4000, generationCustomPrompt: 16_000 }
-const UMA_NUMBERS = {
+export const UMA_NUMBERS = {
   minPlayers: [RACE_SIZE, RACE_SIZE], maxPlayers: [RACE_SIZE, RACE_SIZE], lobbySeconds: [10, 300],
   raceStageSeconds: [10, 180], cooldownSeconds: [0, 3600], winPoints: [0, 100_000], secondPoints: [0, 100_000],
   thirdPoints: [0, 100_000], participationPoints: [0, 100_000], rankLimit: [3, 50],

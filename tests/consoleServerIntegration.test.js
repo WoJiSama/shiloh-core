@@ -5,7 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import http from "node:http"
 import { spawn } from "node:child_process"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import YAML from "yaml"
 import { agentConversationKey } from "../dist/backend/modules/runtime/domain/agentBindings.js"
 
@@ -20,7 +20,7 @@ test("standalone console returns JSON for the runtime life overview", async t =>
   fs.writeFileSync(path.join(root, "config", "message.yaml"), "pluginSettings: {}\n")
   const preload = path.join(root, "isolated-redis.mjs")
   fs.writeFileSync(preload, "globalThis.redis = { get: async () => null, set: async () => 'OK', del: async () => 0 }\n")
-  const base = await startFixtureServer(root, t, { NODE_OPTIONS: `--import=${preload}` })
+  const base = await startFixtureServer(root, t, { NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` })
   const response = await fetch(`${base}/api/life/overview`, { headers: { "x-console-token": token } })
   assert.equal(response.status, 200)
   const body = await response.text()
@@ -324,7 +324,7 @@ test('standalone trusteeship scans lazy Promise iterators and Redis key batches'
       scanIterator: async () => (async function* () { yield 'bl-chat:delegated:100001'; yield ['bl-chat:delegated:200002', 'bl-chat:delegated:100001']; })()
     };
   `)
-  const base = await startFixtureServer(root, t, {NODE_OPTIONS:`--import=${preload}`})
+  const base = await startFixtureServer(root, t, {NODE_OPTIONS:`--import=${pathToFileURL(preload).href}`})
   const response = await fetch(`${base}/api/trusteeship/overview`, {headers:{'x-console-token':'isolated-scan-token'}})
   assert.equal(response.status, 200)
   const overview = await response.json()
@@ -344,18 +344,19 @@ test('standalone trusteeship lists and deletes exactly one scoped memory with an
   }))
   const entryId='dlg_1794400000000_0123456789abcdef0123456789abcdef'
   const preload = path.join(root, 'redis.mjs')
+  const redisFixture = new URL('./helpers/delegatedMemoryRedis.js', import.meta.url).href
   fs.writeFileSync(preload, `
+    import { createDelegatedMemoryRedis } from ${JSON.stringify(redisFixture)}
     const keys = ${JSON.stringify(scopeKeys.map(scope => `bl-chat:delegated:v2:${encodeURIComponent(scope)}`))}
-    const entry = suffix => JSON.stringify([{id:${JSON.stringify(entryId)},owner:'ou_opaque',content:'saved-'+suffix,createdAt:1794400000000,status:'active'}])
+    const entry = suffix => JSON.stringify([{ id:${JSON.stringify(entryId)}, owner:'ou_opaque', ownerName:'fixture owner',
+      content:'saved-'+suffix, createdAt:1794400000000, updatedAt:1794400000000, dueAt:0, status:'active' }])
     const data = new Map(keys.map((key,index) => [key,entry(index)]))
     globalThis.redis = {
-      get: async key => data.get(key) ?? null,
-      set: async () => 'OK', del: async () => 0,
-      eval: async (_script,{keys,arguments:args}) => { if ((data.get(keys[0])||'') !== args[0]) return 0; data.set(keys[0],args[1]); return 1 },
+      ...createDelegatedMemoryRedis(data),
       scanIterator: async () => (async function* () { yield keys; })()
     }
   `)
-  const base = await startFixtureServer(root, t, {NODE_OPTIONS:`--import=${preload}`})
+  const base = await startFixtureServer(root, t, {NODE_OPTIONS:`--import=${pathToFileURL(preload).href}`})
   const headers={'x-console-token':'isolated-scoped-token','content-type':'application/json'}
   const get=async()=>(await fetch(`${base}/api/trusteeship/overview`,{headers})).json()
   const post=body=>fetch(`${base}/api/trusteeship/delegated-delete`,{method:'POST',headers,body:JSON.stringify(body)})

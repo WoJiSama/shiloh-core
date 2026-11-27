@@ -6,7 +6,9 @@ import type { AgentBindingSnapshot } from '../contracts/agentBinding.js'
 import type { AgentHistoryConfig } from '../contracts/agentHistory.js'
 import { qqId, validateQqBindingAddress } from '../adapters/qqIdentity.js'
 import { agentConversationKey, agentPersonaScopeId, conversationAddressKey, decodeAgentConversationKey } from '../modules/runtime/domain/agentBindings.js'
-import { agentHistoryId, createAgentHistoryStore, type AgentHistoryRow } from '../modules/memory/infrastructure/agentHistoryStore.js'
+import { agentHistoryId, createAgentHistoryStore, AGENT_HISTORY_CLEANUP_KEY, type AgentHistoryRow } from '../modules/memory/infrastructure/agentHistoryStore.js'
+import { conversationCleanupAllows, parseConversationCleanup } from '../modules/memory/infrastructure/conversationMemoryCleanup.js'
+import { parseSemanticCleanup, semanticCleanupAllows, SEMANTIC_CLEANUP_KEY } from '../modules/memory/infrastructure/agentSemanticMemoryCleanup.js'
 import { createPersonMemoryStore } from '../modules/memory/infrastructure/personMemoryStore.js'
 import { personMemoryAddress } from '../modules/memory/infrastructure/personMemoryContext.js'
 import { isPersonMemoryRedacted } from '../modules/memory/domain/personMemory.js'
@@ -18,7 +20,14 @@ export interface StandaloneAgentArchiveMigrationOptions {
   readonly redis: { get(key: string): Promise<string | null> }
   readonly prefix: string
   readonly binding: AgentBindingSnapshot
-  readonly sourceBinding: AgentBindingSnapshot
+  readonly sourceBinding?: AgentBindingSnapshot
+  /** Implicit group origin proven by frozen role settings and the original Yunzai event identifier. */
+  readonly legacyGroup?: {
+    readonly originalRole: string
+    readonly roleEffectiveAt: number
+    readonly frozenAt: number
+  }
+  readonly previewWhileRunning?: boolean
   /** The resolved legacy messageArchive.baseDir, not a guessed data directory. */
   readonly sourceArchiveDir: string
   readonly history: AgentHistoryConfig
@@ -147,7 +156,6 @@ function inConversation(row: RecordValue, binding: AgentBindingSnapshot): boolea
 
 function originalText(row: RecordValue, binding: AgentBindingSnapshot, now: number): AgentHistoryRow | undefined {
   if (row.version !== 1 || !inConversation(row, binding) ||
-      row.source_bot_id !== binding.target.account.id || row.source_persona_id !== agentPersonaScopeId(binding.agentId) ||
       row.archive_kind !== undefined || row.source != null || row.personaSource != null || row.forwardCompleteness !== undefined ||
       !numeric(row.user_id) || String(row.user_id) === binding.target.account.id || !object(row.sender) ||
       !numeric(row.sender.user_id) || String(row.sender.user_id) !== String(row.user_id) || !messageId(row.message_id) ||
@@ -172,22 +180,30 @@ function originalText(row: RecordValue, binding: AgentBindingSnapshot, now: numb
  * Source files are never edited; no generated memories, embeddings or new portable facts are made.
  */
 export async function stageStandaloneAgentArchiveMigration(options: StandaloneAgentArchiveMigrationOptions) {
-  const { prefix, binding, sourceBinding, now } = options
-  const destinationKey = scopeKey(binding), sourceKey = scopeKey(sourceBinding)
+  const { prefix, binding, sourceBinding, legacyGroup, now } = options
+  const destinationKey = scopeKey(binding), sourceKey = sourceBinding ? scopeKey(sourceBinding) : destinationKey
+  const supportedLegacy = legacyGroup && binding?.source === 'configured' && binding.target.kind === 'group' &&
+    legacyGroup.originalRole === 'default' && binding.personaId === 'default' && binding.agentId === 'shiloh' &&
+    Number.isSafeInteger(legacyGroup.roleEffectiveAt) && legacyGroup.roleEffectiveAt > 0 &&
+    Number.isSafeInteger(legacyGroup.frozenAt) && legacyGroup.frozenAt >= legacyGroup.roleEffectiveAt &&
+    legacyGroup.frozenAt <= now
   if (!/^bl-agent:[A-Za-z0-9][A-Za-z0-9._-]{0,63}:$/u.test(prefix) || !Number.isSafeInteger(now) || now <= 0 ||
-      !object(binding) || !object(sourceBinding) || !object(options.history) || options.history.enabled !== true ||
+      !object(binding) || (legacyGroup ? !supportedLegacy || sourceBinding !== undefined : !object(sourceBinding)) ||
+      !object(options.history) || options.history.enabled !== true ||
       !destinationKey || !sourceKey || binding.target.kind !== 'group' && binding.target.kind !== 'private' ||
       binding.target.account.platform !== 'qq' || binding.target.account.namespace !== 'global' ||
-      sourceKey !== destinationKey || typeof binding.personaId !== 'string' || !binding.personaId || sourceBinding.personaId !== binding.personaId ||
+      sourceKey !== destinationKey || typeof binding.personaId !== 'string' || !binding.personaId ||
+      sourceBinding !== undefined && sourceBinding.personaId !== binding.personaId ||
       typeof options.sourceArchiveDir !== 'string' || !path.isAbsolute(options.sourceArchiveDir)) fail('只接受已启用history且来源归属相同的QQ/global群或私聊绑定及明确归档目录')
-  validateQqBindingAddress(binding.target); validateQqBindingAddress(sourceBinding.target)
+  validateQqBindingAddress(binding.target)
+  if (sourceBinding) validateQqBindingAddress(sourceBinding.target)
   const bounded = (value: unknown, fallback: number, min: number, max: number) => value === undefined ? fallback
     : typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max ? value : fail('history保留期或容量无效')
   const retention = bounded(options.history.retentionDays, 30, 1, 90) * DAY
   const maximum = bounded(options.history.maxMessagesPerConversation, 1000, 50, 2000)
-  const signature = JSON.stringify([binding, sourceBinding, options.history])
+  const signature = JSON.stringify([binding, sourceBinding, legacyGroup, options.history])
   const current = () => {
-    try { return options.isCurrent() === true && JSON.stringify([options.binding, options.sourceBinding, options.history]) === signature }
+    try { return options.isCurrent() === true && JSON.stringify([options.binding, options.sourceBinding, options.legacyGroup, options.history]) === signature }
     catch { return false }
   }
   const ensure = () => { if (!current()) fail('来源或目标绑定及配置已改变') }
@@ -206,10 +222,13 @@ export async function stageStandaloneAgentArchiveMigration(options: StandaloneAg
     await read(key); checks.get(key)!.write = write
   }
   const { botId, scene } = personMemoryAddress(binding.target), identity = { botId, personaId: agentPersonaScopeId(binding.agentId) }
+  const sourceIdentity = legacyGroup ? { botId, personaId: legacyGroup.originalRole } : identity
   const privateChat = binding.target.kind === 'private'
   const memoryBase = `shiloh:person-memory:v1:${encodeURIComponent(botId)}:${encodeURIComponent(identity.personaId)}`
   for (const key of [prefix + 'agent:host-lease', memoryBase + ':lock', prefix + memoryBase + ':lock',
+    'shiloh:person-memory:v1:' + encodeURIComponent(botId) + ':' + encodeURIComponent(sourceIdentity.personaId) + ':lock',
     'shiloh:person-memory:v1:identities:lock', prefix + 'shiloh:person-memory:v1:identities:lock']) {
+    if (key === prefix + 'agent:host-lease' && legacyGroup && options.previewWhileRunning) continue
     if (await read(key) !== null) fail('宿主或人物隐私仍在更新，须离线迁移')
   }
   if (privateChat) for (const base of ['', prefix]) {
@@ -233,22 +252,28 @@ export async function stageStandaloneAgentArchiveMigration(options: StandaloneAg
     `private:${encodeURIComponent(botId)}:${encodeURIComponent(identity.personaId)}:${encodeURIComponent(binding.target.id)}`] : [binding.target.id]
   const optedOut = new Set<string>()
   let disabled = false
-  for (const base of privateChat ? ['', prefix] : ['']) for (const scope of metaScopes) {
-    const raw = await read(base + KEY.meta(scope)), meta = raw === null ? {} : parse(raw, '会话记忆隐私')
+  const metaKeys = metaScopes.map(scope => KEY.meta(scope))
+  if (privateChat || legacyGroup) metaKeys.push(...metaScopes.map(scope => prefix + KEY.meta(scope)))
+  if (legacyGroup) metaKeys.push(prefix + KEY.meta(agentMemoryScope(binding)))
+  for (const key of metaKeys) {
+    const raw = await read(key), meta = raw === null ? {} : parse(raw, '会话记忆隐私')
     if (!object(meta) || meta.disabled !== undefined && typeof meta.disabled !== 'boolean' ||
         meta.optedOut !== undefined && (!Array.isArray(meta.optedOut) || meta.optedOut.some(value => !numeric(value)))) fail('会话记忆隐私格式无效')
     disabled ||= meta.disabled === true
     for (const id of Array.isArray(meta.optedOut) ? meta.optedOut : []) optedOut.add(String(id))
   }
+  const semanticCleanup = legacyGroup && parseSemanticCleanup(await read(prefix + SEMANTIC_CLEANUP_KEY))
   if (privateChat) for (const store of [sourceMemory, targetMemory]) {
     // Capture both documents even when the archive is empty, incomplete, or
     // already pruned; their original bytes remain final-CAS evidence.
     await store.getRedactions({ identity, subjectId: binding.target.id })
   }
   const id = agentHistoryId(binding), stateKey = `agent:history:v1:state:${id}`
+  const historyCleanup = parseConversationCleanup(await read(prefix + AGENT_HISTORY_CLEANUP_KEY))
   const history = createAgentHistoryStore({ get: key => read(prefix + key),
     async eval(_script, args) {
-      if (args.arguments.length || args.keys.length !== 2) fail('历史校验器不得执行写操作')
+      if (args.arguments.length || args.keys.length !== 3 || args.keys[0] !== CATALOG ||
+          args.keys[1] !== stateKey || args.keys[2] !== AGENT_HISTORY_CLEANUP_KEY) fail('历史校验器不得执行写操作')
       return Promise.all(args.keys.map(key => read(prefix + key)))
     } })
   const existing = await history.read(id), catalog = await history.listScopes()
@@ -259,6 +284,7 @@ export async function stageStandaloneAgentArchiveMigration(options: StandaloneAg
       !object(marker.scope) || Object.keys(marker.scope).some(key => !['agentId', 'target'].includes(key)) || scopeKey(marker.scope) !== destinationKey ||
       !Array.isArray(marker.imported) || marker.imported.length > 2000) fail('原文交接记录无效')
   const receipts = new Map<string, Receipt>()
+  const portableRows: AgentHistoryRow[] = []
   for (const entry of marker.imported) {
     if (!object(entry) || Object.keys(entry).some(key => !['messageId', 'fingerprint', 'source'].includes(key)) || messageId(entry.messageId) !== entry.messageId ||
         typeof entry.fingerprint !== 'string' || !/^[a-f\d]{64}$/u.test(entry.fingerprint) || receipts.has(entry.messageId as string) || !object(entry.source) ||
@@ -293,10 +319,12 @@ export async function stageStandaloneAgentArchiveMigration(options: StandaloneAg
       for (const base of ['', prefix]) if (await read(base + key) === '1') blocked = 'recalled'
     }
     if (row) {
-      if (disabled || optedOut.has(row.authorId)) blocked = 'privacy'
+      if (disabled || optedOut.has(row.authorId) || !conversationCleanupAllows(binding, row, historyCleanup) ||
+          semanticCleanup && !semanticCleanupAllows(binding, row, semanticCleanup)) blocked = 'privacy'
       const source = { scene, authorId: row.authorId, messageId: mid, at: row.at, excerpt: row.text }
-      for (const store of [sourceMemory, targetMemory]) if (isPersonMemoryRedacted(source, row.text,
-        await store.getRedactions({ identity, subjectId: row.authorId }))) blocked = 'privacy'
+      for (const [store, owner] of [[sourceMemory, sourceIdentity], [targetMemory, identity]] as const) {
+        if (isPersonMemoryRedacted(source, row.text, await store.getRedactions({ identity: owner, subjectId: row.authorId }))) blocked = 'privacy'
+      }
     }
     return disk.unresolved ? 'semanticDependency' as const : blocked
   }
@@ -309,10 +337,15 @@ export async function stageStandaloneAgentArchiveMigration(options: StandaloneAg
     await targetMemory.revokeSource({ identity, scene, messageId: mid, at: now })
     if (saved) { nextRows.delete(mid); report.removed++ }
   }
-  for (const [mid, copies] of originals) {
+  const originalTimes = (copies: Original[]) => typeof copies[0]?.row.timestamp === 'number' ? copies[0].row.timestamp : 0
+  const candidates = legacyGroup ? [...originals].sort((a, b) => originalTimes(b[1]) - originalTimes(a[1])) : originals
+  for (const [mid, copies] of candidates) {
     const original = copies[0]!, raw = original.row
-    if (raw.source_bot_id !== binding.target.account.id || raw.source_persona_id !== identity.personaId ||
-        !inConversation(raw, binding)) { skip('identity'); continue }
+    const explicit = !legacyGroup && raw.source_bot_id === binding.target.account.id && raw.source_persona_id === identity.personaId
+    const implicit = legacyGroup && raw.source_bot_id === undefined && raw.source_persona_id === undefined &&
+      raw.event_id === ['v1', binding.target.account.id, 'message', 'group', binding.target.id, mid].join(':') &&
+      typeof raw.timestamp === 'number' && raw.timestamp >= legacyGroup.roleEffectiveAt && raw.timestamp <= legacyGroup.frozenAt
+    if ((!explicit && !implicit) || !inConversation(raw, binding)) { skip('identity'); continue }
     const row = originalText(raw, binding, now)
     if (!row) { skip('incomplete'); continue }
     if (copies.some(copy => hash(canonical(copy.row)) !== hash(canonical(raw)))) { skip('conflict'); continue }
@@ -326,6 +359,7 @@ export async function stageStandaloneAgentArchiveMigration(options: StandaloneAg
     const sourceFingerprint = fingerprint(row)
     if (receipt) {
       if (receipt.fingerprint !== sourceFingerprint) fail('原文交接来源已改变')
+      if (nextRows.has(mid)) portableRows.push(row)
       report.alreadyImported++; continue
     }
     const saved = nextRows.get(mid)
@@ -333,18 +367,20 @@ export async function stageStandaloneAgentArchiveMigration(options: StandaloneAg
     if (receipts.size >= 2000 || !saved && nextRows.size >= maximum) { skip('capacity'); continue }
     if (!await targetMemory.registerSource({ identity, subjectId: row.authorId, source }, current)) { skip('privacy'); continue }
     receipts.set(mid, { messageId: mid, fingerprint: sourceFingerprint, source: original.location })
-    nextRows.set(mid, row); report.imported++
+    nextRows.set(mid, row); portableRows.push(row); report.imported++
   }
   if (report.imported || report.removed) {
     const scope = { agentId: binding.agentId, target: structuredClone(binding.target) }
     const entries = catalog.some(entry => entry.id === id) ? catalog : [...catalog, { id, scope }]
+    const rows = [...nextRows.values()]
+    if (legacyGroup) rows.sort((a, b) => a.at - b.at)
     await stage(prefix + CATALOG, JSON.stringify({ version: 1, entries }))
-    await stage(prefix + stateKey, JSON.stringify({ version: 1, id, scope, rows: [...nextRows.values()] }))
+    await stage(prefix + stateKey, JSON.stringify({ version: 1, id, scope, rows }))
     await history.read(id) // The canonical store validates the exact staged schema and all bounds.
     await stage(markerKey, JSON.stringify({ version: 1, scope, imported: [...receipts.values()] }))
   }
   ensure()
   if (!disk.isCurrent()) fail('归档或遗忘文件在预览期间改变')
   for (const [key, check] of checks) options.checks.set(key, check)
-  return { report, isCurrent: () => current() && disk.isCurrent() }
+  return { report, portableRows, isCurrent: () => current() && disk.isCurrent() }
 }

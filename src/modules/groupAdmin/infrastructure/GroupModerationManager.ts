@@ -609,7 +609,6 @@ export class GroupModerationManager {
   }
 
   decideAction(config:ModerationConfig, confidence:number) {
-    if (config.actions.kickEnabled && confidence >= config.thresholds.kick) return "kick"
     if (config.actions.muteEnabled && confidence >= config.thresholds.mute) return "mute"
     if (config.actions.recallEnabled && confidence >= config.thresholds.recall) return "recall"
     if (confidence >= config.thresholds.report) return "report"
@@ -617,7 +616,7 @@ export class GroupModerationManager {
   }
 
   async applyAction(e:AdminEvent, config:ModerationConfig, action:string) {
-    if (action === "ignore" || action === "report") return false
+    if (action !== "recall" && action !== "mute") return false
     const bot = requireAdminBot(this.ports,e)
     try {
       if (action === "recall") {
@@ -631,14 +630,6 @@ export class GroupModerationManager {
           group_id: Number(e.group_id),
           user_id: Number(e.user_id),
           duration: Number(config.actions.muteSeconds)
-        })
-        return true
-      }
-      if (action === "kick") {
-        await bot.sendApi("set_group_kick", {
-          group_id: Number(e.group_id),
-          user_id: Number(e.user_id),
-          reject_add_request: false
         })
         return true
       }

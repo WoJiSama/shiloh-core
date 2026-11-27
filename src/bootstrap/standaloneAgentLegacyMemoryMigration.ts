@@ -248,7 +248,8 @@ async function archiveMember(archive: string, name: string): Promise<string> {
   if (details.length !== 1 || !details[0]?.startsWith('-')) return failure('备份成员不是唯一普通文件')
   return (await execute('tar', ['-xOzf', archive, name], options)).stdout
 }
-async function readBackupCharacter(rdbFile: string, expectedHash: string, key: string): Promise<string> {
+export async function withFrozenLegacyRedis<T>(rdbFile: string, expectedHash: string,
+  run: (client: NonNullable<ReturnType<typeof createClient>>) => Promise<T>): Promise<T> {
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'bl-legacy-'))), socket = path.join(directory, 's'), file = path.join(directory, 'snapshot.rdb')
   let child: ReturnType<typeof spawn> | undefined, client: ReturnType<typeof createClient> | undefined, exited: Promise<unknown> | undefined
   try {
@@ -270,10 +271,7 @@ async function readBackupCharacter(rdbFile: string, expectedHash: string, key: s
       await delay(25)
     }
     if (!ready) return failure('隔离RDB快照尚未就绪')
-    if (await client.type(key) !== 'string') return failure('冻结RDB缺少来源角色状态')
-    const raw = await client.get(key)
-    if (raw === null || Buffer.byteLength(raw) > 8 * 1024 * 1024) return failure('冻结RDB来源状态无效')
-    return raw
+    return await run(client)
   } finally {
     if (client?.isOpen) await client.close().catch(() => client?.destroy())
     if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
@@ -281,6 +279,15 @@ async function readBackupCharacter(rdbFile: string, expectedHash: string, key: s
     if (child && child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited }
     await rm(directory, { recursive: true, force: true })
   }
+}
+
+async function readBackupCharacter(rdbFile: string, expectedHash: string, key: string): Promise<string> {
+  return withFrozenLegacyRedis(rdbFile, expectedHash, async client => {
+    if (await client.type(key) !== 'string') return failure('冻结RDB缺少来源角色状态')
+    const raw = await client.get(key)
+    if (raw === null || Buffer.byteLength(raw) > 8 * 1024 * 1024) return failure('冻结RDB来源状态无效')
+    return raw
+  })
 }
 
 /** Acquisition owns filesystem and RDB authenticity. Callers cannot supply a
@@ -405,7 +412,7 @@ export async function runStandaloneLegacyQqMemoryMigration(config: ReturnType<ty
     const connection = config.connections.find(row => row.connection.id === options.connectionId)?.connection
     if (!connection || !config.isConfigCurrent()) return failure('连接或当前宿主配置无效')
     const target = { account: connection.account, kind: 'group' as const, id: options.groupId }, resolved = config.resolvePersona(target), binding = resolved?.binding
-    if (!binding || binding.connectionId !== options.connectionId || config.simulation.enabled === false || config.useTextGroup?.(target)) return failure('目标不是已配置仿真群')
+    if (!binding || binding.connectionId !== options.connectionId) return failure('目标不是已配置仿真群')
     const expectedToken = agentBindingToken(binding), redis = await connectAgentRedis(config.redisUrl)
     try {
       const captured = await acquireStandaloneLegacyMemoryEvidence({ sourceRoot: options.sourceRoot, backupDir: options.backupDir, binding, redis })

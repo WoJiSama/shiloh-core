@@ -2,6 +2,7 @@ import type { SimMoodState, SimSessionState } from '../../../contracts/simulatio
 import { randomUUID } from 'node:crypto'
 import type { CharacterScope } from '../../../contracts/character.js'
 import type { AgentConversationScope } from '../../../contracts/agentBinding.js'
+import { reportAgentFailure, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { characterKey } from '../domain/characterState.js'
 import { agentConversationKey } from '../../runtime/domain/agentBindings.js'
 import { createDefaultSimSession, dayKey, isSimulationUserId } from '../domain/simConfig.js'
@@ -29,6 +30,7 @@ export interface SimSessionStorePorts {
   memoryScope?: AgentConversationScope
   redis: SimRedisLike
   logger?: { warn?(message: string): void; error?(message: string, error?: unknown): void }
+  diagnostics?: Pick<AgentDiagnostics, 'emit'>
   now?(): number
 }
 
@@ -96,7 +98,7 @@ const MOOD_KEY = 'shiloh:sim:mood'
 export const SIM_TURN_BUSY_LEASE_MS = 15 * 60_000
 
 /** 群级覆盖（.仿真 开/关 与控制台预算编辑都写这里）：budgetCaps 键=群号 值=每日金额上限；budgetDefaultCny 为空表示用 yaml 默认；atOnly=「仅被@才回」群清单（管理员设定，优先于 AI 自设触发器）；playAlongUntil=「活跃助推」到期表（epoch ms，助推窗口内系统兜底节奏，过期回落自主档、由 AI 自设配置接管） */
-export interface SimGroupOverrides { explicitEnabled: string[]; disabled: string[]; budgetCaps: Record<string, number>; turnCaps: Record<string, number>; atOnly?: string[]; playAlongUntil?: Record<string, number>; budgetDefaultCny?: number }
+export interface SimGroupOverrides { explicitEnabled: string[]; disabled: string[]; budgetCaps: Record<string, number>; turnCaps: Record<string, number>; atOnly?: string[]; playAlongUntil?: Record<string, number>; proactive?: Record<string, boolean>; budgetDefaultCny?: number }
 
 interface SimulationBudgetCarryover { day: string; turns: number; costCny: number }
 
@@ -191,6 +193,8 @@ export function decodeSimulationOverrides(raw: string): SimGroupOverrides {
   }
   return { explicitEnabled: parseStringList(parsed.explicitEnabled), disabled: parseStringList(parsed.disabled),
     budgetCaps: normalizeCaps(parsed.budgetCaps), turnCaps: normalizeCaps(parsed.turnCaps), atOnly: parseStringList(parsed.atOnly), playAlongUntil,
+    proactive: Object.fromEntries(Object.entries(record(parsed.proactive))
+      .filter((entry): entry is [string, boolean] => supportedKey(entry[0]) && typeof entry[1] === 'boolean')),
     ...(Number.isFinite(rawDefault) && rawDefault > 0 ? { budgetDefaultCny: Math.min(10_000, rawDefault) } : {}) }
 }
 
@@ -202,6 +206,7 @@ export function encodeSimulationOverrides(overrides: SimGroupOverrides): string 
     turnCaps: overrides.turnCaps || {},
     atOnly: overrides.atOnly || [],
     playAlongUntil: overrides.playAlongUntil || {},
+    ...(overrides.proactive ? { proactive: overrides.proactive } : {}),
     ...(overrides.budgetDefaultCny !== undefined ? { budgetDefaultCny: overrides.budgetDefaultCny } : {}),
   })
 }
@@ -293,7 +298,6 @@ export function createSimSessionStore(ports: SimSessionStorePorts): SimSessionSt
   }
 
   const selfKey = (legacy: string): string => ports.characterScope ? `${characterKey(ports.characterScope)}:legacy:${legacy.split(':').pop()}` : legacy
-  const logWarn = (message: string) => { try { ports.logger?.warn?.(message) } catch { /* 日志不可用不阻塞 */ } }
   const queueWrite = async (key: string, write: () => Promise<void>): Promise<void> => {
     let writes = sessionWrites.get(redis)
     if (!writes) { writes = new Map(); sessionWrites.set(redis, writes) }
@@ -322,12 +326,19 @@ export function createSimSessionStore(ports: SimSessionStorePorts): SimSessionSt
         await pending
         if (sessionWrites.get(redis)?.get(simulationSessionKey(groupId)) === pending) break
       }
-      try {
-        const raw = await redis.get(simulationSessionKey(groupId))
-        return raw ? decodeSimulationSession(raw, now()) : createDefaultSimSession(now())
-      } catch (error) {
+      let raw: string | null
+      try { raw = await redis.get(simulationSessionKey(groupId)) }
+      catch (error) {
+        reportAgentFailure(ports.diagnostics, { stage: 'runtime', operation: 'simulation_session_load', code: 'session_read_failed', error },
+          () => ports.logger?.warn?.(`[仿真] 群 ${groupId} 会话状态读取失败，使用默认状态`))
+        return createDefaultSimSession(now())
+      }
+      if (!raw) return createDefaultSimSession(now())
+      try { return decodeSimulationSession(raw, now()) }
+      catch (error) {
         // 损坏隔离：不让一次坏数据把后续保存也变成写坏库（qq-bridge 教训：catch{return 默认}会让下次保存清掉整库）。
-        logWarn(`[仿真] 群 ${groupId} 会话状态损坏，已重建：${error instanceof Error ? error.message : String(error)}`)
+        reportAgentFailure(ports.diagnostics, { stage: 'runtime', operation: 'simulation_session_load', code: 'session_decode_failed', error },
+          () => ports.logger?.warn?.(`[仿真] 群 ${groupId} 会话状态损坏，使用默认状态`))
         return createDefaultSimSession(now())
       }
     },
@@ -398,8 +409,9 @@ export function createSimSessionStore(ports: SimSessionStorePorts): SimSessionSt
       try {
         const raw = await redis.get(key)
         return await allowedMemories(raw ? (Array.isArray(JSON.parse(raw)) ? JSON.parse(raw) as unknown[] : []) : [])
-      } catch {
-        logWarn(`[仿真] 群 ${groupId} 记忆库损坏，按空处理（不回写覆盖，等下一次保存重建）`)
+      } catch (error) {
+        reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'simulation_memory_load', code: 'memory_read_failed', error },
+          () => ports.logger?.warn?.(`[仿真] 群 ${groupId} 记忆库读取或校验失败，按空处理`))
         return []
       }
     },
@@ -418,8 +430,9 @@ export function createSimSessionStore(ports: SimSessionStorePorts): SimSessionSt
         // Legacy reason strings lack individual evidence/time. Keep familiarity,
         // but never reuse a reason after any source has been invalidated.
         return Object.fromEntries(Object.entries(parsed).map(([id, value]) => [id, cutoff ? { ...record(value), reasons: [] } : value]))
-      } catch {
-        logWarn(`[仿真] 群 ${groupId} 好感度数据损坏，按空处理`)
+      } catch (error) {
+        reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'simulation_affinity_load', code: 'affinity_read_failed', error },
+          () => ports.logger?.warn?.(`[仿真] 群 ${groupId} 好感度数据读取或校验失败，按空处理`))
         return {}
       }
     },

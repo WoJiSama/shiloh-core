@@ -2,12 +2,15 @@
 import { computed, defineAsyncComponent } from 'vue'
 import { useRoute } from 'vue-router'
 import { workspace } from '../lib/workspace'
-import { workspaceFeatures, type WorkspaceFeature } from '../lib/navigation'
+import { workspaceFeatures, workspaceNavigation, type WorkspaceFeature } from '../lib/navigation'
 import { robotLocation, selectConversation } from '../lib/workspaceModel'
 import CapabilityGate from '../components/CapabilityGate.vue'
 import SchemaPage from './SchemaPage.vue'
 import WorkspaceConnections from './WorkspaceConnections.vue'
 const props = defineProps<{ feature: WorkspaceFeature }>()
+const StandaloneSemanticPage = defineAsyncComponent(() => import('./StandaloneSemanticPage.vue'))
+const StandaloneGroupAdminPage = defineAsyncComponent(() => import('./StandaloneGroupAdminPage.vue'))
+const StandaloneCommandsPage = defineAsyncComponent(() => import('./StandaloneCommandsPage.vue'))
 const mode = workspace.mode
 const route = useRoute()
 const components = {
@@ -73,15 +76,10 @@ const componentProps = computed<Record<string, unknown>>(() => {
   }
   return {}
 })
-const groupLabels: Record<string, string> = {
-  '/resources': '资源库',
-  '/runtime': '运行中心',
-  '/system': '系统',
-  '/connections': '连接',
-  '/robots': '机器人'
-}
 const backLabel = computed(() =>
-  backTarget.value.path.startsWith('/robots/') ? '机器人' : groupLabels[feature.value.group]
+  backTarget.value.path.startsWith('/robots/')
+    ? '机器人'
+    : workspaceNavigation.find((section) => section.path === feature.value.group)?.label
 )
 </script>
 <template>
@@ -92,7 +90,9 @@ const backLabel = computed(() =>
     <WorkspaceConnections v-if="props.feature === 'groups'" /><CapabilityGate
       v-else
       :operation="feature.operation"
-      ><SchemaPage v-if="props.feature === 'commands'" kind="dice" /><component
+      ><StandaloneCommandsPage v-if="props.feature === 'commands'" />
+      <StandaloneGroupAdminPage v-else-if="props.feature === 'group-admin'" />
+      <StandaloneSemanticPage v-else-if="props.feature === 'semantic'" /><component
         v-else
         :is="components[props.feature]"
         v-bind="componentProps" /></CapabilityGate></template

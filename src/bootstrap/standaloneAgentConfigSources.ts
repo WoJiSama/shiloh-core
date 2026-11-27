@@ -28,6 +28,16 @@ const snapshots = new WeakMap<SourceSnapshot, Root>()
 const observations = new WeakMap<Root, SourceSnapshot>()
 const verifiedFiles = new WeakMap<Root, Readonly<Record<ConfigSourceName, FileRead>>>()
 const maximum = 2 * 1024 * 1024
+const sourceKeys = ['host', 'personas', 'bindings'] as const
+let configReadCount = 0, configReadMs = 0
+export function standaloneConfigReadWork() {
+  return { configReadCount, configReadMs }
+}
+function measureConfigRead<T>(read: () => T): T {
+  const started = performance.now()
+  try { return read() }
+  finally { configReadCount++; configReadMs += performance.now() - started }
+}
 const fail = (code: 'conflict' | 'unavailable' = 'conflict'): never => { throw new AgentConsoleError(code) }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 const missing = (error: unknown) => !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
@@ -80,19 +90,19 @@ function readFile(name: string, optional: boolean, previous?: FileRead): FileRea
 }
 function transactionRoot(root: Root): TransactionRoot { return { root: root.root, hostFile: root.hostFile, ensureRoot: () => checkRoot(root) } }
 function readRoot(root: Root): SourceSnapshot {
-  const { reads, snapshot } = readConfigTransactionGroup(transactionRoot(root), fence => {
+  const { reads, snapshot } = measureConfigRead(() => readConfigTransactionGroup(transactionRoot(root), fence => {
     const files = names(root), previous = verifiedFiles.get(root)
     const host = readFile(files.host, false, previous?.host), personas = readFile(files.personas, true, previous?.personas),
       bindings = readFile(files.bindings, false, previous?.bindings)
     const reads = { host, personas, bindings }
     const versions = Object.freeze({ host: host.version, personas: personas.version, bindings: bindings.version })
     // Verify the complete read set, not only the last file read.
-    for (const key of ['host', 'personas', 'bindings'] as const) if (readFile(files[key], key === 'personas', reads[key]) !== reads[key]) fail()
+    for (const key of sourceKeys) if (readFile(files[key], key === 'personas', reads[key]) !== reads[key]) fail()
     const sources: ConfigSources = Object.freeze({ host: host.source!, personas: personas.source, bindings: bindings.source! })
     const snapshot: SourceSnapshot = Object.freeze({ hostFile: root.hostFile, root: root.root, versions, sources, fence,
       revision: digest(JSON.stringify([root.root, root.pins[0]!.stat.dev.toString(), root.pins[0]!.stat.ino.toString(), versions, fence])) })
     return { reads, snapshot }
-  })
+  }))
   verifiedFiles.set(root, reads)
   snapshots.set(snapshot, root)
   return snapshot
@@ -170,11 +180,16 @@ export function observeStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot, c
   if (observations.has(root)) return { current: true, accepted: evaluate() }
   let entry: SourceSnapshot
   try { entry = readRoot(root) } catch { return failed }
+  const reads = verifiedFiles.get(root)!
   observations.set(root, entry)
   let accepted: boolean
   try { accepted = evaluate() } finally { observations.delete(root) }
   try {
-    const current = readRoot(root).revision === entry.revision
+    // Compare every exit byte and file identity against the already verified
+    // entry read set, inside a fresh transaction fence.
+    const files = names(root)
+    const current = measureConfigRead(() => readConfigTransactionGroup(transactionRoot(root), fence =>
+      fence === entry.fence && sourceKeys.every(key => readFile(files[key], key === 'personas', reads[key]) === reads[key])))
     return { current, accepted: current && accepted }
   } catch { return failed }
 }

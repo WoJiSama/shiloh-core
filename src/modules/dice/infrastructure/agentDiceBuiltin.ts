@@ -9,8 +9,9 @@ import {DEFAULT_TEMPLATES,DEFAULT_CHECK_LEVELS,DEFAULT_TEMP_INSANITY,DEFAULT_IND
 import type {DiceReplyInput} from '../domain/diceReplyCatalog.js'
 import {DICE_COMMAND_RULES,stripDiceCommand,normalizeDiceCommandText} from './diceCommandPolicy.js'
 import {isPlatformIdentifier} from '../../runtime/domain/agentBindings.js'
+import {executeDiceDeck,normalizeDiceDeck} from '../domain/diceDeck.js'
 
-export interface AgentDiceBuiltinConfig extends DiceReplyInput { readonly enabled?:boolean;readonly maxDiceCount?:number;readonly maxDiceSides?:number;readonly maxRounds?:number;readonly defaultRule?:string;readonly allowHiddenRoll?:boolean;readonly timeZone?:string }
+export interface AgentDiceBuiltinConfig extends DiceReplyInput { readonly enabled?:boolean;readonly maxDiceCount?:number;readonly maxDiceSides?:number;readonly maxRounds?:number;readonly defaultRule?:string;readonly allowHiddenRoll?:boolean;readonly timeZone?:string;readonly decks?:Readonly<Record<string,readonly string[]>> }
 export interface AgentDiceBuiltinState { readonly version:1; readonly users:Record<string,DiceUser>; readonly scene:DiceGroup }
 export interface AgentDiceBuiltinContext {
  readonly source:{readonly messageId:string;readonly authorId:string;readonly at:number}
@@ -48,7 +49,7 @@ function cleanJson<T>(value:T):T {
  };return copy(value,0) as T
 }
 const defaults={enabled:true,maxDiceCount:100,maxDiceSides:100000,maxRounds:20,defaultRule:'0',allowHiddenRoll:false,timeZone:'Asia/Shanghai'}
-type DiceConfig=typeof defaults & ReturnType<typeof mergeDiceReplyConfig>
+type DiceConfig=typeof defaults & ReturnType<typeof mergeDiceReplyConfig> & {decks:Readonly<Record<string,readonly string[]>>}
 
 const ATTR_ALIASES:Record<string,string> = {
   力量: "STR", str: "STR", STR: "STR",
@@ -1696,7 +1697,7 @@ handleInsanity(type = "ti") {
   }
 }
 
-const migrated=new Set(['roll','initiativeRoll','initiative','observer','randomName','rsr','ww','dx','ek','ekgen','bonusRoll','penaltyRoll','team','who','ping','opposed','seaCocCheck','check','numberedCheck','bonusCheck','penaltyCheck','hiddenCheck','sanCheck','enCheck','coc','dnd','nameDnd','dndUtility','st','pc','nn','sn','setCoc','setDiceOption','jrrp','db','ti','li'])
+const migrated=new Set(['drawCard','roll','initiativeRoll','initiative','observer','randomName','rsr','ww','dx','ek','ekgen','bonusRoll','penaltyRoll','team','who','ping','opposed','seaCocCheck','check','numberedCheck','bonusCheck','penaltyCheck','hiddenCheck','sanCheck','enCheck','coc','dnd','nameDnd','dndUtility','st','pc','nn','sn','setCoc','setDiceOption','jrrp','db','ti','li'])
 const rules=[...DICE_COMMAND_RULES.filter(rule=>migrated.has(rule.fnc)),{fnc:'team',reg:'^[.。]\\s*team(?![A-Za-z])[\\s\\S]*$'}].map(rule=>({...rule,pattern:new RegExp(rule.reg,'iu')}))
 const commandMatch=(command:string)=>rules.find(rule=>rule.pattern.test(command.trim()))
 function canonical(value:unknown):string {
@@ -1710,9 +1711,14 @@ function freeze<T>(value:T):T {
 }
 function resolveConfig(input:AgentDiceBuiltinConfig):DiceConfig {
  const supplied=cleanJson(input)
- const allowed=['enabled','maxDiceCount','maxDiceSides','maxRounds','defaultRule','allowHiddenRoll','timeZone','templates','checkLevels','insanityTables','jrrpComments']
+ const allowed=['enabled','maxDiceCount','maxDiceSides','maxRounds','defaultRule','allowHiddenRoll','timeZone','templates','checkLevels','insanityTables','jrrpComments','decks']
  if(Object.keys(supplied).some(key=>!allowed.includes(key)))throw new Error('骰子内核配置无效')
- const config={...defaults,...supplied,...mergeDiceReplyConfig(supplied)}
+ const decks=supplied.decks??{}
+ if(!decks||typeof decks!=='object'||Array.isArray(decks)||Object.keys(decks).length>80||
+   Object.entries(decks).some(([name,items])=>!name.trim()||name!==name.trim()||name.length>48||/[\u0000-\u001f\u007f]/u.test(name)||
+     !Array.isArray(items)||items.length<1||items.length>200||items.some(item=>typeof item!=='string'||!item.trim()||item.length>800||
+       Number(/^::(\d+)::/u.exec(item)?.[1]??1)>100)))throw new Error('牌堆配置无效')
+ const config={...defaults,...supplied,...mergeDiceReplyConfig(supplied),decks}
  for(const [key,min,max]of [['maxDiceCount',1,10000],['maxDiceSides',2,100000000],['maxRounds',1,1000]] as const){if(!Number.isSafeInteger(config[key])||config[key]<min||config[key]>max)throw new Error('骰子内核配置无效')}
  if(typeof config.enabled!=='boolean'||typeof config.allowHiddenRoll!=='boolean'||typeof config.defaultRule!=='string'||typeof config.timeZone!=='string')throw new Error('骰子内核配置无效')
  if(Object.values(config.templates).some(value=>typeof value!=='string'||value.length>8000)||Object.values(config.checkLevels).some(value=>typeof value!=='string'||value.length>256)||
@@ -1732,7 +1738,10 @@ function validateContext(context:AgentDiceBuiltinContext){
 /** A pure, owner-local transition. Source claiming, durable random freezing and delivery belong to the engine. */
 export function createAgentDiceBuiltin(input:AgentDiceBuiltinConfig={}) {
  const config=resolveConfig(input)
- const definitionId='dice:builtin:v1:'+createHash('sha256').update(canonical(config)).digest('hex')
+ const {decks,...previous}=config
+ const deck=normalizeDiceDeck(decks,'Core')
+ const visibleDecks=Object.keys(decks).filter(name=>!name.startsWith('_'))
+ const definitionId='dice:builtin:v1:'+createHash('sha256').update(canonical(Object.keys(decks).length?config:previous)).digest('hex')
  return Object.freeze({
   definitionId,
   isCandidate:(command:string)=>config.enabled&&typeof command==='string'&&!!commandMatch(command),
@@ -1750,6 +1759,17 @@ export function createAgentDiceBuiltin(input:AgentDiceBuiltinConfig={}) {
    const text=normalizeDiceCommandText(command.trim()),strip=(head:string)=>stripDiceCommand(text,head)
    let output='',hidden=false
    switch(match.fnc){
+    case 'drawCard': {
+     const name=strip('(draw|抽牌)').trim()
+     if (deck && visibleDecks.includes(name)) {
+      try {
+       output=name+' · '+executeDiceDeck(deck,name,true,{playerName:context.actor.name,
+        maxDepth:8,maxDraws:32,maxTextLength:1800},0,runtime.rollInt.bind(runtime))
+      } catch { output='此牌堆的抽取规则暂时无法完成。' }
+     } else output=name?'牌堆未找到。用 .draw 查看可用牌堆。':
+      visibleDecks.length?'可用牌堆：'+visibleDecks.join('、'):'本实例尚未配置牌堆。'
+     break
+    }
     case 'roll': output=runtime.handleRoll(actor,strip('(r(?![A-Za-z])|roll)'));break
     case 'initiativeRoll':output=await runtime.handleInitiativeRoll(actor,strip('ri'));break
     case 'initiative':output=await runtime.handleInitiative(actor,strip('(init|先攻)'));break

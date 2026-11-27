@@ -2051,7 +2051,7 @@ test('standalone QQ sends verified group images only to the configured vision mo
   assert.deepEqual(lookups, [90101, 90102, 90102])
   const directResults = modelRequests.filter(item => item.visible.includes('直接看图验收')).flatMap(item => item.body.messages.filter(row => row.role === 'tool'))
   assert.ok(directResults.some(row => row.tool_call_id === 'simGetMessageImages-hidden' && String(row.content).includes('本轮可见')))
-  assert.ok(directResults.some(row => row.tool_call_id === 'simGetMessageImages-extra' && String(row.content).includes('正整数序号')))
+  assert.ok(directResults.some(row => row.tool_call_id === 'simGetMessageImages-extra' && String(row.content).includes('不符合声明的 JSON Schema')))
   assert.ok(directResults.some(row => String(row.content).includes('本轮看图次数上限')))
 
   // A pre-cutover source has no inbox receipt, so the quote is verified against OneBot.
@@ -2072,7 +2072,7 @@ test('standalone QQ sends verified group images only to the configured vision mo
     nextVisionResponse = scenario.status
     publish(scenario.group, scenario.id, [mention, talk(scenario.command), image])
     await waitUntil(() => visionRequests.length === before + 1, 'diagnostic failure reaches the configured vision provider')
-    await waitUntil(() => modelRequests.some(item => item.visible.includes(scenario.command) && String(item.result).startsWith('error:')),
+    await waitUntil(() => modelRequests.some(item => item.visible.includes(scenario.command) && String(item.result).includes('"code":"image_description_unavailable"')),
       'failed vision returns a tool error to the current turn')
     await settled(scenario.group)
     assert.equal(visionRequests.length, before + 1, 'HTTP or empty-content failure does not retry vision')
@@ -2136,6 +2136,8 @@ test('standalone QQ sends verified group images only to the configured vision mo
   const journalText = (await Promise.all((await fs.readdir(operations)).filter(name => name.endsWith('.ndjson'))
     .map(name => fs.readFile(path.join(operations, name), 'utf8')))).join('')
   const events = journalText.trim().split('\n').map(line => JSON.parse(line))
+  assert.ok(events.some(event => event.operation === 'simGetMessageImages' && event.code === 'tool_schema_invalid' &&
+    event.details?.rule === 'additionalProperties' && event.details.result === 'not_dispatched'))
   const visionEvents = events.filter(event => ['simulation_image_description', 'vision_provider_http'].includes(event.operation))
   for (const [group, status] of [[groups.unauthorized, 401], [groups.empty, 200]]) {
     const scoped = visionEvents.filter(event => event.scope.kind === 'conversation' && event.scope.binding.target.id === String(group))
@@ -2145,7 +2147,9 @@ test('standalone QQ sends verified group images only to the configured vision mo
       'vision HTTP outcome preserves only its status')
     assert.ok(scoped.some(event => event.operation === 'simulation_image_description' && event.outcome === 'started'), 'image description start is durable')
     assert.ok(scoped.some(event => event.operation === 'simulation_image_description' && event.outcome === 'failed' &&
-      event.code === 'image_model_response_error' && event.httpStatus === status), 'HTTP and empty-content failures retain their safe distinction')
+      event.code === (status === 401 ? 'http_error' : 'model_response_empty') &&
+      event.details?.step === (status === 401 ? 'provider_request' : 'response_validation') && event.httpStatus === status),
+    'HTTP and empty-content failures retain their safe distinction')
   }
   assert.ok(visionEvents.some(event => event.operation === 'simulation_image_description' && event.outcome === 'succeeded' &&
     event.code === 'image_description_completed'), 'normal vision 200 records its confirmed description')
@@ -2154,7 +2158,7 @@ test('standalone QQ sends verified group images only to the configured vision mo
   for (const event of visionEvents.filter(event => event.outcome !== 'started')) {
     assert.ok(Number.isFinite(event.durationMs) && event.durationMs >= 0, 'terminal vision diagnostics retain safe duration')
     assert.ok(Object.keys(event).every(key => ['version', 'id', 'traceId', 'at', 'scope', 'stage', 'operation', 'outcome', 'code',
-      'durationMs', 'errorKind', 'httpStatus', 'configurationRevision'].includes(key)), 'vision diagnostics expose metadata only')
+      'durationMs', 'errorKind', 'httpStatus', 'configurationRevision', 'details'].includes(key)), 'vision diagnostics expose metadata only')
   }
   for (const secret of [privateVisionBody, fixturePng, text, forbidden, 'vision-fixture', 'chat-fixture', 'https://private.invalid',
     `http://127.0.0.1:${port}`, '/vision/v1/chat/completions', 'base64://', 'data:image/', 'image_url', '图源发送者']) {

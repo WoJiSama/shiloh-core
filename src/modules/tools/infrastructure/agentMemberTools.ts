@@ -93,7 +93,7 @@ export function createAgentMemberTools(): readonly AgentTool[] {
       }
       if (!id && nickname) {
         const snapshot = await context.listMembers?.()
-        if (!snapshot) return failed('unavailable', '本次群成员列表无法核实。')
+        if (!snapshot) return failed('unavailable', '本次群成员列表无法核实。', { unavailable: 'list' })
         const found = matches(snapshot.members, nickname, true)
         if (found.length !== 1) return failed(found.length ? 'needs_clarification' : 'not_found', '姓名未唯一匹配，请提供准确成员标识。', {
           candidates: found.slice(0, 10).map(member => ({ user_id: member.user.id, nickname: member.profile?.nickname ?? member.displayName, card: member.profile?.conversationName ?? '' })), total_candidates: found.length,
@@ -105,7 +105,7 @@ export function createAgentMemberTools(): readonly AgentTool[] {
       if (!id) return failed('needs_clarification', '请明确一位查询对象。')
       const snapshot = await context.readMember(id)
       await ensure(context)
-      if (!snapshot) return failed('unavailable', '本次成员资料无法核实。')
+      if (!snapshot) return failed('unavailable', '本次成员资料无法核实。', { unavailable: 'detail' })
       return succeeded({ action: 'member_info', success: true, data: { user_id: id, displayName: snapshot.member.displayName,
         role: snapshot.member.role, ...(snapshot.member.profile ?? {}) }, observedAt: snapshot.observedAt })
     },

@@ -2,6 +2,28 @@ import type { AgentMediaShare } from '../../../contracts/agentMediaRelayWorkflow
 import { validateAgentMediaShare } from './agentMediaRelayReference.js'
 export { validateAgentMediaShare } from './agentMediaRelayReference.js'
 
+function record(input: unknown): Record<string, unknown> {
+  return input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {}
+}
+
+/** Season responses may list specials in sections outside the main episode list. */
+export function findAgentBilibiliEpisode(value: unknown, id: string): Record<string, unknown> | undefined {
+  const { episodes, section = [] } = record(value)
+  if (!Array.isArray(section) || section.length > 1000) return undefined
+  let found: Record<string, unknown> | undefined, count = 0
+  for (const items of [episodes, ...section.map(item => record(item).episodes)]) {
+    if (items === undefined) continue
+    if (!Array.isArray(items) || (count += items.length) > 1000) return undefined
+    for (const item of items) {
+      const episode = record(item), key = episode.id
+      if (!(typeof key === 'string' || typeof key === 'number' && Number.isSafeInteger(key)) || String(key) !== id) continue
+      if (found) return undefined
+      found = episode
+    }
+  }
+  return found
+}
+
 /** Syntax only: credentials, queries and platform payloads never become references. */
 export function parseAgentBilibiliReference(text: string): Readonly<AgentMediaShare> | undefined {
   if (typeof text !== 'string' || text.length > 64_000) return undefined

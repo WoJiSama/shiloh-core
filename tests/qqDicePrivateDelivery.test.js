@@ -232,11 +232,10 @@ test('revocation before and after transport queueing checks async authority and 
 })
 
 test('final asynchronous source guard is awaited after all native proofs before sendApi', async () => {
-  const f = fixture({ ensure: count => { if (count === 8) throw Error('privacy changed at final dispatch') } })
-  // Initial guard plus adapter/fixture guard around each of the three reads is
-  // seven checks; the eighth is the immediate pre-dispatch durable check.
+  const f = fixture({ ensure: () => { if (f.reads.length === 3) throw Error('privacy changed at final dispatch') } })
   assert.equal((await f.send(request(), f.guard)).state, 'unknown')
   assert.equal(f.reads.length, 3); assert.equal(f.sends.length, 0)
+  assert.equal(f.state.ensures, 2, 'native evidence shares the initial check, with a fresh check before dispatch')
 })
 
 test('unexpected native read failures are unknown and never trigger a private fallback or retry', async () => {

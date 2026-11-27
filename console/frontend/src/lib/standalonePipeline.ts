@@ -1,4 +1,5 @@
-import { accountLabel, type WorkspaceAccount } from './workspaceModel'
+import type { WorkspaceAccount } from './workspaceModel'
+import { accountLabel, conversationAddressLabel } from './workspaceNames'
 
 export type PipelineMode = 'unknown' | 'standalone' | 'legacy'
 export const corePipelineStates = {
@@ -49,7 +50,7 @@ export interface CoreMediaJob extends CoreIdentity {
   prepareFailures: number
   nextRetryAt: number
   effects: {
-    effect: 'forward' | 'forwardRetry' | 'directIntro' | 'directVideo' | 'link'
+    effect: 'forward' | 'forwardRetry' | 'forwardCard' | 'directIntro' | 'directVideo' | 'link'
     state: 'pending' | 'sent' | 'failed' | 'unknown'
     beganAt: number
     finishedAt?: number
@@ -186,7 +187,7 @@ function coreJob(value: unknown): CoreInboxJob | CoreMediaJob {
     effects: row.effects.map((value) => {
       const effect = object(value)
       return {
-        effect: choice(effect.effect, ['forward', 'forwardRetry', 'directIntro', 'directVideo', 'link']),
+        effect: choice(effect.effect, ['forward', 'forwardRetry', 'forwardCard', 'directIntro', 'directVideo', 'link']),
         state: choice(effect.state, ['pending', 'sent', 'failed', 'unknown']),
         beganAt: timestamp(effect.beganAt),
         ...(effect.finishedAt === undefined ? {} : { finishedAt: timestamp(effect.finishedAt) })
@@ -264,7 +265,7 @@ export function pipelineStateLabel(job: PipelineJob) {
   return names[job.state] || job.state
 }
 export function pipelineConversationLabel(job: CoreInboxJob | CoreMediaJob) {
-  return `${{ private: '私聊', group: '群聊', channel: '频道', thread: '话题' }[job.conversation.kind] || job.conversation.kind} ${job.conversation.id}`
+  return conversationAddressLabel({ ...job.conversation, account: job.account })
 }
 export function pipelineAccountLabel(job: CoreInboxJob | CoreMediaJob) {
   return accountLabel(job.account)
@@ -280,6 +281,7 @@ export function pipelineDuration(seconds: number) {
 export const pipelineEffectNames: Record<CoreMediaJob['effects'][number]['effect'], string> = {
   forward: '合并转发',
   forwardRetry: '合并转发重试',
+  forwardCard: '发送简图',
   directIntro: '介绍消息',
   directVideo: '视频直发',
   link: '链接回退'

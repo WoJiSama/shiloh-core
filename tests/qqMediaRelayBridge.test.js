@@ -81,7 +81,8 @@ async function raw(url, request) {
   return bounded(new Promise((resolve, reject) => {
     const socket = connect({ host: parsed.hostname.replace(/^\[|\]$/gu, ''), port: Number(parsed.port) })
     let received = ''
-    socket.on('connect', () => socket.end(request)); socket.on('data', chunk => { received += chunk })
+    socket.setTimeout(1800, () => socket.destroy(new Error('raw HTTP response timed out')))
+    socket.on('connect', () => socket.write(request)); socket.on('data', chunk => { received += chunk })
     socket.on('error', reject); socket.on('close', () => resolve(received))
   }), 'raw HTTP request')
 }
@@ -249,6 +250,42 @@ test('HTTP streaming cancellation and release interrupt backpressure without del
   await assert.rejects(request); await bounded(lease.release(), 'release streaming socket')
   assert.ok(received > 0 && received < original.artifact.sizeBytes)
   assert.deepEqual(await f.copiedFiles(), [])
+})
+
+test('a peer closing after the declared body finishes does not wait for another authorization', async t => {
+  const failures = [], f = await fixture(t, { diagnostics: { emit: event => failures.push(event) } })
+  const original = await f.image(), afterBody = gate()
+  let checks = 0, serving = false, received = 0
+  const lease = await f.bridge.stage(original.artifact, context({ async ensureCurrent() {
+    // A single-block GET checks admission, opens and reads the artifact, then authorizes writing it.
+    if (serving && ++checks > 7) await afterBody.promise
+  } }))
+  serving = true
+  try {
+    const response = await bounded(download(lease.nativeUrl, { onData(bytes, response) {
+      received += bytes.length
+      if (received === PNG.length) response.socket.destroy()
+    } }), 'complete body and peer close')
+    assert.equal(response.sha256, sha(PNG))
+    assert.equal(checks, 7)
+    assert.deepEqual(failures, [])
+  } finally {
+    afterBody.resolve()
+    await lease.release(); await original.release()
+  }
+})
+
+test('a peer disconnect records the active transfer step and byte count without disclosing the bridge URL', async t => {
+  const failures = [], f = await fixture(t, { diagnostics: { emit: event => failures.push(event) } })
+  const original = await f.video(16 * MiB), lease = await f.bridge.stage(original.artifact, context())
+  await assert.rejects(download(lease.nativeUrl, { onData(_bytes, response) { response.destroy() } }))
+  await waitFor(() => failures.length === 1, 'observe peer closing the socket')
+  assert.equal(failures[0].code, 'media_bridge_peer_closed')
+  assert.equal(failures[0].httpStatus, 200)
+  assert.equal(failures[0].details.bytesExpected, 16 * MiB)
+  assert.ok(failures[0].details.bytesWritten > 0 && failures[0].details.bytesWritten < 16 * MiB)
+  assert.ok(!JSON.stringify(failures[0]).includes(lease.nativeUrl))
+  await lease.release(); await original.release()
 })
 
 test('bridge.close removes only its own copies and listener while preserving host resources and neighbors', async t => {

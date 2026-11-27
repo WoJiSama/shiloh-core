@@ -9,15 +9,15 @@ import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agent
 import { validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
 import { agentMediaSharePageUrl, validateAgentMediaShare } from './agentMediaRelayReference.js'
-import { createDouyinHttp, douyinBody, douyinFailure, douyinGuard, douyinOfficialUrl } from './agentDouyinRelayHttp.js'
+import { createDouyinHttp, DouyinHttpError, douyinBody, douyinFailure, douyinGuard } from './agentDouyinRelayHttp.js'
 import type { AgentDouyinLookup, AgentDouyinRequest, DouyinRequestKind } from './agentDouyinRelayHttp.js'
 import { nativeAgentDouyinBrowser } from './agentDouyinRelayBrowser.js'
 import type { AgentDouyinBrowser } from './agentDouyinRelayBrowser.js'
-import { douyinCanonicalPage, douyinDocumentMetadata, douyinPageIdentity } from './agentDouyinRelayMetadata.js'
+import { douyinCanonicalPage, douyinDocumentMetadata, douyinPageIdentity, hasDouyinMedia } from './agentDouyinRelayMetadata.js'
 import type { AgentDouyinResolvedMedia } from './agentDouyinRelayMetadata.js'
 import { douyinConvertImage, douyinFileChunks, douyinSlideshow, douyinThumbnail } from './agentDouyinRelayNative.js'
 import type { AgentDouyinNative } from './agentDouyinRelayNative.js'
-import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import type { AgentDiagnosticInput, AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 
 export type { AgentDouyinLookup, AgentDouyinRequest, AgentDouyinResponse, AgentDouyinRequestPolicy } from './agentDouyinRelayHttp.js'
 export type { AgentDouyinBrowser, AgentDouyinBrowserInput, AgentDouyinBrowserRead } from './agentDouyinRelayBrowser.js'
@@ -49,6 +49,9 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
   const allows = (value: string) => { try { return hostSecretCheck(value) && options.allowsText?.(value) !== false } catch { return false } }
   const stageTime = (maximum: number) => Math.min(maximum, options.timeoutMs ?? maximum)
   let browserTail: Promise<unknown> = Promise.resolve()
+  const diagnose = (input: AgentDiagnosticInput) => {
+    try { options.diagnostics?.emit(input) } catch { /* Observation cannot change the prepared media. */ }
+  }
   return { async prepare(input, context) {
     const share = validateAgentMediaShare(input)
     if (share.provider !== 'douyin') throw douyinFailure()
@@ -120,31 +123,58 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
       const ref = share.reference
       let id = ref.kind === 'short' ? '' : ref.id, kind: 'video' | 'note' = ref.kind === 'note' ? 'note' : 'video'
       let metadata: AgentDouyinResolvedMedia | undefined
-      const metadataGuard = douyinGuard(guard.context, stageTime(7000))
+      const pageStarted = performance.now(), pageLimit = stageTime(7000)
+      const metadataGuard = douyinGuard(guard.context, pageLimit)
+      let pageStep = 'douyin_page_request', pageStatus: number | undefined, pageError: unknown
       try {
         const response = await read(agentMediaSharePageUrl(share), 'page', metadataGuard, 2 * MiB)
+        pageStatus = response.status; pageStep = 'douyin_page_identity'
         const landed = douyinPageIdentity(response.url)
         if (!landed || id && landed.id !== id) { await response.close(); throw douyinFailure() }
         id = landed.id; kind = landed.kind
-        const body = await douyinBody(response)
-        if (!secretCheck(body.toString('utf8'))) throw douyinFailure()
-        metadata = douyinDocumentMetadata(body.toString('utf8'), id, kind)
-      } catch { await guard.ensure(); if (!id) throw douyinFailure() }
-      finally { metadataGuard.close() }
-      const complete = () => metadata && (metadata.kind === 'note' ? metadata.images.length > 0 : !!metadata.video && metadata.duration > 0)
-      if (!complete()) {
-        const browserGuard = douyinGuard(guard.context, stageTime(25_000))
+        pageStep = 'response_body'
+        const body = (await douyinBody(response)).toString('utf8')
+        pageStep = 'douyin_page_parse'
+        if (!secretCheck(body)) throw douyinFailure()
+        metadata = douyinDocumentMetadata(body, id, kind)
+      } catch (error) {
+        await guard.ensure()
+        pageError = error
+        if (error instanceof DouyinHttpError) { pageStep = error.step; pageStatus = error.httpStatus ?? pageStatus }
+      } finally { metadataGuard.close() }
+      let browserStep = 'douyin_browser_queue', browserStatus: number | undefined, queueMs = 0, browserTimedOut = false
+      const browserLimit = stageTime(25_000)
+      if (!hasDouyinMedia(metadata)) {
+        const code = metadataGuard.deadlineElapsed ? 'douyin_page_timeout' : pageError ? 'douyin_page_failed' :
+          pageStatus !== 200 ? 'douyin_page_challenge' : metadata ? 'douyin_page_metadata_incomplete' : 'douyin_page_target_missing'
+        diagnose({ stage: 'runtime', operation: 'douyin_metadata_page', outcome: pageError ? 'failed' : 'cancelled', code,
+          durationMs: performance.now() - pageStarted, ...(pageStatus === undefined ? {} : { httpStatus: pageStatus }),
+          ...(pageError === undefined ? {} : { error: pageError }), details: { step: pageStep, ...(metadataGuard.deadlineElapsed ? { limit: pageLimit } : {}) } })
+        if (!id) throw douyinFailure()
+        const queuedAt = performance.now(), browserGuard = douyinGuard(guard.context, browserLimit)
         try {
-          const task = browserTail.then(async () => { await browserGuard.ensure(); return (options.browser ?? nativeAgentDouyinBrowser)({ id, kind, pageUrl: douyinCanonicalPage(id, kind), directory }, browserGuard.context, read) })
+          const task = browserTail.then(async () => {
+            await browserGuard.ensure()
+            queueMs = performance.now() - queuedAt
+            browserStep = options.browser ? 'douyin_browser_extract' : 'douyin_browser_launch'
+            return (options.browser ?? nativeAgentDouyinBrowser)({
+              id, kind, pageUrl: douyinCanonicalPage(id, kind), directory,
+              observeStep(step, status) { if (!browserGuard.signal.aborted) { browserStep = step; browserStatus = status } },
+            }, browserGuard.context, read)
+          })
           browserTail = task.catch(() => {})
           const resolved = await browserGuard.wait(task)
           if (resolved) metadata = resolved
-        } catch { await guard.ensure() }
-        finally { browserGuard.close() }
+        } catch (error) {
+          await guard.ensure()
+          browserTimedOut = browserGuard.deadlineElapsed
+          if (browserStep === 'douyin_browser_queue') queueMs = performance.now() - queuedAt
+          if (error instanceof DouyinHttpError) { browserStep = error.step; browserStatus = error.httpStatus }
+        } finally { browserGuard.close() }
       }
       await guard.ensure()
       const media = metadata
-      let degradation = !complete() ? 'metadata_unavailable' : undefined
+      let degradation = !hasDouyinMedia(media) ? 'metadata_unavailable' : undefined
       if (media && (media.id !== id || !['video', 'note'].includes(media.kind) || !Number.isFinite(media.duration) || media.duration < 0 || !Array.isArray(media.images) || media.images.length > 2000 ||
         ![media.title, media.description, media.author].every(value => typeof value === 'string' && Array.from(value).length <= 1000 && (!value || safeText(value))))) throw douyinFailure()
       if (media) kind = media.kind
@@ -194,8 +224,13 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
       const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover.artifact } as const] : [])] }, ...items] }, { allowsText: safeText })
       await guard.ensure(); transferred = true
       if (degradation) {
-        try { options.diagnostics?.emit({ stage: 'runtime', operation: 'douyin_provider_prepare', outcome: 'failed', code: degradation }) }
-        catch { /* A diagnostic observer cannot change an owned media result. */ }
+        diagnose({ stage: 'runtime', operation: 'douyin_provider_prepare', outcome: 'failed', code: degradation,
+          durationMs: performance.now() - pageStarted,
+          ...(degradation === 'metadata_unavailable' ? { ...(browserStatus === undefined ? {} : { httpStatus: browserStatus }),
+            details: { step: browserStep, queueMs: Math.round(queueMs), result: 'fallback_used',
+              cause: browserTimedOut ? 'douyin_browser_timeout' : browserStep === 'douyin_browser_extract'
+                ? 'douyin_browser_target_missing' : 'douyin_browser_failed',
+              ...(browserTimedOut ? { limit: browserLimit } : {}) } } : {}) })
       }
       return { status: items.length ? 'ready' : 'metadata-only', pageUrl, infoText, plan, release } satisfies AgentPreparedMediaRelay
     } catch { throw douyinFailure() }

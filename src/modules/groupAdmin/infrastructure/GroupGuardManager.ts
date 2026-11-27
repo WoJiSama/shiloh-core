@@ -15,20 +15,24 @@ const DEFAULT_GROUP_GUARD_CONFIG:GuardConfig = {
   questionMaxNumber: 10,
   questionOperators: ["add", "sub"],
   maxWrongTimes: 1,
-  kickOnTimeout: true,
-  kickOnWrongAnswer: true,
+  kickOnTimeout: false,
+  kickOnWrongAnswer: false,
   promptTemplate: "{at} 欢迎入群，请在 {timeout} 秒内回答：{question}",
   passMessage: "验证通过",
   retryMessage: "回答错误，请重新回答：{question}",
-  failMessage: "回答错误，已移出群聊",
-  timeoutMessage: "用户 {userId} 入群验证超时，已移出群聊"
+  failMessage: "入群验证未通过，请联系群管理员",
+  timeoutMessage: "用户 {userId} 入群验证超时，请联系群管理员"
 }
 
 export function normalizeGroupGuardConfig(input:unknown = {}):GuardConfig {
   const raw=adminRecord(input)
   const config = { ...DEFAULT_GROUP_GUARD_CONFIG, ...(raw || {}) }
-  for(const key of ['enabled','verifyInviteJoin','kickOnTimeout','kickOnWrongAnswer'] as const)config[key]=typeof raw[key]==='boolean'?raw[key]:DEFAULT_GROUP_GUARD_CONFIG[key]
+  for(const key of ['enabled','verifyInviteJoin'] as const)config[key]=typeof raw[key]==='boolean'?raw[key]:DEFAULT_GROUP_GUARD_CONFIG[key]
   for(const key of ['promptTemplate','passMessage','retryMessage','failMessage','timeoutMessage'] as const)config[key]=typeof raw[key]==='string'?raw[key]:DEFAULT_GROUP_GUARD_CONFIG[key]
+  config.kickOnTimeout = config.kickOnWrongAnswer = false
+  for (const key of ['failMessage', 'timeoutMessage'] as const) {
+    if (/踢出|移出群聊|移出本群/u.test(config[key])) config[key] = DEFAULT_GROUP_GUARD_CONFIG[key]
+  }
   config.enabledGroups = Array.isArray(config.enabledGroups)
     ? config.enabledGroups.map(id => String(id).trim()).filter(Boolean)
     : []
@@ -213,9 +217,6 @@ export class GroupGuardManager {
     }
 
     this.clearPending(key)
-    if (config.kickOnWrongAnswer) {
-      await this.kickUser(e, groupId, userId, "wrong_answer")
-    }
     if (config.failMessage) {
       await this.sendGroupMessage(e, groupId, renderTemplate(config.failMessage, {
         userId,
@@ -244,37 +245,12 @@ export class GroupGuardManager {
     if (!this.isGroupEnabled(config, groupId)) return
 
     const fakeEvent = { group_id: groupId, user_id: userId }
-    if (config.kickOnTimeout) {
-      await this.kickUser(fakeEvent, groupId, userId, "timeout")
-    }
     if (config.timeoutMessage) {
       await this.sendGroupMessage(fakeEvent, groupId, renderTemplate(config.timeoutMessage, {
         userId,
         question: item.question,
         timeout: config.timeoutSeconds
       }))
-    }
-  }
-
-  async kickUser(e:AdminEvent, groupId:GroupId, userId:GroupId, reason:string) {
-    const config = this.getConfig(groupId)
-    if (!this.isGroupEnabled(config, groupId)) return false
-    if (!await this.isBotAdmin(e, groupId)) return false
-    if (await this.isTargetProtected(e, groupId, userId)) return false
-
-    try {
-      const bot = requireAdminBot(this.ports,e)
-      const response = await bot.sendApi("set_group_kick", {
-        group_id: Number(groupId),
-        user_id: Number(userId),
-        reject_add_request: false
-      })
-      const ok = adminRecord(response).status === "ok" || adminRecord(response).retcode === 0
-      if (!ok) this.ports.logger?.warn?.(`[GroupGuard] 踢出失败 group=${groupId} user=${userId} reason=${reason}: ${JSON.stringify(response)}`)
-      return ok
-    } catch (error) {
-      this.ports.logger?.error?.(`[GroupGuard] 踢出失败 group=${groupId} user=${userId} reason=${reason}: ${adminError(error)}`)
-      return false
     }
   }
 

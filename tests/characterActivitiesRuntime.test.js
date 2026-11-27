@@ -30,10 +30,10 @@ async function waitFor(check, description) {
 }
 
 /** Compiled production runtime, with isolated persistence, model and adapter ports. */
-function fixture({ groups = [GROUP], script = () => quiet(), fetchCharacterFeed, reflectCharacter, runCharacterWorker, characterWorkerAvailable, beforeSet } = {}) {
+function fixture({ groups = [GROUP], script = () => quiet(), fetchCharacterFeed, reflectCharacter, runCharacterWorker, characterWorkerAvailable, beforeGet, beforeSet, diagnostics, observeCurrent } = {}) {
   const kv = new Map(), clock = { value: BASE }, calls = [], events = [], sent = [], errors = []
   const redis = {
-    async get(key) { return kv.get(key) ?? null },
+    async get(key) { await beforeGet?.(key); return kv.get(key) ?? null },
     async set(key, value) { await beforeSet?.(key, value); kv.set(key, value); return 'OK' },
     async del(...keys) { let removed = 0; for (const key of keys) if (kv.delete(key)) removed++; return removed },
   }
@@ -50,6 +50,8 @@ function fixture({ groups = [GROUP], script = () => quiet(), fetchCharacterFeed,
   }
   const runtimePorts = {
     redis, now: () => clock.value, random: () => 0.99,
+    ...(diagnostics ? { diagnostics } : {}),
+    ...(observeCurrent ? { observeCurrent } : {}),
     logger: { info() {}, warn(...args) { errors.push(args.join(' ')) }, error(...args) { errors.push(args.map(String).join(' ')) } },
     getSelf: () => ({ id: BOT, name: '希洛' }),
     getPersona: () => ({ personaId: 'shiloh', persona: { name: '希洛' }, systemContent: '喜欢探索与解谜' }),
@@ -192,6 +194,49 @@ test('后台收尾写入等待期间的新消息保持序号与未读，点名�
       h.runtime.stop()
     }
   }
+})
+
+test('a recalled message cancels the background check while storage failures still alert', async t => {
+  const entered = deferred(), resume = deferred(), emitted = []
+  let paused = false, broken = false, pending, subscriptionReads = 0, observedAuthority = 0
+  const h = fixture({
+    diagnostics: { emit: row => emitted.push(row), traceId: () => 'background-test' },
+    observeCurrent(check) { observedAuthority++; return check() },
+    async beforeGet(key) {
+      if (key === `${sessionKey(GROUP)}:activity-version` && !paused) {
+        paused = true
+        entered.resolve()
+        await resume.promise
+      }
+      if (key.startsWith('shiloh:character-subscriptions:')) {
+        subscriptionReads++
+        if (broken) throw new Error('Redis unavailable')
+      }
+    },
+  })
+  t.after(async () => { resume.resolve(); h.runtime.stop(); await pending })
+  pending = h.runtime.sweepOnce()
+  await entered.promise
+  await h.runtime.handleRecall({ group_id: GROUP, message_id: 'recalled-source' })
+  resume.resolve()
+  await pending
+  const background = () => emitted.filter(row => row.operation === 'simulation_character_background')
+    .map(row => [row.outcome, row.code])
+  assert.deepEqual(background(), [['cancelled', 'character_background_revoked']])
+  broken = true
+  await h.runtime.sweepOnce()
+  assert.deepEqual(background(), [
+    ['cancelled', 'character_background_revoked'],
+    ['failed', 'character_background_subscription_failed'],
+  ])
+  assert.equal(emitted.filter(row => row.operation === 'simulation_character_background').at(-1).details.step, 'subscription_read')
+  broken = false
+  subscriptionReads = 0
+  await h.runtime.sweepOnce()
+  assert.equal(subscriptionReads, 1)
+  assert.ok(observedAuthority > 0)
+  assert.equal(h.calls.length, 0)
+  assert.equal(h.sent.length, 0)
 })
 
 test('作品与订阅经模型工具持久化，订阅更新自主唤醒且去重，不借用群友身份', async () => {

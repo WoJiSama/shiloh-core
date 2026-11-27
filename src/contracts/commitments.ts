@@ -8,6 +8,7 @@ export interface CommitmentScheduleOnce { kind:'once'; time:number }
 export interface CommitmentScheduleDaily { kind:'daily'; time:string }
 export type CommitmentSchedule = CommitmentScheduleOnce | CommitmentScheduleDaily
 export type CommitmentStatus = 'active'|'completed'|'failed'|'expired'|'cancelled'|'unknown'
+export interface CommitmentSourceMessage { messageId:string; authorId:string; at:number }
 export interface CommitmentData {
   id:string
   group_id:string
@@ -17,8 +18,17 @@ export interface CommitmentData {
   schedule:CommitmentSchedule
   deliver:'agent'|'static'         // agent=到点唤醒仿真 agent 用工具完成;static=直发固定文案
   static_message:string|null
+  /** Older group commitments keep mentioning the creator. */
+  mentionCreator?:boolean
   /** An existing one-time reminder transferred from the QQ reminder ledger. */
   importedReminder?:true
+  /** The owning scope stays private. A destination, when present, is a bound group on the same account. */
+  privateRequest?: { messageId:string; groupId?:string; destinationBindingIdentity?:string }
+  /** A reminder accepted by the agent itself in a single bound group. */
+  ownedReservation?: { goalId:string; source:CommitmentSourceMessage; attemptedAt?:number; verifiedMessageId?:string }
+  /** Verified triggering message for a newly accepted one-time group reminder. */
+  groupSource?: CommitmentSourceMessage
+  groupDispatch?: { at:number; sha256:string; mentionId?:string; nextCheckAt?:number; checks?:number; messageId?:string }
   /** Frozen extra_action delegation; executed by the dedicated worker, never by wakeSim. */
   deferredAction?:AgentDeferredActionData
   expiry_at:number                 // 到期不再执行(默认30天,防遗忘永动机)
@@ -52,7 +62,7 @@ export interface CommitmentRedisLike {
 export interface CommitmentBotLike { uin?:string|number; sendApi?:(action:string,params:Record<string,unknown>)=>Promise<unknown> }
 export interface CommitmentEvent extends AgentBindingTurn {
   sourceAt?:number
-  _agentToolRequest?:{readonly occurredAt?:number|undefined}
+  _agentToolRequest?:{readonly occurredAt?:number|undefined;readonly messageId?:string}
   group_id?:string|number|undefined
   user_id?:string|number|undefined
   isMaster?:boolean|undefined

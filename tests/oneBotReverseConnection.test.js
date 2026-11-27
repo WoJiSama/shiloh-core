@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { once } from 'node:events'
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, get } from 'node:http'
@@ -45,10 +46,10 @@ async function waitFor(probe, description, timeoutMs = 4_000) {
   assert.fail(`timed out waiting for ${description}`)
 }
 
-async function peerAt(t, url, handleRequest, timeoutMs) {
+async function peerAt(t, url, handleRequest, timeoutMs, peerHeaders = headers) {
   let peer
   await waitFor(async () => {
-    peer = new WebSocket(url, { headers })
+    peer = new WebSocket(url, { headers: peerHeaders })
     const client = peer
     if (handleRequest) client.on('message', frame => handleRequest(client, JSON.parse(frame)))
     try { await once(peer, 'open'); return true }
@@ -128,7 +129,7 @@ test('OneBot backpressure preserves ordinary FIFO and admits recall and privacy 
   let pressures = 0, heldRead
   const adapter = adapterAt(url, {
     onAdmissionPressure() { pressures++ },
-    onEventError(error, code) { failures.push({ error, code }) },
+    onEventError(event) { failures.push(event) },
   })
   t.after(() => { first.resolve(); adapter.stop() })
   const started = adapter.start(async incoming => {
@@ -194,6 +195,58 @@ test('reverse OneBot reconnect rechecks identity and never replays an uncertain 
   assert.equal((await adapter.actions.send(action)).state, 'failed')
 })
 
+test('OneBot caches only configured QQ names and ignores replies from a retired socket', { timeout: 15_000 }, async t => {
+  const url = await address()
+  const group = { account, kind: 'group', id: '315320' }
+  const outsideList = { ...group, id: '315322' }
+  const wrongReply = { ...group, id: '315323' }
+  const friend = { account, kind: 'private', id: '324152' }
+  const unbound = { ...group, id: '315321' }
+  const foreign = { ...group, account: { ...account, id: '987654321' } }
+  const adapter = adapterAt(url, { conversationNameTargets: [group, outsideList, wrongReply, friend, foreign] })
+  t.after(() => adapter.stop())
+  const started = adapter.start(async () => {})
+  void started.catch(() => {})
+  const reply = (peer, request, data) => peer.send(JSON.stringify({ status: 'ok', retcode: 0, data, echo: request.echo }))
+  let previousRequest
+  const first = await peerAt(t, url, (peer, request) => {
+    if (request.action === 'get_login_info') login(peer, request)
+    if (request.action === 'get_group_list') previousRequest = request
+    if (request.action === 'get_friend_list') reply(peer, request, [{ user_id: 324152, nickname: '  第一位好友  ' }])
+  })
+  await started
+  await waitFor(() => !!previousRequest && adapter.conversationName(friend) === '第一位好友', 'first name reads')
+  assert.equal(adapter.conversationName(group), undefined)
+  first.terminate()
+  await waitFor(() => !adapter.isReady(), 'first socket retirement')
+  const infoRequests = []
+  const second = await peerAt(t, url, (peer, request) => {
+    if (request.action === 'get_login_info') login(peer, request)
+    if (request.action === 'get_group_list') reply(peer, request, [
+      { group_id: group.id, group_name: '今天的群名' },
+      { group_id: unbound.id, group_name: '不可见群名' },
+    ])
+    if (request.action === 'get_group_info') {
+      const id = request.params.group_id
+      infoRequests.push(id)
+      reply(peer, request, id === outsideList.id
+        ? { group_id: Number(id), group_name: '单群资料中的群名' }
+        : { group_id: unbound.id, group_name: '错群资料' })
+    }
+    if (request.action === 'get_friend_list') reply(peer, request, [{ user_id: friend.id, nickname: '更新后的昵称' }])
+  })
+  await waitFor(() => adapter.conversationName(group) === '今天的群名' &&
+    adapter.conversationName(friend) === '更新后的昵称' && adapter.conversationName(outsideList) === '单群资料中的群名' &&
+    infoRequests.length === 2, 'refreshed conversation names')
+  reply(second, previousRequest, [{ group_id: group.id, group_name: '过期的群名' }])
+  await delay(40)
+  assert.equal(adapter.conversationName(group), '今天的群名')
+  assert.deepEqual(infoRequests, [outsideList.id, wrongReply.id])
+  assert.equal(adapter.conversationName(wrongReply), undefined)
+  assert.equal(adapter.conversationName(unbound), undefined)
+  assert.equal(adapter.conversationName(foreign), undefined)
+})
+
 test('reverse OneBot stop cancels initial verification and releases the listening address', { timeout: 10_000 }, async t => {
   const url = await address()
   const adapter = adapterAt(url)
@@ -208,6 +261,68 @@ test('reverse OneBot stop cancels initial verification and releases the listenin
   t.after(() => server.close())
   server.listen(Number(new URL(url).port), '127.0.0.1')
   await once(server, 'listening')
+})
+
+test('the standalone listener survives a wrong peer and the initial login deadline', { timeout: 25_000 }, async t => {
+  const url = await address()
+  const adapter = adapterAt(url, { keepReverseListenerWaiting: true, onError() { assert.fail('the listener should stay open') } })
+  t.after(() => adapter.stop())
+  const started = adapter.start(async () => {})
+  let done = false
+  void started.then(() => { done = true }, () => { done = true })
+  const bad = await peerAt(t, url, (client, request) => login(client, request, '987654321'))
+  await waitFor(() => bad.readyState === WebSocket.CLOSED, 'unverified peer removed')
+  await delay(15_100)
+  assert.equal(adapter.isReady(), false)
+  assert.equal(done, false)
+  await peerAt(t, url, login)
+  await started
+  assert.equal(adapter.isReady(), true)
+})
+
+test('an offline reverse listener lets a second account verify and the first account reconnect later', { timeout: 10_000 }, async t => {
+  const url = await address(), companionUrl = await address()
+  const companion = { ...account, id: '987654321' }
+  const first = adapterAt(url, { startOffline: true })
+  const second = adapterAt(companionUrl, { connection: { id: 'companion', account: companion }, startOffline: true })
+  t.after(() => { first.stop(); second.stop() })
+  await Promise.all([first.start(async () => {}), second.start(async () => {})])
+  assert.equal(first.isReady(), false)
+  assert.equal(second.isReady(), false)
+  await peerAt(t, companionUrl, (client, request) => login(client, request, companion.id), undefined, { ...headers, 'X-Self-ID': companion.id })
+  await waitFor(() => second.isReady(), 'second account ready')
+  assert.equal(first.isReady(), false)
+  await peerAt(t, url, login)
+  await waitFor(() => first.isReady(), 'first account ready')
+})
+
+test('uncertain group text is confirmed only by a single exact, self-authored history match', { timeout: 10_000 }, async t => {
+  const url = await address(), time = Math.floor(Date.now() / 1000)
+  const target = { account, kind: 'group', id: '315320' }, body = '已安排组队'
+  const matched = { message_type: 'group', message_id: 870000001, group_id: target.id, time, self_id: account.id, user_id: account.id,
+    sender: { user_id: account.id }, message: [{ type: 'text', data: { text: body } }] }
+  const wrongGroup = { ...matched, message_id: 870000002, group_id: '315321' }
+  const wrongAuthor = { ...matched, message_id: 870000003, sender: { user_id: '987654321' } }
+  const mentioned = { ...matched, message_id: 870000005, message: [{ type: 'at', data: { qq: 315321 } }, ...matched.message] }
+  const adapter = adapterAt(url)
+  t.after(() => adapter.stop())
+  const started = adapter.start(async () => {})
+  let ambiguous = false
+  await peerAt(t, url, (client, request) => {
+    if (request.action === 'get_login_info') return login(client, request)
+    assert.equal(request.action, 'get_group_msg_history')
+    assert.equal(String(request.params.group_id), target.id)
+    client.send(JSON.stringify({ status: 'ok', retcode: 0, echo: request.echo,
+      data: { messages: [wrongGroup, wrongAuthor, matched, mentioned, ...(ambiguous ? [{ ...matched, message_id: 870000004 }] : [])] } }))
+  })
+  await started
+  const guard = { signal: new AbortController().signal, isCurrent: () => true }
+  const proof = { sha256: createHash('sha256').update(body).digest('hex'), from: time * 1000, until: time * 1000 + 60_000 }
+  assert.equal((await adapter.findOwnTextDelivery(target, proof, guard))?.messageId, '870000001')
+  assert.equal((await adapter.findOwnTextDelivery(target, { ...proof, mentionId: '315321' }, guard))?.messageId, '870000005')
+  assert.equal(await adapter.findOwnTextDelivery(target, { ...proof, mentionId: '315322' }, guard), undefined)
+  ambiguous = true
+  assert.equal(await adapter.findOwnTextDelivery(target, proof, guard), undefined)
 })
 
 test('a retired socket cannot disconnect an immediately restarted OneBot adapter', { timeout: 10_000 }, async t => {
@@ -353,7 +468,7 @@ test('reverse OneBot CLI preflight validates login and exits without event, mode
   assert.ok(!result.stdout.includes(token) && !result.stderr.includes(token))
 })
 
-test('standalone reverse OneBot carries a bound private turn through model and confirmed delivery', {
+test('standalone Core starts with two offline listeners and carries a verified account’s private turn', {
   skip: !redisAvailable, timeout: 25_000,
 }, async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'agent-reverse-turn-'))
@@ -370,15 +485,17 @@ test('standalone reverse OneBot carries a bound private turn through model and c
   model.listen(0, '127.0.0.1')
   await once(model, 'listening')
   t.after(() => new Promise(resolve => model.close(resolve)))
-  const url = await address()
+  const url = await address(), offlineUrl = await address()
   await writeFile(path.join(directory, 'agent-host.yaml'), JSON.stringify({
     version: 1, instance: 'reverse-turn', dataDir: 'ledger', privateChat: { enabled: true },
     model: { baseUrl: `http://127.0.0.1:${model.address().port}/v1`, name: 'fixture', apiKeyEnv: 'REVERSE_MODEL_KEY' },
-    connections: [{ id: 'reverse', transport: 'reverse-websocket', url, accessTokenEnv: 'REVERSE_QQ_TOKEN' }],
+    connections: [{ id: 'reverse', transport: 'reverse-websocket', url, accessTokenEnv: 'REVERSE_QQ_TOKEN' },
+      { id: 'offline', transport: 'reverse-websocket', url: offlineUrl, accessTokenEnv: 'REVERSE_QQ_TOKEN' }],
   }))
   await writeFile(path.join(directory, 'agent-bindings.yaml'), JSON.stringify({
     version: 1, agents: [{ id: 'role', personaId: 'default' }],
-    connections: [{ id: 'reverse', platform: 'qq', namespace: 'global', accountId: account.id }],
+    connections: [{ id: 'reverse', platform: 'qq', namespace: 'global', accountId: account.id },
+      { id: 'offline', platform: 'qq', namespace: 'global', accountId: '987654321' }],
     bindings: [{ connectionId: 'reverse', kind: 'private', conversationId: '324152', agentId: 'role' }],
   }))
   const repo = fileURLToPath(new URL('../', import.meta.url))
@@ -393,12 +510,13 @@ test('standalone reverse OneBot carries a bound private turn through model and c
   child.stderr.on('data', bytes => { log += bytes })
   t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); await exited })
   try {
+    await waitFor(() => log.includes('已启动'), 'standalone Core starts while neither account has logged in', 12_000)
     const peer = await peerAt(t, url, (client, request) => {
       if (request.action === 'get_login_info') return login(client, request)
       deliveries.push(request)
       client.send(JSON.stringify({ status: 'ok', retcode: 0, echo: request.echo, data: { message_id: 'reply-17' } }))
     }, 15_000)
-    await waitFor(() => log.includes('已启动'), 'standalone reverse host readiness')
+    await waitFor(() => log.includes('onebot_recovery succeeded'), 'the connected account finishes verification')
     peer.send(JSON.stringify({
       ...event('private-17'), message_type: 'private', sub_type: 'friend', group_id: undefined, message: '反向独立回合',
     }))

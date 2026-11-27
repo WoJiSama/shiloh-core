@@ -3,11 +3,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {createDelegateMemoryRuntime} from '../dist/backend/modules/memory/infrastructure/delegateMemoryTool.js'
 import {createAgentBindingDirectory} from '../dist/backend/modules/runtime/domain/agentBindings.js'
+import {createDelegatedMemoryRedis} from './helpers/delegatedMemoryRedis.js'
 
 const key='bl-chat:delegated:20'
 function setup(){
   const data=new Map(),logs=[]
-  const redis={get:async k=>data.get(k)||null,set:async(k,v)=>{data.set(k,v);return 'OK'},eval:async(_script,{keys,arguments:args})=>{if((data.get(keys[0])||'')!==args[0])return 0;data.set(keys[0],args[1]);return 1}}
+  const redis=createDelegatedMemoryRedis(data)
   const runtime=createDelegateMemoryRuntime({redis,logger:{info:m=>logs.push(String(m)),warn(){},error(){}},loadConfig:()=>({})})
   return {data,logs,redis,...runtime,tool:new runtime.DelegateMemoryTool()}
 }
@@ -50,7 +51,7 @@ test('forget 权限:本人可删,他人不可,群主可以',async()=>{
 
 test('上限:每人 20 条封顶(用注入配置压到 2 验证)',async()=>{
   const data=new Map()
-  const redis={get:async k=>data.get(k)||null,set:async(k,v)=>{data.set(k,v);return 'OK'},eval:async(_script,{keys,arguments:args})=>{if((data.get(keys[0])||'')!==args[0])return 0;data.set(keys[0],args[1]);return 1}}
+  const redis=createDelegatedMemoryRedis(data)
   const runtime=createDelegateMemoryRuntime({redis,logger:{warn(){},error(){},info(){}},loadConfig:()=>({maxPerOwner:2,maxPerGroup:50})})
   const tool=new runtime.DelegateMemoryTool()
   assert.match(await tool.execute({action:'remember',content:'第一条'},ev),/记下了/)
