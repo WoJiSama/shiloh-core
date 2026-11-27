@@ -30,42 +30,46 @@ function formatCell(cell: ReturnType<typeof readExcelCell>['cell']) {
 export function boundAgentExcelResult(text: string): string {
   if ([...text].length <= MAX_AGENT_EXCEL_RESULT_CHARS) return text
   const suffix = '\n（结果达到长度上限，已截断；请缩小查询范围。）'
-  const budget = MAX_AGENT_EXCEL_RESULT_CHARS - [...suffix].length
-  const blocks = text.split('\n\n'), kept: string[] = []
-  let used = 0
-  for (const block of blocks) {
-    const size = [...block].length + (kept.length ? 2 : 0)
-    if (used + size > budget) break
+  return safeTruncateUnicode(text, MAX_AGENT_EXCEL_RESULT_CHARS - [...suffix].length) + suffix
+}
+function boundBlocks(header: string[], blocks: string[], separator: string, continuation?: (index: number) => string): string {
+  const intro = header.join(separator), sizes = blocks.map(block => [...block].length + separator.length)
+  let used = [...intro].length
+  if (used + sizes.reduce((total, size) => total + size, 0) <= MAX_AGENT_EXCEL_RESULT_CHARS) return [intro, ...blocks].join(separator)
+  const suffixes = blocks.map((_block, index) => `\n（结果达到长度上限，已截断；${continuation?.(index) ?? '请缩小查询范围。'}）`)
+  const budget = MAX_AGENT_EXCEL_RESULT_CHARS - Math.max(...suffixes.map(suffix => [...suffix].length))
+  if (used > budget) return safeTruncateUnicode(intro, budget) + suffixes[0]!
+  const kept = [intro]
+  for (const [index, block] of blocks.entries()) {
+    if (used + sizes[index]! > budget) return kept.join(separator) + suffixes[index]!
     kept.push(block)
-    used += size
+    used += sizes[index]!
   }
-  if (kept.length && blocks.length > 1) return kept.join('\n\n') + suffix
-  return safeTruncateUnicode(text, budget) + suffix
+  return kept.join(separator)
 }
 export function formatAgentExcelResult(result: AgentExcelResult, source: AgentExcelSource): string {
   const header = ['【Excel 工作簿查询结果】', `文件: ${label(source.name)}`, `来源: ${source.origin ?? '当前会话授权文件'}`]
-  if (result.operation === 'list_sheets') return boundAgentExcelResult([...header, '工作表:', ...result.sheets.map(sheet =>
-    `${sheet.index}. ${sheet.name}（${sheet.state}，${sheet.rowCount}行 × ${sheet.columnCount}列）`)].join('\n'))
+  if (result.operation === 'list_sheets') return boundBlocks([...header, '工作表:'], result.sheets.map(sheet =>
+    `${sheet.index}. ${sheet.name}（${sheet.state}，${sheet.rowCount}行 × ${sheet.columnCount}列）`), '\n')
   if (result.operation === 'read_cell') return boundAgentExcelResult([...header, `工作表: ${result.sheetName}`, formatCell(result.cell)].join('\n'))
-  if (result.operation === 'read_range') return boundAgentExcelResult([...header, `工作表: ${result.sheetName}`, `区域: ${result.range}（${result.cellCount}个单元格）`,
-    `列: ${[...new Set((result.rows[0] ?? []).map(cell => cell.address.replace(/\d+$/u, '')))].join('、')}`,
-    ...result.rows.map(row => row.map(formatCell).join('\n'))].join('\n\n'))
+  if (result.operation === 'read_range') return boundBlocks([...header, `工作表: ${result.sheetName}`, `区域: ${result.range}（${result.cellCount}个单元格）`,
+    `列: ${[...new Set((result.rows[0] ?? []).map(cell => cell.address.replace(/\d+$/u, '')))].join('、')}`],
+    result.rows.map(row => row.map(formatCell).join('\n')), '\n\n', index =>
+      `请从 ${result.rows[index]?.[0]?.address ?? result.range} 所在行缩小范围续读。`)
   const modes: Record<string, string> = { contains: '包含', exact: '完全等于', starts_with: '开头是', ends_with: '结尾是' }
   const lines = [...header, `搜索: ${result.query}`, `匹配方式: ${modes[result.matchMode] ?? result.matchMode}`,
     ...(result.scope ? [`搜索区域: ${result.scope}`] : []), ...(result.relatedTerms.length ? [
       `原词精确命中: ${result.exactMatchCount}`, `关联词: ${result.relatedTerms.join('、')}`,
       ...(result.exactMatchCount ? [] : ['说明: 工作簿中没有出现搜索原词；以下是文件内实际命中的关联内容，不等同于原词的字面命中。']),
     ] : []), `扫描单元格: ${result.scannedCells}`, `匹配数量: ${result.matches.length}${result.truncated ? '（结果或扫描已达到上限）' : ''}`]
-  for (const match of result.matches) {
+  const blocks = result.matches.map(match => {
     const matchedBy = match.exactMatch ? '原词' : match.matchedTerms.length ? `关联词:${match.matchedTerms.join('/')}` : ''
-    lines.push(`工作表: ${match.sheetName}${matchedBy ? `（命中:${matchedBy}）` : ''}\n${formatCell(match)}`)
-  }
-  if (!result.matches.length) lines.push('没有找到匹配项')
-  return boundAgentExcelResult(lines.join('\n\n'))
+    return `工作表: ${match.sheetName}${matchedBy ? `（命中:${matchedBy}）` : ''}\n${formatCell(match)}`
+  })
+  return boundBlocks(lines, blocks.length ? blocks : ['没有找到匹配项'], '\n\n')
 }
 export function formatAgentExcelListing(result: AgentExcelListing): string {
-  return boundAgentExcelResult(['【Excel 工作簿查询结果】', '文件: 当前群文件仓库', '来源: group_file',
-    `群文件中的 Excel: ${result.files.length} 个（共扫描到 ${result.totalExcelFiles} 个）${result.truncated ? '，目录扫描达到上限' : ''}`,
-    ...result.files.map(file => `${label(file.fullPath)}（${file.size} 字节）`),
-    ...(!result.files.length ? ['没有找到匹配的群文件 Excel'] : [])].join('\n'))
+  return boundBlocks(['【Excel 工作簿查询结果】', '文件: 当前群文件仓库', '来源: group_file',
+    `群文件中的 Excel: ${result.files.length} 个（共扫描到 ${result.totalExcelFiles} 个）${result.truncated ? '，目录扫描达到上限' : ''}`],
+    result.files.length ? result.files.map(file => `${label(file.fullPath)}（${file.size} 字节）`) : ['没有找到匹配的群文件 Excel'], '\n')
 }
