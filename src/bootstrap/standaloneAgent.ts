@@ -36,7 +36,8 @@ import { createAgentImageSearchTools } from '../modules/content/infrastructure/a
 import { createAgentLocalEmojiRuntime } from '../modules/emoji/infrastructure/agentLocalEmojiRuntime.js'
 import { createAgentLifeThreadProvider } from '../modules/simulation/infrastructure/agentLifeThreadProvider.js'
 import { createAgentExcelTool } from '../modules/content/infrastructure/agentExcelTool.js'
-import { createAgentFileTextTool } from '../modules/content/infrastructure/agentFileTextTool.js'
+import { createAgentFileTextService, createAgentFileTextTool } from '../modules/content/infrastructure/agentFileTextTool.js'
+import { createAgentFileTextWorkspace } from '../modules/content/infrastructure/agentFileTextWorkspace.js'
 import { createAgentVoiceTool } from '../modules/media/infrastructure/agentVoiceTool.js'
 import { createAgentMusicTool } from '../modules/media/infrastructure/agentMusicTool.js'
 import { createAgentMusicProvider } from '../modules/media/infrastructure/agentMusicProvider.js'
@@ -331,6 +332,7 @@ export async function main(argv: string[]): Promise<void> {
   let bilibiliAuthService: Awaited<ReturnType<typeof openStandaloneBilibiliAuth>>
   let torrentHost: Awaited<ReturnType<typeof openStandaloneTorrent>> | undefined
   let groupLogHost: Awaited<ReturnType<typeof openStandaloneGroupLog>> | undefined
+  let fileTextWorkspace: ReturnType<typeof createAgentFileTextWorkspace> | undefined
   let localEmoji: ReturnType<typeof createAgentLocalEmojiRuntime> | undefined
   let consoleAuth: Awaited<ReturnType<typeof openStandaloneAgentConsoleAuth>> | undefined
   let consoleHost: ReturnType<typeof createStandaloneAgentConsole> | undefined
@@ -429,6 +431,8 @@ export async function main(argv: string[]): Promise<void> {
     journal = await openAgentOperationJournal({ dataDir: config.dataDir, ...config.operationLogging, allowsText: text => createAgentSecretTextCheck(hostSecrets)(text) })
     diagnostics.emit({ stage: 'host', operation: 'host_start', outcome: 'started' })
     startupStep = 'initialize_services'
+    fileTextWorkspace = createAgentFileTextWorkspace({ dataDir: config.dataDir, instance: config.instance, isLeaseCurrent: storage.isCurrent, diagnostics })
+    void fileTextWorkspace.sweep()
     let musicProvider: ReturnType<typeof createAgentMusicProvider> | undefined
     const registerHostSecrets = (values: readonly string[]) => { for (const value of values) if (value && !hostSecrets.includes(value)) hostSecrets.push(value) }
     const musicContext = {
@@ -657,7 +661,10 @@ export async function main(argv: string[]): Promise<void> {
         ...pixivTools,
         ...(config.tools.music?.enabled && musicProvider ? [createAgentMusicTool(config.tools.music, { provider: musicProvider, secrets: hostSecrets, allowsText: text => allowsSecretText(text) && (config.forbiddenWords.blockOutput === false || !words.findForbiddenWord(text, config.forbiddenWords)) })] : []),
         ...(config.tools.voice?.enabled ? [createAgentVoiceTool(config.tools.voice, { secrets: hostSecrets, allowsText: text => allowsSecretText(text) && (config.forbiddenWords.blockOutput === false || !words.findForbiddenWord(text, config.forbiddenWords)) })] : []),
-        ...(config.tools.files?.enabled ? [createAgentFileTextTool({ nativeFormats: config.tools.files.nativeFormats, secrets: hostSecrets, allowsText: text => config.forbiddenWords.blockOutput === false || !words.findForbiddenWord(text, config.forbiddenWords) })] : []),
+        ...(config.tools.files?.enabled ? [createAgentFileTextTool({ secrets: hostSecrets,
+          service: createAgentFileTextService({ nativeFormats: config.tools.files.nativeFormats, createTemporaryDirectory: fileTextWorkspace.create }),
+          allowsText: text => config.forbiddenWords.blockOutput === false || !words.findForbiddenWord(text, config.forbiddenWords),
+        })] : []),
         ...(config.tools.excel?.enabled ? [createAgentExcelTool({ secrets: hostSecrets, allowsText: text => config.forbiddenWords.blockOutput === false || !words.findForbiddenWord(text, config.forbiddenWords) })] : []),
         ...(createAgentWebTools({ ...config.tools, secrets: hostSecrets, diagnostics }).builtIn ?? []),
         ...(createAgentRepositoryTools({ ...config.tools, secrets: hostSecrets }).builtIn ?? []),
@@ -1033,6 +1040,7 @@ export async function main(argv: string[]): Promise<void> {
       await Promise.all([
         cleanup('media_relay_close', () => mediaRelayHost?.close()), cleanup('torrent_close', () => torrentHost?.close()),
         cleanup('group_log_close', () => groupLogHost?.close()),
+        cleanup('file_text_cleanup', () => fileTextWorkspace?.close()),
         cleanup('local_emoji_close', () => localEmoji?.close()),
         cleanup('mcp_close', () => mcp?.close()), cleanup('semantic_close', () => semanticBackend?.dispose()),
         cleanup('ledger_flush', () => ledger.flush()),

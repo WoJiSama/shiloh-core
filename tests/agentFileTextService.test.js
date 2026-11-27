@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { fork, execFile } from 'node:child_process'
-import { mkdtemp, writeFile, readFile, rm, access } from 'node:fs/promises'
+import { fork, execFile, spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { once } from 'node:events'
+import { mkdtemp, mkdir, writeFile, readFile, rm, access, symlink, utimes, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -9,6 +11,7 @@ import { promisify } from 'node:util'
 import JSZip from 'jszip'
 import ExcelJS from 'exceljs'
 import { createAgentFileTextService } from '../dist/backend/modules/content/infrastructure/agentFileTextService.js'
+import { createAgentFileTextWorkspace } from '../dist/backend/modules/content/infrastructure/agentFileTextWorkspace.js'
 import { validateFileTextZip } from '../dist/backend/modules/content/infrastructure/agentFileTextZip.js'
 
 const marker = 'REAL_DOCUMENT_MARKER'
@@ -74,6 +77,65 @@ test('ordinary ZIP lists paths, then reads only one chosen text entry with Unico
   assert.match((await service.extract(request('corrupt.zip', corrupt), context())).text, /test\.txt/)
   await assert.rejects(service.extract(request('corrupt.zip', corrupt, { archiveEntry: 'test.txt' }), context()), { code: 'invalid' })
 })
+
+test('startup and the periodic sweep clear expired files left by a killed host while protecting active or unowned directories',
+  { skip: process.getuid === undefined, timeout: 10_000 }, async t => {
+    const dataDir = await realpath(await mkdtemp(path.join(tmpdir(), 'file-workspace-test-'))), instance = 'file-workspace-fixture'
+    t.after(() => rm(dataDir, { recursive: true, force: true }))
+    const module = new URL('../dist/backend/modules/content/infrastructure/agentFileTextWorkspace.js', import.meta.url).href
+    const previous = spawn(process.execPath, ['--input-type=module', '-e', `
+      import { writeFile } from 'node:fs/promises'
+      import path from 'node:path'
+      import { createAgentFileTextWorkspace } from ${JSON.stringify(module)}
+      const [dataDir, instance] = process.argv.slice(1)
+      const workspace = createAgentFileTextWorkspace({ dataDir, instance, isLeaseCurrent: () => true })
+      const paths = []
+      for (const text of ['abandoned', 'recent']) {
+        const job = await workspace.create()
+        await writeFile(path.join(job.path, 'input'), text, { mode: 0o600 })
+        paths.push(job.path)
+      }
+      console.log(JSON.stringify(paths))
+      setInterval(() => {}, 1000)
+    `, dataDir, instance], { stdio: ['ignore', 'pipe', 'inherit'] })
+    const exited = once(previous, 'exit')
+    let output = ''
+    previous.stdout.setEncoding('utf8').on('data', chunk => { output += chunk })
+    try { await until(() => output.includes('\n'), 'the former instance wrote two temporary files') }
+    finally { previous.kill('SIGKILL'); await exited }
+    const [expired, recent] = JSON.parse(output)
+    const parent = path.dirname(expired)
+    const unowned = path.join(parent, `read-${randomUUID()}`), outside = path.join(dataDir, 'outside')
+    await mkdir(unowned, { mode: 0o700 }); await mkdir(outside, { mode: 0o700 })
+    await writeFile(path.join(outside, 'keep'), 'outside the reader')
+    await symlink(outside, path.join(expired, 'link'), 'dir')
+    await symlink(outside, path.join(parent, `read-${randomUUID()}`), 'dir')
+    const past = new Date(Date.now() - 11 * 60_000)
+    await Promise.all([expired, unowned].map(directory => utimes(directory, past, past)))
+
+    t.mock.timers.enable({ apis: ['setInterval'] })
+    const events = [], workspace = createAgentFileTextWorkspace({ dataDir, instance, isLeaseCurrent: () => true,
+      diagnostics: { emit(event) { events.push(event) } } })
+    const active = await workspace.create()
+    try {
+      await utimes(active.path, past, past)
+      await workspace.sweep()
+      await assert.rejects(access(expired), { code: 'ENOENT' })
+      assert.equal(await readFile(path.join(recent, 'input'), 'utf8'), 'recent')
+      await utimes(recent, past, past)
+      t.mock.timers.tick(60_000)
+      await until(() => events.length === 2, 'the periodic sweep removed the newly expired directory')
+      await assert.rejects(access(recent), { code: 'ENOENT' })
+      await access(active.path)
+      await access(unowned)
+      assert.equal(await readFile(path.join(outside, 'keep'), 'utf8'), 'outside the reader')
+      assert.deepEqual(events.map(event => event.code), ['file_text_orphans_removed', 'file_text_orphans_removed'])
+    } finally {
+      await active.remove()
+      await workspace.close()
+    }
+    await assert.rejects(access(active.path), { code: 'ENOENT' })
+  })
 test('real Office/ODF/EPUB parsers preserve DOCX/PPTX/POTX/Excel XML XLS/XLSX/XLSM/XLTX/XLSB and all OpenDocument families', { timeout: 30_000 }, async t => {
   const doc = await zip({ 'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${marker}</w:t></w:r></w:p></w:body></w:document>` })
   const slide = await zip({ 'ppt/slides/slide1.xml': `<a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:r><a:t>${marker}</a:t></a:r></a:p>`, 'ppt/notesSlides/notesSlide1.xml': '<a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:r><a:t>NOTES_MARKER</a:t></a:r></a:p>' })

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
+import { createHash } from 'node:crypto'
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -224,6 +225,10 @@ async function fixture(t, mode) {
     async stop() { child.kill('SIGTERM'); assert.deepEqual(await exited, [0, null]) },
     async assertClean() {
       assert.deepEqual(errors, [])
+      if (readReached) {
+        const instanceSuffix = createHash('sha256').update(instance).digest('hex').slice(0, 32)
+        assert.deepEqual(await readdir(path.join(directory, 'data', instance, `.agent-file-text-${instanceSuffix}`)), [])
+      }
       const persisted = await storedRedisText(reader, prefix)
       const files = await storedFilesText(path.join(directory, 'data'))
       for (const value of [marker, extracted, derived, bytes.toString('base64'), fileUrl, fileId, unverifiedUrl]) {
