@@ -11,11 +11,14 @@ test('a narrower fallback uses its own wire budget and keeps current sources and
   const calls = []
   const carry = optionalContext({ role: 'user', content: 'OLD_STYLE'.repeat(1700) }, 'style')
   const authority = { role: 'user', content: 'FINAL: 21:00，原群只登记一次' }
+  const read = { role: 'assistant', tool_calls: [{ id: 'notice-1', type: 'function', function: { name: 'readNotice', arguments: '{}' } }] }
+  const resultText = '来源：公开公告，最终 21:00\n工具回执：R1'
+  const readResult = excerptContext({ role: 'tool', name: 'readNotice', tool_call_id: 'notice-1', content: '背景'.repeat(2300) + resultText }, resultText)
   const result = await modelExecutor(async (url, options) => {
     const body = JSON.parse(options.body)
     calls.push({ url, bytes: Buffer.byteLength(options.body), body })
     return url.includes('tools.invalid') ? new Response('busy', { status: 503 }) : success()
-  }).YTapi(modelContextRequest({ messages: [{ role: 'system', content: 'fixed' }, carry, authority],
+  }).YTapi(modelContextRequest({ messages: [{ role: 'system', content: 'fixed' }, carry, read, readResult, authority],
     tools: [{ type: 'function', function: { name: 'reminderTool', description: 'file' } }], tool_choice: 'auto' }, 'text'),
     { ...config, useTools: true, modelContext: decodeModelContextLimits({ chat: { windowTokens: 2048, maxRequestBytes: 4096 }, tools: { windowTokens: 32768 } }) })
   assert.equal(result.choices[0].message.content, 'ok')
@@ -27,6 +30,12 @@ test('a narrower fallback uses its own wire budget and keeps current sources and
   assert.deepEqual(calls[1].body.messages.at(-1), authority)
   assert.equal(calls[1].body.messages.some(row => row.content.startsWith('OLD_STYLE')), false)
   assert.equal(calls[1].body.tools, undefined)
+  const frame = calls[1].body.messages.find(row => row.content?.includes('【工具执行资料】'))
+  assert.equal(frame.role, 'user')
+  assert.deepEqual(JSON.parse(frame.content.split('\n').at(-1)), {
+    calls: [{ id: 'notice-1', name: 'readNotice' }],
+    results: [{ id: 'notice-1', name: 'readNotice', content: resultText }],
+  })
 })
 
 test('context overflow retries only a reduced inference and rechecks source authorization', async () => {

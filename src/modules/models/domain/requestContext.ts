@@ -36,6 +36,10 @@ export function excerptContext<T extends ChatMessage>(message: T, content: strin
   return message
 }
 
+export function messageContextMetadata(message: ChatMessage) {
+  return { section: sections.get(message), excerpt: excerpts.get(message) }
+}
+
 export function decodeModelContextLimits(value: unknown): Readonly<Record<string, ModelContextLimits>> {
   if (value === undefined) return Object.freeze({})
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > 64) throw new Error('modelContext 应为模型名到窗口预算的映射')
