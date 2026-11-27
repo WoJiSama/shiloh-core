@@ -252,7 +252,7 @@ describe('standalone persistence page requests', () => {
     await flushPromises()
     expect(fetcher.mock.calls.map((call) => call[0])).toEqual(['/api/auth/state', '/api/workspace'])
     expect(consoleRestart.state.phase).toBe('restart-required')
-    expect(wrapper.text()).toContain('等待重启')
+    expect(wrapper.text()).toContain('正在核对服务是否恢复')
     expect(wrapper.find('app-shell-stub').attributes()).not.toHaveProperty('inert')
     await expect(api('/api/config/dice', { method: 'PUT', body: '{}' })).rejects.toMatchObject({
       name: 'AbortError'

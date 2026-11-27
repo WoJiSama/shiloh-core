@@ -22,7 +22,7 @@
 
 流程依次使用 `GET /api/configuration/catalog`、`POST /api/configuration/preview` 和 `POST /api/configuration/commit`。预览展示字段差异、受影响本人、连接、完整会话及权限变化，完整候选保留在服务端；提交只携带 `previewId`、`revision`、`candidateDigest` 和包含 host/personas/bindings 的完整 `readSet`。候选过期、身份撤销或配置变化后须重新预览，不能用旧预览覆盖新配置。
 
-宿主配置（示例名 `agent-host.yaml`，实际路径由 `--config` 指定）、`persona-library.yaml` 和 `agent-bindings.yaml` 仍是权威配置源。事务按完整候选一致提交三份配置，保存版本与本进程已加载版本分别记录。旧执行实例退休后，工作区、配置状态和运行观测仍可认证读取，其他业务操作须等待真实新进程；当前启动器没有 supervisor，保存不会自动在线重启。
+宿主配置（示例名 `agent-host.yaml`，实际路径由 `--config` 指定）、`persona-library.yaml` 和 `agent-bindings.yaml` 仍是权威配置源。事务按完整候选一致提交三份配置，保存版本与已加载版本分别记录。使用标准启动器时，有改动的控制台提交会停止旧执行实例，在交付响应及释放 Redis 租约后，用同一个进程启动新的宿主实例。控制台自动核对新的运行轮次与保存版本，等 QQ 重新核验和宿主恢复后才恢复编辑。磁盘手工修改和结果不明的事务仍按下方恢复流程处理。
 
 提交结果未知时不能自动补交。残留事务使用显式离线恢复；正常启动不抢残留锁，也不按 PID 自动删除锁。先单独检查安全状态：
 

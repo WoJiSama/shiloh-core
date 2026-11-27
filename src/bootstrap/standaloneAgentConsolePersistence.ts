@@ -27,6 +27,8 @@ export interface StandaloneConsolePersistenceOptions {
   readonly hostFile: string
   readonly loaded: SourceSnapshot
   readonly authority: { readonly signal: AbortSignal; isCurrent(): boolean }
+  isStartupReady?(): boolean
+  onCommitted?(revision: string): void
   validateCandidate(sources: ConfigSources): ValidatedConsoleCandidate
 }
 type Data = Record<string, unknown>
@@ -159,6 +161,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
   function ensure(context: AgentConsoleContext) {
     context.ensureCurrent()
     if (options.enabled !== true) return fail('unavailable')
+    if (options.isStartupReady?.() === false) return fail('unavailable')
     if (!execution.isCurrent()) return fail('conflict')
   }
   function validate(sources: ConfigSources) {
@@ -240,10 +243,14 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
         onCommitPublished() { committed = true; receipt.markCommitted() },
       })
       const after = transaction.snapshot
-      held = true
-      return receipt.complete(after.revision, processEpoch, json(output(after, transaction.txId)), () => {
+      // The complete transaction is durable even if the initiating client loses
+      // its response. The HTTP owner drains that request before restarting.
+      try { if (committed) options.onCommitted?.(after.revision) } catch { /* The client can still inspect the durable result. */ }
+      const response = receipt.complete(after.revision, processEpoch, json(output(after, transaction.txId)), () => {
         try { lock.ensureCurrent(); return ownTransition === transition && retired && phase === 'restart-required' && lock.read().revision === after.revision } catch { return false }
       })
+      held = true
+      return response
     } catch (error) {
       if (fenced || committed) { retire('uncertain'); return fail(committed ? 'commit_outcome_unknown' : 'configuration_recovery_required') }
       // A failed publication may have retained a lease before onFenced was
@@ -396,7 +403,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
   }
   function state(context: AgentConsoleContext): Record<string, AgentConsoleJson> {
     context.ensureCurrent()
-    if (options.enabled !== true || !hostCurrent()) return fail('unavailable')
+    if (options.enabled !== true || !hostCurrent() || options.isStartupReady?.() === false) return fail('unavailable')
     execution.isCurrent()
     const transaction = inspectStandaloneAgentConfigTransaction(loaded.hostFile)
     let storedRevision = ''

@@ -383,18 +383,30 @@ export function createStandaloneAgentConsole(options: AgentConsolePorts & {
   server.requestTimeout = 30_000
   server.headersTimeout = 10_000
   server.keepAliveTimeout = 5000
-  async function close(): Promise<void> {
+  async function close(mode: 'stop' | 'restart' = 'stop'): Promise<void> {
     if (closing) return closing
-    lifetime.abort()
-    for (const controller of active) controller.abort()
     options.authority.signal.removeEventListener('abort', stop)
+    if (mode === 'stop') {
+      lifetime.abort()
+      for (const controller of active) controller.abort()
+    }
     closing = (async () => {
-      if (listening) await listening.catch(() => {})
-      if (!server.listening) return
-      await new Promise<void>((resolve, reject) => {
-        server.close(error => error ? reject(error) : resolve())
-        server.closeAllConnections()
-      })
+      try {
+        if (!server.listening && listening) await listening.catch(() => {})
+        if (!server.listening) return
+        await new Promise<void>((resolve, reject) => {
+          const deadline = mode === 'restart' ? setTimeout(() => server.closeAllConnections(), 2_000) : undefined
+          server.close(error => {
+            clearTimeout(deadline)
+            if (error) reject(error)
+            else resolve()
+          })
+          if (mode === 'stop') server.closeAllConnections()
+        })
+      } finally {
+        lifetime.abort()
+        for (const controller of active) controller.abort()
+      }
     })()
     return closing
   }

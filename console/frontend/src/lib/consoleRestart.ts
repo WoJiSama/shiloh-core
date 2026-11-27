@@ -166,7 +166,7 @@ export function createConsoleRestartGate() {
       state.phase = 'uncertain'
       throw new Error('保存响应无法核对，请先检查服务状态；草稿已保留')
     }
-    state.committedRevision = saved.committedRevision
+    state.committedRevision = saved.requiresRestart ? saved.committedRevision : ''
     state.phase = saved.requiresRestart ? 'restart-required' : 'active'
   }
   function failed(
@@ -206,7 +206,8 @@ export function createConsoleRestartGate() {
       !next.requiresRestart &&
       !next.recoveryRequired &&
       next.transaction.phase === 'clean' &&
-      next.loadedRevision === next.storedRevision
+      next.loadedRevision === next.storedRevision &&
+      (!state.committedRevision || next.loadedRevision === state.committedRevision)
     ) {
       state.processEpoch = next.processEpoch
       state.committedRevision = ''

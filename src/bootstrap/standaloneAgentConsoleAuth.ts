@@ -27,11 +27,16 @@ export interface StandaloneAgentConsoleAuthOptions {
   readonly secureCookies?: boolean
   readonly now?: () => number
 }
-export type StandaloneAgentConsoleAuth = AgentConsoleAuthPort & { close(): Promise<void> }
+export type StandaloneAgentConsoleAuth = AgentConsoleAuthPort & {
+  close(): Promise<void>
+  captureRestartSessions(): unknown
+}
 
 interface User { username: string; salt: string; hash: string; createdAt: string; updatedAt?: string }
 interface Snapshot { readonly stat: Stats; readonly raw: string }
 interface Issued { readonly principal: AgentConsolePrincipal; readonly username: string | null; readonly tokenHash?: string; readonly sidHash?: string; expiresAt: number }
+const restartSessions = new WeakMap<object, { readonly file: string; readonly secure: boolean; readonly ttl: number;
+  readonly snapshot: Snapshot; readonly sessions: readonly Issued[]; readonly attempts: readonly [string, Attempts][]; readonly globalAttempts: Attempts }>()
 interface Attempts { count: number; firstAt: number; lockedUntil: number }
 const cookieName = 'bl_console_sid', maxStoreBytes = 1024 * 1024
 const windowMs = 15 * 60_000, lockMs = 10 * 60_000, maxFails = 5
@@ -103,7 +108,7 @@ function hashPassword(value: string, salt: string): Promise<string> {
 }
 
 /** Local files and explicit environment references only; errors contain fixed public codes. */
-export async function openStandaloneAgentConsoleAuth(options: StandaloneAgentConsoleAuthOptions): Promise<StandaloneAgentConsoleAuth> {
+export async function openStandaloneAgentConsoleAuth(options: StandaloneAgentConsoleAuthOptions, previous?: unknown): Promise<StandaloneAgentConsoleAuth> {
   try {
     const file = absolute(options.userFile), directory = path.dirname(file), uid = process.getuid?.()
     if (uid === undefined || directory === file || !options.authority || !(options.authority.signal instanceof AbortSignal) ||
@@ -257,6 +262,22 @@ export async function openStandaloneAgentConsoleAuth(options: StandaloneAgentCon
       return value
     }
     tokenValue()
+    const transfer = previous && typeof previous === 'object' ? restartSessions.get(previous) : undefined
+    if (transfer) {
+      restartSessions.delete(previous as object)
+      if (transfer.file === file && transfer.secure === secure && transfer.ttl === ttl && snapshot &&
+          sameStat(transfer.snapshot.stat, snapshot.stat) && transfer.snapshot.raw === snapshot.raw) {
+        for (const record of transfer.sessions) if (record.sidHash && record.expiresAt > now()) {
+          // A new principal must authorize each request under the new host lease.
+          const principal = Object.freeze({ ...record.principal, id: 'session-' + randomUUID() })
+          const restored = { ...record, principal }
+          sessions.set(record.sidHash, restored)
+          issued.set(principal.id, restored)
+        }
+        for (const [key, value] of transfer.attempts) attempts.set(key, value)
+        globalAttempts = transfer.globalAttempts
+      }
+    }
     const tokenWorks = (value: string) => { const expected = tokenValue(); return !!value && !!expected && secureEqual(value, expected) }
     const publicCurrent = (principal: AgentConsolePrincipal) => {
       try {
@@ -315,6 +336,15 @@ export async function openStandaloneAgentConsoleAuth(options: StandaloneAgentCon
       finally { passwordsPending-- }
     }
     const result: StandaloneAgentConsoleAuth = {
+      captureRestartSessions() {
+        check()
+        if (!snapshot) return undefined
+        const ticket = Object.freeze({})
+        restartSessions.set(ticket, { file, secure, ttl, snapshot,
+          sessions: [...sessions.values()].filter(record => record.expiresAt > now()),
+          attempts: [...attempts], globalAttempts })
+        return ticket
+      },
       async state(input, guard) {
         try {
           check(guard); const value = credentials(input), actor = session(value)?.principal

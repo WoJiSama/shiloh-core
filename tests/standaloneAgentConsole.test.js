@@ -349,6 +349,26 @@ test('shutdown aborts in-flight work and closes the HTTP listener', async t => {
   await assert.rejects(f.app.listen(), { code: 'unavailable' })
 })
 
+test('a restart drains the in-flight HTTP response before expiring its authority', async t => {
+  const ready = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const f = await fixture(t, [route('config-state.read', async (_request, context) => {
+    ready.resolve()
+    await release.promise
+    context.ensureCurrent()
+    return json({ committedRevision: 'synthetic-revision' })
+  })])
+  const pending = f.request('/api/config-state')
+  await ready.promise
+  const closing = f.app.close('restart')
+  release.resolve()
+  const response = await pending
+  assert.equal(response.status, 200)
+  assert.deepEqual(response.data, { committedRevision: 'synthetic-revision' })
+  await closing
+  assert.equal(f.app.server.listening, false)
+})
+
 test('invalid or downgraded service declarations cannot reserve auth routes or replace scoped handlers', async t => {
   const f = await fixture(t)
   for (const services of [[custom('/api/auth/evil', async () => json({}))], [custom('/api/bindings', async () => json({}))],

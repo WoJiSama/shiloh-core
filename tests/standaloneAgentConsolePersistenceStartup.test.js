@@ -8,6 +8,7 @@ import { createServer as createTcpServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { fileURLToPath } from 'node:url'
 import { createClient } from '@redis/client'
 import { WebSocketServer } from 'ws'
 import YAML from 'yaml'
@@ -16,6 +17,7 @@ import YAML from 'yaml'
 // are local and no incoming QQ message or model generation is requested.
 const sourceHelper = new URL('./helpers/bilibiliQualitySource.mjs', import.meta.url).href
 const sourceEntry = `const { importBilibiliHost: load } = await import(${JSON.stringify(sourceHelper)}); const { main } = await load('bootstrap/standaloneAgent.js'); await main(process.argv.slice(1));`
+const launcher = new URL('../scripts/start-agent.mjs', import.meta.url)
 const MODEL_KEY = 'PERSIST_STARTUP_MODEL_PRIVATE_20261117', SECOND_KEY = 'PERSIST_STARTUP_NEXT_MODEL_PRIVATE_20261117',
   QQ_TOKEN = 'PERSIST_STARTUP_QQ_PRIVATE_20261117', ADMIN_TOKEN = 'PERSIST_STARTUP_ADMIN_PRIVATE_20261117', PASSWORD = 'PERSIST_STARTUP_LOGIN_PRIVATE_20261117'
 const BOT = '19001917', GROUP = '310917'
@@ -35,7 +37,7 @@ async function readTree(directory) {
     return entry.isDirectory() ? readTree(file) : entry.isFile() ? readFile(file, 'utf8') : ''
   }))).join('\n')
 }
-async function fixture(t, enabled = true, { holdLogin = false } = {}) {
+async function fixture(t, enabled = true, { holdLogin = false, automaticRestart = false } = {}) {
   assert.equal(spawnSync('redis-server', ['--version'], { stdio: 'ignore' }).status, 0, 'source persistence startup requires real Redis')
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'agent-persist-start-'))), dataDir = path.join(root, 'data'), socketPath = path.join(root, 'redis.sock')
   const port = await freePort(), base = `http://127.0.0.1:${port}`, instance = 'persist-startup', prefix = `bl-agent:${instance}:`
@@ -97,7 +99,8 @@ async function fixture(t, enabled = true, { holdLogin = false } = {}) {
     PERSIST_QQ_TOKEN: QQ_TOKEN, PERSIST_ADMIN_TOKEN: ADMIN_TOKEN }
   function launch(check = false) {
     const offset = log.length
-    child = spawn(process.execPath, ['--input-type=module', '-e', sourceEntry, '--', '--config', configFile, ...(check ? ['--check'] : [])], { cwd: root, env })
+    const entry = automaticRestart ? [fileURLToPath(launcher)] : ['--input-type=module', '-e', sourceEntry, '--']
+    child = spawn(process.execPath, [...entry, '--config', configFile, ...(check ? ['--check'] : [])], { cwd: root, env })
     exited = once(child, 'exit'); children.push({ child, exited })
     for (const stream of [child.stdout, child.stderr]) stream.on('data', data => { log += data })
     return offset
@@ -136,6 +139,7 @@ async function fixture(t, enabled = true, { holdLogin = false } = {}) {
     assert.equal(modelRequests, 0); assert.deepEqual(errors, [])
   }
   return { root, dataDir, configFile, libraryFile, bindingsFile, base, reader, prefix, start, stop, login, request,
+    waitingForLogin: () => heldLogins.length > 0,
     releaseLogins() { for (const reply of heldLogins.splice(0)) reply() },
     async check() {
       const offset = launch(true); assert.deepEqual(await exited, [0, null], log.slice(offset))
@@ -200,6 +204,36 @@ test('source main persists each single-file family and reloads it under a genuin
   assert.equal(library.personas[0].extensionOwned, 'retained-template')
   assert.equal(library.personas[0].moods[0].extensionOwned, 'retained-mood')
   assert.match(await readFile(f.bindingsFile, 'utf8'), /# preserved topology/u)
+  await f.stop(); await f.clean()
+})
+
+test('the standalone launcher reloads a saved revision only after the new QQ login and keeps the admin session', {
+  timeout: 45000, skip: process.platform === 'win32',
+}, async t => {
+  const f = await fixture(t, true, { holdLogin: true, automaticRestart: true })
+  await f.start({ waitForHostReady: false }); await f.login(); f.releaseLogins()
+  const route = '/api/config/dice', session = { token: false, session: true }
+  const before = await f.request('/api/config-state', session)
+  const dice = await f.request(route, session)
+  const save = value => f.request(route, { ...session, method: 'PUT', body: { revision: dice.data.revision, values: { 'dice.maxRounds': value } } })
+  const unchanged = await save(20)
+  assert.equal(unchanged.data.requiresRestart, false)
+  assert.equal((await f.request('/api/config-state', session)).data.processEpoch, before.data.processEpoch)
+  const saved = await save(31)
+  assert.equal(saved.status, 200, saved.text)
+  assert.equal(saved.data.requiresRestart, true)
+  assert.equal(saved.data.processEpoch, before.data.processEpoch)
+  await waitFor(async () => f.waitingForLogin() && (await f.request('/api/config-state', session).catch(() => null))?.status === 503,
+    'new console waits for QQ login')
+  f.releaseLogins()
+  let loaded
+  await waitFor(async () => {
+    loaded = await f.request('/api/config-state', session).catch(() => null)
+    return loaded?.status === 200 && loaded.data.phase === 'active' && loaded.data.processEpoch !== before.data.processEpoch
+  }, 'committed revision reload')
+  assert.equal(loaded.data.loadedRevision, saved.data.committedRevision)
+  assert.equal(loaded.data.storedRevision, saved.data.committedRevision)
+  assert.equal(fieldValue((await f.request(route, session)).data, 'dice.maxRounds'), 31)
   await f.stop(); await f.clean()
 })
 

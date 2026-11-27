@@ -59,6 +59,17 @@ describe('standalone configuration epoch gate', () => {
     gate.complete(gate.begin(), saved(false))
     expect(gate.blocked.value).toBe(false)
     expect(() => gate.observe({ mode: 'standalone', processEpoch: 'p1' }, generation)).toThrow()
+    gate.invalidate()
+    gate.process(status('p2', { loadedRevision: 'r3', storedRevision: 'r3' }))
+    expect(gate.blocked.value).toBe(false)
+  })
+  it('verifies that the replacement host loaded the committed revision', () => {
+    const gate = initial()
+    gate.complete(gate.begin(), saved())
+    gate.process(status('p2', { loadedRevision: 'r3', storedRevision: 'r3' }))
+    expect(gate.blocked.value).toBe(true)
+    gate.process(status('p3'))
+    expect(gate.blocked.value).toBe(false)
   })
   it('keeps network, conflict and postcommit failures uncertain without automatic retry', () => {
     for (const error of [new Error('network'), { status: 409 }, { status: 500 }]) {

@@ -111,7 +111,7 @@ async function checkStandaloneQq(config: ReturnType<typeof readStandaloneAgentCo
   }
 }
 
-export async function main(argv: string[]): Promise<void> {
+export async function main(argv: string[], options?: { readonly restartOnConfigSave?: boolean }): Promise<void> {
   const { values } = parseArgs({ args: argv, options: {
     config: { type: 'string' }, help: { type: 'boolean', short: 'h' }, check: { type: 'boolean' },
     'inspect-config-transaction': { type: 'boolean' }, 'recover-config': { type: 'boolean' },
@@ -248,6 +248,36 @@ export async function main(argv: string[]): Promise<void> {
     console.log(JSON.stringify(await checkStandaloneQq(config)))
     return
   }
+  let restart: { revision: string; sessions: unknown } | undefined
+  do {
+    restart = await runStandaloneAgent(config, configPath, { alerts, qqAlertOwner, qqAlertConnection,
+      restartOnConfigSave: options?.restartOnConfigSave === true, reloading: restart !== undefined, sessions: restart?.sessions,
+      setAlertLabelCheck: check => { allowsAlertLabel = check } })
+    if (restart) {
+      config = readStandaloneAgentConfig(configPath, process.env)
+      if (config.sourceSnapshot.revision !== restart.revision) {
+        logger.warn('[Agent] configuration_restart_revision_changed')
+        return
+      }
+      qqAlertOwner = qqAlertConnection ? resolveStandaloneQqAlertOwner(qqAlertConnection, config.connections.map(({ connection }) => connection), config.bilibiliQuality.masters) : undefined
+      alerts = webhookUrl ? createAgentAlertWebhook({ url: webhookUrl, logger, allowsLabel: label => allowsAlertLabel?.(label) !== false }) : undefined
+    }
+  } while (restart)
+}
+
+async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentConfig>, configPath: string, options: {
+  alerts: ReturnType<typeof createAgentAlertWebhook> | undefined
+  qqAlertOwner: ReturnType<typeof resolveStandaloneQqAlertOwner> | undefined
+  qqAlertConnection: string | undefined
+  restartOnConfigSave: boolean
+  reloading: boolean
+  sessions: unknown
+  setAlertLabelCheck(check: (label: string) => boolean): void
+}): Promise<{ revision: string; sessions: unknown } | undefined> {
+  const { qqAlertOwner, qqAlertConnection } = options
+  let alerts = options.alerts, allowsAlertLabel: ((label: string) => boolean) | undefined
+  let restartRevision: string | undefined, shutdownRequested = false, ready = !options.reloading
+  let restartSessions: unknown
   const termination = new AbortController()
   let storage: Awaited<ReturnType<typeof openAgentRedis>> | undefined
   let qqAlertAdapter: ReturnType<typeof createOneBotConnection> | undefined
@@ -272,6 +302,7 @@ export async function main(argv: string[]): Promise<void> {
   const safeLogger = diagnostics.logger
   const stop = () => termination.abort()
   const gracefulStop = () => {
+    shutdownRequested = true
     if (termination.signal.aborted) return
     if (alerts && qqAlertAdapter && storage?.isCurrent() === true && config.isConfigCurrent()) {
       const finish = qqAlertAdapter.beginOwnerAlertDrain?.()
@@ -309,6 +340,17 @@ export async function main(argv: string[]): Promise<void> {
     if (config.console.enabled) {
       consolePersistence = createStandaloneAgentConsolePersistence({ enabled: true, hostFile: configPath,
         loaded: config.sourceSnapshot, authority: consoleAuthority,
+        isStartupReady: () => ready,
+        ...(options.restartOnConfigSave ? { onCommitted(revision: string) {
+          restartRevision = revision
+          void Promise.resolve(consoleHost?.close('restart')).catch(error => {
+            diagnostics.emit({ stage: 'host', operation: 'config_restart', outcome: 'failed', code: 'console_drain_failed', error })
+          }).finally(() => {
+            try { if (!termination.signal.aborted) restartSessions = consoleAuth?.captureRestartSessions() }
+            catch { diagnostics.emit({ stage: 'host', operation: 'config_restart', outcome: 'cancelled', code: 'console_session_transfer_unavailable' }) }
+            stop()
+          })
+        } } : {}),
         validateCandidate: createStandaloneAgentCandidateValidator(config.sourceSnapshot.hostFile, process.env, { sourceSnapshot: config.sourceSnapshot }) })
       const execution = consolePersistence.execution
       // Every existing model/tool/sending fence also observes this irreversible process-local retirement.
@@ -396,6 +438,7 @@ export async function main(argv: string[]): Promise<void> {
       .filter((key): key is string => typeof key === 'string' && !!key)
     if (alerts) {
       allowsAlertLabel = label => createAgentSecretTextCheck(hostSecrets)(label)
+      options.setAlertLabelCheck(allowsAlertLabel)
     }
     journal = await openAgentOperationJournal({ dataDir: config.dataDir, ...config.operationLogging, allowsText: text => createAgentSecretTextCheck(hostSecrets)(text) })
     diagnostics.emit({ stage: 'host', operation: 'host_start', outcome: 'started' })
@@ -750,7 +793,7 @@ export async function main(argv: string[]): Promise<void> {
         allowSetup: config.console.allowSetup,
         secureCookies: config.console.secureCookies,
         policy: { operations, authorize: async () => 'allowed' },
-      })
+      }, options.sessions)
       const runtime = createStandaloneAgentConsoleRuntime({ runtime: host.runtime, bindings, auth: consoleAuth })
       const management = host.management && createStandaloneAgentConsoleManagement({ management: host.management, auth: consoleAuth })
       const profilePort = management?.profiles
@@ -808,7 +851,11 @@ export async function main(argv: string[]): Promise<void> {
       musicTimer = setInterval(refresh, 10 * 60_000)
       musicTimer.unref?.()
     }
-    if (!executionSignal.aborted) { diagnostics.emit({ stage: 'host', operation: 'host_start', outcome: 'succeeded' }); logger.info('[Agent] 已启动') }
+    if (!executionSignal.aborted) {
+      ready = true
+      diagnostics.emit({ stage: 'host', operation: 'host_start', outcome: 'succeeded' })
+      logger.info('[Agent] 已启动')
+    }
     if (!termination.signal.aborted) await new Promise<void>(resolve => termination.signal.addEventListener('abort', () => resolve(), { once: true }))
   } catch (error) {
     diagnostics.emit({ stage: 'host', operation: 'host_run', outcome: 'failed', code: 'host_exception', error })
@@ -847,4 +894,5 @@ export async function main(argv: string[]): Promise<void> {
       }
     }
   }
+  return restartRevision && !shutdownRequested && !process.exitCode ? { revision: restartRevision, sessions: restartSessions } : undefined
 }

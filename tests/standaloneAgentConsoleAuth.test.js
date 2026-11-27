@@ -30,7 +30,7 @@ async function fixture(t, changes = {}) {
   const authority = guard(), file = path.join(root, 'auth', 'users.json'), env = { TEST_CONSOLE_AUTH_TOKEN: token }, services = []
   const clock = { at: Date.parse('2026-11-17T12:00:00+08:00') }
   const options = { userFile: file, authority, env, tokenEnv: 'TEST_CONSOLE_AUTH_TOKEN', now: () => clock.at, ...changes }
-  const open = async extra => { const port = await openStandaloneAgentConsoleAuth({ ...options, ...extra }); services.push(port); return port }
+  const open = async (extra, sessions) => { const port = await openStandaloneAgentConsoleAuth({ ...options, ...extra }, sessions); services.push(port); return port }
   t.after(async () => { for (const port of services) await port.close() })
   return { root, file, authority, clock, env, options, open,
     async setup(port, credentials = { ...empty, token }, name = 'admin') { return port.run('setup', { username: name, password: secret }, credentials, guard()) },
@@ -53,6 +53,22 @@ test('explicit token env is the only credential read and default setup/permissio
   assert.equal((await port.authenticate({ ...empty, token }, guard())).via, 'token', 'logout revokes its issued identity while the explicit automation token remains configured')
   assert.ok(reads.length > 0); assert.equal((await lstat(path.dirname(f.file))).mode & 0o777, 0o700)
   await assert.rejects(lstat(f.file), { code: 'ENOENT' })
+})
+
+test('a committed restart transfers only still-valid sessions with new request identities', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t), old = await f.open({ sessionTtlMs: 1_000 })
+  const supplied = { ...empty, cookie: cookie(await f.setup(old)) }
+  const prior = await old.authenticate(supplied, guard())
+  const ticket = old.captureRestartSessions()
+  await old.close()
+  const next = await f.open({ authority: guard(), sessionTtlMs: 1_000 }, ticket)
+  const principal = await next.authenticate(supplied, guard())
+  assert.equal(principal.username, prior.username)
+  assert.notEqual(principal.id, prior.id)
+  assert.equal(next.isCurrent(prior), false)
+  assert.equal(await (await f.open({ authority: guard(), sessionTtlMs: 1_000 }, ticket)).authenticate(supplied, guard()), undefined)
+  f.clock.at += 1_000
+  assert.equal(await next.authenticate(supplied, guard()), undefined)
 })
 
 test('token requests keep one issued identity until its fixed expiry or explicit revocation', async t => {

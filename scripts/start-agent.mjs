@@ -5,7 +5,7 @@ try {
   await ensureBackendArtifacts()
   startupStage = 'host'
   const { main } = await import('../dist/backend/bootstrap/standaloneAgent.js')
-  await main(process.argv.slice(2))
+  await main(process.argv.slice(2), { restartOnConfigSave: true })
 } catch (error) {
   // Match known diagnostic classes, but never echo arbitrary exception content.
   const value = error && typeof error === 'object' ? Object.getOwnPropertyDescriptor(error, 'message')?.value : undefined

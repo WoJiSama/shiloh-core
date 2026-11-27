@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { NAlert, NButton } from 'naive-ui'
 import { api } from '../lib/api'
 import { consoleRestart } from '../lib/consoleRestart'
@@ -13,20 +13,42 @@ const title = computed(() =>
       ? '正在保存配置'
       : consoleRestart.state.phase === 'uncertain'
         ? '保存结果待核对'
-        : '配置已保存，等待重启'
+        : '配置已保存，正在核对服务是否恢复'
 )
-async function check() {
+async function check(automatic = false, signal = AbortSignal.timeout(4_000)) {
   if (checking.value) return
   checking.value = true
-  error.value = ''
+  if (!automatic) error.value = ''
   try {
-    await api('/api/config-state')
+    await api('/api/config-state', { signal })
   } catch {
-    error.value = '暂时无法核对服务状态，草稿与编辑锁已保留。'
+    if (!automatic) error.value = '暂时无法核对服务状态，草稿与编辑锁已保留。'
   } finally {
     checking.value = false
   }
 }
+watch(
+  () => [consoleRestart.state.phase, consoleRestart.state.recoveryRequired] as const,
+  ([phase, recovery], _previous, onCleanup) => {
+    error.value = ''
+    if (recovery || (phase !== 'restart-required' && phase !== 'uncertain')) return
+    const controller = new AbortController()
+    const deadline = Date.now() + 60_000
+    const timer = setInterval(() => {
+      if (Date.now() >= deadline) {
+        clearInterval(timer)
+        error.value = '服务暂未确认恢复。请检查运行状态，必要时手动重启。草稿已保留。'
+        return
+      }
+      void check(true, AbortSignal.any([controller.signal, AbortSignal.timeout(4_000)]))
+    }, 2_000)
+    onCleanup(() => {
+      clearInterval(timer)
+      controller.abort()
+    })
+  },
+  { immediate: true }
+)
 </script>
 <template>
   <div v-if="restartBlocked" class="config-restart-banner" role="status">
@@ -36,14 +58,14 @@ async function check() {
       </p>
       <p v-else-if="consoleRestart.state.phase === 'saving'">正在写入本次修改，请稍候。</p>
       <p v-else-if="consoleRestart.state.phase === 'uncertain'">
-        请勿重复保存。请重启服务并检查状态，确认新的进程已加载磁盘配置后恢复编辑；未提交草稿会保留。
+        请勿重复保存。控制台会自动核对服务状态，确认重新加载磁盘配置后恢复编辑。未提交草稿会保留。
       </p>
-      <p v-else>请重启服务后检查状态。确认新的进程已加载配置后恢复编辑；其他页面的草稿会保留。</p>
+      <p v-else>控制台会自动检查服务是否已加载保存的配置。确认后恢复编辑，其他页面的草稿会保留。</p>
       <NButton
         v-if="consoleRestart.state.phase !== 'saving'"
         size="small"
         :loading="checking"
-        @click="check"
+        @click="check()"
       >
         检查服务状态
       </NButton>
