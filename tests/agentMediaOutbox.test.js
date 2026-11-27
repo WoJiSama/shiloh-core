@@ -34,7 +34,7 @@ const xiaohongshuShare = (kind = 'note', id = '6ad4a9c200000000290162d4') => ({ 
 const youtubeShare = (id = 'Ab_Cd-9xYz0') => ({ provider: 'youtube', reference: { kind: 'video', id } })
 const pixivShare = (id = '126649495') => ({ provider: 'pixiv', reference: { kind: 'artwork', id } })
 const referenceKey = share => JSON.stringify([share.provider, share.reference.kind, share.reference.id])
-const gallery = { version: 1, items: [{ parts: [{ kind: 'text', text: '抖音图集，共20张；超过20张时仅附前20张。' }] },
+const gallery = { version: 1, items: [{ parts: [{ kind: 'image', artifact: cover }] },
   ...Array.from({ length: 20 }, (_, index) => ({ parts: [{ kind: 'image', artifact: { ...cover, id: (index + 1).toString(16).padStart(32, '0'), sha256: (index + 1).toString(16).padStart(64, '0') } }] }))] }
 async function bounded(promise, ms = 3000) { let timer; try { return await Promise.race([promise, new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error('outbox fixture hung')), ms) })]) } finally { clearTimeout(timer) } }
 async function waitFor(probe, label, ms = 5000) { const end = Date.now() + ms; while (Date.now() < end) { const value = await probe(); if (value) return value; await delay(10) }; assert.fail(`timed out: ${label}`) }
@@ -68,7 +68,8 @@ async function fixture(t, diagnostics) {
         : selected.provider === 'youtube' ? `https://www.youtube.com/watch?v=${selected.reference.id}`
           : selected.provider === 'pixiv' ? `https://www.pixiv.net/artworks/${selected.reference.id}`
             : `https://www.xiaohongshu.com/explore/${selected.reference.kind === 'short' ? '6ad4a9c200000000290162d4' : selected.reference.id}`
-    return { status: 'ready', pageUrl, infoText: `搬运 ${job.source.messageId}`, plan: ['note', 'artwork'].includes(selected.reference.kind) ? structuredClone(gallery) : plan(`搬运 ${job.source.messageId}`, selected.provider === 'bilibili'),
+    const card = selected.provider === 'bilibili' || selected.provider === 'douyin'
+    return { status: 'ready', pageUrl, infoText: `搬运 ${job.source.messageId}`, plan: ['note', 'artwork'].includes(selected.reference.kind) ? structuredClone(gallery) : plan(`搬运 ${job.source.messageId}`, card),
       async release() { if (!released) { released = true; releases.set(job.id, (releases.get(job.id) ?? 0) + 1) } } }
   }
   const makeContext = (record, signal) => {
@@ -155,6 +156,8 @@ test('Bilibili, Douyin, Xiaohongshu, YouTube and Pixiv share one durable FIFO wi
   assert.deepEqual([...new Set(f.calls.map(call => call.id))], jobs.map(job => job.id))
   const galleryCall = f.calls.find(call => call.id === images.id)
   assert.deepEqual(galleryCall.action.plan, gallery)
+  assert.deepEqual(f.calls.filter(call => call.id === video.id).map(call => call.effect), ['forward'])
+  assert.deepEqual(f.calls.find(call => call.id === video.id).action.plan.items.map(item => item.parts.map(part => part.kind)), [['image'], ['video'], ['video']])
   for (const job of jobs) assert.equal(f.releases.get(job.id), 1)
 })
 
@@ -213,38 +216,39 @@ test('a Pixiv artwork switch during preparation cancels and releases the late ga
   assert.equal((await f.finished(job)).state, 'cancelled'); assert.equal(f.calls.length, 0); assert.equal(f.releases.get(job.id), 1)
 })
 
-test('YouTube sends video plans as intro plus direct video without forward and reconstructs its one permitted canonical query', redisTest, async t => {
+test('YouTube forwards the card and videos together and does not persist plans or the canonical query', redisTest, async t => {
   const f = await fixture(t), job = await f.enqueue(0, youtubeShare())
   await f.outbox.start(); const record = await f.finished(job)
   assert.equal(record.state, 'completed')
-  assert.deepEqual(f.calls.map(call => call.effect), ['directIntro', 'directVideo'])
-  const intro = f.calls[0].action, direct = f.calls[1].action
-  assert.equal(intro.mode, 'direct-video'); assert.equal(direct.mode, 'direct-video')
-  assert.ok(intro.plan.items.flatMap(item => item.parts).some(part => part.kind === 'text' && /搬运 /u.test(part.text)))
-  assert.ok(direct.plan.items.every(item => item.parts.every(part => part.kind === 'video')))
+  assert.deepEqual(f.calls.map(call => call.effect), ['forward'])
+  const forward = f.calls[0].action
+  assert.equal(forward.mode, 'forward')
+  assert.deepEqual(forward.plan.items[0].parts, [{ kind: 'image', artifact: cover }])
+  assert.deepEqual(forward.plan.items.slice(1).flatMap(item => item.parts).filter(part => part.kind === 'video').map(part => part.artifact), [firstVideo, secondVideo])
   assert.equal(f.releases.get(job.id), 1)
   const persisted = await f.reader.get(f.prefix + `agent:media-outbox:v1:job:${job.id}`)
   assert.equal(persisted.includes('watch?v='), false); assert.equal(persisted.includes('sha256'), false)
   assert.deepEqual(record.source.share, youtubeShare())
 })
 
-test('YouTube explicit video rejection falls back to its canonical query after the intro', redisTest, async t => {
+test('YouTube falls back to the canonical query after explicit rejection of both the video and the card', redisTest, async t => {
   const f = await fixture(t), job = await f.enqueue(0, youtubeShare())
-  f.setSend(call => call.effect === 'directVideo' ? { state: 'failed', code: 'native_rejected' } : sent(`receipt-${f.calls.length}`))
+  f.setSend(call => call.effect === 'link' ? sent(`receipt-${f.calls.length}`) : { state: 'failed', code: 'native_rejected' })
   await f.outbox.start(); const record = await f.finished(job)
   assert.equal(record.state, 'completed')
-  assert.deepEqual(f.calls.map(call => call.effect), ['directIntro', 'directVideo', 'link'])
-  assert.equal(f.calls[0].action.mode, 'direct-video'); assert.equal(f.calls[1].action.mode, 'direct-video')
+  assert.deepEqual(f.calls.map(call => call.effect), ['forward', 'forwardRetry', 'link'])
+  assert.deepEqual(f.calls.slice(0, 2).map(call => call.action.mode), ['forward', 'forward'])
+  assert.deepEqual(f.calls[1].action.plan.items[0].parts, [{ kind: 'image', artifact: cover }])
+  assert.equal(f.calls[1].action.plan.items.flatMap(item => item.parts).some(part => part.kind === 'video'), false)
   assert.ok(f.calls.at(-1).action.parts[0].text.includes('https://www.youtube.com/watch?v=Ab_Cd-9xYz0'))
   assert.equal(f.releases.get(job.id), 1)
 })
 
-for (const stage of ['directIntro', 'directVideo', 'link']) test(`YouTube ${stage} unknown stops later effects and freezes restart`, redisTest, async t => {
+for (const stage of ['forward', 'forwardRetry', 'link']) test(`YouTube ${stage} unknown stops later effects and freezes restart`, redisTest, async t => {
   const f = await fixture(t), job = await f.enqueue(0, youtubeShare())
-  f.setSend(call => call.effect === stage ? { state: 'unknown' }
-    : call.effect === 'directVideo' ? { state: 'failed', code: 'native_rejected' } : sent(`receipt-${f.calls.length}`))
+  f.setSend(call => call.effect === stage ? { state: 'unknown' } : { state: 'failed', code: 'native_rejected' })
   await f.outbox.start(); assert.equal((await f.finished(job)).state, 'unknown')
-  const sequence = ['directIntro', 'directVideo', 'link'], expected = sequence.slice(0, sequence.indexOf(stage) + 1)
+  const sequence = ['forward', 'forwardRetry', 'link'], expected = sequence.slice(0, sequence.indexOf(stage) + 1)
   assert.deepEqual(f.calls.map(call => call.effect), expected)
   await f.outbox.stop(); await f.create().start(); await f.idle(); assert.equal(f.calls.length, expected.length)
 })
@@ -269,7 +273,7 @@ test('YouTube prepared pages cannot change video identity, add queries or switch
     await f.outbox.start(); await waitFor(async () => (await f.inspect(job)).prepareFailures === 1, 'invalid YouTube prepared page rejected')
     assert.equal(f.calls.length, 0); assert.equal(f.releases.get(job.id), 1)
     f.setPrepare(undefined); f.advance(1000); await f.outbox.tick()
-    assert.equal((await f.finished(job)).state, 'completed'); assert.deepEqual(f.calls.map(call => call.effect), ['directIntro', 'directVideo'])
+    assert.equal((await f.finished(job)).state, 'completed'); assert.deepEqual(f.calls.map(call => call.effect), ['forward'])
   })
 })
 
@@ -509,6 +513,19 @@ test('Bilibili preserves the image-only card after a definite video rejection', 
   assert.deepEqual(record.effects.map(effect => effect.state), ['failed', 'failed', 'sent'])
 })
 
+test('Douyin keeps the card and ordered gallery when QQ rejects the slideshow video before sending', redisTest, async t => {
+  const f = await fixture(t), job = await f.enqueue(0, douyinShare('note'))
+  f.setPrepare(async (_job, _scope, prepared) => ({ ...prepared(),
+    plan: { version: 1, items: [...gallery.items, ...plan('video', true).items.slice(1, 2)] } }))
+  f.setSend(call => call.effect === 'forward' ? resourceFailure() : sent('gallery-with-card'))
+  await f.outbox.start()
+  assert.equal((await f.finished(job)).state, 'completed')
+  assert.deepEqual(f.calls.map(call => call.effect), ['forward', 'forwardRetry'])
+  assert.deepEqual(f.calls.map(call => call.action.mode), ['forward', 'forward'])
+  assert.deepEqual(f.calls[0].action.plan.items.at(-1).parts.map(part => part.kind), ['video'])
+  assert.deepEqual(f.calls[1].action.plan, gallery)
+})
+
 for (const stage of ['forward', 'forwardRetry', 'link']) test(`Bilibili ${stage} unknown stops every later fallback and cannot replay on restart`, redisTest, async t => {
   const f = await fixture(t), job = await f.enqueue()
   f.setSend(call => call.effect === stage ? { state: 'unknown' } : resourceFailure())
@@ -640,7 +657,7 @@ for (const stage of ['preparing', 'prepared', 'sending']) test(`a sibling accoun
   for (const job of [victim, unaffected]) { assert.equal(f.contextReleases.get(job.id), 1); assert.equal(releaseCalls.get(job.id), 1); assert.equal(f.releases.get(job.id), 1) }
 })
 
-test('three bounded preparation failures preserve FIFO and send a native card with the safe link', redisTest, async t => {
+test('three bounded preparation failures preserve FIFO and send the original link when a card cannot be prepared', redisTest, async t => {
   const f = await fixture(t), first = await f.enqueue(), second = await f.enqueue()
   f.setPrepare(async (job, _scope, prepared) => { if (job.id === first.id) throw new Error('/private/provider/url?credential=SECRET'); return prepared() })
   await f.outbox.start()
@@ -649,8 +666,8 @@ test('three bounded preparation failures preserve FIFO and send a native card wi
   assert.equal(f.calls.length, 0); f.advance(3000); await f.outbox.tick()
   const record = await f.finished(first); await f.finished(second)
   assert.equal(record.prepareAttempts, 3); assert.equal(record.state, 'completed')
-  assert.deepEqual(f.calls.map(call => [call.id, call.effect]), [[first.id, 'forward'], [second.id, 'forward']])
-  const parts = f.calls[0].action.plan.items.flatMap(item => item.parts)
+  assert.deepEqual(f.calls.map(call => [call.id, call.effect]), [[first.id, 'link'], [second.id, 'forward']])
+  const parts = f.calls[0].action.parts
   assert.deepEqual(parts.map(part => part.kind), ['text'])
   assert.match(parts[0].text, /视频资源准备失败/)
   assert.equal(parts[0].text.includes('SECRET'), false)

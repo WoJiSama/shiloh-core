@@ -9,7 +9,7 @@ const page = value => ({ text: value, offset: 0, totalChars: Array.from(value).l
 test('fileTextTool is explicit/ephemeral with closed scoped source and Unicode pagination parameters', () => {
   const tool = createAgentFileTextTool()
   assert.equal(tool.name, 'fileTextTool'); assert.equal(tool.dataPolicy, 'ephemeral'); assert.equal(tool.parameters.additionalProperties, false)
-  assert.deepEqual(Object.keys(tool.parameters.properties), ['sourceSeq', 'fileIndex', 'fileName', 'folderPath', 'fileUrl', 'offset', 'limit'])
+  assert.deepEqual(Object.keys(tool.parameters.properties), ['sourceSeq', 'fileIndex', 'fileName', 'folderPath', 'fileUrl', 'archiveEntry', 'offset', 'limit'])
   for (const key of ['extensions', 'dataPolicy', 'command', 'path', 'nativeFormats', 'url']) assert.equal(tool.parameters.properties[key], undefined)
 })
 test('real child tool reads trusted bytes, returns bounded evidence and paginates Unicode past the first page', async () => {
@@ -32,7 +32,7 @@ test('tool owns source arguments and returned bytes before authorization waits',
 })
 test('invalid parameters, absent file ports, nonhuman context and revoked authority never expose a service', async () => {
   let calls = 0; const tool = createAgentFileTextTool({ service: { async extract() { calls++; return page(text) } } })
-  for (const input of [{ offset: -1 }, { offset: 1.2 }, { offset: 1_000_001 }, { limit: 11_001 }, { limit: 0 }, { extensions: ['.txt'] }, { nativeFormats: ['doc'] }, { path: '/tmp/secret' }, { fileName: '../secret' }]) assert.equal((await tool.execute(input, context())).status, 'failed')
+  for (const input of [{ offset: -1 }, { offset: 1.2 }, { offset: 1_000_001 }, { limit: 11_001 }, { limit: 0 }, { extensions: ['.txt'] }, { nativeFormats: ['doc'] }, { path: '/tmp/secret' }, { fileName: '../secret' }, { archiveEntry: '../secret' }, { archiveEntry: '/etc/passwd' }, { archiveEntry: 'C:\\temp\\file.txt' }]) assert.equal((await tool.execute(input, context())).status, 'failed')
   for (const extra of [{ readFile: undefined }, { actor: { kind: 'autonomous' } }, { isCurrent: () => false }, { async ensureCurrent() { throw Error('PRIVATE') } }]) assert.equal((await tool.execute({}, context(extra))).status, 'failed')
   assert.equal(calls, 0)
 })

@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks'
 import type { AgentInteractionPlan, AgentInteractionResult } from '../../../contracts/agentInteraction.js'
 import { normalizeAgentInteractionResult, validateAgentInteractionPlan } from '../../tools/infrastructure/agentInteractions.js'
 import type { AgentDiagnosticDetails, AgentDiagnosticScope } from '../../../contracts/agentDiagnostics.js'
@@ -52,14 +53,15 @@ import type { PersonMemorySource } from '../../../contracts/personMemory.js'
 import type { PersonProfileExtractor, PersonProfileExtractionContext } from '../../../contracts/personProfileExtraction.js'
 import { PersonProfileExtractionError } from '../../memory/infrastructure/agentPersonExtractor.js'
 import type { AgentBindingSnapshot, AgentBindingTurn, AgentConversationScope, ConversationAddress, PlatformAccountRef, PlatformUserRef } from '../../../contracts/agentBinding.js'
-import type { ForwardContent, ForwardReference, MessageImage, MessageImageReadOptions, PlatformNudgeEvent } from '../../../contracts/platformConnection.js'
+import { messageImageReadSteps, type ForwardContent, type ForwardReference, type MessageImage, type MessageImageReadFailure,
+  type MessageImageReadOptions, type PlatformNudgeEvent } from '../../../contracts/platformConnection.js'
 import type { IncomingMessage, MessageActionOptions, MessageActionPort, MessagePart, OutgoingPart, MessageBundleItem, MessageBundlePart } from '../../../contracts/platformMessage.js'
 import type { DeliveryReceipt } from '../../../contracts/delivery.js'
 import type { AgentQqActionRunner, AgentToolContext, AgentToolMessage, AgentToolRequest } from '../../../contracts/agentTool.js'
 import type { AgentQzoneOperation, AgentQzoneResult } from '../../../contracts/agentQzone.js'
 import { createAgentQzoneTools } from '../../tools/infrastructure/agentQzoneTools.js'
 import { authorizeAgentToolContext } from '../../tools/infrastructure/agentToolAuthorization.js'
-import { normalizeStringArrayInput } from '../domain/paramTolerance.js'
+import { normalizeMessageTextsInput } from '../domain/paramTolerance.js'
 import { parseAgentToolArguments, validateAgentToolInput } from '../../tools/infrastructure/agentToolSchema.js'
 import type { ConversationMembersSnapshot } from '../../../contracts/platformConnection.js'
 import type { PersonaScope } from '../../../contracts/persona.js'
@@ -68,10 +70,12 @@ import { createDefaultSimSession, dayKey, isSimulationUserId } from '../domain/s
 import { affinityLevel, bumpMemeUsage, defaultAffinityEntry, dueMemories, formatSelfMemorySection, mergeMemeCandidates, normalizeMemoryList, parseMemeCandidates } from '../domain/simMemory.js'
 import { mineUserCatchphrases } from '../domain/userStyle.js'
 import { boundedTimerDelay, safeSetTimeout, isDuplicateMessageId, sanitizeUntrustedText, safeToolErrorText, shouldSendErrorNotice } from '../domain/safety.js'
-import { directGroupAddress, evaluateWakeTrigger, formatWakeReason, mergeWakeReason, messageReasonStillPending, pushPendingReason, TIMER_WAKE_REASONS } from '../domain/wakeTrigger.js'
+import { directGroupAddress, evaluateWakeTrigger, formatWakeReason, hasExplicitGroupSalutation, mergeWakeReason, messageReasonStillPending, pushPendingReason, TIMER_WAKE_REASONS } from '../domain/wakeTrigger.js'
 import { resolveSimToolSurface } from '../domain/toolPolicy.js'
 import { acknowledgeMessages, noteModelSeen, readThroughSeq } from '../domain/watermark.js'
 import { buildWakeSnapshot, compactSimMessage } from '../domain/messageView.js'
+import { buildGroupWakeRouting, currentGroupReplies, isAddressedElsewhere, isImplicitGroupContinuation, rememberGroupReply, validateGroupWakeSelection,
+  type GroupWakeSelection } from '../domain/groupTurnRouting.js'
 import { buildSocialPermissionRequest, readSocialVerdict, type SocialAction } from '../domain/socialPermission.js'
 import { computeWaitOutcome, normalizeWaitPlan, type SimWaitPlan } from '../domain/waitGate.js'
 import { checkSendAllowance, checkWakeBudget, describeBudgetLimit, isDirectAddressKind, limitNoticeDue, shouldAnnounceBudgetLimit, invalidatePreSleepWaitByParticipation, markPreSleepSatisfied, recordSend, recordWake, recordWakeTokens, resetPreSleepWait, rollBudgetDay } from '../domain/budget.js'
@@ -87,7 +91,7 @@ import { buildChatRequestData } from '../../models/domain/modelGateway.js'
 import { excerptContext, modelContextRequest, optionalContext } from '../../models/domain/requestContext.js'
 import { safeTruncateUnicode } from '../../models/domain/unicodeText.js'
 import { createSimSessionStore, simulationSessionKey, type SimGroupOverrides, type SimSessionStore } from './simSessionStore.js'
-import { AgentSimulationModelError, type AgentSimulationWakePhase } from './agentSimulationModels.js'
+import { AgentSimulationModelError, wakeGateChecksSources, type AgentSimulationWakeInput, type AgentSimulationWakePhase, type AgentSimulationWakeVerdict } from './agentSimulationModels.js'
 import { createInitialPromptStore } from './simInitialPrompt.js'
 import { resolveSimulationGroupConfig, seedSimulationOverrides, simulationGroupOverride } from './simulationGroupPolicy.js'
 import { decodeSimulationAddressKey, isQqSimulationAddress, qqSimulationAddress, simulationAddressKey } from './simulationAddress.js'
@@ -252,9 +256,9 @@ export interface SimulationRuntimePorts {
   /** Explicit current capability for QQ extension tools; absence denies the neutral extension surface. */
   supportsQqAction?(target: ConversationAddress, toolName: string): boolean
   executeQzone?(operation: AgentQzoneOperation, context: AgentToolContext): Promise<AgentQzoneResult>
-  /** 唤醒预判闸：低信号唤醒先判断值不值得进完整回合；返回 null = 预判不可用（fail-open 放行） */
-  wakeGateJudge?(input: { reason: string; messages: { name: string; text: string; atSelf: boolean }[] }, isCurrent?: ExecutionOptions['isCurrent'],
-    context?: PersonProfileExtractionContext, onPhase?: (phase: AgentSimulationWakePhase) => void): Promise<{ engage: boolean; reason?: string } | null>
+  /** Core resolves the conversational target here. Legacy hosts may continue when the judge is unavailable. */
+  wakeGateJudge?(input: AgentSimulationWakeInput, isCurrent?: ExecutionOptions['isCurrent'],
+    context?: PersonProfileExtractionContext, onPhase?: (phase: AgentSimulationWakePhase, httpStatus?: number) => void): Promise<AgentSimulationWakeVerdict | null>
   /** QQ空间互动：看指定成员的最近说说 / 点赞 / 评论（凭据由装配层处理；内容已在上层脱敏） */
   qzoneInteract?(input: { action: 'visit' | 'like' | 'comment'; userId?: string; tid?: string; text?: string }, target: ConversationAddress, options?: SimSendOptions): Promise<{ ok: boolean; error?: string; feeds?: { tid: string; time: string; text: string; likes: number }[] }>
   /** 人物核心档案提取（侧路小模型）：近期消息 → 跨群身份级事实补丁 */
@@ -321,7 +325,8 @@ export interface SimulationRuntime {
   /** 承诺账本查询口：该群当前是否仿真生效（commitmentTool 创建 agent 类承诺前的闸） */
   isGroupActive(groupId: string): boolean
   isConversationActive(target: ConversationAddress): Promise<boolean>
-  canInitiateGroupChat(target: ConversationAddress): Promise<boolean>
+  canInitiateGroupChat(target: ConversationAddress, checkAvailability?: boolean): Promise<boolean>
+  personalGroupActivity(target: ConversationAddress): Promise<'recent' | 'earlier' | 'empty' | undefined>
   readPersonalWorkContext(binding: AgentBindingSnapshot, isCurrent: () => boolean, allowsText: (value: string) => boolean): Promise<{
     messages: readonly { messageId: string; authorId: string; name: string; at: number; text: string }[]
     isCurrent(): Promise<boolean>
@@ -584,11 +589,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const filtered = { ...message, quoteToSelf: false }
     delete filtered.quoteAuthor; delete filtered.quoteText; delete filtered.quoteImageUrls
     delete filtered.quoteSource
+    delete filtered.replyMessageId
     delete filtered.replyToUserId
     return filtered
   }
 
-  const needsQuoteForWake = (message?: SimMessage) => Boolean(message?.quoteSource && message.quoteToSelf && !message.atSelf)
+  const needsQuoteForWake = (message?: SimMessage) => Boolean((message?.quoteSource || message?.replyMessageId) && message?.quoteToSelf && !message.atSelf)
   async function revokeSharedDerived(groupId: string, scope: CharacterScope): Promise<void> {
     const active = new Set((await sharedFor(scope).projection()).map(entry => entry.id))
     const source = await characters.load(scope)
@@ -728,20 +734,26 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         ? reported ?? (confirmedReadResult(tool.name, text) ? 'succeeded' : 'unknown') : classified
       if (!tool.agentDiagnosesExecution) {
         let code: string | undefined
+        let httpStatus: number | undefined
         if (status !== 'succeeded' && ['simGetMessageImages', 'simGetForward', 'simSendPoke'].includes(tool.name)) {
           try {
-            const resultCode = record(JSON.parse(text)).code
+            const { code: resultCode, httpStatus: resultStatus } = record(JSON.parse(text))
             if (typeof resultCode === 'string' && /^(?:image|forward|poke)_[a-z_]{1,52}$/u.test(resultCode)) code = resultCode
+            if (tool.name === 'simGetMessageImages' && code === 'image_download_http_error' && typeof resultStatus === 'number') httpStatus = resultStatus
           } catch { /* Legacy result prose stays in the tool response. */ }
         }
+        const imageStep = tool.name === 'simGetMessageImages' && code && Object.hasOwn(messageImageReadSteps, code)
+          ? messageImageReadSteps[code as keyof typeof messageImageReadSteps] : undefined
         const details: AgentDiagnosticDetails | undefined = invalid ? { ...invalid, result: 'not_dispatched' } :
           status === 'unknown' ? { result: 'confirmation_pending' } :
           code === 'image_turn_limit' ? { limit: 2, result: 'not_dispatched' } :
+          code === 'image_source_is_file' ? { step: 'image_attachment_select', result: 'not_dispatched' } :
           code === 'poke_rate_limit' ? { limit: 6, result: 'not_dispatched' } :
+          imageStep ? { step: imageStep, result: 'discarded' } :
           code === 'image_description_unavailable' ? { step: 'response_validation', result: 'discarded' } : undefined
         diagnose({ stage: 'tool', operation, outcome: status, code: invalid ? 'tool_schema_invalid' : status === 'succeeded' ? 'completed' :
           code ?? (error === undefined ? `returned_${status}` : 'tool_threw'),
-          durationMs: Date.now() - started, ...(error === undefined ? {} : { error }),
+          durationMs: Date.now() - started, ...(error === undefined ? {} : { error }), ...(httpStatus === undefined ? {} : { httpStatus }),
           ...(details ? { details } : {}) })
       }
       if (observed && status !== 'succeeded') observed.failureReported = true
@@ -902,11 +914,37 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return isSimulationGroup(key)
   }
 
-  async function canInitiateGroupChat(target: ConversationAddress): Promise<boolean> {
-    if (target.kind !== 'group' || !allowsConversationAI(target)) return false
+  async function personalGroupKey(target: ConversationAddress, checkAvailability: boolean): Promise<string | undefined> {
+    if (target.kind !== 'group' || !allowsConversationAI(target)) return
     await refreshGroupState()
     const key = await conversationKey(target)
-    return !!key && isSimulationGroup(key) && proactiveAllowed(key)
+    if (!key || !isSimulationGroup(key) || !proactiveAllowed(key)) return
+    if (!checkAvailability) return key
+    const scope = characterScopeFor(target, personaFor(target).personaId || 'default')
+    if ((await characters.load(scope)).paused) return
+    const cfg = runtimeConfig(key)
+    if (!cfg.rhythm.enabled || !isSleeping(new Date(now() + 8 * 3600_000).getUTCHours(), await loadRhythmWindow(cfg, scope))) return key
+  }
+
+  async function canInitiateGroupChat(target: ConversationAddress, checkAvailability = false): Promise<boolean> {
+    return !!await personalGroupKey(target, checkAvailability)
+  }
+
+  function personalWorkMessages(state: SimSessionState, botId: string) {
+    return [...new Map([...state.recent, ...state.unread].map(message => [message.seq, message])).values()]
+      .filter(message => message.kind === 'text' && message.text.trim() && message.messageId && message.userId !== botId)
+      .sort((a, b) => a.seq - b.seq).slice(-16)
+  }
+
+  async function personalGroupActivity(target: ConversationAddress): Promise<'recent' | 'earlier' | 'empty' | undefined> {
+    const key = await personalGroupKey(target, true)
+    if (!key || !proactiveAllowed(key) || !allowsConversationAI(target)) return
+    const state = liveStates.get(key) ?? await store.load(key)
+    const binding = personaFor(target).binding
+    if (!binding || !allowsConversationAI(target) || !proactiveAllowed(key)) return
+    if (state.botId !== target.account.id || state.bindingToken !== agentBindingToken(binding)) return 'empty'
+    const latest = personalWorkMessages(state, target.account.id).at(-1)
+    return latest ? now() - latest.at < 4 * 3600_000 ? 'recent' : 'earlier' : 'empty'
   }
 
   async function readPersonalWorkContext(binding: AgentBindingSnapshot, guard: () => boolean, allowsText: (value: string) => boolean) {
@@ -918,9 +956,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const resolved = personaFor(target)
     const scope = characterScopeFor(target, resolved.personaId || 'default')
     const state = liveStates.get(key) ?? await store.load(key)
-    const candidates = [...new Map([...state.recent, ...state.unread].map(message => [message.seq, message])).values()]
-      .filter(message => message.kind === 'text' && message.text.trim() && message.messageId && message.userId !== target.account.id)
-      .sort((a, b) => a.seq - b.seq).slice(-16)
+    if (state.botId !== target.account.id || state.bindingToken !== agentBindingToken(binding)) return undefined
+    const candidates = personalWorkMessages(state, target.account.id)
     const redacted = await redactSceneMessages(scope, candidates)
     const visible: SimMessage[] = []
     for (const message of redacted) {
@@ -1046,6 +1083,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     state.nextProactiveCheckAt = 0
     state.nextReplyCheckAt = 0
     delete state.lastConfirmedChat
+    delete state.confirmedGroupReplies
     state.lastProactiveCheckedSeq = state.seq
     delete state.offeredFollowUpIds
     delete state.lastPlayAlongWakeAt
@@ -1236,6 +1274,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       ...(atOther ? { atOther: true } : {}),
       ...(incoming.mentions.length ? { mentionUserIds: [...new Set(incoming.mentions.filter(inAccountNamespace).map(user => user.id))].slice(0, 20) } : {}),
       quoteToSelf,
+      ...(quoteId && quoteId !== incoming.messageId && (quoteSource || knownBotReply || quotedUserId) ? { replyMessageId: quoteId } : {}),
       ...(quote && !quoteToSelf ? {
         ...(quotedUserId ? { replyToUserId: quotedUserId } : {}),
         ...(quoteAuthor ? { quoteAuthor } : {}),
@@ -1268,17 +1307,22 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const atOnlyGroup = !proactiveAllowed(groupId)
     let reason = ports.unifiedGroupChat ? directGroupAddress(message, [selfName, ...aliases], !atOnlyGroup) : null
     if (!state.bootstrapSent) {
-      if (!reason && (!ports.unifiedGroupChat || !atOnlyGroup)) {
+      if (!reason && (!ports.unifiedGroupChat || !atOnlyGroup && !isAddressedElsewhere(message))) {
         reason = message.atSelf || message.quoteToSelf ? { kind: 'atMention', seq: message.seq } : { kind: 'bootstrap', seq: message.seq }
       }
       state.bootstrapSent = true
     } else if (!reason && (!ports.unifiedGroupChat || !atOnlyGroup)) {
       const hourNow = new Date(now() + 8 * 3600_000).getUTCHours()
-      // 插话熔断：我上次发言后有第三人插过话（recent 只含群友消息，当前消息已入列但按 userId 自然排除）——
-      // 对话对象这条更可能是接那人的话而不是对我说的，不算延续唤醒。宁可漏接不要抢话。
-      const interveningSinceBotTurn = state.lastAiSendAt > 0
+      // The legacy host still uses its conversation window. Core checks its
+      // confirmed reply first and sends potential continuations to the model.
+      const interveningSinceBotTurn = !ports.unifiedGroupChat && state.lastAiSendAt > 0
         && state.recent.some(m => m.at > state.lastAiSendAt && m.userId !== message.userId)
-      reason = evaluateWakeTrigger(message, state.wakeConfig, { selfId: selfUserId, selfName, random, conversation: state.conversation, interveningSinceBotTurn, activityFactor: cfg.rhythm.enabled ? activityFactor(hourNow) : 1 })
+      const wake = evaluateWakeTrigger(message, state.wakeConfig, { selfId: selfUserId, selfName, random, ...(ports.unifiedGroupChat ? {} : { conversation: state.conversation }),
+        interveningSinceBotTurn, activityFactor: cfg.rhythm.enabled ? activityFactor(hourNow) : 1 })
+      // In Core, a weak keyword can wake the observer but cannot hide a live continuation candidate.
+      const possibleContinuation = ports.unifiedGroupChat && isImplicitGroupContinuation(state, message, cfg.wake.continuationWindowMs)
+      reason = possibleContinuation && (!wake || ['keyword', 'speaker', 'probability', 'anyMessage'].includes(wake.kind))
+        ? { kind: 'continuation', seq: message.seq, detail: message.name } : wake
     }
     // 管理员设定的「仅@才回」优先于一切触发器（含 AI 自设唤醒）：非点名类唤醒压掉。
     // 消息照常入库——AI 被点名醒来后仍可读到全部内容；定时器/管理类唤醒是被点名后的延伸，不受影响。
@@ -1306,15 +1350,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       state.pendingWakeReasons = pushPendingReason(state.pendingWakeReasons, reason)
       reason = null
     }
-    // 任何触发命中都视为"机器人在和这个人对话"：登记对话对象并刷新延续窗口
-    if (reason && message.kind === 'text') markConversationEngaged(state, message.userId, cfg.wake.continuationWindowMs)
+    if (!ports.unifiedGroupChat && reason && message.kind === 'text') markConversationEngaged(state, message.userId, cfg.wake.continuationWindowMs)
     if (reason && ports.durableIngress) {
       const prior = state.queuedIngressWake
       const merged = mergeWakeReason(prior ?? null, reason)
       state.queuedIngressWake = merged.reason
       // Separate directed messages retain their own turn when a batch is merged.
-      if (prior && isDirectAddressKind(prior.kind) && isDirectAddressKind(reason.kind)
-        && state.recent.find(item => item.seq === prior.seq)?.userId !== message.userId) {
+      if (prior && isDirectAddressKind(prior.kind) && isDirectAddressKind(reason.kind) &&
+          (ports.unifiedGroupChat ? prior.seq !== reason.seq : state.recent.find(item => item.seq === prior.seq)?.userId !== message.userId)) {
         state.pendingWakeReasons = pushPendingReason(state.pendingWakeReasons, merged.changed ? prior : reason)
       }
     }
@@ -1579,10 +1622,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       }
       const discardWake = () => beginWake(() => {})
       let wakeRecorded = false
-      const recordWakeStart = () => {
+      const recordWakeStart = (countTowardRate = true) => {
         if (wakeRecorded) return
         wakeRecorded = true
-        recordWake(turnState, now())
+        recordWake(turnState, now(), countTowardRate)
         turnState.lastWakeReason = reason
       }
       if ((ports.unifiedGroupChat || ['characterGoal', 'interestUpdate', 'proactiveCheck'].includes(reason.kind)) && !mayWake(groupId, reason, state)) {
@@ -1606,10 +1649,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const memorySceneState = await personMemory.getSceneRedactions({ identity: characterScope, scene: memoryScene })
       const attachmentSourceIds = new Set<string>()
       const triggerRevoked = Boolean(triggerSource?.messageId && await ports.isMessageRecalled?.(target, String(triggerSource.messageId)))
-      const quoteRevoked = Boolean(triggerSource?.quoteSource && await ports.isMessageRecalled?.(target, triggerSource.quoteSource.messageId))
+      const replyMessageId = triggerSource?.quoteSource?.messageId ?? triggerSource?.replyMessageId
+      const quoteRevoked = Boolean(replyMessageId && await ports.isMessageRecalled?.(target, replyMessageId))
       if ((state.personMemoryInvalidatedAt || 0) !== memorySceneState.invalidatedAt) {
         state.agentHistory = []
         delete state.lastConfirmedChat
+        delete state.confirmedGroupReplies
       }
       state.personMemoryInvalidatedAt = memorySceneState.invalidatedAt
       state.recent = await redactSceneMessages(characterScope, state.recent)
@@ -1625,9 +1670,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         return
       }
       const triggerEvidenceIds = () => {
-        const visibleQuote = triggerSource && state!.recent.find(message => message.seq === triggerSource.seq)?.quoteSource
+        const visibleMessage = triggerSource && state!.recent.find(message => message.seq === triggerSource.seq)
+        const visibleQuoteId = visibleMessage?.quoteSource?.messageId ?? visibleMessage?.replyMessageId
         return [...(triggerSource?.messageId ? [String(triggerSource.messageId)] : []),
-          ...(visibleQuote ? [visibleQuote.messageId] : []), ...attachmentSourceIds]
+          ...(visibleQuoteId ? [visibleQuoteId] : []), ...attachmentSourceIds]
       }
       const assertTriggerCurrent = async () => {
         for (const id of triggerEvidenceIds()) if (await ports.isMessageRecalled?.(target, id)) {
@@ -1645,6 +1691,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if ((state.activityVersion || '') !== activityVersion) {
         state.agentHistory = []
         delete state.lastConfirmedChat
+        delete state.confirmedGroupReplies
       }
       state.activityVersion = activityVersion
       const goalCheckAt = now()
@@ -1671,12 +1718,305 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (state.personaId !== persona.personaId) {
         state.agentHistory = []
         delete state.lastConfirmedChat
+        delete state.confirmedGroupReplies
       }
       state.personaId = persona.personaId
       state.botId = self.id
       let actor = resolveSimulationActor(characterScope, reason, state.recent)
-      const triggerMessage = actor.kind === 'user' ? state.recent.find(message => message.seq === reason.seq) : undefined
       const runResolvedTurn = async (state: SimSessionState): Promise<void> => {
+        const routedGroup = ports.unifiedGroupChat === true && target.kind === 'group'
+        const directSource = state.recent.find(message => message.seq === reason.seq)
+        const transportAddressed = reason.kind === 'atMention' && !!directSource && (directSource.atSelf || directSource.quoteToSelf)
+        const clearSalutation = reason.kind === 'nameMention' && !!directSource && hasExplicitGroupSalutation(directSource, reason.detail ?? '')
+        const explicitlyAddressed = transportAddressed || clearSalutation
+        const judgeWake = ports.wakeGateJudge
+        if (routedGroup && actor.kind === 'user' && !explicitlyAddressed) actor = { ...characterScope, kind: 'autonomous' }
+        const screenGroup = routedGroup && !explicitlyAddressed &&
+          !['admin', 'commitment', 'characterGoal', 'interestUpdate', 'timeout'].includes(reason.kind)
+        let groupSelection: GroupWakeSelection | undefined
+        let relatedMessages: SimMessage[] | undefined
+        let relatedReply: string | undefined
+        if (!routedGroup && actor.kind === 'autonomous' && character.paused) {
+          if (durableWake) await discardWake()
+          return
+        }
+        let focusedGoalId: string | undefined
+        let focusedGoalRevision: number | undefined
+        let decision: CharacterDecision['kind'] | undefined
+        let turnClosed = false
+        let requiresClosing = false
+        let managementTerminal = false
+        let qqActionTerminal = false
+        let qqActionSends = 0
+        // Only the synchronous final announcement can use the committed goal version.
+        // This permit is never exposed to a subsequent model tool call.
+        type AnnouncementPermit = { revision: number; goalRevision?: number; goalStatus?: string }
+        let announcement: AnnouncementPermit | undefined
+        const focusGoal = async (id: string) => {
+          if (reason.kind === 'commitment') throw new Error('正式托付回合不能转为自主目标并借用托付预算')
+          if (!proactiveAllowed(groupId)) throw new Error('本群已关闭主动接话')
+          if (focusedGoalId && focusedGoalId !== id) throw new Error('一回合只能推进一个自主目标')
+          if (focusedGoalId) return
+          if (!characterMemoryVisibility(character, memorySceneState.invalidatedAt).goals.some(goal => goal.id === id)) throw new Error('目标的聊天来源已失效')
+          const receiptId = randomUUID()
+          character = await characters.update(characterScope, current => beginCharacterGoalAttempt(current, id, { id: receiptId, toolName: 'simGoalCheck' }, now()))
+          const pending = character.receipts.find(item => item.id === receiptId)!
+          focusedGoalId = id
+          focusedGoalRevision = pending.goalRevision
+          actor = { ...characterScope, kind: 'autonomous' }
+          character = await characters.update(characterScope, current => recordCharacterReceipt(current, { ...pending, status: 'unknown', summary: '已进行一次目标检查，尚无外部行动结果', at: now() }, now()))
+        }
+        liveStates.set(groupId, state)
+        rollBudgetDay(state, now())
+        const verdict = await checkGroupWakeBudget(state, cfg, groupId, reason)
+        if (!verdict.allowed) {
+          // 预算类(回合/金额)今日不会再放行:群内提示一次后不再重试;
+          // 限频类延后重试（丢弃会让 timeout 唤醒停在无定时器静默态）
+          const limitText = describeBudgetLimit(verdict.reason)
+          if (limitText) {
+            const announceBudget = () => {
+              diagnose({ stage: 'runtime', operation: 'simulation_wake_budget', outcome: 'failed',
+                code: verdict.reason.startsWith('dailyTurns:') ? 'daily_turn_limit' : 'daily_cost_limit' },
+              () => logger.warn(`[仿真] 群 ${groupId} 唤醒被预算拦截：${verdict.reason}（今日剩余唤醒不再重试）`))
+              const hasAudience = (!routedGroup || actor.kind === 'user') && shouldAnnounceBudgetLimit(String(reason.kind), Number(turnState.lastIncomingAt) || 0, now())
+              if (hasAudience && limitNoticeDue(limitNoticeAt.get(groupId) || 0, now())) {
+                limitNoticeAt.set(groupId, now())
+                void sendText(`（${limitText}，调用已限额，明天自动恢复喵）`)
+                  .then(receipt => {
+                    if (!receipt.ok) diagnose({ stage: 'delivery', operation: 'simulation_budget_notice',
+                      outcome: receipt.unknown ? 'unknown' : 'failed', code: 'budget_notice_not_confirmed' },
+                    () => logger.warn(`[仿真] 群 ${groupId} 限额提示发送失败`))
+                  })
+                  .catch(error => diagnose({ stage: 'delivery', operation: 'simulation_budget_notice', outcome: 'unknown',
+                    code: 'budget_notice_not_confirmed', error }, () => logger.warn(`[仿真] 群 ${groupId} 限额提示发送失败`)))
+              }
+            }
+            if (durableWake) await beginWake(announceBudget)
+            else announceBudget()
+            return
+          }
+          if (!retryTimers.has(groupId)) {
+            const timer = administration.background(() => safeSetTimeout(() => {
+              retryTimers.delete(groupId)
+              launchTurn(groupId, reason, capturedBinding)
+            }, 60_000))
+            retryTimers.set(groupId, { timer, reason, bindingToken: capturedBinding })
+          }
+          return
+        }
+        if (reason.kind === 'characterGoal') {
+          const goal = dueCharacterGoal(character, now())
+          if (!goal || (reason.detail && reason.detail !== goal.id)) {
+            if (durableWake) await discardWake()
+            return
+          }
+          if (durableWake) {
+            const attempt = await beginWake(() => focusGoal(goal.id).then(() => undefined, error => ({ error })))
+            if (!attempt) return
+            const failure = await attempt.result
+            if (failure) throw failure.error
+          } else await focusGoal(goal.id)
+        }
+        if (!durableWake && !commitment) recordWakeStart(!routedGroup || !explicitlyAddressed)
+        const memories = normalizeMemoryList(await selfStore.loadMemories(groupId), now(), isQqSimulationAddress(target) ? undefined : isSimulationUserId)
+        const followUpId = reason.kind === 'proactiveCheck' ? reason.detail : undefined
+        let noteProactiveCheck: (() => void) | undefined
+        if (reason.kind === 'proactiveCheck') {
+          let offeredFollowUpIds: string[] | undefined
+          if (followUpId) {
+            const due = dueMemories(memories, now())
+            if (!due.some(item => item.id === followUpId && item.proactiveSourceSeq !== undefined) || state.offeredFollowUpIds?.includes(followUpId)) {
+              if (durableWake) await discardWake()
+              return
+            }
+            const offered = new Set(state.offeredFollowUpIds)
+            offeredFollowUpIds = [...due.filter(item => offered.has(item.id)).map(item => item.id), followUpId]
+          }
+          noteProactiveCheck = () => {
+            if (offeredFollowUpIds) turnState.offeredFollowUpIds = offeredFollowUpIds
+            turnState.lastProactiveCheckedSeq = turnState.seq
+          }
+          if (!durableWake) noteProactiveCheck()
+        }
+
+        const declineGroupWake = async (seqs: number[]) => {
+          if (durableWake && !wakeStarted && !await discardWake()) return
+          const pending = state.pendingWakeReasons.filter(entry => !sameWake(entry, reason))
+          const reserved = new Set(pending.filter(entry => isDirectAddressKind(entry.kind) || entry.kind === 'continuation').map(entry => entry.seq))
+          noteModelSeen(state, seqs.filter(seq => !reserved.has(seq)))
+          acknowledgeMessages(state, readThroughSeq(state))
+          const [next, ...remaining] = pending.filter(entry =>
+            reserved.has(entry.seq) && state.recent.some(message => message.seq === entry.seq) || messageReasonStillPending(entry, state.unread))
+          state.pendingWakeReasons = remaining
+          nextWake = ports.durableIngress && next ? queueWake(state, next) : next
+          await store.save(groupId, state)
+        }
+        if (!followUpId && cfg.wakeGate.enabled && judgeWake && now() >= wakeGateRetryAt &&
+            (routedGroup ? screenGroup : !WAKE_GATE_BYPASS_KINDS.has(reason.kind))) {
+          const gateReadThroughSeq = turnState.unread.reduce((max, message) => Math.max(max, message.seq), turnState.lastReadThroughSeq)
+          const available = [...(routedGroup ? turnState.recent : turnState.unread)].sort((a, b) => a.seq - b.seq)
+            .filter(message => !resolvedPersona.binding || message.kind === 'text' && !!message.messageId && !message.forwardId && !message.textTruncated)
+          const gateSources = available.slice(-10)
+          const focal = available.find(message => message.seq === reason.seq)
+          if (routedGroup && focal && !gateSources.includes(focal)) gateSources.splice(0, 1, focal)
+          gateSources.sort((a, b) => a.seq - b.seq)
+          const previous = routedGroup && focal ? currentGroupReplies(state, now(), cfg.wake.continuationWindowMs)
+            .filter(item => item.source.userId === focal.userId && item.source.seq < focal.seq).slice(0, 3) : []
+          const answeredSeqs = new Set(state.confirmedGroupReplies?.map(reply => reply.sourceSeq))
+          const routingAt = now()
+          const joinable = routedGroup && proactiveAllowed(groupId) && !character.paused ? new Set(state.unread
+            .filter(message => routingAt - message.at <= cfg.wake.continuationWindowMs && message.at <= routingAt + 2_000 &&
+              !answeredSeqs.has(message.seq) &&
+              (reason.kind !== 'continuation' || message.seq !== reason.seq) &&
+              !state.pendingWakeReasons.some(item => item.seq === message.seq && (isDirectAddressKind(item.kind) || item.kind === 'continuation')))
+            .map(message => message.seq)) : new Set<number>()
+          const routing = routedGroup ? buildGroupWakeRouting(gateSources, previous, reason, self.id, selfName, joinable, routingAt,
+            reason.kind !== 'continuation' || previous.length > 0) : undefined
+          if (routing?.reply === 'none' && !routing.allowJoin) { await declineGroupWake([]); return }
+          const witnesses = [...new Map([...gateSources, ...previous.map(item => item.source)].map(message => [message.seq, message])).values()]
+          const witnessIds = [...gateSources.flatMap(message => message.replyMessageId ? [message.replyMessageId] : message.quoteSource ? [message.quoteSource.messageId] : []),
+            ...previous.flatMap(({ reply }) => [reply.replyId, ...(reply.evidenceIds ?? [])])]
+          let sourceFailure: 'wake_gate_source_changed' | 'wake_gate_source_check_failed' | undefined
+          let gateUsageRecorded = false, gateActive = true
+          const gateTimeoutMs = 8_000, gateStarted = performance.now(), gateLoop = performance.eventLoopUtilization()
+          const providerChecksSources = wakeGateChecksSources(judgeWake)
+          type GateStep = AgentSimulationWakePhase | 'provider_request'
+          let gateStep: GateStep = 'wake_request_authorization'
+          let gateStepStarted = gateStarted, gateDispatched = false, gateHttpStatus: number | undefined
+          let slowest: { step: GateStep; ms: number } | undefined
+          const gatePhase = (step: GateStep, status?: number) => {
+            const at = performance.now(), ms = Math.round(at - gateStepStarted)
+            if (!slowest || ms > slowest.ms) slowest = { step: gateStep, ms }
+            gateStep = step; gateStepStarted = at
+            if (step === 'response_headers') gateDispatched = true
+            if (status !== undefined) gateHttpStatus = status
+          }
+          const gateSignal = AbortSignal.any([turnSignal, AbortSignal.timeout(gateTimeoutMs)])
+          const gateAuthorized = () => gateActive && !sourceFailure && canCallModel() && witnesses.every(source => turnState.recent.some(message =>
+            message.seq === source.seq && message.messageId === source.messageId && message.userId === source.userId &&
+            message.at === source.at && message.text === source.text && message.quoteSource?.messageId === source.quoteSource?.messageId &&
+            message.replyMessageId === source.replyMessageId))
+          const gateCurrent = () => !gateSignal.aborted && gateAuthorized()
+          const gateContext: PersonProfileExtractionContext = { target, ...(resolvedPersona.binding ? { binding: resolvedPersona.binding } : {}),
+            signal: gateSignal, isCurrent: gateCurrent,
+            async ensureCurrent() {
+              try {
+                if (!await sideModelSourcesCurrent(characterScope, target, witnesses, gateCurrent, gateSignal, [...triggerEvidenceIds(), ...witnessIds])) {
+                  gateSignal.throwIfAborted()
+                  throw new SimulationSourceRevokedError('唤醒预判来源已失效')
+                }
+              } catch (error) {
+                if (!gateSignal.aborted) sourceFailure = error instanceof SimulationSourceRevokedError ? 'wake_gate_source_changed' : 'wake_gate_source_check_failed'
+                throw error
+              }
+              gateSignal.throwIfAborted()
+            },
+            recordUsage(model, usage) {
+              if (!gateActive || gateUsageRecorded) return
+              gateUsageRecorded = true
+              ports.recordTokens?.({ scope: groupId, stage: 'wake-gate', model, usage })
+            },
+          }
+          const invokeGate = async () => {
+            try {
+              if (!gateCurrent() || !gateSources.length) return null
+              const started = now()
+              if (durableWake) { recordWakeStart(); noteProactiveCheck?.() }
+              if (!providerChecksSources) await awaitSideModel(() => gateContext.ensureCurrent(), gateSignal, gateCurrent)
+              gatePhase('provider_request')
+              const verdict = await awaitSideModel(() => judgeWake({
+                reason: formatWakeReason(reason),
+                messages: gateSources
+                  .map(m => ({ name: String(m.name || ''), text: String(m.text || '').slice(0, 80), atSelf: Boolean(m.atSelf || m.quoteToSelf) })),
+                ...(routing ? { routing } : {}),
+              }, gateCurrent, gateContext, (phase, status) => { if (!gateSignal.aborted) gatePhase(phase, status) }), gateSignal, gateCurrent)
+              if (!providerChecksSources) {
+                gatePhase('wake_response_authorization')
+                await awaitSideModel(() => gateContext.ensureCurrent(), gateSignal, gateCurrent)
+              }
+              if (verdict === null) diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'failed', code: 'wake_gate_unavailable',
+                durationMs: now() - started, details: { step: 'response_validation', result: 'discarded' } })
+              else diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'succeeded', durationMs: now() - started })
+              return verdict
+            } finally { gateActive = false }
+          }
+          const runGate = () => invokeGate().catch(error => {
+            const cancelled = sourceFailure === 'wake_gate_source_changed' || turnSignal.aborted && gateSignal.reason === turnSignal.reason
+            const timedOut = gateSignal.aborted && gateSignal.reason instanceof DOMException && gateSignal.reason.name === 'TimeoutError'
+            const failure = error instanceof AgentSimulationModelError ? error : undefined
+            const httpStatus = failure?.httpStatus ?? gateHttpStatus
+            const durationMs = performance.now() - gateStarted, stepMs = Math.round(performance.now() - gateStepStarted)
+            const useBackoff = !cancelled && (timedOut || failure?.code === 'provider_timeout' || failure?.code === 'provider_transport_error' ||
+                httpStatus === 429 || httpStatus !== undefined && httpStatus >= 500)
+            const retryInMs = 60_000
+            if (useBackoff) wakeGateRetryAt = now() + retryInMs
+            diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: cancelled ? 'cancelled' : 'failed',
+              code: sourceFailure ?? (cancelled ? 'wake_gate_cancelled' : timedOut ? 'wake_gate_timeout' : failure?.code ?? 'wake_gate_unavailable'),
+              ...(httpStatus === undefined ? {} : { httpStatus }), error, durationMs,
+              details: { step: gateStep, stepMs,
+                ...(slowest && slowest.ms > stepMs ? { slowestCompletedStep: slowest.step, slowestCompletedStepMs: slowest.ms } : {}),
+                ...(gateStep === 'provider_request' ? {} : { dispatched: gateDispatched }), result: gateDispatched || gateStep === 'provider_request' ? 'discarded' : 'not_dispatched',
+                ...(useBackoff ? { retryInMs } : {}), ...(timedOut ? { limit: gateTimeoutMs,
+                  timeoutOverrunMs: Math.max(0, Math.round(durationMs - gateTimeoutMs)),
+                  loopActiveMs: Math.round(performance.eventLoopUtilization(gateLoop).active) } : {}) } })
+            return null
+          })
+          const gate = durableWake ? await beginWake(runGate) : { result: runGate() }
+          if (!gate) return
+          const verdict = await gate.result
+          if (!canCallModel() || sourceFailure) {
+            if (routedGroup && canRunTurn()) await declineGroupWake([])
+            return
+          }
+          if (routing) {
+            groupSelection = verdict?.engage === true ? validateGroupWakeSelection(verdict.selection, routing) : undefined
+            if (!groupSelection) {
+              await declineGroupWake(verdict ? gateSources.map(message => message.seq) : [])
+              return
+            }
+            const selection = groupSelection
+            const earlier = previous.find(item => item.source.seq === selection.previousSeq)
+            relatedMessages = gateSources.filter(message => selection.contextSeqs?.includes(message.seq))
+            if (earlier) {
+              if (!relatedMessages.some(message => message.seq === earlier.source.seq)) relatedMessages.unshift(earlier.source)
+              relatedReply = earlier.reply.text
+              attachmentSourceIds.add(earlier.reply.replyId)
+              for (const id of earlier.reply.evidenceIds ?? []) attachmentSourceIds.add(id)
+            }
+            for (const message of [...relatedMessages, ...gateSources.filter(item => item.seq === selection.seq)]) {
+              if (message.messageId != null) attachmentSourceIds.add(String(message.messageId))
+              const quoteId = message.quoteSource?.messageId ?? message.replyMessageId
+              if (quoteId) attachmentSourceIds.add(quoteId)
+            }
+            if (selection.mode === 'reply') actor = resolveSimulationActor(characterScope, reason, state.recent)
+            else actor = { ...characterScope, kind: 'autonomous' }
+            logger.info(`[仿真] 群 ${groupId} 预判结果 wake=${reason.kind} mode=${selection.mode} seq=${selection.seq}`)
+          } else if (verdict && verdict.engage === false) {
+            state.lastReadThroughSeq = Math.max(state.lastReadThroughSeq, gateReadThroughSeq)
+            state.unread = state.unread.filter(message => message.seq > gateReadThroughSeq)
+            const [next, ...remaining] = state.pendingWakeReasons.filter(pending => messageReasonStillPending(pending, state!.unread))
+            state.pendingWakeReasons = remaining
+            nextWake = ports.durableIngress && next ? queueWake(state, next) : next
+            await store.save(groupId, state)
+            logger.info(`[仿真] 群 ${groupId} 预判闸拦截 wake=${reason.kind}${verdict.reason ? `（${verdict.reason}）` : ''}，省一次完整回合`)
+            return
+          } else if (verdict) logger.info(`[仿真] 群 ${groupId} 预判闸放行 wake=${reason.kind}${verdict.reason ? `（${verdict.reason}）` : ''}`)
+        } else if (screenGroup && !followUpId) {
+          await declineGroupWake([])
+          return
+        }
+
+        if (actor.kind === 'autonomous' && character.paused) {
+          if (durableWake) await declineGroupWake([])
+          return
+        }
+        if (groupSelection?.mode === 'join' && state.pendingWakeReasons.some(entry =>
+          entry.seq === groupSelection!.seq && (isDirectAddressKind(entry.kind) || entry.kind === 'continuation'))) {
+          await declineGroupWake([])
+          return
+        }
+        const triggerMessage = actor.kind === 'user' ? state.recent.find(message => message.seq === reason.seq) : undefined
+        const requestSource = routedGroup ? triggerMessage : triggerSource
         const toolEvent = {
           ...(isQqSimulationAddress(target) ? { group_id: Number(target.id) } : {}),
           self_id: self.id, _isAgentBindingCurrent: canCallModel,
@@ -1727,18 +2067,18 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               messageId: String(triggerSource.messageId), authorId: actor.userId, text: triggerSource.text, at: triggerSource.at,
               mentions: (triggerSource.mentionUserIds ?? []).map(id => ({ ...target.account, id })),
               ...(triggerSource.quoteSource?.messageId ? { replyMessageId: triggerSource.quoteSource.messageId } : {}),
-            ...(triggerSource.replyToUserId ? { replyAuthor: { ...target.account, id: triggerSource.replyToUserId } } : {}),
+              ...(triggerSource.replyToUserId ? { replyAuthor: { ...target.account, id: triggerSource.replyToUserId } } : {}),
             }, canCallModel, signal)
             historyProjections.push(projection)
             await ensureExecution()
             if (!guard() || signal.aborted) throw new Error('历史查询工具已失效')
             return projection.text
           } } : {}),
-          ...(triggerSource?.messageId && !triggerSource.textTruncated ? { _agentToolRequest: {
-            messageId: String(triggerSource.messageId), text: triggerSource.text, occurredAt: triggerSource.at,
-            mentions: (triggerSource.mentionUserIds ?? []).map(id => ({ ...target.account, id })),
-            ...(triggerSource.quoteSource?.messageId ? { replyMessageId: triggerSource.quoteSource.messageId } : {}),
-            ...(triggerSource.replyToUserId ? { replyAuthor: { ...target.account, id: triggerSource.replyToUserId } } : {}),
+          ...(requestSource?.messageId && !requestSource.textTruncated ? { _agentToolRequest: {
+            messageId: String(requestSource.messageId), text: requestSource.text, occurredAt: requestSource.at,
+            mentions: (requestSource.mentionUserIds ?? []).map(id => ({ ...target.account, id })),
+            ...(requestSource.quoteSource?.messageId ? { replyMessageId: requestSource.quoteSource.messageId } : {}),
+            ...(requestSource.replyToUserId ? { replyAuthor: { ...target.account, id: requestSource.replyToUserId } } : {}),
           } satisfies AgentToolRequest } : {}),
           _readAgentToolImages: (sourceSeq: number, isCurrent?: () => boolean, signal?: AbortSignal) => readAgentToolImages(sourceSeq, isCurrent, signal),
           _readAgentFile: async (input: AgentFileRequest, isCurrent: () => boolean, signal: AbortSignal): Promise<AgentFileBytes> => {
@@ -1757,217 +2097,37 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             return agentFiles.listFiles(input, isCurrent, signal)
           },
           ...(memoryTurn?.signal ? { _agentToolSignal: memoryTurn.signal } : {}),
-          ...(triggerSource?.messageId !== undefined ? { _agentRequestMessageId: String(triggerSource.messageId) } : {}),
-          ...(triggerSource?.text !== undefined ? { _agentUserText: triggerSource.text } : {}),
+          ...(requestSource?.messageId != null ? { _agentRequestMessageId: String(requestSource.messageId) } : {}),
+          ...(requestSource ? { _agentUserText: requestSource.text } : {}),
           _agentAllowsText: (_text: string) => true,
           ...(resolvedPersona.binding ? {_agentBinding: resolvedPersona.binding} : {}),
         }
-        const anchor = reason.kind !== 'session' ? triggerMessage : undefined
-        const conversationUserId = anchor?.userId
-        if (actor.kind === 'autonomous' && character.paused) {
-          if (durableWake) await discardWake()
-          return
+        const selectedSeq = groupSelection?.seq
+        const anchor = groupSelection ? state.recent.find(message => message.seq === selectedSeq)
+          : reason.kind !== 'session' ? triggerMessage : undefined
+        if (groupSelection && !anchor) { await declineGroupWake([]); return }
+        const conversationUserId = groupSelection?.mode === 'join' ? undefined : anchor?.userId
+        const anchorQuoteId = anchor?.quoteSource?.messageId ?? anchor?.replyMessageId
+        if (routedGroup && anchor && anchorQuoteId && !groupSelection) {
+          const earlier = anchor.quoteToSelf ? currentGroupReplies(state, now(), cfg.wake.continuationWindowMs)
+            .find(item => item.reply.replyId === anchorQuoteId) : undefined
+          if (earlier) {
+            relatedMessages = [earlier.source]
+            relatedReply = earlier.reply.text
+            for (const id of earlier.reply.evidenceIds ?? []) attachmentSourceIds.add(id)
+          } else relatedMessages = state.recent.filter(message => String(message.messageId) === anchorQuoteId).slice(0, 1)
         }
-        let focusedGoalId: string | undefined
-        let focusedGoalRevision: number | undefined
-        let decision: CharacterDecision['kind'] | undefined
-        let turnClosed = false
-        let requiresClosing = false
-        let managementTerminal = false
-        let qqActionTerminal = false
-        let qqActionSends = 0
-        // Only the synchronous final announcement can use the committed goal version.
-        // This permit is never exposed to a subsequent model tool call.
-        type AnnouncementPermit = { revision: number; goalRevision?: number; goalStatus?: string }
-        let announcement: AnnouncementPermit | undefined
-        const focusGoal = async (id: string) => {
-          if (reason.kind === 'commitment') throw new Error('正式托付回合不能转为自主目标并借用托付预算')
-          if (!proactiveAllowed(groupId)) throw new Error('本群已关闭主动接话')
-          if (focusedGoalId && focusedGoalId !== id) throw new Error('一回合只能推进一个自主目标')
-          if (focusedGoalId) return
-          if (!characterMemoryVisibility(character, memorySceneState.invalidatedAt).goals.some(goal => goal.id === id)) throw new Error('目标的聊天来源已失效')
-          const receiptId = randomUUID()
-          character = await characters.update(characterScope, current => beginCharacterGoalAttempt(current, id, { id: receiptId, toolName: 'simGoalCheck' }, now()))
-          const pending = character.receipts.find(item => item.id === receiptId)!
-          focusedGoalId = id
-          focusedGoalRevision = pending.goalRevision
-          actor = { ...characterScope, kind: 'autonomous' }
-          character = await characters.update(characterScope, current => recordCharacterReceipt(current, { ...pending, status: 'unknown', summary: '已进行一次目标检查，尚无外部行动结果', at: now() }, now()))
-        }
-        liveStates.set(groupId, state)
-        rollBudgetDay(state, now())
-        const verdict = await checkGroupWakeBudget(state, cfg, groupId, reason)
-        if (!verdict.allowed) {
-          // 预算类(回合/金额)今日不会再放行:群内提示一次后不再重试;
-          // 限频类延后重试（丢弃会让 timeout 唤醒停在无定时器静默态）
-          const limitText = describeBudgetLimit(verdict.reason)
-          if (limitText) {
-            const announceBudget = () => {
-              diagnose({ stage: 'runtime', operation: 'simulation_wake_budget', outcome: 'failed',
-                code: verdict.reason.startsWith('dailyTurns:') ? 'daily_turn_limit' : 'daily_cost_limit' },
-              () => logger.warn(`[仿真] 群 ${groupId} 唤醒被预算拦截：${verdict.reason}（今日剩余唤醒不再重试）`))
-              const hasAudience = shouldAnnounceBudgetLimit(String(reason.kind), Number(turnState.lastIncomingAt) || 0, now())
-              if (hasAudience && limitNoticeDue(limitNoticeAt.get(groupId) || 0, now())) {
-                limitNoticeAt.set(groupId, now())
-                void sendText(`（${limitText}，调用已限额，明天自动恢复喵）`)
-                  .then(receipt => {
-                    if (!receipt.ok) diagnose({ stage: 'delivery', operation: 'simulation_budget_notice',
-                      outcome: receipt.unknown ? 'unknown' : 'failed', code: 'budget_notice_not_confirmed' },
-                    () => logger.warn(`[仿真] 群 ${groupId} 限额提示发送失败`))
-                  })
-                  .catch(error => diagnose({ stage: 'delivery', operation: 'simulation_budget_notice', outcome: 'unknown',
-                    code: 'budget_notice_not_confirmed', error }, () => logger.warn(`[仿真] 群 ${groupId} 限额提示发送失败`)))
-              }
-            }
-            if (durableWake) await beginWake(announceBudget)
-            else announceBudget()
-            return
-          }
-          if (!retryTimers.has(groupId)) {
-            const timer = administration.background(() => safeSetTimeout(() => {
-              retryTimers.delete(groupId)
-              launchTurn(groupId, reason, capturedBinding)
-            }, 60_000))
-            retryTimers.set(groupId, { timer, reason, bindingToken: capturedBinding })
-          }
-          return
-        }
-        if (reason.kind === 'characterGoal') {
-          const goal = dueCharacterGoal(character, now())
-          if (!goal || (reason.detail && reason.detail !== goal.id)) {
-            if (durableWake) await discardWake()
-            return
-          }
-          if (durableWake) {
-            const attempt = await beginWake(() => focusGoal(goal.id).then(() => undefined, error => ({ error })))
-            if (!attempt) return
-            const failure = await attempt.result
-            if (failure) throw failure.error
-          } else await focusGoal(goal.id)
-        }
-        if (!durableWake && !commitment) recordWakeStart()
-        const memories = normalizeMemoryList(await selfStore.loadMemories(groupId), now(), isQqSimulationAddress(target) ? undefined : isSimulationUserId)
-        const followUpId = reason.kind === 'proactiveCheck' ? reason.detail : undefined
-        let noteProactiveCheck: (() => void) | undefined
-        if (reason.kind === 'proactiveCheck') {
-          let offeredFollowUpIds: string[] | undefined
-          if (followUpId) {
-            const due = dueMemories(memories, now())
-            if (!due.some(item => item.id === followUpId && item.proactiveSourceSeq !== undefined) || state.offeredFollowUpIds?.includes(followUpId)) {
-              if (durableWake) await discardWake()
-              return
-            }
-            const offered = new Set(state.offeredFollowUpIds)
-            offeredFollowUpIds = [...due.filter(item => offered.has(item.id)).map(item => item.id), followUpId]
-          }
-          noteProactiveCheck = () => {
-            if (offeredFollowUpIds) turnState.offeredFollowUpIds = offeredFollowUpIds
-            turnState.lastProactiveCheckedSeq = turnState.seq
-          }
-          if (!durableWake) noteProactiveCheck()
-        }
-
-        // 唤醒预判闸：低信号唤醒（关键词/概率/延续/旁观类）先由便宜模型小上下文预判；
-        // 判定不值得 → 等价 simMarkRead 静默收尾（推进水位、清未读），不进完整回合。
-        // 预判不可用/异常 → 放行（fail-open，宁多花一次也不丢回复）。
-        const judgeWake = ports.wakeGateJudge
-        if (!followUpId && cfg.wakeGate.enabled && judgeWake && now() >= wakeGateRetryAt && !WAKE_GATE_BYPASS_KINDS.has(reason.kind)) {
-          const gateReadThroughSeq = turnState.unread.reduce((max, message) => Math.max(max, message.seq), turnState.lastReadThroughSeq)
-          const gateSources = [...turnState.unread].sort((a, b) => a.seq - b.seq)
-            .filter(message => !resolvedPersona.binding || message.kind === 'text' && !!message.messageId && !message.forwardId && !message.textTruncated)
-            .slice(-10).map(message => ({ ...message }))
-          let sourceFailure: 'wake_gate_source_changed' | 'wake_gate_source_check_failed' | undefined
-          let gateUsageRecorded = false, gateActive = true
-          const gateTimeoutMs = 8_000, gateStarted = now()
-          let gateStep: AgentSimulationWakePhase | 'provider_request' = 'wake_request_authorization'
-          let gateStepStarted = gateStarted, gateDispatched = false
-          const gatePhase = (step: typeof gateStep) => {
-            gateStep = step
-            gateStepStarted = now()
-            if (step === 'response_headers') gateDispatched = true
-          }
-          const gateSignal = AbortSignal.any([turnSignal, AbortSignal.timeout(gateTimeoutMs)])
-          const gateAuthorized = () => gateActive && !sourceFailure && canCallModel() && gateSources.every(source => turnState.recent.some(message =>
-            message.seq === source.seq && message.messageId === source.messageId && message.userId === source.userId &&
-            message.at === source.at && message.text === source.text))
-          const gateCurrent = () => !gateSignal.aborted && gateAuthorized()
-          const gateContext: PersonProfileExtractionContext = { target, ...(resolvedPersona.binding ? { binding: resolvedPersona.binding } : {}),
-            signal: gateSignal, isCurrent: gateCurrent,
-            async ensureCurrent() {
-              try {
-                if (!await sideModelSourcesCurrent(characterScope, target, gateSources, gateCurrent, gateSignal, triggerEvidenceIds())) {
-                  gateSignal.throwIfAborted()
-                  throw new SimulationSourceRevokedError('唤醒预判来源已失效')
-                }
-              } catch (error) {
-                if (!gateSignal.aborted) sourceFailure = error instanceof SimulationSourceRevokedError ? 'wake_gate_source_changed' : 'wake_gate_source_check_failed'
-                throw error
-              }
-              gateSignal.throwIfAborted()
-            },
-            recordUsage(model, usage) {
-              if (!gateActive || gateUsageRecorded) return
-              gateUsageRecorded = true
-              ports.recordTokens?.({ scope: groupId, stage: 'wake-gate', model, usage })
-            },
-          }
-          const invokeGate = async () => {
-            try {
-              if (!gateCurrent() || !gateSources.length) return null
-              const started = now()
-              if (durableWake) { recordWakeStart(); noteProactiveCheck?.() }
-              await awaitSideModel(() => gateContext.ensureCurrent(), gateSignal, gateCurrent)
-              gatePhase('provider_request')
-              const verdict = await awaitSideModel(() => judgeWake({
-                reason: formatWakeReason(reason),
-                messages: gateSources
-                  .map(m => ({ name: String(m.name || ''), text: String(m.text || '').slice(0, 80), atSelf: Boolean(m.atSelf || m.quoteToSelf) })),
-              }, gateCurrent, gateContext, phase => { if (gateCurrent()) gatePhase(phase) }), gateSignal, gateCurrent)
-              gatePhase('wake_response_authorization')
-              await awaitSideModel(() => gateContext.ensureCurrent(), gateSignal, gateCurrent)
-              if (verdict === null) diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'failed', code: 'wake_gate_unavailable',
-                durationMs: now() - started, details: { step: 'response_validation', result: 'discarded' } })
-              else diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'succeeded', durationMs: now() - started })
-              return verdict
-            } finally { gateActive = false }
-          }
-          const runGate = () => invokeGate().catch(error => {
-            const cancelled = sourceFailure === 'wake_gate_source_changed' || turnSignal.aborted && gateSignal.reason === turnSignal.reason
-            const timedOut = gateSignal.aborted && gateSignal.reason instanceof DOMException && gateSignal.reason.name === 'TimeoutError'
-            const failure = error instanceof AgentSimulationModelError ? error : undefined
-            const httpStatus = failure?.httpStatus
-            const useBackoff = !cancelled && (timedOut || failure?.code === 'provider_timeout' || failure?.code === 'provider_transport_error' ||
-                httpStatus === 429 || httpStatus !== undefined && httpStatus >= 500)
-            const retryInMs = 60_000
-            if (useBackoff) wakeGateRetryAt = now() + retryInMs
-            diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: cancelled ? 'cancelled' : 'failed',
-              code: sourceFailure ?? (cancelled ? 'wake_gate_cancelled' : timedOut ? 'wake_gate_timeout' : failure?.code ?? 'wake_gate_unavailable'),
-              ...(httpStatus === undefined ? {} : { httpStatus }), error, durationMs: now() - gateStarted,
-              details: { step: gateStep, stepMs: Math.max(0, now() - gateStepStarted),
-                ...(gateStep === 'provider_request' ? {} : { dispatched: gateDispatched }), result: gateDispatched || gateStep === 'provider_request' ? 'discarded' : 'not_dispatched',
-                ...(useBackoff ? { retryInMs } : {}), ...(timedOut ? { limit: gateTimeoutMs } : {}) } })
-            return null
-          })
-          const gate = durableWake ? await beginWake(runGate) : { result: runGate() }
-          if (!gate) return
-          const verdict = await gate.result
-          if (!canCallModel() || sourceFailure) return
-          if (verdict && verdict.engage === false) {
-            state.lastReadThroughSeq = Math.max(state.lastReadThroughSeq, gateReadThroughSeq)
-            state.unread = state.unread.filter(message => message.seq > gateReadThroughSeq)
-            const [next, ...remaining] = state.pendingWakeReasons.filter(pending => messageReasonStillPending(pending, state!.unread))
-            state.pendingWakeReasons = remaining
-            nextWake = ports.durableIngress && next ? queueWake(state, next) : next
-            await store.save(groupId, state)
-            logger.info(`[仿真] 群 ${groupId} 预判闸拦截 wake=${reason.kind}${verdict.reason ? `（${verdict.reason}）` : ''}，省一次完整回合`)
-            return
-          }
-          if (verdict) logger.info(`[仿真] 群 ${groupId} 预判闸放行 wake=${reason.kind}${verdict.reason ? `（${verdict.reason}）` : ''}`)
-        }
-
-        const snapshot = buildWakeSnapshot(state, { limit: cfg.turn.wakeMessageLimit, maxChars: cfg.turn.wakeMaxChars, now: now(), ...(anchor ? { anchor } : {}) })
+        if (routedGroup && cfg.wakeGate.enabled) relatedMessages ??= []
+        const snapshot = buildWakeSnapshot(state, { limit: cfg.turn.wakeMessageLimit, maxChars: cfg.turn.wakeMaxChars, now: now(),
+          ...(anchor ? { anchor } : {}), ...(relatedMessages ? { relatedMessages } : {}),
+          ...(groupSelection ? { mode: groupSelection.mode } : {}) })
         const snapshotSeqs = snapshot.includedSeqs
         const snapshotIds = state.recent.filter(message => snapshotSeqs.includes(message.seq)).flatMap(message => message.messageId == null ? [] : [String(message.messageId)])
+        if (routedGroup && anchor) for (const message of state.recent.filter(item => snapshotSeqs.includes(item.seq) && item.seq !== anchor.seq)) {
+          if (message.messageId != null) attachmentSourceIds.add(String(message.messageId))
+          const quoteId = message.quoteSource?.messageId ?? message.replyMessageId
+          if (quoteId) attachmentSourceIds.add(quoteId)
+        }
         const projectedWatermark = { unread: state.unread, modelSeenSeqs: state.modelSeenSeqs, lastReadThroughSeq: state.lastReadThroughSeq }
         noteModelSeen(projectedWatermark, snapshotSeqs)
         const visibleMessageSeqs = new Set(anchor ? snapshotSeqs : [...projectedWatermark.modelSeenSeqs, ...snapshotSeqs])
@@ -2157,7 +2317,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           !anchor.imageCount && !anchor.videoCount && !anchor.files?.length && !anchor.textTruncated && !focusedGoalId &&
           !groupMemoryContext && !webEvidence && !semanticRecall && !topic && !cognitionProjection?.text && isSimpleSimulationGreeting(anchor.text)
         const wakeInput: Parameters<typeof buildWakePrompt>[0] = {
-          state, reason, ...(addressedBy ? { speakerId: addressedBy } : {}), ...(anchor ? { focusSeq: anchor.seq } : {}), snapshotText: snapshot.text, unreadTotal: snapshot.unreadTotal, now: now(), selfName,
+          state, reason, ...(addressedBy ? { speakerId: addressedBy } : {}), ...(anchor ? { focusSeq: anchor.seq } : {}),
+          ...(groupSelection ? { focusMode: groupSelection.mode } : {}), ...(relatedReply ? { priorTopicReply: relatedReply } : {}),
+          snapshotText: snapshot.text, unreadTotal: snapshot.unreadTotal, now: now(), selfName, groupRouting: routedGroup,
           ...(initialPrompt ? { initialPrompt } : {}),
           memories: anchor ? memories.filter(memory => memory.aboutUser === anchor.userId) : memories,
           affinity: anchor ? (affinity[anchor.userId] ? { [anchor.userId]: affinity[anchor.userId]! } : {}) : affinity,
@@ -2181,7 +2343,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         const interests = await subscriptionsFor(characterScope).unreadSummary()
         const workDirectory = (await workspace.list()).map(work => ({ id: work.id, title: work.title, kind: work.kind, status: work.status, revision: work.revision })).slice(0,24)
         const priorHistory = state.agentHistory
-        const matchingHistory = trimAgentHistory(conversationUserId ? priorHistory.filter(message => message?.conversationUserId === conversationUserId) : priorHistory,
+        const matchingHistory = trimAgentHistory(routedGroup && anchor ? [] : conversationUserId ? priorHistory.filter(message => message?.conversationUserId === conversationUserId) : priorHistory,
           cfg.turn.historyMaxMessages, cfg.turn.historyMaxChars)
         const firstWake = matchingHistory.findIndex(message => message.role === 'user')
         const projectedHistory = firstWake < 0 ? [] : matchingHistory.slice(firstWake)
@@ -2205,7 +2367,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         async function runFirstWakeModel(request: ChatRequestData): Promise<ChatResponse> {
           await assertGroupMemoryCurrent()
           const binding = resolvedPersona.binding
-          if (!initialPromptStore || binding?.source !== 'configured' || !triggerSource || !request.messages) {
+          if (!initialPromptStore || binding?.source !== 'configured' || !requestSource || !request.messages) {
             return await invokeSimModel(request, executionConfig, turnSignal, canCallModel, ensureModelCurrent)
           }
           const initial = await initialPromptStore.claim(groupId, binding)
@@ -2477,7 +2639,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             },
             readMessageVideo: ports.readMessageVideo,
           }) : undefined
-        const readAgentToolImages = async (seq: number, toolCurrent?: () => boolean, toolSignal?: AbortSignal): Promise<readonly MessageImage[]> => {
+        const readAgentToolImages = async (seq: number, toolCurrent?: () => boolean, toolSignal?: AbortSignal,
+          reportFailure?: MessageImageReadOptions['reportFailure']): Promise<readonly MessageImage[]> => {
           const signals = [toolSignal, memoryTurn?.signal].filter((value): value is AbortSignal => !!value)
           const signal = signals.length ? AbortSignal.any(signals) : undefined
           if (!Number.isSafeInteger(seq) || seq < 1) throw new Error('请使用本轮可见的附图消息正整数序号')
@@ -2500,6 +2663,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             await ensureExecution()
             if (!isCurrent() || await ports.isMessageRecalled?.(target, messageId) ||
                 originalId !== messageId && await ports.isMessageRecalled?.(target, originalId) || !isCurrent()) {
+              reportFailure?.({ code: 'image_source_changed' })
               throw new Error('附图消息来源或工具权限已失效')
             }
           }
@@ -2507,15 +2671,24 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           const images = await ports.readMessageImages(target, { messageId, ...(quote ? { quotedMessageId: originalId } : {}) }, {
             isCurrent,
             ...(signal ? { signal } : {}),
+            ...(reportFailure ? { reportFailure } : {}),
             async allowsSource(original) {
               if (original.messageId !== originalId || conversationAddressKey(original.conversation) !== conversationAddressKey(target) ||
                   original.sender.id !== authorId || original.sender.platform !== target.account.platform ||
-                  original.sender.namespace !== target.account.namespace || original.occurredAt !== occurredAt) return false
+                  original.sender.namespace !== target.account.namespace || original.occurredAt !== occurredAt) {
+                reportFailure?.({ code: 'image_source_mismatch' }); return false
+              }
               const excerpt = original.text || '[图片]'
-              const redactions = await personMemory.getRedactions({ identity: characterScope, subjectId: authorId })
-              if (isPersonMemoryRedacted({ scene: memoryScene, messageId: originalId, authorId, at: occurredAt, excerpt }, excerpt, redactions)) return false
-              await ensureReadCurrent()
-              return isCurrent()
+              try {
+                const redactions = await personMemory.getRedactions({ identity: characterScope, subjectId: authorId })
+                if (isPersonMemoryRedacted({ scene: memoryScene, messageId: originalId, authorId, at: occurredAt, excerpt }, excerpt, redactions)) {
+                  reportFailure?.({ code: 'image_source_privacy_denied' }); return false
+                }
+                await ensureReadCurrent()
+                return isCurrent()
+              } catch (error) {
+                reportFailure?.({ code: 'image_source_check_failed' }); throw error
+              }
             },
           })
           await ensureReadCurrent()
@@ -2562,16 +2735,29 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             const message = visibleMessage()
             if (!message?.messageId) return { seq, code: 'image_source_not_visible', error: '请使用本轮可见的附图消息序号' }
             const quote = message.imageCount === 0 ? message.quoteSource : undefined
-            if (!message.imageCount && !quote?.image) return { seq, code: 'image_source_has_no_image', error: '这条消息没有可取的附图' }
+            if (!message.imageCount && !quote?.image) {
+              if (message.files?.length || quote?.file?.files.length) {
+                const canReadFile = actor.kind === 'user' && extraTools.some(tool => tool.name === 'fileTextTool')
+                return { seq, code: 'image_source_is_file', error: canReadFile
+                  ? '这条消息只有文件附件，请用 fileTextTool 读取。' : '这条消息只有文件附件，本轮的看图工具只接受附图。' }
+              }
+              return { seq, code: 'image_source_has_no_image', error: '这条消息没有可取的附图' }
+            }
             if (visionAttempts >= 2) return { seq, code: 'image_turn_limit', error: '已达本轮看图次数上限' }
             visionAttempts++
             const isCurrent = () => canRunTurn() && visibleMessage() === message
+            let firstFailure: MessageImageReadFailure | undefined
             let images: readonly MessageImage[] | undefined
-            try { images = await readAgentToolImages(seq) } catch (error) {
+            try { images = await readAgentToolImages(seq, undefined, undefined, failure => { firstFailure ??= failure }) } catch (error) {
+              if (firstFailure) return { ...refused, ...firstFailure }
               diagnose({ stage: 'runtime', operation: 'simulation_image_read', outcome: 'failed', code: 'image_read_failed', error })
               return { ...refused, code: 'image_read_failed' }
             }
-            if (!images?.length || !isCurrent()) return refused
+            if (!isCurrent()) return { ...refused, code: 'image_source_changed' }
+            if (!images?.length) return { ...refused, ...firstFailure }
+            if (firstFailure) diagnose({ stage: 'runtime', operation: 'simulation_image_read', outcome: 'failed',
+              code: firstFailure.code, ...(firstFailure.httpStatus === undefined ? {} : { httpStatus: firstFailure.httpStatus }),
+              details: { step: messageImageReadSteps[firstFailure.code], result: 'fallback_used' } })
             await ensureExecution()
             await assertTriggerCurrent()
             if (!isCurrent()) return refused
@@ -2632,11 +2818,21 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         }
         let proactiveSourceSeq: number | undefined
         ctx.proactiveSourceSeq = () => proactiveSourceSeq
-        if (anchor) ctx.waitMessageFilter = message => message.userId === anchor.userId &&
-          (message.atSelf || message.quoteToSelf || (!message.atOther && !message.replyToUserId))
+        if (anchor && groupSelection?.mode !== 'join') ctx.waitMessageFilter = message => message.userId === anchor.userId &&
+          (routedGroup ? message.atSelf || message.quoteToSelf : !isAddressedElsewhere(message))
         const sendMessage = ctx.sendMessage
         const confirmedExpressions: CognitionTurnProjection['expressions'][number][] = []
         ctx.sendMessage = async (messages, opts) => {
+          if (groupSelection?.mode === 'join' && (sends > 0 || messages.length > 1 || opts.atUserIds?.length ||
+              opts.replyToMessageId != null && String(opts.replyToMessageId) !== String(anchor?.messageId))) {
+            return { ok: false, sent: 0, error: '主动加入话题请只发一句，说明你在接什么。可引用选中的消息。' }
+          }
+          if (routedGroup && triggerMessage?.messageId && reason.kind === 'continuation') {
+            if (opts.replyToMessageId != null && String(opts.replyToMessageId) !== String(triggerMessage.messageId)) {
+              return { ok: false, sent: 0, error: '这条续话应引用当前那句，请去掉其他引用。' }
+            }
+            if (opts.replyToMessageId == null && sends === 0) opts = { ...opts, replyToMessageId: triggerMessage.messageId }
+          }
           const beforeIds = new Set(state!.confirmedMessageIds ?? []), beforeTexts = memoryBox.sentTexts.length
           const result = await sendMessage(messages, opts)
           const ids = (state!.confirmedMessageIds ?? []).filter(id => !beforeIds.has(id)), texts = memoryBox.sentTexts.slice(beforeTexts)
@@ -3430,7 +3626,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               let repair = tool === finishTool && issue?.field === 'choice' && issue.rule === 'required' ? ` ${FINISH_CHOICE_GUIDANCE}` : ''
               let details: AgentDiagnosticDetails | undefined = issue
               if ((tool === finishTool || tool.name === 'simSendMessage') && issue?.field === 'messages' && issue.rule === 'type') {
-                const messages = normalizeStringArrayInput(args.messages)
+                const messages = normalizeMessageTextsInput(args.messages)
                 const array = Array.isArray(messages)
                 const rejected = array ? messages.find(value => typeof value !== 'string') : messages
                 details = { ...issue, field: array ? 'messages.items' : 'messages', expectedType: array ? 'string' : 'array',
@@ -3623,7 +3819,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             break
           }
           const context = buildCharacterTurnContext({ phase: closing ? 'closing' : 'acting', remainingToolRounds: cfg.turn.maxToolRounds - rounds + 1, ...(focusedGoalId ? { focusedGoalId } : {}), visibleEvidenceRefs: visibleEvidenceRefs() }) +
-            (anchor ? `\n当前只回应 #${anchor.seq} 的话题；同一人的前文也仅在有关时用。` : '') +
+            (anchor ? groupSelection?.mode === 'join' ? `\n可主动参与 #${anchor.seq} 的话题。你以自己身份参与，有具体贡献才发言。`
+              : `\n当前只回应 #${anchor.seq} 的话题。前文仅在有关时用。` : '') +
             (reviewer ? `\n本轮剩余提交检查次数：${Math.max(0, 3 - reviewer.stats().checks)}。将需要保存的观点、目标和最终消息合并进 simFinishTurn；检查退回后自行修正或安静放弃，检查提示不发到群里。` : '')
           const { messages: requestHistory, repeatedReads, ...readCompaction } = readContext.project(history)
           if (compactWakeText) excerptContext(requestHistory[firstCurrentMessage]!, compactWakeText)
@@ -3658,7 +3855,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             }
             if (durableWake && rounds === 1) {
               const model = await beginWake(async () => {
-                recordWakeStart()
+                recordWakeStart(!routedGroup || !explicitlyAddressed)
                 noteProactiveCheck?.()
                 const write = saveTurnContext().catch(error => diagnose({ stage: 'runtime', operation: 'simulation_context_save', outcome: 'failed', code: 'turn_context_not_saved', error }))
                 try { return { response: await runFirstWakeModel(requestData) } }
@@ -3941,11 +4138,24 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           }, { isCurrent: canCallModel, signal: turnSignal })
         } catch (error) { diagnose({ stage: 'memory', operation: 'cognition_project', outcome: 'failed', code: 'cognition_projection_failed', error }) }
         if (removedSource) delete state.lastConfirmedChat
+        const joinedSource = groupSelection?.mode === 'join' ? anchor : undefined
+        const continuationSource = actor.kind === 'user' ? triggerMessage : joinedSource
+        const quotedSomeone = continuationSource && !continuationSource.quoteToSelf && (continuationSource.quoteText || continuationSource.replyToUserId)
+        if (routedGroup && !failureNoticeTurn && !removedSource && continuationSource && !ephemeralRead &&
+            !semanticRecall && !historyProjections.length && !fileProjections.length && !usedImageDescription && !usedInitialPrompt && !quotedSomeone) {
+          const reply = confirmedExpressions.at(-1)
+          // A confirmed reply can anchor a topic without retaining text derived from memory or later tool reads.
+          const canKeepText = !topic && !groupMemoryContext && !cognitionProjection?.text &&
+            [...visibleMessageSeqs].every(seq => snapshotSeqs.includes(seq))
+          if (reply) rememberGroupReply(state, continuationSource, reply,
+            canKeepText ? { content: reply.content, evidenceIds: attachmentSourceIds } : undefined)
+        }
+        if (removedSource) delete state.confirmedGroupReplies
         if (groupMemoryContext || semanticRecall || topic || cognitionProjection?.text || ephemeralRead) delete state.lastConfirmedChat
         if (sends > 0 && !failureNoticeTurn && !removedSource && !groupMemoryContext && !semanticRecall && !topic && !cognitionProjection?.text && !ephemeralRead && actor.kind === 'user' && actor.userId && memoryBox.sentTexts.length) {
           state.lastConfirmedChat = { at: now(), userId: actor.userId, text: memoryBox.sentTexts.slice(-2).join('\n').slice(-500) }
         }
-        if (sends > qqActionSends && isBindingCurrent()) state.nextReplyCheckAt = now() + cfg.wake.replyCheckMs
+        if (!routedGroup && sends > qqActionSends && isBindingCurrent()) state.nextReplyCheckAt = now() + cfg.wake.replyCheckMs
         // 仿真群不走主链路，情节记忆在这里补记：让"这两天做过什么"持续有料
         if (sends > qqActionSends && !failureNoticeTurn && !removedSource && !semanticRecall && !ephemeralRead) try { await ports.recordGroupReply?.(target, canCallModel) } catch {
           diagnose({ stage: 'memory', operation: 'simulation_group_reply_record', outcome: 'failed', code: 'group_reply_not_recorded' })
@@ -3974,7 +4184,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         // 已在本回合展示的普通触发可消费。其他人的点名仍需独立回应，即使用户查过那条消息。
         const replay = (isBindingCurrent() ? state.pendingWakeReasons : []).filter(pending =>
           pending.seq !== reason.seq || pending.kind !== reason.kind).filter(pending =>
-          (isDirectAddressKind(pending.kind) && state!.recent.some(message => message.seq === pending.seq)) ||
+          ((isDirectAddressKind(pending.kind) || routedGroup && pending.kind === 'continuation') && state!.recent.some(message => message.seq === pending.seq)) ||
           messageReasonStillPending(pending, state!.unread))
         const [next, ...remaining] = replay
         state.pendingWakeReasons = remaining
@@ -3989,7 +4199,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       }
       if (ports.withDiagnosticScope) {
         const diagnosticScope: AgentDiagnosticScope = resolvedPersona.binding
-          ? { kind: 'conversation', binding: resolvedPersona.binding, ...(triggerMessage?.messageId ? { messageId: String(triggerMessage.messageId) } : {}) }
+          ? { kind: 'conversation', binding: resolvedPersona.binding, ...(triggerSource?.messageId ? { messageId: String(triggerSource.messageId) } : {}) }
           : { kind: 'account', account: target.account }
         await ports.withDiagnosticScope(diagnosticScope, 'simulation_turn', () => runResolvedTurn(state!))
       } else await runResolvedTurn(state)
@@ -4106,7 +4316,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             sendsThisTurn++
             addSends(1)
             memoryBox.sentTexts.push(text)
-            markConversationEngaged(state, state.conversation.lastTriggerUserId || '', cfg.wake.continuationWindowMs)
+            if (!ports.unifiedGroupChat) markConversationEngaged(state, state.conversation.lastTriggerUserId || '', cfg.wake.continuationWindowMs)
             const memeBumped = retainReplyMemory() && bumpMemeUsage(memoryBox.list, text, now()).length > 0
             recordSend(state, now(), 1)
             state.lastAiSendAt = now()
@@ -4463,7 +4673,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       if (state.nextReplyCheckAt && at >= state.nextReplyCheckAt) {
         state.nextReplyCheckAt = 0
         scheduleChanged = true
-        if ((!ports.unifiedGroupChat || !atOnly) && state.unread.some(message => message.at > state.lastAiSendAt && (message.atSelf || message.quoteToSelf || (!message.atOther && !message.replyToUserId)))) {
+        if (!ports.unifiedGroupChat && state.unread.some(message => message.at > state.lastAiSendAt && !isAddressedElsewhere(message))) {
           reasons.push({ kind: 'replyCheck' })
         }
       }
@@ -5469,15 +5679,18 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     state = liveStates.get(groupId) ?? await store.load(groupId)
     state.agentHistory = []
     delete state.lastConfirmedChat
-    const quoteOnlySeqs = new Set([...state.recent, ...state.unread].filter(message => message.quoteSource?.messageId === messageId &&
+    const repliesToSource = (message: SimMessage) => (message.quoteSource?.messageId ?? message.replyMessageId) === messageId
+    const quoteOnlySeqs = new Set([...state.recent, ...state.unread].filter(message => repliesToSource(message) &&
       needsQuoteForWake(message)).map(message => message.seq))
     const removeMsg = (list: SimMessage[]) => list.filter(m => String(m.messageId ?? '') !== messageId)
-      .map(message => message.quoteSource?.messageId === messageId ? withoutResolvedQuote(message) : message)
+      .map(message => repliesToSource(message) ? withoutResolvedQuote(message) : message)
     const beforeUnread = state.unread.length
     const beforeRecent = state.recent.length
     state.unread = removeMsg(state.unread)
     state.recent = removeMsg(state.recent)
     if (state.confirmedMessageIds?.includes(messageId)) state.confirmedMessageIds = state.confirmedMessageIds.filter(id => id !== messageId)
+    if (state.confirmedGroupReplies) state.confirmedGroupReplies = state.confirmedGroupReplies.filter(reply =>
+      reply.sourceId !== messageId && reply.replyId !== messageId && !reply.evidenceIds?.includes(messageId))
     const visibleSeqs = new Set([...state.unread, ...state.recent].map(message => message.seq))
     const sourceExists = (reason: SimWakeReason) => reason.seq === undefined ||
       (visibleSeqs.has(reason.seq) && (reason.kind !== 'atMention' || !quoteOnlySeqs.has(reason.seq)))
@@ -5876,7 +6089,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     return `【群友好感 · 前8】\n${top}${mineLine}`
   }
 
-  return { runAdministration: administration.run, ingest, ingestNudge, start, stop, drain, sweepOnce, invalidateConversation, enableGroup, disableGroup, setGroupReplyMode, groupStatus, resetGroup, listMemories, listAffinity, ingestPoke, handleRecall, overview, describeGroup, controlCharacter, controlActivity, getInitialPrompt, setInitialPrompt, setGroupBudget, setGroupTurnsCap, setDefaultBudget, conversationKey, isGroupActive: isSimulationGroup, isConversationActive, canInitiateGroupChat, readPersonalWorkContext, groupTextBudget, wakeForCommitment, listPersonProfiles: () => store.listPersonProfiles(), deletePersonProfile: (userId: string) => store.deletePersonProfile(userId), deletePersonProfileField: (userId: string, field: string, value?: string) => store.deletePersonProfileField(userId, field, value),
+  return { runAdministration: administration.run, ingest, ingestNudge, start, stop, drain, sweepOnce, invalidateConversation, enableGroup, disableGroup, setGroupReplyMode, groupStatus, resetGroup, listMemories, listAffinity, ingestPoke, handleRecall, overview, describeGroup, controlCharacter, controlActivity, getInitialPrompt, setInitialPrompt, setGroupBudget, setGroupTurnsCap, setDefaultBudget, conversationKey, isGroupActive: isSimulationGroup, isConversationActive, canInitiateGroupChat, personalGroupActivity, readPersonalWorkContext, groupTextBudget, wakeForCommitment, listPersonProfiles: () => store.listPersonProfiles(), deletePersonProfile: (userId: string) => store.deletePersonProfile(userId), deletePersonProfileField: (userId: string, field: string, value?: string) => store.deletePersonProfileField(userId, field, value),
   lifeOverview: async (groupIds?: readonly string[]) => {
     const cfg = runtimeConfig()
     const stored = await store.loadRhythm().catch(() => null)

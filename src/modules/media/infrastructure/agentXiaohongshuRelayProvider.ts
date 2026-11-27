@@ -6,8 +6,10 @@ import type { AgentMediaArtifactLease, AgentMediaRelayItem } from '../../../cont
 import type { AgentMediaRelayProvider, AgentPreparedMediaRelay, AgentMediaShareAccess } from '../../../contracts/agentMediaRelayWorkflow.js'
 import { sanitizeFinalReplyText } from '../../conversation/domain/replySanitizer.js'
 import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agentSecretText.js'
-import { validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
+import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import { firstAgentMediaRelayImage, validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
+import { stageAgentMediaRelayCard } from './agentMediaRelayCard.js'
 import { validateAgentMediaShare } from './agentMediaRelayReference.js'
 import { parseAgentXiaohongshuReference, readAgentXiaohongshuAccess, validateAgentXiaohongshuAccess, xiaohongshuAccessPageUrl } from './agentXiaohongshuRelayReference.js'
 import { createXiaohongshuHttp, xiaohongshuBody, xiaohongshuFailure, xiaohongshuGuard } from './agentXiaohongshuRelayHttp.js'
@@ -32,6 +34,7 @@ export interface AgentXiaohongshuRelayProviderOptions {
   readonly request?: AgentXiaohongshuRequest
   readonly browser?: AgentXiaohongshuBrowser
   readonly native?: AgentDouyinNative
+  readonly diagnostics?: Pick<AgentDiagnostics, 'emit'>
   readonly timeoutMs?: number
 }
 const MiB = 1024 * 1024, IMAGE_BYTES = 32 * MiB, VIDEO_BYTES = 256 * MiB
@@ -162,10 +165,16 @@ export function createAgentXiaohongshuRelayProvider(options: AgentXiaohongshuRel
         ![[media.title, 300], [media.description, 2000], [media.author, 120]].every(([value, maximum]) => typeof value === 'string' && Array.from(value).length <= Number(maximum) && (!value || safeText(value))) ||
         [...media.images, ...media.livePhotos, media.video, media.cover].some(value => typeof value !== 'string' || value.length > 8192))) throw xiaohongshuFailure()
       const kind = access?.mediaKind === 'image' ? 'image' : media?.kind ?? access?.mediaKind ?? 'image', pageUrl = xiaohongshuCanonicalPage(id)
-      const lines = [`分享了小红书笔记《${media?.title || '未命名笔记'}》`, `笔记:${id}`], items: AgentMediaRelayItem[] = []
+      const title = media?.title || '未命名笔记'
+      const lines = [`分享了小红书笔记《${title}》`, `笔记:${id}`], items: AgentMediaRelayItem[] = []
       if (media?.author) lines.push(`作者:${media.author}`)
-      if (media?.stats) { const labels: Readonly<Record<string, string>> = { liked: '点赞', collected: '收藏', comments: '评论' }; const stats = Object.entries(labels).filter(([key]) => Number.isSafeInteger(media.stats[key]) && media.stats[key]! >= 0).map(([key, label]) => `${label}:${media.stats[key]}`); if (stats.length) lines.push(`数据:${stats.join(' ')}`) }
-      if (media?.description && media.description !== media.title) items.push({ parts: [{ kind: 'text', text: media.description }] })
+      const labels: Readonly<Record<string, string>> = { liked: '点赞', collected: '收藏', comments: '评论' }
+      const stats = Object.entries(labels).flatMap(([key, label]) => {
+        const count = media?.stats?.[key]
+        return typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? [[label, count] as const] : []
+      })
+      if (stats.length) lines.push(`数据:${stats.map(([label, count]) => `${label}:${count}`).join(' ')}`)
+      const firstMediaLine = lines.length
       let cover: AgentMediaArtifactLease | undefined, ready = false
       if (kind === 'video' && media) {
         if (media.cover) { try { cover = await image(media.cover) } catch { await guard.ensure(); lines.push('封面暂时获取失败') } }
@@ -186,10 +195,20 @@ export function createAgentXiaohongshuRelayProvider(options: AgentXiaohongshuRel
         if (failed.length) lines.push(`笔记第${failed.join('、')}张图片暂时获取失败，已保留其余内容和笔记页面`)
         if (!ready) lines.push('笔记图片暂时获取失败，已保留笔记页面')
       } else lines.push('小红书笔记详情暂时未解析完成，已保留笔记页面')
+      const notice = lines.slice(firstMediaLine).filter(line => !line.startsWith('图片:') && !line.startsWith('封面')).join(' · ')
       lines.push(pageUrl)
       const infoText = lines.join('\n')
       if (!safeText(infoText)) throw xiaohongshuFailure()
-      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover.artifact } as const] : [])] }, ...items] }, { allowsText: safeText })
+      const preview = firstAgentMediaRelayImage(items)
+      const detail = kind === 'image' && media?.images.length ? `${media.images.length} 张图片` :
+        kind === 'video' && media?.duration ? `${Math.floor(media.duration / 60)}:${String(Math.floor(media.duration % 60)).padStart(2, '0')}` : ''
+      const card = await stageAgentMediaRelayCard({ platform: 'xiaohongshu', kind: kind === 'video' ? '视频' : '图文',
+        title, author: media?.author ?? '', detail, description: media?.description ?? '', stats, pageUrl, notice,
+      }, { artifacts: options.artifacts, covers: [cover?.artifact, preview], guard, allowsText: safeText, diagnostics: options.diagnostics })
+      if (card) leases.push(card)
+      const intro = card?.artifact ?? cover?.artifact ?? preview
+      if (media?.description && media.description !== media.title) items.push({ parts: [{ kind: 'text', text: media.description }] })
+      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [intro ? { kind: 'image', artifact: intro } : { kind: 'text', text: infoText }] }, ...items] }, { allowsText: safeText })
       await guard.ensure(); transferred = true
       return { status: ready ? 'ready' : 'metadata-only', pageUrl, infoText, plan, release } satisfies AgentPreparedMediaRelay
     } catch { throw xiaohongshuFailure() }

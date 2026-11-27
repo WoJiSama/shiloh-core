@@ -45,6 +45,24 @@ test('QQ Qzone native publication is pure text and returns only a stable post ID
   assert.ok(scope.timeoutMs > 0 && scope.timeoutMs <= 30000); assert.ok(scope.signal instanceof AbortSignal); assert.ok(Object.isFrozen(f.calls[0].params))
 })
 
+test('quiet feed access uses the bound private peer and a GET without comments', async () => {
+  const f = fixture(), userId = '333333333'
+  const peer = { ...binding, target: { account, kind: 'private', id: userId } }
+  const request = action('visit', { binding: peer, operation: { kind: 'read', userId } })
+  const other = { ...request, operation: { kind: 'read', userId: '456789' } }
+  assert.equal((await f.provider.execute(other, f.guard)).state, 'failed')
+  assert.equal(f.calls.length, 0)
+  const result = await f.provider.execute(request, f.guard)
+  assert.equal(result.state, 'confirmed')
+  assert.equal(result.feeds[0].userId, userId)
+  const [{ url, options }] = f.http
+  assert.equal(new URL(url).searchParams.get('hostUin'), userId)
+  assert.equal(new URL(url).searchParams.get('replynum'), '0')
+  assert.equal(new URL(url).searchParams.get('need_private_comment'), '0')
+  assert.equal(options.method, 'GET')
+  assert.deepEqual(f.calls.map(call => call.name), ['get_credentials'])
+})
+
 test('QQ Qzone native deletion requires independently stored matching account, agent and stable post ID', async () => {
   let lookups = 0
   const f = fixture({ async readOwnPost(selected, id) { lookups++; assert.deepEqual(selected, account); assert.equal(id, 'stable-post_1'); return ownership() } })

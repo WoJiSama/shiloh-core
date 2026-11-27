@@ -8,7 +8,7 @@ import WebSocket from 'ws'
 import type { ConversationAddress, PlatformConnection, PlatformUserRef } from '../contracts/agentBinding.js'
 import { QQ_OWNER_ALERT_MAX_LENGTH, type AgentDiagnosticDetails } from '../contracts/agentDiagnostics.js'
 import type { DeliveryReceipt } from '../contracts/delivery.js'
-import type { ConversationMember, ConversationMemberProfile, ConversationMemberReadOptions, ForwardContent, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
+import type { ConversationMember, ConversationMemberProfile, ConversationMemberReadOptions, ForwardContent, MessageImageReadOptions, PlatformConnectionAdapter, PlatformConversationEvent } from '../contracts/platformConnection.js'
 import type { MessageActionOptions } from '../contracts/platformMessage.js'
 import type { FileReadGuard, ConversationFileEntry } from '../contracts/agentFiles.js'
 import type { AgentQzoneGuard, AgentQzoneLedger } from '../contracts/agentQzone.js'
@@ -1354,16 +1354,22 @@ function createOneBotSession(options: OneBotConnectionOptions) {
     async readMessageImages(target, messageId, guard) {
       const client = socket
       const cancel = new AbortController()
-      const signal = AbortSignal.any([cancel.signal, AbortSignal.timeout(5_000), ...(guard.signal ? [guard.signal] : [])])
+      const deadline = AbortSignal.timeout(5_000)
+      const signal = AbortSignal.any([cancel.signal, deadline, ...(guard.signal ? [guard.signal] : [])])
+      const report: NonNullable<MessageImageReadOptions['reportFailure']> = issue => {
+        try { guard.reportFailure?.(issue) } catch { /* Reporting must not affect the read. */ }
+      }
+      const reportStopped = () => report({ code: deadline.aborted ? 'image_read_timeout' : 'image_source_changed' })
       const isCurrent = () => {
         try { return !signal.aborted && !!client && socket === client && verified && guard.isCurrent?.() !== false }
         catch { return false }
       }
-      if (!isCurrent()) return undefined
+      if (!isCurrent()) { reportStopped(); return undefined }
       const timer = setInterval(() => { if (!isCurrent()) cancel.abort() }, 25)
       try {
         const original = await readMessage(target, messageId, { isCurrent, signal })
-        if (!original || !isCurrent()) return undefined
+        if (!isCurrent()) { reportStopped(); return undefined }
+        if (!original) { report({ code: 'image_message_lookup_failed' }); return undefined }
         const images = []
         const seen = new Set<string>()
         for (const part of original.parts) {
@@ -1371,11 +1377,13 @@ function createOneBotSession(options: OneBotConnectionOptions) {
           if (part.kind !== 'image' || !part.resource || seen.has(part.resource.value)) continue
           seen.add(part.resource.value)
           try {
-            const image = await readQqMessageImage(part.resource, { signal, isCurrent, authorize: () => guard.allowsSource(original) })
+            const image = await readQqMessageImage(part.resource, { signal, isCurrent, reportFailure: report, authorize: () => guard.allowsSource(original) })
             if (image) images.push(image)
           } catch { /* The other attachment may still be available. */ }
         }
-        return images.length && isCurrent() ? images : undefined
+        if (!isCurrent()) { reportStopped(); return undefined }
+        if (!seen.size) report({ code: 'image_attachment_missing' })
+        return images.length ? images : undefined
       } finally { clearInterval(timer); cancel.abort() }
     },
     actions: {

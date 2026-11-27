@@ -23,7 +23,7 @@ interface Owner extends Machine { token: string; pid: number; prepared: string }
 interface Artifact {
   dev: string; ino: string; size: string; mtime: string; mode: string; uid: string; hash: string
 }
-interface FileState { source: string; artifact: Artifact; version: string }
+interface FileState { source: string; artifact: Artifact; version: string; stat: BigIntStats }
 interface Blob { name: string; artifact: Artifact }
 interface Entry { original: Artifact | null; old: Blob | null; next: Blob | null }
 interface Manifest {
@@ -37,6 +37,11 @@ interface Action {
 interface Resolution { schema: 1; txId: string; direction: 'undo' | 'redo'; head: string }
 interface Claim { schema: 1; owner: Owner; predecessor: string; lockToken: string; txId?: string }
 interface Transaction { directory: string; manifest: Manifest; hash: string }
+interface HeadSnapshot {
+  readonly directory: BigIntStats
+  readonly records: readonly { name: string; stat: BigIntStats }[]
+  readonly fence: string
+}
 const keys = ['host', 'personas', 'bindings'] as const
 const maximum = 2 * 1024 * 1024
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u
@@ -47,6 +52,12 @@ const absent = (error: unknown) => !!error && typeof error === 'object' && 'code
 const exists = (name: string) => fs.lstatSync(name, { throwIfNoEntry: false }) !== undefined
 const stat = (name: string) => fs.lstatSync(name, { bigint: true })
 const identity = (left: BigIntStats, right: BigIntStats) => left.dev === right.dev && left.ino === right.ino
+export const sameConfigFileState = (left: BigIntStats, right: BigIntStats) => identity(left, right) && left.size === right.size &&
+  left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs && left.mode === right.mode && left.uid === right.uid &&
+  left.gid === right.gid && left.nlink === right.nlink
+// A recent write can share its ctime with another change in the same filesystem clock tick.
+export const configMetadataReuseCutoff = () => BigInt(Date.now() - 2_000) * 1_000_000n
+export const canReuseConfigMetadata = (state: BigIntStats, device: bigint, cutoff: bigint) => state.dev === device && state.ctimeNs < cutoff
 const record = (value: unknown): Record<string, unknown> => { if (!value || typeof value !== 'object' || Array.isArray(value)) return fail(); return value as Record<string, unknown> }
 const exact = (value: Record<string, unknown>, fields: readonly string[]) => { if (Object.keys(value).some(key => !fields.includes(key))) fail() }
 const names = (root: TransactionRoot): Record<ConfigSourceName, string> => ({ host: root.hostFile, personas: path.join(root.root, 'persona-library.yaml'), bindings: path.join(root.root, 'agent-bindings.yaml') })
@@ -80,10 +91,9 @@ function readState(name: string, optional = false, links = 1n, limit = maximum):
     const before = fs.fstatSync(fd, { bigint: true })
     if (!before.isFile() || before.uid !== BigInt(process.getuid!()) || before.nlink < 1n || before.nlink > links || before.size > BigInt(limit) || (before.mode & 0o022n) !== 0n || !identity(before, stat(name))) return fail('unavailable')
     const bytes = fs.readFileSync(fd), after = fs.fstatSync(fd, { bigint: true }), source = bytes.toString('utf8')
-    if (bytes.length !== Number(after.size) || !Buffer.from(source).equals(bytes) || !identity(before, after) ||
-        before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs ||
-        before.mode !== after.mode || before.uid !== after.uid || !identity(after, stat(name))) return fail()
-    return { source, artifact: artifact(after, digest(bytes)), version: digest([after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs].join(':') + '\0' + source) }
+    if (bytes.length !== Number(after.size) || !Buffer.from(source).equals(bytes) ||
+        !sameConfigFileState(before, after) || !sameConfigFileState(after, stat(name))) return fail()
+    return { source, artifact: artifact(after, digest(bytes)), version: digest([after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs].join(':') + '\0' + source), stat: after }
   } catch (error) { if (optional && absent(error)) return null; if (error instanceof AgentConsoleError) throw error; return fail('unavailable') }
   finally { if (fd !== undefined) fs.closeSync(fd) }
 }
@@ -164,24 +174,26 @@ function parseBlob(value: unknown): Blob | null {
   if (typeof data.name !== 'string' || !/^(?:old|next|prepared)-[A-Za-z0-9.-]+$/u.test(data.name)) return fail()
   return { name: data.name, artifact: parseArtifact(data.artifact) }
 }
-function readHead(root: TransactionRoot): string {
-  const directory = headName(root)
-  if (!exists(directory)) return 'absent'
-  privateDirectory(directory)
+function readHeadSnapshot(directory: string): HeadSnapshot | undefined {
+  if (!exists(directory)) return undefined
+  const before = privateDirectory(directory), records: { name: string; stat: BigIntStats }[] = []
   const entries = fs.readdirSync(directory).sort()
   if (entries.length > 4096) return fail('unavailable')
   const values = entries.filter(name => !name.startsWith('.record-')).map(name => {
     if (!/^[a-f0-9-]{36}\.json$/u.test(name) || !uuid.test(name.slice(0, -5))) return fail()
-    const data = readJson(path.join(directory, name))!, value = record(data.value)
+    const file = path.join(directory, name)
+    const data = readJson(file)!, value = record(data.value)
     exact(value, ['schema', 'txId', 'direction', 'token'])
     if (value.schema !== 1 || typeof value.txId !== 'string' || !uuid.test(value.txId) || !['undo', 'redo'].includes(String(value.direction)) || value.token !== name.slice(0, -5)) return fail()
+    records.push({ name: file, stat: data.state.stat })
     return [name, data.state.artifact]
   })
-  return digest(JSON.stringify(values))
+  if (!sameConfigFileState(before, stat(directory))) return fail()
+  return { directory: before, records, fence: digest(JSON.stringify(values)) }
 }
-function readFenceValue(root: TransactionRoot): string {
+function readFenceValue(root: TransactionRoot, readHead = () => readHeadSnapshot(headName(root))?.fence ?? 'absent'): string {
   if (exists(activeName(root)) || exists(maintenanceName(root))) return fail()
-  const head = readHead(root)
+  const head = readHead()
   if (exists(activeName(root)) || exists(maintenanceName(root))) return fail()
   return head
 }
@@ -193,13 +205,33 @@ export function readConfigTransactionFence(root: TransactionRoot): string {
   return head
 }
 /** One synchronous root/fence envelope owns the complete group observation. */
-export function readConfigTransactionGroup<T>(root: TransactionRoot, read: (fence: string) => T): T {
+export function readConfigTransactionGroup<T>(root: TransactionRoot, read: (fence: string) => T, readHead?: () => string): T {
   root.ensureRoot()
-  const fence = readFenceValue(root), result = read(fence)
+  const fence = readFenceValue(root, readHead), result = read(fence)
   if (result && typeof result === 'object' && typeof (result as { then?: unknown }).then === 'function') return fail()
-  if (readFenceValue(root) !== fence) return fail()
+  if (readFenceValue(root, readHead) !== fence) return fail()
   root.ensureRoot()
   return result
+}
+
+/** Installed only by the Linux execution observer. Transaction writers always parse the complete head. */
+export function createConfigExecutionTransactionReader(root: TransactionRoot, device: bigint) {
+  const directory = headName(root)
+  let verified: HeadSnapshot | undefined
+  const readHead = () => {
+    const current = fs.lstatSync(directory, { bigint: true, throwIfNoEntry: false })
+    if (!current) { verified = undefined; return 'absent' }
+    if (verified && sameConfigFileState(current, verified.directory) && verified.records.every(file => {
+      const state = fs.lstatSync(file.name, { bigint: true, throwIfNoEntry: false })
+      return !!state && sameConfigFileState(state, file.stat)
+    })) return verified.fence
+
+    const cutoff = configMetadataReuseCutoff(), observed = readHeadSnapshot(directory)
+    verified = observed && canReuseConfigMetadata(observed.directory, device, cutoff) &&
+      observed.records.every(file => canReuseConfigMetadata(file.stat, device, cutoff)) ? observed : undefined
+    return observed?.fence ?? 'absent'
+  }
+  return <T>(read: (fence: string) => T) => readConfigTransactionGroup(root, read, readHead)
 }
 export interface ConfigTransactionLease {
   readonly owner: Owner
@@ -482,7 +514,7 @@ export function commitConfigTransaction(root: TransactionRoot, lease: ConfigTran
   // Retirement listeners may synchronously edit even an otherwise identical file.
   // Before the first materialization, retain the complete original version CAS.
   for (const key of keys) if ((readState(fileNames[key], key === 'personas')?.version ?? 'absent') !== expected.versions[key]) return fail()
-  if (readHead(root) !== expected.fence) return fail()
+  if ((readHeadSnapshot(headName(root))?.fence ?? 'absent') !== expected.fence) return fail()
   for (const key of keys) { preflight(root, tx); addAction(root, tx, key, next[key], ensure) }
   ensure(); finalCheck(root, tx, next)
   const commitPrepared = path.join(directory, '.commit-' + txId)

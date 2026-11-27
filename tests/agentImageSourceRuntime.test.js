@@ -62,6 +62,7 @@ async function fixture(t, settings = {}) {
         if (!current) return undefined
         effect('native.get_msg'); reads.push(id)
         if (!await guard.allowsSource(structuredClone(source))) return undefined
+        if (settings.readFailure) { guard.reportFailure?.(settings.readFailure); return undefined }
         entered.resolve()
         if (settings.holdRead) await released.promise
         // Deliberately return late bytes even after revocation. Core must perform
@@ -80,12 +81,13 @@ async function fixture(t, settings = {}) {
       effect('model'); await ensureCurrent?.(); requests.push(request)
       if (requests.length === 1) return call('simGetMessageImages', { seq: 1 })
       terminal = true
+      if (settings.readFailure) return call('simFinishTurn', { choice: 'silent' })
       return call('simFinishTurn', { choice: 'chat', reason: '已读取图片', messages: ['图中是一把蓝伞。'] })
     },
   })
   t.after(async () => { released.resolve(); await host.stop() })
   await host.start()
-  return { effects, checks, requests, reads, visions, sends, entered, released,
+  return { effects, checks, requests, reads, visions, sends, entered, released, diagnostics,
     get revokedInside() { return revokedInside }, revoke() { version++ },
     async run() {
       await accept({ kind: 'message', message: structuredClone(source) })
@@ -124,4 +126,13 @@ test('Core image source reading preserves compatibility without an observation p
   const f = await fixture(t, { observer: false })
   await f.run()
   assert.equal(f.reads.length, 1); assert.deepEqual(f.visions, [[image]]); assert.equal(f.sends.length, 1)
+})
+
+test('a QQ image download failure reaches the same tool trace with its HTTP status and phase', redisTest, async t => {
+  const f = await fixture(t, { readFailure: { code: 'image_download_http_error', httpStatus: 403 } })
+  await f.run()
+  assert.equal(f.reads.length, 1)
+  assert.equal(f.visions.length, 0)
+  assert.equal(f.sends.length, 0)
+  assert.match(f.diagnostics.join('\n'), /tool\/simGetMessageImages failed image_download_http_error .*http=403.*step=image_download.*result=discarded/u)
 })

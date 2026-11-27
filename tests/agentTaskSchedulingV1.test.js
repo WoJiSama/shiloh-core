@@ -115,6 +115,32 @@ async function fixture(t, { model, followFeed, deliver, verify }) {
   }
 }
 
+test('Core initiates a conversation without any ingress and rechecks the group switch before delivery', {
+  skip: !redisAvailable, timeout: 20_000,
+}, async t => {
+  let revoke = false
+  const h = await fixture(t, {
+    followFeed: async () => [],
+    async model(request) {
+      const input = JSON.parse(request.messages[1].content)
+      if (!input.goals) return response('{"action":"keep"}')
+      assert.equal(input.targets.length, 1)
+      assert.equal(input.targets[0].history, 'empty')
+      if (revoke) await h.quiet()
+      return response(JSON.stringify({ action: 'contact', key: input.targets[0].key, text: '我想到一种新的书签做法。' }))
+    },
+  })
+  await h.host.start()
+  h.at += 10 * 60_000
+  const receipts = async () => JSON.parse(await h.storage.get(personalKey)).receipts
+  await waitFor(async () => (await receipts()).some(item => item.state === 'confirmed'), 'unsolicited contact')
+  assert.deepEqual(h.sent.map(row => row.text), ['我想到一种新的书签做法。'])
+  revoke = true
+  h.at += 20 * 3600_000
+  await waitFor(async () => (await receipts()).some(item => item.state === 'failed'), 'revoked contact')
+  assert.equal(h.sent.length, 1)
+})
+
 test('Core reclaims an old reminder under the same id while a feed and a real @ turn run independently', {
   skip: !redisAvailable, timeout: 25_000,
 }, async t => {

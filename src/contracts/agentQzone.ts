@@ -5,6 +5,7 @@ import type { ConversationMemberSnapshot } from './platformConnection.js'
 export type AgentQzoneOperation =
   | { readonly kind: 'publish'; readonly text: string }
   | { readonly kind: 'delete'; readonly postId: string }
+  | { readonly kind: 'read'; readonly userId: string }
   | { readonly kind: 'visit'; readonly userId: string }
   | { readonly kind: 'like'; readonly userId: string; readonly postId: string; readonly visitId: string }
   | { readonly kind: 'comment'; readonly userId: string; readonly postId: string; readonly visitId: string; readonly text: string }
@@ -42,7 +43,7 @@ export interface AgentQzoneOwnPost {
   readonly postId: string
   readonly source: AgentBindingSnapshot
 }
-/** Only verified visit results create these opaque, binding/source-bound capabilities. No feed text is persisted. */
+/** A verified feed read may issue a capability scoped to that binding and observation. */
 export interface AgentQzoneVisit {
   readonly id: string
   readonly binding: AgentBindingSnapshot
@@ -96,7 +97,7 @@ export interface AgentQzoneExecution {
   ensureCurrent(): Promise<void>
   /** Re-evaluates live tool allow/deny, actor policy, privacy and source withdrawal. Missing grant means deny. */
   authorize(action: AgentQzoneAction): Promise<boolean>
-  /** Fresh group evidence is mandatory for every visit, like and comment. */
+  /** Fresh group membership for visits and interactions scoped to a group. */
   readMember?(userId: string, guard: AgentQzoneGuard): Promise<ConversationMemberSnapshot | undefined>
   affinity?(userId: string): number
   /** Applies the host's persona/output policy to the final outbound text. Must return exactly true. */

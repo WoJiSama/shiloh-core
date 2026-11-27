@@ -57,12 +57,13 @@ async function fixture(t, settings = {}) {
   }
 }
 
-test('static target video preserves full text separately and owns cover, body and thumbnail without exposing signed URLs', async t => {
+test('static target video follows its PNG card and retains the complete note text without exposing signed URLs', async t => {
   const f = await fixture(t), result = await f.prepare()
   assert.equal(result.status, 'ready'); assert.equal(result.pageUrl, `https://www.xiaohongshu.com/explore/${ID}`)
   assert.equal(result.plan.items.length, 3)
-  const [info, description, video] = result.plan.items
-  assert.equal(info.parts[0].kind, 'text'); assert.equal(info.parts[1].kind, 'image'); assert.equal(description.parts[0].text, note().desc)
+  const [info, video, description] = result.plan.items
+  assert.deepEqual(info.parts.map(part => part.kind), ['image']); assert.equal(description.parts[0].text, note().desc)
+  assert.equal((await f.bytes(info.parts[0].artifact)).readUInt32BE(16), 920)
   assert.equal(video.parts[0].kind, 'video'); assert.deepEqual(await f.bytes(video.parts[0].artifact), mp4()); assert.deepEqual(await f.bytes(video.parts[0].thumbnail), JPEG)
   assert.equal(video.parts[0].artifact.sha256, createHash('sha256').update(mp4()).digest('hex'))
   assert.match(result.infoText, /点赞:12000/); assert.match(result.infoText, /作者:作者/)
@@ -73,13 +74,13 @@ test('static target video preserves full text separately and owns cover, body an
 
 test('two-thousand codepoint descriptions retain astral characters and newline in a dedicated node', async t => {
   const f = await fixture(t, { note: note({ desc: '😀'.repeat(2001) }) }), result = await f.prepare()
-  assert.equal(result.plan.items[1].parts[0].text, '😀'.repeat(2000)); assert.equal(result.infoText.includes('😀'), false)
+  assert.equal(result.plan.items.at(-1).parts[0].text, '😀'.repeat(2000)); assert.equal(result.infoText.includes('😀'), false)
 })
 
 test('gallery keeps original slots: live success replaces its image; live failure falls back to the exact original image', async t => {
   const f = await fixture(t, { note: gallery(4, [2, 3]), respond: url => url.pathname.endsWith('/live-3.mp4') ? response('', '', { status: 403 }) : undefined })
   const result = await f.prepare()
-  assert.deepEqual(result.plan.items.map(item => item.parts[0].kind), ['text', 'text', 'image', 'video', 'image', 'image'])
+  assert.deepEqual(result.plan.items.map(item => item.parts[0].kind), ['image', 'image', 'video', 'image', 'image', 'text'])
   assert.equal(f.requests.some(call => call.url === imageUrl(2)), false)
   const paths = f.requests.map(call => new URL(call.url).pathname)
   assert.ok(paths.indexOf('/stream/live-3.mp4') < paths.indexOf(new URL(imageUrl(3)).pathname))
@@ -90,7 +91,7 @@ test('twenty slot cap preserves failures, does not shift live-photo positions or
   const value = gallery(23, [2, 20]); value.imageList[0] = { url: '' }
   const f = await fixture(t, { note: value }), result = await f.prepare()
   assert.equal(result.plan.items.length, 21); assert.match(result.infoText, /第1张图片暂时获取失败/); assert.match(result.infoText, /共23张图，仅附前20张/)
-  assert.equal(result.plan.items[2].parts[0].kind, 'video'); assert.equal(result.plan.items.at(-1).parts[0].kind, 'video')
+  assert.equal(result.plan.items[1].parts[0].kind, 'video'); assert.equal(result.plan.items.at(-2).parts[0].kind, 'video')
   assert.equal(f.requests.some(call => call.url === imageUrl(21)), false)
 })
 
@@ -106,20 +107,20 @@ test('type normal access prevents a main-video interpretation even if a browser 
   const value = note(), media = xiaohongshuMetadata(state(value), ID)
   const f = await fixture(t, { respond: url => url.hostname === 'www.xiaohongshu.com' ? response('<html>challenge</html>') : undefined, browser: async () => media })
   const result = await f.prepare(share(), scope({ readSourceAccess: async () => ({ provider: 'xiaohongshu', mediaKind: 'image' }) }))
-  assert.equal(result.plan.items.at(-1).parts[0].kind, 'image'); assert.equal(f.requests.some(call => call.url.includes('/main.mp4')), false)
+  assert.equal(result.plan.items.at(-2).parts[0].kind, 'image'); assert.equal(f.requests.some(call => call.url.includes('/main.mp4')), false)
 })
 
 for (const duration of [0, 1801]) test(`duration ${duration} avoids the main body and preserves cover/text/page`, async t => {
   const f = await fixture(t, { note: note({ video: { media: { stream: { h264: [{ masterUrl: 'https://sns-video-qc.xhscdn.com/stream/main.mp4', duration }] } } } }) }), result = await f.prepare()
   assert.equal(result.status, 'metadata-only'); assert.equal(f.requests.some(call => call.url.includes('/main.mp4')), false)
-  assert.match(result.infoText, duration ? /超过30分钟/ : /时长未通过验证/); assert.equal(result.plan.items[0].parts[1].kind, 'image')
+  assert.match(result.infoText, duration ? /超过30分钟/ : /时长未通过验证/); assert.equal(result.plan.items[0].parts[0].kind, 'image')
 })
 
 test('main video download failure preserves cover and complete original text; thumbnail failure retains a complete neutral video', async t => {
   const failed = await fixture(t, { respond: url => url.hostname.startsWith('sns-video') ? response('', '', { status: 403 }) : undefined }), fallback = await failed.prepare()
   assert.equal(fallback.status, 'metadata-only'); assert.match(fallback.infoText, /视频本体暂时获取失败/); assert.equal(fallback.plan.items[1].parts[0].text, note().desc)
   const thumbnail = await fixture(t, { native: async () => { throw Error('ffmpeg absent') } }), result = await thumbnail.prepare()
-  assert.equal(result.status, 'ready'); assert.equal(result.plan.items.at(-1).parts[0].thumbnail, undefined); assert.deepEqual(await thumbnail.bytes(result.plan.items.at(-1).parts[0].artifact), mp4())
+  assert.equal(result.status, 'ready'); assert.equal(result.plan.items[1].parts[0].thumbnail, undefined); assert.deepEqual(await thumbnail.bytes(result.plan.items[1].parts[0].artifact), mp4())
 })
 
 test('HEIC conversion belongs to Core and per-slot conversion failures preserve the remaining gallery', async t => {
@@ -243,7 +244,7 @@ test('note identity is checked on every redirect before DNS/HTTP and a short lin
 test('image notes with no gallery preserve their cover fallback and full body', async t => {
   const resolved = { ...xiaohongshuMetadata(state(gallery(1)), ID), images: [], livePhotos: [], cover: imageUrl(1) }
   const f = await fixture(t, { respond: url => url.hostname === 'www.xiaohongshu.com' ? response('<html>no state</html>') : undefined, browser: async () => resolved }), result = await f.prepare()
-  assert.equal(result.status, 'ready'); assert.deepEqual(result.plan.items.map(item => item.parts[0].kind), ['text', 'text', 'image'])
+  assert.equal(result.status, 'ready'); assert.deepEqual(result.plan.items.map(item => item.parts[0].kind), ['image', 'image', 'text'])
 })
 
 test('current access cannot be renamed into an official script query or used for another note by the anonymous browser', async t => {
@@ -277,7 +278,7 @@ test('explicit host Cookie values shorter than eight characters are still protec
 test('a source image hint survives same-note redirects that advertise video and prevents the live-photo main-video path', async t => {
   const f = await fixture(t, { respond: (url, _signal, _policy, calls) => calls.length === 1 ? response('', '', { status: 302, headers: { location: `https://www.xiaohongshu.com/explore/${ID}?type=video` } }) : undefined })
   const result = await f.prepare(share(), scope({ readSourceAccess: async () => ({ provider: 'xiaohongshu', mediaKind: 'image' }) }))
-  assert.equal(result.plan.items.at(-1).parts[0].kind, 'image'); assert.equal(f.requests.some(call => call.url.includes('/main.mp4')), false)
+  assert.equal(result.plan.items.at(-2).parts[0].kind, 'image'); assert.equal(f.requests.some(call => call.url.includes('/main.mp4')), false)
 })
 
 test('signed feed accepts only the closed target body, exact URL and bounded signature fields; POST redirects never replay', async () => {

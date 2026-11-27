@@ -6,6 +6,7 @@ import test from 'node:test'
 import { createAgentDiagnostics } from '../dist/backend/modules/runtime/infrastructure/agentDiagnostics.js'
 import { createAgentFailureAlerts } from '../dist/backend/modules/runtime/infrastructure/agentFailureAlerts.js'
 import { formatQqOwnerAlerts } from '../dist/backend/bootstrap/standaloneQqAlerts.js'
+import { createAgentSimulationWakeGate } from '../dist/backend/modules/simulation/infrastructure/agentSimulationModels.js'
 import { createSimulationRuntime } from '../dist/backend/modules/simulation/infrastructure/simulationRuntime.js'
 import { createCommitmentRuntime } from '../dist/backend/modules/commitments/infrastructure/commitmentTool.js'
 import { createDefaultSimSession } from '../dist/backend/modules/simulation/domain/simConfig.js'
@@ -55,7 +56,7 @@ function fixture({
   groups = [GROUP], script = () => quiet(), execute, writeFault, onSave, send, review, recordTokens,
   proactiveProbability = 0, seed = true, maxToolRounds = 8, maxSendsPerTurn, consistencyEnabled,
   runCharacterWorker, recordToolResult, judgeSocialPermission, getPersona, loadDelegatedMemories,
-  getStyleDigest, readSemanticMemory, getSemanticRecall, readConversationMemory, readGroupMemory, wakeGateJudge,
+  getStyleDigest, readSemanticMemory, getSemanticRecall, readConversationMemory, readGroupMemory, wakeGateJudge, recalledMessageIds,
   recordGroupReply, recordEpisode,
   getSelf, handlesTarget, messageActions, getTodaySpendCny, durableIngress, isAccountReady, readFault, getBoundTools,
   describeImages, fetchImageBase64, getForwardContent, allowsToolInput, diagnostics, rawModel, failureNoticeFallback, ephemeralTools = false, withDiagnosticScope, logger,
@@ -121,6 +122,7 @@ function fixture({
     ...(readConversationMemory ? { readConversationMemory } : {}),
     ...(readGroupMemory ? { readGroupMemory } : {}),
     ...(wakeGateJudge ? { wakeGateJudge } : {}),
+    ...(recalledMessageIds ? { recalledMessageIds } : {}),
     ...(describeImages ? { describeImages } : {}),
     ...(fetchImageBase64 ? { fetchImageBase64 } : {}),
     ...(getForwardContent ? { getForwardContent } : {}),
@@ -300,6 +302,33 @@ test('stopping during wake screening records cancellation and never starts the m
   assert.equal(h.calls.length, 0)
   assert.deepEqual(diagnostics.events.filter(row => row.operation === 'simulation_wake_gate')
     .map(row => [row.outcome, row.code]), [['cancelled', 'wake_gate_cancelled']])
+})
+
+test('the wake provider and injected judges each recheck sources once before and once after the request', async t => {
+  for (const mode of ['provider', 'injected']) await t.test(mode, async t => {
+    const events = [], diagnostics = spy()
+    const binding = { source: 'configured', id: 'wake-test', revision: 'wake-test-rev', agentId: 'shiloh', personaId: 'shiloh', connectionId: 'qq-fixture',
+      target: { account: { platform: 'qq', namespace: 'global', id: BOT }, kind: 'group', id: GROUP } }
+    const wakeGateJudge = mode === 'provider' ? createAgentSimulationWakeGate({
+      baseUrl: 'https://wake-fixture.example/v1', name: 'wake-fixture', apiKey: 'fixture-key', throwOnFailure: true,
+      async fetchImpl() {
+        events.push('request')
+        return Response.json({ choices: [{ message: { content: '{"engage":false}' } }] })
+      },
+    }) : async () => { events.push('request'); return { engage: false } }
+    const h = fixture({ diagnostics, proactiveProbability: 1, wakeGateJudge,
+      getPersona: () => ({ binding, personaId: 'shiloh', persona: { name: '希洛' }, systemContent: '喜欢独立游戏' }),
+      async recalledMessageIds() { events.push('source'); return new Set() },
+    })
+    t.after(() => h.runtime.stop())
+    await h.ingest('普通群聊背景', '40000', { at: false })
+    h.clock.value += 2 * 60 * 60_000
+    await h.runtime.sweepOnce()
+    await waitFor(() => diagnostics.events.some(row => row.operation === 'simulation_wake_gate' && row.outcome === 'succeeded'), 'wake verdict')
+    await settled(h, 0)
+    assert.deepEqual(events, ['source', 'request', 'source'])
+    assert.equal(h.calls.length, 0)
+  })
 })
 
 test('reply and episode record failures keep confirmed delivery without another model or send', async t => {
@@ -686,6 +715,23 @@ test('finish accepts the serialized string array on the first call and sends onl
   assert.match(JSON.stringify(h.sent[0]), /直接完成收尾/u)
   assert.doesNotMatch(JSON.stringify(h.sent[0]), /\[\\"直接完成收尾/u)
   assert.deepEqual(diagnostics.events.filter(row => row.operation === 'simFinishTurn').map(row => row.outcome), ['started', 'succeeded'])
+})
+
+test('a single nested string array works for both send and finish', async t => {
+  for (const name of ['simSendMessage', 'simFinishTurn']) await t.test(name, async t => {
+    const diagnostics = spy(), message = '双层数组中的正文'
+    const h = fixture({ diagnostics, script: (_request, index) => index > 0
+      ? tools(toolCall('simFinishTurn', { choice: 'silent' }))
+      : tools(toolCall(name, { ...(name === 'simSendMessage' ? { continuation: 'chat' } : { choice: 'chat' }), messages: [[message]] })) })
+    t.after(() => h.runtime.stop())
+    await h.ingest()
+    const calls = name === 'simSendMessage' ? 2 : 1
+    await settled(h, calls)
+    assert.equal(h.calls.length, calls)
+    assert.equal(h.sent.length, 1)
+    assert.match(JSON.stringify(h.sent[0]), /双层数组中的正文/u)
+    assert.ok(!diagnostics.events.some(row => row.operation === name && row.code === 'tool_schema_invalid'))
+  })
 })
 
 test('simSendMessage reports the invalid value type and accepts the corrected string array', async t => {

@@ -14,6 +14,7 @@ import { decodeSimulationAddressKey, simulationAddressKey } from './simulationAd
 import { SIM_INITIAL_PROMPT_MAX_CHARS, simulationInitialPromptKey } from './simInitialPrompt.js'
 import { normalizeSimulationMessageFiles } from './simulationAgentFiles.js'
 import { normalizeSimulationMessageVideo } from './simulationAgentVideo.js'
+import { GROUP_REPLY_EVIDENCE_LIMIT, GROUP_REPLY_LIMIT } from '../domain/groupTurnRouting.js'
 
 /** Redis 形状约束：TRSS 包装层支持 get/set/del/eval，Set 用 JSON 数组模拟（避免依赖 sadd 族）。 */
 export interface SimRedisLike {
@@ -683,6 +684,13 @@ function normalizeSession(parsed: Partial<SimSessionState>, now: number): SimSes
         }
       : base.conversation,
   }
+  if (Array.isArray(parsed.confirmedGroupReplies)) {
+    state.confirmedGroupReplies = parsed.confirmedGroupReplies.filter(item => item && Number.isSafeInteger(item.sourceSeq) && item.sourceSeq > 0 &&
+      typeof item.sourceId === 'string' && item.sourceId.length <= 128 && typeof item.replyId === 'string' && item.replyId.length <= 128 &&
+      Number.isSafeInteger(item.at) && item.at > 0 && (item.text === undefined || typeof item.text === 'string' && item.text.length <= 240) &&
+      (item.evidenceIds === undefined || Array.isArray(item.evidenceIds) && item.evidenceIds.length <= GROUP_REPLY_EVIDENCE_LIMIT &&
+        item.evidenceIds.every(id => typeof id === 'string' && id.length > 0 && id.length <= 128))).slice(0, GROUP_REPLY_LIMIT)
+  } else delete state.confirmedGroupReplies
   if (!Number.isSafeInteger(state.memeRetryAt) || (state.memeRetryAt ?? 0) <= 0) delete state.memeRetryAt
   if (!Number.isSafeInteger(state.personProfileRetryAt) || (state.personProfileRetryAt ?? 0) <= 0) delete state.personProfileRetryAt
   return state

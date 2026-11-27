@@ -112,19 +112,23 @@ for (const scenario of [{ kind: 'video', unknown: false }, { kind: 'metadata-onl
           if (action === 'get_login_info') data = { user_id: botId, nickname: 'YouTube合成机器人' }
           else if (action === 'get_msg') { assert.equal(Number(params.message_id), source.message_id); data = source }
           else if (action === 'send_group_forward_msg') {
-            deliveries.push({ action, params }); assert.equal(String(params.group_id), String(groupId)); assert.equal(params.messages.length, 1)
-            const node = params.messages[0]; assert.equal(node.type, 'node'); assert.equal(String(node.data.uin), String(botId))
-            assert.deepEqual(node.data.content.map(part => part.type), scenario.kind === 'video' ? ['text', 'image', 'video'] : ['text', 'image'])
-            const text = node.data.content[0].data.text
-            assert.ok(text.includes(pageUrl)); assert.ok(text.includes('合成频道')); assert.ok(text.includes(description.replace(/\s+/gu, ' ')))
-            if (scenario.kind === 'metadata-only') assert.ok(text.includes('超过30分钟'))
-            for (const segment of node.data.content) {
-              if (!['image', 'video'].includes(segment.type)) { assert.equal(segment.type, 'text'); continue }
+            deliveries.push({ action, params }); assert.equal(String(params.group_id), String(groupId))
+            assert.deepEqual(params.messages.map(node => node.data.content.map(part => part.type)), scenario.kind === 'video' ? [['image'], ['video']] : [['image']])
+            for (const node of params.messages) {
+              assert.equal(node.type, 'node'); assert.equal(String(node.data.uin), String(botId))
+              const segment = node.data.content[0]
               capabilities.push(segment.data.file); assert.match(segment.data.file, /^http:\/\/127\.0\.0\.1:\d+\/agent-media-relay\/[a-f\d]{64}$/u)
               const response = await fetch(segment.data.file); assert.equal(response.status, 200)
-              const bytes = Buffer.from(await response.arrayBuffer()), expected = segment.type === 'video' ? MP4 : cover
-              assert.deepEqual(bytes, expected); assert.equal(Number(response.headers.get('content-length')), expected.length)
-              resources.push({ type: segment.type, sha256: sha(bytes), bytes: bytes.length })
+              const bytes = Buffer.from(await response.arrayBuffer())
+              assert.equal(Number(response.headers.get('content-length')), bytes.length)
+              if (segment.type === 'video') assert.deepEqual(bytes, MP4)
+              else {
+                assert.equal(response.headers.get('content-type'), 'image/png')
+                assert.equal(bytes.readUInt32BE(16), 920, 'the first node must contain a rendered image card')
+                resources.push({ type: 'card' })
+                continue
+              }
+              resources.push({ type: 'video', sha256: sha(bytes), bytes: bytes.length })
               if (segment.type === 'video') {
                 capabilities.push(segment.data.thumb); const thumbnail = await fetch(segment.data.thumb); assert.equal(thumbnail.status, 200)
                 const bytes = Buffer.from(await thumbnail.arrayBuffer()); assert.deepEqual(bytes, JPEG); resources.push({ type: 'thumbnail', sha256: sha(bytes), bytes: bytes.length })
@@ -177,7 +181,7 @@ for (const scenario of [{ kind: 'video', unknown: false }, { kind: 'metadata-onl
     const records = async () => Promise.all((await reader.keys(`${prefix}agent:media-outbox:v1:job:*`)).map(async key => JSON.parse(await reader.get(key))))
     await waitFor(async () => (await records()).some(record => record.state === (scenario.unknown ? 'unknown' : 'completed')), 'terminal media outbox')
     assert.deepEqual(errors, []); assert.equal(deliveries.length, 1)
-    assert.deepEqual(resources, [{ type: 'image', sha256: sha(cover), bytes: cover.length }, ...(scenario.kind === 'video' ? [
+    assert.deepEqual(resources, [{ type: 'card' }, ...(scenario.kind === 'video' ? [
       { type: 'video', sha256: sha(MP4), bytes: MP4.length }, { type: 'thumbnail', sha256: sha(JPEG), bytes: JPEG.length }] : [])])
     assert.deepEqual((await records())[0].effects.map(row => [row.effect, row.state]), [['forward', scenario.unknown ? 'unknown' : 'sent']])
     assert.ok(requests.filter(row => row.action === 'get_msg').length >= 2)

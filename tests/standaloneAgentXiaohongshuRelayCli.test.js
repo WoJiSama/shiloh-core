@@ -130,19 +130,24 @@ for (const scenario of [{ kind: 'video', unknown: false }, { kind: 'note', unkno
             deliveries.push({ action, params }); assert.equal(String(params.group_id), String(groupId))
             assert.equal(params.messages.length, scenario.kind === 'video' ? 3 : 5)
             assert.equal(JSON.stringify(params).includes('xsec_token'), false)
-            assert.equal(params.messages[1].data.content.map(part => part.data.text ?? '').join(''), description)
+            assert.equal(params.messages.at(-1).data.content.map(part => part.data.text ?? '').join(''), description)
             assert.deepEqual(params.messages.map(node => node.data.content.map(part => part.type)), scenario.kind === 'video'
-              ? [['text', 'image'], ['text'], ['video']] : [['text'], ['text'], ['image'], ['video'], ['image']])
+              ? [['image'], ['video'], ['text']] : [['image'], ['image'], ['video'], ['image'], ['text']])
             for (const [index, node] of params.messages.entries()) {
               assert.equal(node.type, 'node'); assert.equal(String(node.data.uin), String(botId))
-              if (index === 0) assert.ok(node.data.content.some(segment => segment.type === 'text' && segment.data.text.includes(pageUrl)))
               for (const segment of node.data.content) {
                 if (segment.type !== 'image' && segment.type !== 'video') { assert.equal(segment.type, 'text'); continue }
                 capabilities.push(segment.data.file)
                 assert.match(segment.data.file, /^http:\/\/127\.0\.0\.1:\d+\/agent-media-relay\/[a-f\d]{64}$/u)
                 const response = await fetch(segment.data.file); assert.equal(response.status, 200)
                 const bytes = Buffer.from(await response.arrayBuffer())
-                const expected = scenario.kind === 'video' ? segment.type === 'video' ? MP4 : cover : segment.type === 'video' ? LIVE : images[index === 2 ? 0 : 2]
+                if (index === 0) {
+                  assert.equal(response.headers.get('content-type'), 'image/png')
+                  assert.equal(bytes.readUInt32BE(16), 920, 'the note starts with a rendered image card')
+                  resources.push({ type: 'card' })
+                  continue
+                }
+                const expected = scenario.kind === 'video' ? MP4 : segment.type === 'video' ? LIVE : images[index === 1 ? 0 : 2]
                 assert.deepEqual(bytes, expected); assert.equal(Number(response.headers.get('content-length')), expected.length)
                 resources.push({ type: segment.type, sha256: sha(bytes), bytes: bytes.length })
                 if (segment.type === 'video') {
@@ -200,11 +205,11 @@ for (const scenario of [{ kind: 'video', unknown: false }, { kind: 'note', unkno
     const records = async () => Promise.all((await reader.keys(`${prefix}agent:media-outbox:v1:job:*`)).map(async key => JSON.parse(await reader.get(key))))
     await waitFor(async () => (await records()).some(record => record.state === (scenario.unknown ? 'unknown' : 'completed')), 'terminal media outbox')
     assert.deepEqual(errors, []); assert.equal(deliveries.length, 1)
-    const expected = scenario.kind === 'video' ? [{ type: 'image', sha256: sha(cover), bytes: cover.length }, { type: 'video', sha256: sha(MP4), bytes: MP4.length },
+    const expected = scenario.kind === 'video' ? [{ type: 'video', sha256: sha(MP4), bytes: MP4.length },
       { type: 'thumbnail', sha256: sha(JPEG), bytes: JPEG.length }] : [{ type: 'image', sha256: sha(images[0]), bytes: images[0].length },
       { type: 'video', sha256: sha(LIVE), bytes: LIVE.length }, { type: 'thumbnail', sha256: sha(JPEG), bytes: JPEG.length },
       { type: 'image', sha256: sha(images[2]), bytes: images[2].length }]
-    assert.deepEqual(resources, expected)
+    assert.deepEqual(resources, [{ type: 'card' }, ...expected])
     assert.deepEqual((await records())[0].effects.map(row => [row.effect, row.state]), [['forward', scenario.unknown ? 'unknown' : 'sent']])
     assert.ok(requests.filter(row => row.action === 'get_msg').length >= 2, 'Core rereads the original source before delivery')
     const sendAt = events.indexOf('send_group_forward_msg'), downloadAt = events.indexOf('download')

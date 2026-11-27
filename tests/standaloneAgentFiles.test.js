@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
+import { createHash } from 'node:crypto'
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -10,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createClient } from '@redis/client'
 import { WebSocketServer } from 'ws'
+import JSZip from 'jszip'
 
 const repo = fileURLToPath(new URL('../', import.meta.url))
 const release = path.resolve(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo)
@@ -23,7 +25,6 @@ const marker = '仅存在于TXT源字节的专用标记紫竹'
 const extracted = `${marker}\n测试资料说明：本次活动安排在周六上午十点。\n`
 const derived = '根据刚才文件得出的专用回答银杏：活动安排在周六上午十点。'
 const ordinary = '本轮未开放文件读取，请提供需要讨论的文字。'
-const bytes = Buffer.from(extracted)
 const unverifiedUrl = 'https://unverified.example/file-segment-url-must-not-be-used'
 const target = { account: { platform: 'qq', namespace: 'global', id: String(botId) }, kind: 'group', id: String(groupId) }
 const scope = simulationAddressKey(target)
@@ -64,6 +65,9 @@ async function storedFilesText(directory) {
 
 async function fixture(t, mode) {
   assert.equal(spawnSync('redis-server', ['--version'], { stdio: 'ignore' }).status, 0, 'this CLI acceptance needs real Redis')
+  const archive = mode === 'archive', fileName = archive ? '验收.zip' : '验收.txt'
+  const member = '资料/活动.txt', attachmentPath = archive ? '/attachment.zip' : '/attachment.txt'
+  const bytes = archive ? await new JSZip().file(member, extracted).generateAsync({ type: 'nodebuffer' }) : Buffer.from(extracted)
   const directory = await mkdtemp(path.join(tmpdir(), `agent-filetext-${mode}-`))
   const socketPath = path.join(directory, 'redis.sock')
   const instance = `filetext-${mode}`, prefix = `bl-agent:${instance}:`
@@ -74,19 +78,20 @@ async function fixture(t, mode) {
   const now = Math.floor(Date.now() / 1000)
   const original = { post_type: 'message', message_type: 'group', sub_type: 'normal', self_id: botId, group_id: groupId, user_id: userId,
     sender: { user_id: userId, nickname: '文本文件验收员' }, message_id: 98101, time: now,
-    message: [{ type: 'file', data: { name: '验收.txt', file_id: fileId, file: 'display-name-must-not-shadow-file-id', busid: 102, url: unverifiedUrl } }], raw_message: '' }
-  const requestText = '请阅读我刚上传的验收.txt，告诉我活动时间。'
+    message: [{ type: 'file', data: { name: fileName, file_id: fileId, file: 'display-name-must-not-shadow-file-id', busid: 102, url: unverifiedUrl } }], raw_message: '' }
+  const requestText = `请阅读我刚上传的${fileName}，告诉我活动时间。`
   const current = { post_type: 'message', message_type: 'group', sub_type: 'normal', self_id: botId, group_id: groupId, user_id: userId,
     sender: { user_id: userId, nickname: '文本文件验收员' }, message_id: 98102, time: now + 1,
-    message: [{ type: 'at', data: { qq: String(botId) } }, { type: 'text', data: { text: requestText } }], raw_message: requestText }
+    message: [...(archive ? [{ type: 'reply', data: { id: String(original.message_id) } }] : []),
+      { type: 'at', data: { qq: String(botId) } }, { type: 'text', data: { text: requestText } }], raw_message: requestText }
   let reader, child, exited, websocket, log = '', finished = false, readReached = false, fileUrl, releaseModel
   const heldModel = new Promise(resolve => { releaseModel = resolve })
   const enabled = !['omitted', 'disabled'].includes(mode)
   const server = createServer(async (req, res) => {
     try {
-      if (req.url === '/attachment.txt') {
+      if (req.url === attachmentPath) {
         downloaded.push(req.url)
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.end(bytes); return
+        res.setHeader('Content-Type', archive ? 'application/zip' : 'text/plain; charset=utf-8'); res.end(bytes); return
       }
       const chunks = []; for await (const chunk of req) chunks.push(chunk)
       const body = JSON.parse(Buffer.concat(chunks).toString() || 'null')
@@ -114,7 +119,29 @@ async function fixture(t, mode) {
         res.end(completion('simSendMessage', { continuation: 'chat', messages: [derived] }, 'send')); return
       }
       assert.equal(body.tools.some(row => row.function.name === 'fileTextTool'), enabled)
-      res.end(enabled ? completion('fileTextTool', { fileName: '验收.txt', offset: 0, limit: 2048 }, 'read') :
+      if (archive) {
+        const wrongTool = body.messages.findLast(row => row.role === 'tool' && row.tool_call_id === 'wrong-tool')
+        const directory = body.messages.findLast(row => row.role === 'tool' && row.tool_call_id === 'archive-directory')
+        const missing = body.messages.findLast(row => row.role === 'tool' && row.tool_call_id === 'archive-missing')
+        assert.ok(body.tools.some(row => row.function.name === 'simGetMessageImages'), 'the vision tool exists but must decline file sources')
+        assert.ok(body.messages.some(row => row.role === 'system' && row.content.includes('ZIP 先列目录')))
+        if (!wrongTool) {
+          const evidence = body.messages.findLast(row => row.role === 'user' && String(row.content).includes(requestText))
+          const sourceLine = String(evidence?.content ?? '').split('\n').find(line => line.startsWith('#') && line.includes(requestText))
+          const seq = Number(sourceLine?.match(/^#(\d+)\b/u)?.[1])
+          assert.ok(Number.isSafeInteger(seq) && seq > 0 && sourceLine.includes('引用文件'), 'the visible request carries the verified ZIP quote')
+          res.end(completion('simGetMessageImages', { seq }, 'wrong-tool')); return
+        }
+        assert.match(wrongTool.content, /image_source_is_file/)
+        assert.match(wrongTool.content, /fileTextTool/)
+        if (!directory) { res.end(completion('fileTextTool', { fileName }, 'archive-directory')); return }
+        assert.match(directory.content, /ZIP 文件清单/)
+        assert.ok(directory.content.includes(member) && !directory.content.includes(marker))
+        if (!missing) { res.end(completion('fileTextTool', { fileName, archiveEntry: 'missing.txt' }, 'archive-missing')); return }
+        assert.match(missing.content, /file_text_archive_entry_missing/)
+        res.end(completion('fileTextTool', { fileName, archiveEntry: member }, 'read')); return
+      }
+      res.end(enabled ? completion('fileTextTool', { fileName, offset: 0, limit: 2048 }, 'read') :
         completion('simSendMessage', { continuation: 'chat', messages: [ordinary] }, 'send'))
     } catch (error) { errors.push(String(error)); res.writeHead(500).end('{}') }
   })
@@ -160,7 +187,7 @@ async function fixture(t, mode) {
   await waitFor(() => stat(socketPath).catch(() => false), 'Redis readiness')
   reader = createClient({ socket: { path: socketPath, reconnectStrategy: false } }); reader.on('error', () => {}); await reader.connect()
   const port = server.address().port
-  fileUrl = `http://files.example:${port}/attachment.txt`
+  fileUrl = `http://files.example:${port}${attachmentPath}`
   // Route only this synthetic public host locally; keep the real downloader's DNS/pinning checks active.
   const preload = path.join(directory, 'file-network-fixture.mjs')
   await writeFile(preload, `import dns from 'node:dns/promises'; import http from 'node:http'; import {syncBuiltinESMExports} from 'node:module';\nconst lookup=dns.lookup; dns.lookup=async(host,...args)=>host==='files.example'?[{address:'8.8.8.8',family:4}]:lookup(host,...args);\nconst request=http.request; http.request=function(url,opts,...args){if(url instanceof URL&&url.hostname==='files.example'){const local=new URL(url);local.hostname='127.0.0.1';return request.call(this,local,{...opts,family:4,lookup:(_h,_o,cb)=>cb(null,'127.0.0.1',4)},...args)}return request.call(this,url,opts,...args)};syncBuiltinESMExports();\n`)
@@ -169,6 +196,7 @@ async function fixture(t, mode) {
     bindings: [{ connectionId: 'qq-files', kind: 'group', conversationId: String(groupId), agentId: 'daily' }] }))
   const configFile = path.join(directory, 'agent-host.yaml')
   await writeFile(configFile, JSON.stringify({ version: 1, instance, model: { baseUrl: `http://127.0.0.1:${port}/main/v1`, name: 'filetext-fixture-model', apiKeyEnv: 'FILETEXT_MODEL_KEY' },
+    ...(archive ? { vision: { baseUrl: `http://127.0.0.1:${port}/vision/v1`, name: 'filetext-fixture-vision', apiKeyEnv: 'FILETEXT_VISION_KEY' } } : {}),
     ...(mode === 'omitted' ? {} : { tools: { files: { enabled } } }),
     ...(mode === 'secret-output' ? { forbiddenWords: { blockOutput: false } } : {}),
     memorySystem: { enabled: false }, midtermMemory: { enabled: false }, episodicMemory: { enabled: false }, groupMemory: { enabled: false },
@@ -178,14 +206,15 @@ async function fixture(t, mode) {
   const settled = async () => !await reader.exists(prefix + simulationBusyKey(scope))
   return {
     requests, actions, deliveries, downloaded, errors, session, settled, releaseModel,
+    readLog: () => log,
     get finished() { return finished }, get readReached() { return readReached },
     async start() {
       child = spawn(process.execPath, ['--import', preload, entry, '--config', configFile], { cwd: directory,
-        env: { ...process.env, BL_AGENT_REDIS_URL: `unix://${socketPath}`, FILETEXT_MODEL_KEY: mainKey, FILETEXT_ONEBOT_KEY: oneBotToken } })
+        env: { ...process.env, BL_AGENT_REDIS_URL: `unix://${socketPath}`, FILETEXT_MODEL_KEY: mainKey, FILETEXT_ONEBOT_KEY: oneBotToken, FILETEXT_VISION_KEY: 'filetext-fixture-vision-key' } })
       exited = once(child, 'exit'); for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { log += chunk })
       await waitFor(() => log.includes('已启动'), 'CLI readiness')
       websocket.send(JSON.stringify(original))
-      await waitFor(async () => (await session())?.recent?.some(row => row.messageId === String(original.message_id)), 'pure TXT attachment retained as filename metadata')
+      await waitFor(async () => (await session())?.recent?.some(row => row.messageId === String(original.message_id)), 'attachment retained as filename metadata')
       assert.equal(requests.length, 0, 'file arrival alone does not invoke the parser or model')
       assert.equal(downloaded.length, 0)
     },
@@ -196,6 +225,10 @@ async function fixture(t, mode) {
     async stop() { child.kill('SIGTERM'); assert.deepEqual(await exited, [0, null]) },
     async assertClean() {
       assert.deepEqual(errors, [])
+      if (readReached) {
+        const instanceSuffix = createHash('sha256').update(instance).digest('hex').slice(0, 32)
+        assert.deepEqual(await readdir(path.join(directory, 'data', instance, `.agent-file-text-${instanceSuffix}`)), [])
+      }
       const persisted = await storedRedisText(reader, prefix)
       const files = await storedFilesText(path.join(directory, 'data'))
       for (const value of [marker, extracted, derived, bytes.toString('base64'), fileUrl, fileId, unverifiedUrl]) {
@@ -221,6 +254,20 @@ test('actual CLI fileTextTool reads a recent TXT using the real parser and keeps
   assert.equal(run.downloaded.length, 1, 'source reauthorization does not download a second copy')
   assert.ok(run.actions.some(row => row.action === 'get_msg' && Number(row.params.message_id) === 98101))
   assert.ok(run.actions.some(row => row.action === 'get_group_file_url'))
+  await run.assertClean()
+})
+
+test('actual CLI keeps a ZIP on the file path and diagnoses a wrong image call and a missing entry', { timeout: 45_000 }, async t => {
+  const run = await fixture(t, 'archive')
+  await run.start(); run.trigger()
+  await waitFor(() => run.finished, 'ZIP member read and derived send')
+  await waitFor(run.settled, 'ZIP turn drains')
+  await run.stop()
+  assert.equal(run.readReached, true)
+  assert.equal(run.deliveries.length, 1)
+  assert.ok(run.deliveries[0].message.some(part => part.type === 'text' && part.data.text === derived))
+  assert.match(run.readLog(), /simGetMessageImages failed image_source_is_file .*step=image_attachment_select result=not_dispatched/u)
+  assert.match(run.readLog(), /fileTextTool failed file_text_archive_entry_missing .*step=file_archive_entry result=discarded/u)
   await run.assertClean()
 })
 

@@ -8,13 +8,14 @@ import { sanitizeFinalReplyText } from '../../conversation/domain/replySanitizer
 import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agentSecretText.js'
 import { validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
+import { renderAgentMediaRelayCard } from './agentMediaRelayCard.js'
 import { agentMediaSharePageUrl, validateAgentMediaShare } from './agentMediaRelayReference.js'
 import { createDouyinHttp, DouyinHttpError, douyinBody, douyinFailure, douyinGuard } from './agentDouyinRelayHttp.js'
 import type { AgentDouyinLookup, AgentDouyinRequest, DouyinRequestKind } from './agentDouyinRelayHttp.js'
-import { nativeAgentDouyinBrowser } from './agentDouyinRelayBrowser.js'
-import type { AgentDouyinBrowser } from './agentDouyinRelayBrowser.js'
-import { douyinCanonicalPage, douyinDocumentMetadata, douyinPageIdentity, hasDouyinMedia } from './agentDouyinRelayMetadata.js'
-import type { AgentDouyinResolvedMedia } from './agentDouyinRelayMetadata.js'
+import { DOUYIN_BROWSER_NAVIGATION_MS, nativeAgentDouyinBrowser } from './agentDouyinRelayBrowser.js'
+import type { AgentDouyinBrowser, DouyinBrowserDocumentEvidence } from './agentDouyinRelayBrowser.js'
+import { douyinCanonicalPage, douyinPageIdentity, hasDouyinMedia, inspectDouyinDocument } from './agentDouyinRelayMetadata.js'
+import type { AgentDouyinResolvedMedia, DouyinDocumentIssue } from './agentDouyinRelayMetadata.js'
 import { douyinConvertImage, douyinFileChunks, douyinSlideshow, douyinThumbnail } from './agentDouyinRelayNative.js'
 import type { AgentDouyinNative } from './agentDouyinRelayNative.js'
 import type { AgentDiagnosticInput, AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
@@ -126,6 +127,7 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
       const pageStarted = performance.now(), pageLimit = stageTime(7000)
       const metadataGuard = douyinGuard(guard.context, pageLimit)
       let pageStep = 'douyin_page_request', pageStatus: number | undefined, pageError: unknown
+      let pageIssue: DouyinDocumentIssue | undefined, pageNativeCode: number | undefined
       try {
         const response = await read(agentMediaSharePageUrl(share), 'page', metadataGuard, 2 * MiB)
         pageStatus = response.status; pageStep = 'douyin_page_identity'
@@ -136,20 +138,23 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
         const body = (await douyinBody(response)).toString('utf8')
         pageStep = 'douyin_page_parse'
         if (!secretCheck(body)) throw douyinFailure()
-        metadata = douyinDocumentMetadata(body, id, kind)
+        const document = inspectDouyinDocument(body, id, kind)
+        metadata = document.metadata; pageIssue = document.issue; pageNativeCode = document.nativeCode
       } catch (error) {
         await guard.ensure()
         pageError = error
         if (error instanceof DouyinHttpError) { pageStep = error.step; pageStatus = error.httpStatus ?? pageStatus }
       } finally { metadataGuard.close() }
       let browserStep = 'douyin_browser_queue', browserStatus: number | undefined, queueMs = 0, browserTimedOut = false
+      let browserDocument: DouyinBrowserDocumentEvidence | undefined
       const browserLimit = stageTime(25_000)
       if (!hasDouyinMedia(metadata)) {
         const code = metadataGuard.deadlineElapsed ? 'douyin_page_timeout' : pageError ? 'douyin_page_failed' :
-          pageStatus !== 200 ? 'douyin_page_challenge' : metadata ? 'douyin_page_metadata_incomplete' : 'douyin_page_target_missing'
+          pageStatus !== 200 ? 'douyin_page_challenge' : pageIssue ?? 'douyin_page_target_missing'
         diagnose({ stage: 'runtime', operation: 'douyin_metadata_page', outcome: pageError ? 'failed' : 'cancelled', code,
           durationMs: performance.now() - pageStarted, ...(pageStatus === undefined ? {} : { httpStatus: pageStatus }),
-          ...(pageError === undefined ? {} : { error: pageError }), details: { step: pageStep, ...(metadataGuard.deadlineElapsed ? { limit: pageLimit } : {}) } })
+          ...(pageError === undefined ? {} : { error: pageError }), details: { step: pageStep,
+            ...(pageNativeCode === undefined ? {} : { nativeCode: pageNativeCode }), ...(metadataGuard.deadlineElapsed ? { limit: pageLimit } : {}) } })
         if (!id) throw douyinFailure()
         const queuedAt = performance.now(), browserGuard = douyinGuard(guard.context, browserLimit)
         try {
@@ -159,7 +164,7 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
             browserStep = options.browser ? 'douyin_browser_extract' : 'douyin_browser_launch'
             return (options.browser ?? nativeAgentDouyinBrowser)({
               id, kind, pageUrl: douyinCanonicalPage(id, kind), directory,
-              observeStep(step, status) { if (!browserGuard.signal.aborted) { browserStep = step; browserStatus = status } },
+              observeStep(step, status, evidence) { if (!browserGuard.signal.aborted) { browserStep = step; browserStatus = status; browserDocument = evidence } },
             }, browserGuard.context, read)
           })
           browserTail = task.catch(() => {})
@@ -178,12 +183,19 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
       if (media && (media.id !== id || !['video', 'note'].includes(media.kind) || !Number.isFinite(media.duration) || media.duration < 0 || !Array.isArray(media.images) || media.images.length > 2000 ||
         ![media.title, media.description, media.author].every(value => typeof value === 'string' && Array.from(value).length <= 1000 && (!value || safeText(value))))) throw douyinFailure()
       if (media) kind = media.kind
-      const pageUrl = douyinCanonicalPage(id, kind), lines = [kind === 'note' ? '抖音图文搬一下' : '抖音视频搬一下', media?.title || '作品详情暂未解析完成', `作品:${id}`], items: AgentMediaRelayItem[] = []
+      const pageUrl = douyinCanonicalPage(id, kind), title = media?.title || '作品详情暂未解析完成'
+      const lines = [kind === 'note' ? '抖音图文搬一下' : '抖音视频搬一下', title, `作品:${id}`], items: AgentMediaRelayItem[] = []
       if (media?.author) lines.push(`作者:${media.author}`)
       if (media?.description && media.description !== media.title) lines.push(`简介:${media.description}`)
-      if (media?.duration) lines.push(`时长:${Math.floor(media.duration / 60)}:${String(Math.floor(media.duration % 60)).padStart(2, '0')}`)
+      const duration = media?.duration ? `${Math.floor(media.duration / 60)}:${String(Math.floor(media.duration % 60)).padStart(2, '0')}` : ''
+      if (duration) lines.push(`时长:${duration}`)
       const labels: Readonly<Record<string, string>> = { play_count: '播放', digg_count: '点赞', comment_count: '评论', share_count: '转发', collect_count: '收藏' }
-      if (media?.stats) { const stats = Object.entries(labels).filter(([key]) => Number.isSafeInteger(media.stats[key]) && media.stats[key]! >= 0).map(([key, label]) => `${label}:${media.stats[key]}`); if (stats.length) lines.push(`数据:${stats.join(' ')}`) }
+      const stats = Object.entries(labels).flatMap(([key, label]) => {
+        const count = media?.stats?.[key]
+        return typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? [[label, count] as const] : []
+      })
+      if (stats.length) lines.push(`数据:${stats.map(([label, count]) => `${label}:${count}`).join(' ')}`)
+      const firstMediaLine = lines.length
       let cover: AgentMediaArtifactLease | undefined
       if (kind === 'video' && media?.cover) {
         try { cover = (await image(media.cover)).lease } catch { await guard.ensure(); degradation ??= 'cover_unavailable'; lines.push('封面暂时获取失败') }
@@ -218,19 +230,47 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
           catch { await guard.ensure(); degradation = 'video_unavailable'; lines.push('视频本体暂时获取失败，已保留作品页面') }
         } else lines.push('视频播放地址暂时获取失败，已保留作品页面')
       } else lines.push('作品详情暂时未解析完成，已保留作品页面')
+      if (degradation === 'metadata_unavailable' && browserDocument?.cause === 'douyin_page_work_empty') {
+        lines.push('抖音网页未提供原作品媒体')
+      } else if (degradation === 'metadata_unavailable' && browserDocument?.cause === 'douyin_page_verification_required') {
+        lines.push('抖音网页要求访问验证')
+      }
+      const notice = lines.slice(firstMediaLine).filter(line => !line.startsWith('图集:') && !line.startsWith('封面')).join(' · ')
       lines.push(pageUrl)
       const infoText = lines.join('\n')
       if (!safeText(infoText)) throw douyinFailure()
-      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover.artifact } as const] : [])] }, ...items] }, { allowsText: safeText })
+      const first = items[0]?.parts[0]
+      const mediaCover = first?.kind === 'image' ? first.artifact : first?.kind === 'video' ? first.thumbnail : undefined
+      let intro = cover?.artifact ?? mediaCover, cardStep = 'media_card_render'
+      try {
+        const bytes = await guard.wait(renderAgentMediaRelayCard({
+          platform: 'douyin', kind: kind === 'note' ? '图文' : '视频', title, author: media?.author ?? '',
+          detail: kind === 'note' && media?.images.length ? `${media.images.length} 张图片` : duration,
+          description: media?.description ?? '', stats, notice, pageUrl,
+        }, { covers: [cover?.artifact, mediaCover], resources: options.artifacts, context: guard.context, allowsText: safeText,
+          onCoverError: error => diagnose({ stage: 'runtime', operation: 'douyin_provider_card', outcome: 'failed',
+            code: 'relay_card_cover_failed', details: { step: 'media_card_cover' }, error }),
+        }))
+        cardStep = 'media_card_store'
+        intro = (await addLease(options.artifacts.stage({ kind: 'image', mime: 'image/png',
+          chunks: (async function* () { yield bytes })() }, guard.context))).artifact
+      } catch (error) {
+        await guard.ensure()
+        diagnose({ stage: 'runtime', operation: 'douyin_provider_card', outcome: 'failed',
+          code: 'relay_card_render_failed', details: { step: cardStep }, error })
+      }
+      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [intro ? { kind: 'image', artifact: intro } : { kind: 'text', text: infoText }] }, ...items] }, { allowsText: safeText })
       await guard.ensure(); transferred = true
       if (degradation) {
         diagnose({ stage: 'runtime', operation: 'douyin_provider_prepare', outcome: 'failed', code: degradation,
           durationMs: performance.now() - pageStarted,
           ...(degradation === 'metadata_unavailable' ? { ...(browserStatus === undefined ? {} : { httpStatus: browserStatus }),
             details: { step: browserStep, queueMs: Math.round(queueMs), result: 'fallback_used',
-              cause: browserTimedOut ? 'douyin_browser_timeout' : browserStep === 'douyin_browser_extract'
-                ? 'douyin_browser_target_missing' : 'douyin_browser_failed',
-              ...(browserTimedOut ? { limit: browserLimit } : {}) } } : {}) })
+              cause: browserTimedOut ? 'douyin_browser_timeout' : browserStep === 'douyin_browser_navigation_timeout' ? browserStep
+                : browserDocument?.cause ?? (browserStep === 'douyin_browser_extract' ? 'douyin_browser_target_missing'
+                  : browserStep === 'douyin_browser_detail' ? 'douyin_browser_detail_unavailable' : 'douyin_browser_failed'),
+              ...(browserDocument?.nativeCode === undefined ? {} : { nativeCode: browserDocument.nativeCode }),
+              ...(browserTimedOut ? { limit: browserLimit } : browserStep === 'douyin_browser_navigation_timeout' ? { limit: DOUYIN_BROWSER_NAVIGATION_MS } : {}) } } : {}) })
       }
       return { status: items.length ? 'ready' : 'metadata-only', pageUrl, infoText, plan, release } satisfies AgentPreparedMediaRelay
     } catch { throw douyinFailure() }

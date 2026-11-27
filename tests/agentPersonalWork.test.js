@@ -11,6 +11,7 @@ import { createAgentBindingDirectory, createAgentRuntime } from '../dist/backend
 import { createStandaloneAgentToolAuthor } from '../dist/backend/bootstrap/standaloneAgentToolAuthor.js'
 import { resolveStandaloneAgentCodingSnapshot } from '../dist/backend/bootstrap/standaloneAgentCodingWorker.js'
 import { createAgentPersonalRuntime } from '../dist/backend/modules/simulation/infrastructure/agentPersonalRuntime.js'
+import { createAgentCoreCapabilities } from '../dist/backend/modules/tools/infrastructure/agentCoreCapabilities.js'
 import { createCommitmentStore } from '../dist/backend/modules/commitments/infrastructure/commitmentStore.js'
 import { createCommitmentRuntime } from '../dist/backend/modules/commitments/infrastructure/commitmentTool.js'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
@@ -200,6 +201,146 @@ test('an uncertain contact stays linked to its goal after restart and is reconci
   assert.equal(saved.receipts[0].state, 'confirmed')
   assert.equal(saved.receipts[0].goalId, saved.goals[0].id)
   assert.equal(saved.receipts[0].messageId, '870000042')
+})
+
+test('a quiet agent chooses its next wake and can contact a peer without an incoming message or goal', async t => {
+  const values = new Map(), sent = [], choices = [], failures = []
+  const start = Date.UTC(2026, 10, 26, 6), privateKey = 'bound-friend'
+  let clock = start, decision = { action: 'rest', afterMinutes: 40 }
+  const redis = { async get(key) { return values.get(key) ?? null }, async set(key, value) { values.set(key, value); return 'OK' } }
+  const create = () => {
+    const capabilities = createAgentCoreCapabilities(() => true)
+    const runtime = createAgentPersonalRuntime({ redis, seeds: [seed], now: () => clock, isCurrent: () => true, capabilities,
+      allowsText: () => true, failed: (...args) => failures.push(args),
+      targets: async () => [{ kind: 'private', key: privateKey, label: '测试好友' }],
+      async model(request) {
+        const input = JSON.parse(request.messages[1].content)
+        if (!input.goals) return response({ action: 'keep' })
+        choices.push(input.canStartContact)
+        return response(decision)
+      },
+      async contact(_id, key, body) { sent.push({ key, body }); return { state: 'sent', messageId: '870000043' } },
+    })
+    return { runtime, capabilities }
+  }
+  let { runtime, capabilities } = create()
+  t.after(() => runtime.stop())
+  await runtime.load()
+  const legacy = JSON.parse(values.get(personalKey))
+  delete legacy.lastWorkAt
+  legacy.nextWorkAt = start + 6 * 60 * minute
+  legacy.goals.push({ id: 'later', title: '下午的计划', draft: '', nextAt: start + 120 * minute, state: 'active' })
+  values.set(personalKey, JSON.stringify(legacy))
+  await runtime.stop()
+  ;({ runtime, capabilities } = create())
+  await runtime.load()
+  const first = runtime.workSummary(seed.id, () => true)
+  assert.equal(first.nextWorkAt, start + minute)
+  assert.equal(first.goals[0].nextAt, start + 120 * minute)
+  clock = first.nextWorkAt
+  await runtime.tick()
+  const resting = runtime.workSummary(seed.id, () => true)
+  assert.equal(resting.lastChoice, '休息')
+  assert.equal(resting.nextWorkAt, clock + 40 * minute)
+  await runtime.stop()
+  ;({ runtime, capabilities } = create())
+  await runtime.load()
+  decision = { action: 'contact', key: privateKey, text: '我试了一种新的拼图排法，突然想到你也喜欢这个。' }
+  clock = resting.nextWorkAt - 1
+  await runtime.tick()
+  assert.equal(sent.length, 0)
+  clock++
+  await Promise.all([runtime.tick(), runtime.tick()])
+  assert.deepEqual(sent, [{ key: privateKey, body: decision.text }])
+  const activity = async key => JSON.parse((await capabilities.call('personal.activity', {}, { agentId: seed.id,
+    origin: { key, revision: 'v1' }, isCurrent: () => true, signal: new AbortController().signal })).content)
+  assert.deepEqual((await activity(privateKey)).confirmedContactsHere, [clock])
+  assert.equal((await activity(privateKey)).lastChoice, '主动联系')
+  assert.deepEqual((await activity('another-scene')).confirmedContactsHere, [])
+  assert.equal((await activity('another-scene')).lastChoice, undefined)
+  assert.equal(runtime.workSummary(seed.id, () => true).actions[0].goalId, undefined)
+  await runtime.stop()
+  ;({ runtime, capabilities } = create())
+  await runtime.load()
+  clock += 90 * minute
+  await runtime.tick()
+  assert.deepEqual(choices, [true, true, false])
+  assert.equal(sent.length, 1)
+  assert.deepEqual(failures, [])
+})
+
+test('a due personal goal sees its original deadline and keeps the independent wake on the calendar', async t => {
+  const values = new Map(), inputs = []
+  let clock = Date.UTC(2026, 10, 26, 6)
+  const runtime = createAgentPersonalRuntime({ seeds: [seed], now: () => clock, isCurrent: () => true, allowsText: () => true,
+    redis: { async get(k) { return values.get(k) ?? null }, async set(k, v) { values.set(k, v); return 'OK' } },
+    targets: async () => [{ key: 'group', kind: 'group', label: '测试群' }], async contact() { assert.fail('no delivery') },
+    failed: (_stage, error) => assert.fail(error),
+    async model(request) {
+      const input = JSON.parse(request.messages[1].content)
+      if (!input.goals) return response({ action: 'keep' })
+      inputs.push(input)
+      return response(inputs.length === 1 ? { action: 'goal', title: '试一试新的排法', afterMinutes: 5 } :
+        { action: 'rest', afterMinutes: 180 })
+    },
+  })
+  t.after(() => runtime.stop())
+  await runtime.load()
+  clock += 10 * minute
+  await runtime.tick()
+  const generalDue = clock + 90 * minute
+  clock += 5 * minute
+  await runtime.tick()
+  assert.equal(inputs[1].dueGoalId, inputs[1].goals[0].id)
+  assert.equal(inputs[1].goals[0].nextAt, clock)
+  assert.equal(runtime.workSummary(seed.id, () => true).nextWorkAt, generalDue)
+  clock = generalDue
+  await runtime.tick()
+  assert.equal(inputs[2].dueGoalId, undefined)
+})
+
+test('a chosen group can receive a fresh same-scene follow-up after everyone has gone quiet', async t => {
+  const values = new Map(), sent = [], failures = []
+  let clock = Date.UTC(2026, 10, 26, 8), selectedId = 'invented', currentSource = true
+  const selected = 'chosen-group', originalAt = clock
+  const runtime = createAgentPersonalRuntime({
+    redis: { async get(k) { return values.get(k) ?? null }, async set(k, v) { values.set(k, v); return 'OK' } },
+    seeds: [seed], now: () => clock, isCurrent: () => true, allowsText: () => true, failed: (...args) => failures.push(args),
+    targets: async () => [selected, 'other-group'].map(key => ({ key, kind: 'group', label: key })),
+    groupContext: async (_id, key) => {
+      assert.equal(key, selected)
+      return { messages: [{ messageId: 'source', authorId: 'author', name: '群友', text: '我想试试用旧车票做书签', at: originalAt }],
+        isCurrent: async () => currentSource }
+    },
+    async model(request) {
+      const input = JSON.parse(request.messages[1].content)
+      if (input.messages) return response({ action: 'contact', sourceMessageId: selectedId, key: 'other-group', text: '那张带日期的票，做书签刚好能记住是哪一趟。' })
+      return response(input.goals ? { action: 'look-group', key: selected } : { action: 'keep' })
+    },
+    async contact(_id, key, body, _signal, _current, sourceCurrent) {
+      assert.ok(await sourceCurrent())
+      sent.push({ key, body })
+      return { state: 'sent', messageId: '870000047' }
+    },
+  })
+  t.after(() => runtime.stop())
+  await runtime.load()
+  clock += 10 * minute
+  await runtime.tick()
+  assert.equal(sent.length, 0)
+  selectedId = 'source'
+  clock += 90 * minute
+  await runtime.tick()
+  assert.deepEqual(sent.map(row => row.key), [selected])
+  assert.equal(JSON.parse(values.get(personalKey)).lastChoice.groupRead, 'read')
+  clock += 5 * 60 * minute
+  await runtime.tick()
+  assert.equal(sent.length, 1)
+  assert.deepEqual(failures, [])
+  currentSource = false
+  clock += 90 * minute
+  await runtime.tick()
+  assert.equal(sent.length, 1)
 })
 
 test('owned reservations use native delivery proofs and cancel when their group source disappears', async () => {

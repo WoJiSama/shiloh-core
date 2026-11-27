@@ -1,12 +1,10 @@
 import { types } from 'node:util'
-import sharp from 'sharp'
 import type { AgentDiagnosticDetails } from '../../../contracts/agentDiagnostics.js'
 import type { AgentMediaArtifact, AgentMediaArtifactLease, AgentMediaRelayItem, AgentMediaResourceContext } from '../../../contracts/agentMediaRelay.js'
 import type { AgentMediaRelayProvider, AgentMediaShare, AgentPreparedMediaRelay } from '../../../contracts/agentMediaRelayWorkflow.js'
 import type { AgentPreparedBilibiliQuality } from '../../../contracts/agentBilibiliQuality.js'
 import { agentErrorDetails, annotateAgentError, type AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agentSecretText.js'
-import { buildTextImageChatSvg } from '../../rendering/infrastructure/textImageTemplates.js'
 import { validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
 import { bilibiliFailure, bilibiliGuard, bilibiliOfficialUrl, createBilibiliHttp, describeBilibiliHttpFailure, nativeAgentBilibiliRequest } from './agentBilibiliRelayHttp.js'
@@ -15,6 +13,7 @@ import { findAgentBilibiliEpisode, parseAgentBilibiliReference, validateAgentMed
 import { prepareBilibiliThumbnail } from './agentBilibiliRelayThumbnail.js'
 import type { AgentBilibiliThumbnail } from './agentBilibiliRelayThumbnail.js'
 import { AgentBilibiliCardError } from './agentBilibiliCardRenderer.js'
+import { renderAgentMediaRelayCard } from './agentMediaRelayCard.js'
 
 export type { AgentBilibiliLookup, AgentBilibiliRequest, AgentBilibiliResponse, AgentBilibiliRequestPolicy } from './agentBilibiliRelayHttp.js'
 export type { AgentBilibiliThumbnail } from './agentBilibiliRelayThumbnail.js'
@@ -28,7 +27,7 @@ export interface AgentBilibiliRelayProviderOptions {
   readonly lookup?: AgentBilibiliLookup
   readonly request?: AgentBilibiliRequest
   readonly thumbnail?: AgentBilibiliThumbnail
-  /** 'summary' renders the first relay node without a browser. */
+  /** 'summary' renders the first relay node from the official cover and metadata without a browser. */
   readonly cardRenderer?: 'summary' | { render(view: Readonly<import('./agentBilibiliCardRenderer.js').AgentBilibiliCardView>, context: AgentMediaResourceContext): Promise<{ mime: string; base64: string }> }
   /** Metadata only: upstream errors, URLs, credentials and local paths are never emitted. */
   readonly diagnostics?: Pick<AgentDiagnostics, 'emit'>
@@ -329,7 +328,8 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
   }
   async function download(urls: string[], kind: 'video' | 'image', context: AgentMediaResourceContext, auth = '', expectedSize = 0): Promise<AgentMediaArtifactLease> {
     for (const [index, url] of urls.entries()) {
-      const guard = bilibiliGuard(context, timeout), maxBytes = kind === 'video' ? videoLimit : IMAGE_BYTES
+      const guard = bilibiliGuard(context, kind === 'image' && cardRenderer === 'summary' ? Math.min(timeout, 10_000) : timeout)
+      const maxBytes = kind === 'video' ? videoLimit : IMAGE_BYTES
       const attempt = index + 1, started = performance.now()
       let response: Awaited<ReturnType<typeof read>> | undefined
       let step = 'bilibili_' + kind
@@ -383,8 +383,8 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
         `时长:${durationText(meta.duration)}`, meta.partCount > 1 ? `${meta.partCount}个分P` : ''].filter(Boolean).join(' | ')]
       if (meta.published) lines.push(`发布日期:${new Date(meta.published * 1000).toISOString().slice(0, 10)}`)
       const statLabels: Record<string, string> = { view: '播放', like: '点赞', coin: '投币', favorite: '收藏', share: '转发', reply: '评论', danmaku: '弹幕' }
-      const stats = Object.entries(statLabels).filter(([key]) => meta.stats[key] !== undefined).map(([key, label]) => `${label}:${meta.stats[key]}`)
-      if (stats.length) lines.push(`数据：${stats.join(' ')}`)
+      const stats = Object.entries(statLabels).filter(([key]) => meta.stats[key] !== undefined).map(([key, label]) => [label, meta.stats[key]!] as const)
+      if (stats.length) lines.push(`数据：${stats.map(([label, count]) => `${label}:${count}`).join(' ')}`)
       if (meta.description) lines.push(`简介：${meta.description}`)
       lines.push(`视频页面:${meta.pageUrl}`)
       if (strict) lines.push(`请求清晰度:qn=${profile.quality}`)
@@ -394,7 +394,7 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       const mediaItems: AgentMediaRelayItem[] = []
       let cover: AgentMediaArtifact | undefined
       step = 'bilibili_cover'
-      if (meta.cover && cardRenderer !== 'summary') { try { const lease = await download([meta.cover], 'image', guard.context); leases.push(lease); cover = lease.artifact } catch { diagnose('bilibili_provider_cover', 'cover_unavailable', context); await guard.ensure(); lines.push('封面暂时获取失败') } }
+      if (meta.cover) { try { const lease = await download([meta.cover], 'image', guard.context); leases.push(lease); cover = lease.artifact } catch { diagnose('bilibili_provider_cover', 'cover_unavailable', context); await guard.ensure(); lines.push('封面暂时获取失败') } }
       const duration = strict ? Math.max(meta.duration, meta.parts.reduce((total, part) => total + part.duration, 0)) : meta.duration
       if (duration > MAX_SECONDS) lines.push('视频超过30分钟，未附带视频本体')
       else if (meta.partCount > MAX_PARTS) lines.push(`视频共有${meta.partCount}个分P，超过20个分P上限，未附带视频本体`)
@@ -445,14 +445,23 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
       const infoText = safe(lines.join('\n')), pageUrl = safe(meta.pageUrl)
       if (!outputAllowed(infoText) || !outputAllowed(pageUrl) || actualQualities.some(value => !outputAllowed(value.label))) throw bilibiliFailure()
       let introParts: readonly ({ kind: 'text', text: string } | { kind: 'image', artifact: AgentMediaArtifact })[] | undefined
+      const firstVideo = mediaItems[0]?.parts[0]
+      const videoCover = firstVideo?.kind === 'video' ? firstVideo.thumbnail : undefined
       if (cardRenderer) {
         step = 'bilibili_card_render'
         try {
           let bytes: Buffer, mime: string
           if (cardRenderer === 'summary') {
-            const { svg, visibleText } = buildTextImageChatSvg({ text: infoText, nickname: '哔哩哔哩' })
-            if (!outputAllowed(visibleText)) throw bilibiliFailure()
-            bytes = await guard.wait(sharp(Buffer.from(svg), { limitInputPixels: 8_000_000 }).timeout({ seconds: 5 }).png().toBuffer())
+            const detail = [meta.duration > 0 ? durationText(meta.duration) : '',
+              meta.partCount > 1 ? `${meta.partCount} 个分 P` : '',
+              meta.published ? new Date(meta.published * 1000).toISOString().slice(0, 10) : ''].filter(Boolean).join(' · ')
+            bytes = await guard.wait(renderAgentMediaRelayCard({
+              platform: 'bilibili', kind: meta.episode ? '番剧' : '视频', title: meta.title,
+              author: meta.owner ? `UP 主 ${meta.owner}` : '', detail, description: meta.description, stats, pageUrl,
+              notice: status === 'preview' ? '平台目前仅提供试看' : mediaItems.length ? '' : lines.at(-1) ?? '',
+            }, { covers: [cover, videoCover], resources: options.artifacts, context: guard.context, allowsText: outputAllowed,
+              onCoverError: error => diagnose('bilibili_provider_card', 'relay_card_cover_failed', context, { step: 'media_card_cover' }, error),
+            }))
             mime = 'image/png'
           } else {
             let coverData: { readonly mime: string; readonly bytes: Buffer } | undefined
@@ -473,12 +482,11 @@ function createProfileProvider(options: AgentBilibiliRelayProviderOptions, profi
           leases.push(lease)
           introParts = [{ kind: 'image', artifact: lease.artifact }]
         } catch (error) {
-          diagnose('bilibili_provider_card', error instanceof AgentBilibiliCardError ? error.code : 'card_unavailable', context, { step })
+          const code = error instanceof AgentBilibiliCardError ? error.code : cardRenderer === 'summary' ? 'relay_card_render_failed' : 'card_unavailable'
+          diagnose('bilibili_provider_card', code, context, { step }, error)
           await guard.ensure()
-          const firstVideo = mediaItems[0]?.parts[0]
-          if (cardRenderer === 'summary' && firstVideo?.kind === 'video' && firstVideo.thumbnail) {
-            introParts = [{ kind: 'image', artifact: firstVideo.thumbnail }]
-          }
+          const fallback = cover ?? videoCover
+          if (cardRenderer === 'summary' && fallback) introParts = [{ kind: 'image', artifact: fallback }]
         }
       }
       step = 'bilibili_plan'

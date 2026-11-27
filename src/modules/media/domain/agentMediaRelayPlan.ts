@@ -7,6 +7,13 @@ const maxVideoBytes = 512 * 1024 * 1024
 const maxArtifactBytes = 16 * 1024 * 1024 * 1024
 const invalid = () => new Error('媒体转发资源或计划无效，或超过数量、文字、资源预算')
 
+export function firstAgentMediaRelayImage(items: readonly AgentMediaRelayItem[]): AgentMediaArtifact | undefined {
+  for (const item of items) for (const part of item.parts) {
+    if (part.kind === 'image') return part.artifact
+    if (part.kind === 'video' && part.thumbnail) return part.thumbnail
+  }
+}
+
 /** Read own data descriptors only; native event fields and behavior never cross the contract. */
 function record(input: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!input || typeof input !== 'object' || Array.isArray(input) ||

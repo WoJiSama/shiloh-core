@@ -45,6 +45,7 @@ import { readStandaloneMagnetSearchConfig } from './standaloneMagnetSearch.js'
 import { readStandaloneLocalEmojiConfig } from './standaloneLocalEmoji.js'
 import { readStandaloneBilibiliQualityConfig } from './standaloneBilibiliQuality.js'
 import { readStandaloneQqActionsConfig, readStandaloneQqActionsConnection } from './standaloneQqActions.js'
+import type { AgentPersonalSocialGrant } from '../modules/simulation/infrastructure/agentPersonalRuntime.js'
 import { readStandaloneDeferredActionsConfig } from './standaloneDeferredActions.js'
 import { resolveAgentTextTriggerConfig } from '../modules/conversation/infrastructure/agentTextTriggerConfig.js'
 import { readStandaloneAgentConsoleConfig } from './standaloneAgentConsoleConfig.js'
@@ -690,6 +691,27 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     ...(repositoryInput.catalog === undefined ? {} : { seed: decodeRepositoryCatalog(repositoryInput.catalog, target => !!bindings.resolve(target) &&
       hostIds.has(bindings.resolve(target)!.connectionId)) }),
   }
+  const socialRows = raw.personalSocial === undefined ? [] : raw.personalSocial
+  if (!Array.isArray(socialRows) || socialRows.length > connections.length) throw new Error('personalSocial 必须是按 QQ 连接声明的本人授权列表')
+  const socialOwners = new Set<string>(), socialConnections = new Set<string>()
+  const personalSocial = Object.freeze(socialRows.map((value): AgentPersonalSocialGrant => {
+    const row = object(value), { agentId, connectionId, readQzone, publishQzone, interactQzone, likeProfile, sendEmoji } = row
+    const grants = ['readQzone', 'publishQzone', 'interactQzone', 'likeProfile', 'sendEmoji']
+    const connection = connections.find(endpoint => endpoint.connection.id === connectionId)
+    if (Object.keys(row).some(key => key !== 'agentId' && key !== 'connectionId' && !grants.includes(key)) ||
+        grants.some(key => row[key] !== undefined && typeof row[key] !== 'boolean') ||
+        typeof agentId !== 'string' || typeof connectionId !== 'string' || socialOwners.has(agentId) || socialConnections.has(connectionId) ||
+        !connection || (readQzone || publishQzone || interactQzone) && connection.qqActions?.qzone !== true ||
+        likeProfile === true && tools.interactions?.enabled !== true || sendEmoji === true && !tools.localEmoji.enabled ||
+        !bindings.listBindings().some(binding => binding.agentId === agentId && binding.connectionId === connectionId)) {
+      throw new Error('personalSocial 需要唯一的本人和已绑定的 QQ 连接，授权的动作须配置对应能力')
+    }
+    socialOwners.add(agentId)
+    socialConnections.add(connectionId)
+    return Object.freeze({ agentId, connectionId, readQzone: readQzone === true, publishQzone: publishQzone === true,
+      ...(interactQzone === undefined ? {} : { interactQzone: interactQzone === true }),
+      ...(likeProfile === undefined ? {} : { likeProfile: likeProfile === true }), ...(sendEmoji === undefined ? {} : { sendEmoji: sendEmoji === true }) })
+  }))
   if (consoleConfig.qqLogin.some(row => !connections.some(({ connection }) =>
     connection.id === row.connectionId && connection.account.id === row.accountId))) {
     throw new Error('console.qqLogin 的连接和 QQ 账号须与当前宿主绑定一致')
@@ -784,6 +806,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
     instance, dataDir, games, groupPolicy, operationLogging, simulation, memorySystem, midtermMemory, episodicMemory, groupMemory, semanticMemory, cognition: { enabled: cognition.enabled }, history, dice, diceEngineConfig, textTrigger, textTriggerModel, console: consoleConfig, musicExtraction, mediaRelay, bilibiliQuality, torrentDownload, groupLog, privateChatEnabled: privateChat.enabled === true, privateTextTools, execution, vision, tools, connections, dingtalkConnections, dingtalkMcp, memorySpaces, projectKnowledge, resolvePersona, checkBindings, forbiddenWords, featureSwitches,
     workspaceAgents,
     personalSeeds,
+    personalSocial,
     personalFollow: { enabled: personalFollow.enabled },
     loadedBindings: Object.freeze([...bindings.listBindings()]),
     loadedAccountSettings: bindings.connectionById,
@@ -833,7 +856,7 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
   let liveBindings: ReturnType<typeof createAgentBindingDirectory> | undefined
   const isConfigCurrent = () => {
     try {
-      const current = inspectStandaloneAgentSourceSnapshot(sourceSnapshot)
+      const current = inspectStandaloneAgentSourceSnapshot(sourceSnapshot, 'execution')
       return current.fence === sourceSnapshot.fence && current.versions.host === sourceSnapshot.versions.host && current.versions.personas === sourceSnapshot.versions.personas
     } catch { return false }
   }
@@ -841,7 +864,7 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
     bindingRevision: sourceSnapshot.versions.bindings, hostVersion: sourceSnapshot.versions.host, isConfigCurrent,
     readBindings(initial) {
       try {
-        const current = inspectStandaloneAgentSourceSnapshot(sourceSnapshot)
+        const current = inspectStandaloneAgentSourceSnapshot(sourceSnapshot, 'execution')
         if (current.fence !== sourceSnapshot.fence || current.versions.host !== sourceSnapshot.versions.host || current.versions.personas !== sourceSnapshot.versions.personas) return undefined
         // Preserve the initial directory identity used by checkBindings while its revision is unchanged.
         if (current.versions.bindings === sourceSnapshot.versions.bindings) return initial
@@ -855,7 +878,7 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
   if (inspectStandaloneAgentSourceSnapshot(sourceSnapshot).revision !== sourceSnapshot.revision) throw new Error('检查期间宿主配置已改变，请重试')
   return { ...config, sourceSnapshot,
     observeConfigCurrent(check: () => boolean): boolean {
-      const result = observeStandaloneAgentSourceSnapshot(sourceSnapshot, check)
+      const result = observeStandaloneAgentSourceSnapshot(sourceSnapshot, check, 'execution')
       return result.current && result.accepted
     },
   }

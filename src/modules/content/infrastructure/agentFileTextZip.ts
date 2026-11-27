@@ -1,9 +1,9 @@
 import yauzl from 'yauzl'
 import type { Entry, ZipFile } from 'yauzl'
 import type { Readable } from 'node:stream'
-import { createInflateRaw } from 'node:zlib'
+import { crc32, createInflateRaw } from 'node:zlib'
 import { createRequire } from 'node:module'
-import { AgentFileTextError, MAX_FILE_TEXT_BYTES } from './agentFileTextTypes.js'
+import { AgentFileTextError, MAX_FILE_TEXT_BYTES, validFileTextArchivePath } from './agentFileTextTypes.js'
 import { stripFileTextHtmlDoctype } from './agentFileTextMarkup.js'
 
 interface XmlParser {
@@ -48,8 +48,12 @@ export async function consumeFileTextZipEntry(zip: ZipFile, entry: Entry, budget
     return actual
   } finally { if (inflate) { raw.unpipe(inflate); inflate.destroy() } raw.destroy() }
 }
-/** Format-independent preflight. Every entry is inflated and counted before any eager document parser runs. */
-export async function validateFileTextZip(bytes: Uint8Array, overrides: Partial<FileTextZipBudget> = {}): Promise<void> {
+function regularArchiveEntry(entry: Entry): boolean {
+  const unixType = entry.versionMadeBy >>> 8 === 3 ? (entry.externalFileAttributes >>> 16) & 0o170000 : 0
+  return !entry.fileName.endsWith('/') && (unixType === 0 || unixType === 0o100000)
+}
+
+async function inspectFileTextZip(bytes: Uint8Array, overrides: Partial<FileTextZipBudget>, archive?: { readonly entry?: string }) {
   if (!(bytes instanceof Uint8Array) || !bytes.length || bytes.length > MAX_FILE_TEXT_BYTES) throw bad()
   const budget = fileTextZipBudget(overrides)
   const zip = await new Promise<ZipFile>((resolve, reject) => yauzl.fromBuffer(Buffer.from(bytes), { autoClose: false, lazyEntries: true, strictFileNames: true, validateEntrySizes: true }, (error, value) => error || !value ? reject(bad()) : resolve(value)))
@@ -58,14 +62,13 @@ export async function validateFileTextZip(bytes: Uint8Array, overrides: Partial<
   try {
     const list = await new Promise<Entry[]>((resolve, reject) => {
       const result: Entry[] = [], names = new Set<string>(); let total = 0
-      if (!Number.isSafeInteger(zip.entryCount) || zip.entryCount < 1 || zip.entryCount > budget.entries) { reject(bad()); return }
+      if (!Number.isSafeInteger(zip.entryCount) || zip.entryCount < (archive ? 0 : 1) || zip.entryCount > budget.entries) { reject(bad()); return }
       zip.on('error', () => reject(bad()))
       zip.on('end', () => result.length === zip.entryCount ? resolve(result) : reject(bad()))
       zip.on('entry', (entry: Entry) => {
         try {
           const name = entry.fileName, key = name.replace(/\/$/u, '')
-          if (!name || name.length > 512 || /[\u0000-\u001f\u007f\\]/u.test(name) || name.startsWith('/') || /^[a-z]:/iu.test(name) ||
-              key.split('/').some(part => !part || part === '.' || part === '..') || names.has(key) || entry.isEncrypted() || ![0, 8].includes(entry.compressionMethod) ||
+          if (name.length > 512 || !validFileTextArchivePath(key) || names.has(key) || entry.isEncrypted() || ![0, 8].includes(entry.compressionMethod) ||
               !Number.isSafeInteger(entry.uncompressedSize) || entry.uncompressedSize < 0 || entry.uncompressedSize > budget.entryBytes ||
               !Number.isSafeInteger(entry.compressedSize) || entry.compressedSize < 0 || (total += entry.uncompressedSize) > budget.totalBytes) throw bad()
           names.add(key); result.push(entry); zip.readEntry()
@@ -73,6 +76,17 @@ export async function validateFileTextZip(bytes: Uint8Array, overrides: Partial<
       })
       zip.readEntry()
     })
+    if (archive) {
+      const files = list.filter(regularArchiveEntry)
+      if (archive.entry === undefined) return { paths: files.map(entry => entry.fileName), bytes: undefined }
+      const selected = files.find(entry => entry.fileName === archive.entry)
+      if (!selected) throw new AgentFileTextError('archive_entry_missing')
+      const chunks: Buffer[] = []
+      let checksum = 0
+      await consumeFileTextZipEntry(zip, selected, budget, item => { chunks.push(item); checksum = crc32(item, checksum) })
+      if (zipError || checksum !== selected.crc32) throw bad()
+      return { paths: [], bytes: Buffer.concat(chunks, selected.uncompressedSize) }
+    }
     let total = 0, nodes = 0
     for (const entry of list) {
       if (zipError) throw bad()
@@ -103,5 +117,16 @@ export async function validateFileTextZip(bytes: Uint8Array, overrides: Partial<
       parser?.close()
       if (zipError) throw bad()
     }
+    return { paths: [], bytes: undefined }
   } finally { zip.close() }
+}
+
+/** Every entry is inflated and counted before an eager document parser runs. */
+export async function validateFileTextZip(bytes: Uint8Array, overrides: Partial<FileTextZipBudget> = {}): Promise<void> {
+  await inspectFileTextZip(bytes, overrides)
+}
+
+/** Read ZIP metadata or one normal file into memory without extracting paths to disk. */
+export function readFileTextArchive(bytes: Uint8Array, overrides: Partial<FileTextZipBudget>, entry?: string) {
+  return inspectFileTextZip(bytes, overrides, entry === undefined ? {} : { entry })
 }

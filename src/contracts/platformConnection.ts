@@ -61,11 +61,33 @@ export interface OwnTextDeliveryProof {
   readonly mentionId?: string
 }
 
+export const messageImageReadSteps = {
+  image_message_lookup_failed: 'image_message_lookup',
+  image_attachment_missing: 'image_attachment_select',
+  image_source_mismatch: 'image_source_authorization',
+  image_source_privacy_denied: 'image_source_authorization',
+  image_source_check_failed: 'image_source_authorization',
+  image_source_changed: 'image_source_authorization',
+  image_reference_unsupported: 'image_attachment_select',
+  image_url_rejected: 'image_address_validation',
+  image_dns_failed: 'image_address_validation',
+  image_read_timeout: 'image_attachment_read',
+  image_download_failed: 'image_download',
+  image_download_http_error: 'image_download',
+  image_bytes_invalid: 'image_bytes_validation',
+} as const
+export interface MessageImageReadFailure {
+  readonly code: keyof typeof messageImageReadSteps
+  readonly httpStatus?: number
+}
+
 export interface MessageImageReadOptions extends MessageActionOptions {
   /** Cancel source lookup, DNS and any in-flight image body read. */
   readonly signal?: AbortSignal
   /** The adapter checks the verified source against the caller's policy before retrieving its image. */
   allowsSource(source: IncomingMessage): Promise<boolean>
+  /** Fixed reason metadata from the first unsuccessful step. Never includes the address or attachment. */
+  reportFailure?(failure: MessageImageReadFailure): void
 }
 
 export interface MusicShareReadOptions extends MessageActionOptions {

@@ -24,7 +24,7 @@ async function fixture(t, options = {}) {
   const clock = { at: Date.parse('2026-11-15T12:00:00+08:00') }
   const bindings = new Map(), unavailable = new Set(), recalled = new Set(), authorized = new Set()
   const calls = { authorized: [], bodyReads: [], acquired: 0, released: 0, diagnostics: [] }
-  const behavior = { authorize: undefined, afterRead: undefined, begin: undefined }
+  const behavior = { authorize: undefined, afterRead: undefined, begin: undefined, readRecall: undefined }
   const config = { enabled: true, timeoutMs: 5000, ...options.config }
   const memory = createPersonMemoryStore({ redis: redis.storage, now: () => clock.at })
   const storage = { ...redis.storage, async eval(script, input) {
@@ -87,7 +87,10 @@ async function fixture(t, options = {}) {
         resolve: target => { const binding = f.binding(target); return binding ? { binding } : undefined },
         available: target => !unavailable.has(conversationAddressKey(target)),
         privatePeer: target => target.kind === 'private' ? peer.id : undefined,
-        isRecalled: async (target, id) => recalled.has(JSON.stringify([conversationAddressKey(target), id])),
+        async isRecalled(target, id) {
+          await behavior.readRecall?.()
+          return recalled.has(JSON.stringify([conversationAddressKey(target), id]))
+        },
         isRunning: redis.isCurrent, allowsText: text => !text.includes('blocked-source'), logger: { warn() {} },
         diagnostics: { emit: event => calls.diagnostics.push(event) },
         async begin(binding) {
@@ -366,6 +369,42 @@ test('in-flight source invalidation and timeouts terminate bounded reads and rel
   assert.equal(f.calls.acquired, f.calls.released)
 })
 
+test('a stalled recall check preserves the first failure and retries the original with fresh privacy', redisTest, async t => {
+  for (const withdrawn of [false, true]) await t.test(withdrawn ? 'withdrawn before retry' : 'one saved original', async t => {
+    const f = await fixture(t, { config: { timeoutMs: 100 } }), id = 'recall-read-stalled'
+    let reads = 0
+    f.behavior.readRecall = () => {
+      if (++reads === 1) {
+        if (withdrawn) f.recall(group, id)
+        return new Promise(() => {})
+      }
+    }
+    await f.capture('用于验证保存的原文', { messageId: id })
+    const state = await f.state()
+    assert.deepEqual(state?.rows.map(row => row.messageId) ?? [], withdrawn ? [] : [id])
+    assert.equal(reads, 2)
+    assert.deepEqual(f.calls.diagnostics.map(event => [event.code, event.details.result]), [
+      ['history_source_timeout', 'retry_scheduled'], withdrawn ? ['history_source_retry_cancelled', 'not_saved'] : ['history_source_retry_recovered', 'recovered'],
+    ])
+    assert.equal(f.calls.diagnostics[0].details.step, 'check_recall')
+  })
+})
+
+test('a timeout reading the archive version retries once before any unconfirmed write', redisTest, async t => {
+  const f = await fixture(t, { config: { timeoutMs: 100 } }), id = 'archive-read-stalled'
+  f.behavior.afterRead = () => {
+    f.behavior.afterRead = undefined
+    return new Promise(() => {})
+  }
+  await f.capture('等待读取归档版本的消息', { messageId: id })
+  assert.deepEqual((await f.state())?.rows.map(row => row.messageId), [id])
+  assert.deepEqual(f.calls.diagnostics.map(event => [event.code, event.details.result]), [
+    ['history_source_timeout', 'retry_scheduled'], ['history_source_retry_recovered', 'recovered'],
+  ])
+  assert.equal(f.calls.diagnostics[0].details.step, 'history_store_read')
+  assert.equal(f.calls.acquired, f.calls.released)
+})
+
 test('a capture timeout identifies a pending authorization acquisition and releases it when it arrives', redisTest, async t => {
   const f = await fixture(t, { config: { timeoutMs: 100 } })
   let open
@@ -376,8 +415,8 @@ test('a capture timeout identifies a pending authorization acquisition and relea
     assert.equal(await f.state(), undefined)
     const [event] = f.calls.diagnostics
     assert.equal(event.code, 'history_source_timeout')
-    const { stepMs, ...details } = event.details
-    assert.ok(Number.isSafeInteger(stepMs) && stepMs >= 0)
+    const { stepMs, loopActiveMs, timeoutOverrunMs, ...details } = event.details
+    assert.ok([stepMs, loopActiveMs, timeoutOverrunMs].every(value => Number.isSafeInteger(value) && value >= 0))
     assert.deepEqual(details, { step: 'acquire', result: 'not_saved', limit: 100 })
   } finally { open() }
   f.behavior.begin = undefined

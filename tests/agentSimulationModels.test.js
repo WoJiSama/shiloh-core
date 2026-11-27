@@ -4,6 +4,7 @@ import test from 'node:test'
 import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
 
 const { createAgentSimulationWakeGate, createAgentSimulationMemeExtractor } = await importBilibiliHost('modules/simulation/infrastructure/agentSimulationModels.js')
+const { agentErrorDetails } = await importBilibiliHost('modules/runtime/infrastructure/agentDiagnostics.js')
 const apiKey = 'simulation-provider-private-key-123456'
 const options = { baseUrl: 'https://simulation.example/v1', name: 'simulation-fixture', apiKey }
 const target = { account: { platform: 'qq', namespace: 'global', id: 'private-account' }, kind: 'group', id: 'private-group' }
@@ -71,7 +72,7 @@ test('official GLM flash side tasks request content without spending the JSON bu
   assert.deepEqual(JSON.parse(await createAgentSimulationMemeExtractor(config)(memes, undefined, context())), memeResult)
   assert.deepEqual(bodies.map(body => body.thinking), [{ type: 'disabled' }, { type: 'disabled' }])
   assert.equal(Object.hasOwn(bodies[0], 'max_tokens'), false)
-  assert.equal(bodies[0].response_format, undefined)
+  assert.deepEqual(bodies[0].response_format, { type: 'json_object' })
   assert.deepEqual(bodies[1].response_format, { type: 'json_object' })
   assert.match(bodies[1].messages[1].content, /\{"candidates":\[\]\}/u)
   const empty = createAgentSimulationMemeExtractor({ ...config, fetchImpl: async () => answer('{"candidates":[]}') })
@@ -93,6 +94,37 @@ test('the standalone wake judge can report a verified upstream error while calle
   assert.equal(await createAgentSimulationWakeGate(truncated)(input, undefined, context()), null)
   await assert.rejects(createAgentSimulationWakeGate({ ...truncated, throwOnFailure: true })(input, undefined, context()),
     { code: 'model_response_truncated' })
+})
+
+test('wake verdicts classify format and candidate failures without recording model text', async () => {
+  const routing = { selfName: '机器人', triggerSeq: 19, reply: 'continuation', allowJoin: false,
+    messages: [{ seq: 19, joinable: false }], previous: [{ sourceSeq: 7 }] }
+  const selected = { ...input, routing }
+  const judge = content => createAgentSimulationWakeGate({ ...options, throwOnFailure: true, fetchImpl: async () => answer(content) })
+  for (const [raw, code, details] of [
+    ['PRIVATE_INVALID_WAKE', 'wake_output_json_invalid', undefined],
+    ['[]', 'wake_output_schema_invalid', { field: 'wake_output', cause: 'wake_output_object_required', expectedType: 'object', actualType: 'array' }],
+    ['{"engage":"true"}', 'wake_output_schema_invalid', { field: 'engage', cause: 'wake_output_engage_invalid', expectedType: 'boolean', actualType: 'string' }],
+    ['{"engage":false,"PRIVATE_EXTRA_FIELD":true}', 'wake_output_schema_invalid', { field: 'wake_output', cause: 'wake_output_fields_invalid' }],
+    ['{"engage":true,"selection":{"mode":"reply","seq":19}}', 'wake_output_schema_invalid', { field: 'selection.previousSeq', cause: 'wake_selection_previous_required' }],
+    ['{"engage":true,"selection":{"mode":"reply","seq":19,"previousSeq":8}}', 'wake_output_schema_invalid', { field: 'selection.previousSeq', cause: 'wake_selection_previous_invalid' }],
+    ['{"engage":true,"selection":{"mode":"reply","seq":19},"previousSeq":8}', 'wake_output_schema_invalid', { field: 'selection.previousSeq', cause: 'wake_selection_previous_invalid' }],
+    ['{"engage":true,"selection":{"mode":"reply","seq":19,"previousSeq":7},"previousSeq":8}', 'wake_output_schema_invalid', { field: 'selection.previousSeq', cause: 'wake_selection_previous_conflict' }],
+    ['{"engage":false,"previousSeq":7}', 'wake_output_schema_invalid', { field: 'selection', cause: 'wake_output_silent_has_selection' }],
+    ['{"engage":true,"selection":{"mode":"reply","seq":19,"previousSeq":7,"contextSeqs":[200]}}', 'wake_output_schema_invalid', { field: 'selection.contextSeqs', cause: 'wake_selection_context_invalid' }],
+  ]) await assert.rejects(judge(raw)(selected, undefined, context()), error => {
+    assert.equal(error.code, code)
+    assert.deepEqual(agentErrorDetails(error), details)
+    assert.doesNotMatch(JSON.stringify(error), /PRIVATE_/u)
+    return true
+  })
+  assert.deepEqual(await judge('{"engage":false,"selection":null}')(selected, undefined, context()), { engage: false })
+  const reply = await judge('{"engage":true,"selection":{"mode":"reply","seq":19,"previousSeq":7,"contextSeqs":null}}')(selected, undefined, context())
+  assert.deepEqual(reply, { engage: true, selection: { mode: 'reply', seq: 19, previousSeq: 7 } })
+  const flattened = judge('{"engage":true,"selection":{"mode":"reply","seq":19},"previousSeq":7}')
+  assert.deepEqual(await flattened(selected, undefined, context()), reply)
+  await assert.rejects(flattened({ ...selected, routing: { ...routing, reply: 'addressed' } }, undefined, context()),
+    error => agentErrorDetails(error)?.cause === 'wake_selection_previous_invalid')
 })
 
 test('meme provider failures carry only a fixed label and optional HTTP status', async () => {

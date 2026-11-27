@@ -5,8 +5,10 @@ import type { AgentMediaArtifactLease, AgentMediaRelayItem } from '../../../cont
 import type { AgentMediaRelayProvider, AgentPreparedMediaRelay } from '../../../contracts/agentMediaRelayWorkflow.js'
 import { sanitizeFinalReplyText } from '../../conversation/domain/replySanitizer.js'
 import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agentSecretText.js'
-import { validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
+import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import { firstAgentMediaRelayImage, validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
+import { stageAgentMediaRelayCard } from './agentMediaRelayCard.js'
 import { validateAgentMediaShare } from './agentMediaRelayReference.js'
 import { createPixivHttp, normalizePixivCookie, pixivBody, pixivFailure, pixivGuard, pixivOfficialUrl } from './agentPixivRelayHttp.js'
 import type { AgentPixivLookup, AgentPixivRequest } from './agentPixivRelayHttp.js'
@@ -20,6 +22,9 @@ export interface AgentPixivRelayProviderOptions {
   readonly authCookie?: string
   readonly proxyUrl?: string
   readonly allowRestricted?: boolean
+  /** Defaults to true. The dedicated artwork tool supplies its own presentation. */
+  readonly introCard?: boolean
+  readonly diagnostics?: Pick<AgentDiagnostics, 'emit'>
   readonly lookup?: AgentPixivLookup
   readonly request?: AgentPixivRequest
   readonly timeoutMs?: number
@@ -34,7 +39,10 @@ function text(input: unknown, maximum: number): string {
 }
 function integer(input: unknown, maximum: number): number | undefined { const value = typeof input === 'number' ? input : typeof input === 'string' && /^\d+$/u.test(input) ? Number(input) : NaN; return Number.isSafeInteger(value) && value >= 0 && value <= maximum ? value : undefined }
 export function createAgentPixivRelayProvider(options: AgentPixivRelayProviderOptions): AgentMediaRelayProvider {
-  if (!options || typeof options.directory !== 'string' || !path.isAbsolute(options.directory) || !options.artifacts || typeof options.artifacts.stage !== 'function' || options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1) || options.allowRestricted !== undefined && typeof options.allowRestricted !== 'boolean') throw pixivFailure()
+  if (!options || typeof options.directory !== 'string' || !path.isAbsolute(options.directory) || !options.artifacts || typeof options.artifacts.stage !== 'function' ||
+      options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1) ||
+      options.allowRestricted !== undefined && typeof options.allowRestricted !== 'boolean' ||
+      options.introCard !== undefined && typeof options.introCard !== 'boolean') throw pixivFailure()
   const cookie = normalizePixivCookie(options.authCookie), secrets = [...options.secrets ?? [], ...(cookie ? [cookie, ...cookie.split(';').map(part => part.trim().split('=').slice(1).join('=')).filter(Boolean)] : [])]
   if (options.proxyUrl) { try { const proxy = new URL(options.proxyUrl); secrets.push(options.proxyUrl, proxy.href); for (const value of [proxy.username, proxy.password]) if (value) secrets.push(value, decodeURIComponent(value)) } catch { throw pixivFailure() } }
   const secretCheck = createAgentSecretTextCheck(secrets)
@@ -92,15 +100,21 @@ export function createAgentPixivRelayProvider(options: AgentPixivRelayProviderOp
       if (!body) lines.push('Pixiv 作品详情暂时未解析完成，已保留作品页面')
       if (author) lines.push(`画师:${author}`)
       lines.push(`作品:${id}`)
+      const width = integer(body?.width, 100_000), height = integer(body?.height, 100_000)
+      const stats = Object.entries({ 浏览: body?.viewCount, 点赞: body?.likeCount, 收藏: body?.bookmarkCount, 评论: body?.commentCount }).flatMap(([label, raw]) => {
+        const value = integer(raw, Number.MAX_SAFE_INTEGER)
+        return value === undefined ? [] : [[label, value] as const]
+      })
       if (body) {
         lines.push(`页数:${count}`)
-        const width = integer(body.width, 100_000), height = integer(body.height, 100_000); if (width && height) lines.push(`尺寸:${width}x${height}`)
+        if (width && height) lines.push(`尺寸:${width}x${height}`)
         const tags = (Array.isArray(row(body.tags).tags) ? row(body.tags).tags : Array.isArray(body.tags) ? body.tags : []) as unknown[]
         if (tags.length > 2000) throw pixivFailure()
         const displayTags = tags.slice(0, 20).map(value => text(row(value).tag ?? value, 80)).filter(Boolean); if (displayTags.length) lines.push(`标签:${displayTags.join('、')}`)
-        const stats = Object.entries({ 浏览: body.viewCount, 点赞: body.likeCount, 收藏: body.bookmarkCount, 评论: body.commentCount }).flatMap(([label, raw]) => { const value = integer(raw, Number.MAX_SAFE_INTEGER); return value === undefined ? [] : [`${label}:${value}`] }); if (stats.length) lines.push(`数据:${stats.join(' ')}`)
+        if (stats.length) lines.push(`数据:${stats.map(([label, count]) => `${label}:${count}`).join(' ')}`)
         if (description) lines.push(`简介:${description}`)
       }
+      const firstMediaLine = lines.length
       const items: AgentMediaRelayItem[] = []
       if (body && restricted === undefined) lines.push('该 Pixiv 作品的受限标记未能验证，未自动附带图片')
       else if (body && restricted! > 0 && options.allowRestricted !== true) lines.push('该 Pixiv 作品标记为受限内容，未自动附带图片')
@@ -141,7 +155,18 @@ export function createAgentPixivRelayProvider(options: AgentPixivRelayProviderOp
       }
       const infoText = [`分享了 Pixiv 作品《${title}》`, ...lines, pageUrl].join('\n')
       if (!safeText(infoText)) throw pixivFailure()
-      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [{ kind: 'text', text: infoText }] }, ...items] }, { allowsText: safeText })
+      let intro: AgentMediaRelayItem = { parts: [{ kind: 'text', text: infoText }] }
+      if (options.introCard !== false) {
+        const cover = firstAgentMediaRelayImage(items)
+        const detail = body ? [`${count} 页`, width && height ? `${width} × ${height}` : ''].filter(Boolean).join(' · ') : ''
+        const card = await stageAgentMediaRelayCard({ platform: 'pixiv', kind: !body ? '作品' : body.illustType === 1 ? '漫画' : '插画',
+          title, author, detail, description, stats, pageUrl, notice: body ? lines.slice(firstMediaLine).join(' · ') : lines[0] ?? '',
+        }, { artifacts: options.artifacts, covers: [cover], guard, allowsText: safeText, diagnostics: options.diagnostics })
+        if (card) leases.push(card)
+        const image = card?.artifact ?? cover
+        if (image) intro = { parts: [{ kind: 'image', artifact: image }] }
+      }
+      const plan = validateAgentMediaRelayPlan({ version: 1, items: [intro, ...items] }, { allowsText: safeText })
       await guard.ensure(); transferred = true
       return { status: body && restricted !== undefined && restricted > 0 && options.allowRestricted !== true ? 'restricted' : ready ? 'ready' : 'metadata-only', pageUrl, infoText, plan, release } satisfies AgentPreparedMediaRelay
     } catch { throw pixivFailure() }

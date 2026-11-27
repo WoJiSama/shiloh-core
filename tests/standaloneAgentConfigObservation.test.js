@@ -4,17 +4,24 @@ import fs from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 
 const { readStandaloneAgentSourceSnapshot: snapshot, inspectStandaloneAgentSourceSnapshot: inspect,
   isStandaloneAgentSourceSnapshotCurrent: current, observeStandaloneAgentSourceSnapshot: observe } = await load('bootstrap/standaloneAgentConfigSources.js')
 
-async function fixture(t) {
+async function fixture(t, withHead = false) {
   const root = fs.realpathSync(await mkdtemp(path.join(tmpdir(), 'agent-config-observation-'))), host = path.join(root, 'host.yaml')
   t.after(() => rm(root, { recursive: true, force: true }))
   await writeFile(host, 'version: 1\n')
   await writeFile(path.join(root, 'agent-bindings.yaml'), 'version: 1\n')
-  return { root, host, loaded: snapshot(host) }
+  const head = path.join(root, '.agent-config.head'), token = '11111111-1111-4111-8111-111111111111'
+  const terminal = path.join(head, token + '.json')
+  if (withHead) {
+    fs.mkdirSync(head, { mode: 0o700 })
+    await writeFile(terminal, JSON.stringify({ schema: 1, txId: token, direction: 'undo', token }), { mode: 0o600 })
+  }
+  return { root, host, terminal, loaded: snapshot(host) }
 }
 
 test('one synchronous configuration check shares its complete entry observation and performs a fresh exit read', async t => {
@@ -115,6 +122,49 @@ test('an async callback is rejected and its continuation receives a new configur
   const thenable = Object.defineProperty({}, 'then', { get() { invoked = true; throw new Error('do not invoke') } })
   assert.deepEqual(observe(f.loaded, () => thenable), { current: true, accepted: false })
   assert.equal(invoked, false)
+})
+
+test('runtime observations reuse verified local bytes and reject an in-place change even with restored mtime', async t => {
+  const f = await fixture(t, true)
+  const time = Date.UTC(2025, 0, 1) / 1000
+  fs.utimesSync(f.host, time, time)
+  const nativeLocal = process.platform === 'linux' && [0xef53, 0x01021994, 0x58465342, 0x9123683e].includes(fs.statfsSync(f.root).type >>> 0)
+  if (nativeLocal) await delay(2_050)
+  const loaded = snapshot(f.host)
+  assert.equal(current(loaded, 'execution'), true)
+  const original = fs.openSync
+  let reads = 0
+  fs.openSync = function(name, ...args) {
+    if (name === f.host || name === f.terminal) reads++
+    return original.call(this, name, ...args)
+  }
+  try {
+    assert.deepEqual(observe(loaded, () => current(loaded, 'execution'), 'execution'), { current: true, accepted: true })
+    if (nativeLocal) assert.equal(reads, 0)
+    assert.deepEqual(observe(loaded, () => {
+      fs.writeFileSync(f.host, 'version: 2\n')
+      fs.utimesSync(f.host, time, time)
+      return true
+    }, 'execution'), { current: false, accepted: false })
+    assert.equal(current(loaded, 'execution'), false)
+    assert.equal(inspect(loaded, 'execution').sources.host, 'version: 2\n')
+    assert.ok(reads > 0)
+  } finally { fs.openSync = original }
+})
+
+test('an execution fence detects a changed terminal record or an active transaction', async t => {
+  for (const changed of ['head', 'active']) await t.test(changed, async t => {
+    const f = await fixture(t, true)
+    assert.equal(current(f.loaded, 'execution'), true)
+    assert.deepEqual(observe(f.loaded, () => {
+      if (changed === 'head') {
+        const record = JSON.parse(fs.readFileSync(f.terminal, 'utf8'))
+        fs.writeFileSync(f.terminal, JSON.stringify({ ...record, direction: 'redo' }))
+      } else fs.writeFileSync(path.join(f.root, '.agent-config.active'), '{}')
+      return true
+    }, 'execution'), { current: false, accepted: false })
+    assert.equal(current(f.loaded, 'execution'), false)
+  })
 })
 
 test('unowned snapshots and source fences changed inside the callback fail closed', async t => {

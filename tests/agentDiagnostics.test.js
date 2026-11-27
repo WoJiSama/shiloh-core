@@ -173,8 +173,10 @@ test('stalled sink times out visibly so flush completes without waiting for the 
     if (typeof line === 'string' && line.startsWith('[Agent] ')) lines.push(line)
   })
   t.mock.timers.enable({ apis: ['setTimeout'] })
-  let calls = 0, flushFinished = false
-  const d = createAgentDiagnostics({ logger: quiet, sink: { append() { calls++; return new Promise(() => {}) } } })
+  const alerts = []
+  let calls = 0, flushFinished = false, configReadCount = 12, configReadMs = 42
+  const d = createAgentDiagnostics({ logger: quiet, sink: { append() { calls++; return new Promise(() => {}) } },
+    onFailure: event => alerts.push(event), sampleConfigReadWork: () => ({ configReadCount, configReadMs }) })
   d.emit({ stage: 'runtime', operation: 'stalled_write', outcome: 'succeeded' })
   const flushing = d.flush().then(() => { flushFinished = true })
   await new Promise(resolve => setImmediate(resolve))
@@ -183,6 +185,8 @@ test('stalled sink times out visibly so flush completes without waiting for the 
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(flushFinished, false)
   assert.equal(lines.length, 0)
+  configReadCount += 60
+  configReadMs += 27
   t.mock.timers.tick(1)
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(flushFinished, true)
@@ -190,6 +194,9 @@ test('stalled sink times out visibly so flush completes without waiting for the 
   assert.equal(calls, 1)
   assert.equal(lines.length, 1)
   assert.ok(lines[0].includes('diagnostic_journal_timeout'))
+  assert.equal(alerts[0].details.configReadCount, 60)
+  assert.equal(alerts[0].details.configReadMs, 27)
+  assert.ok(Number.isSafeInteger(alerts[0].details.loopActiveMs))
 })
 
 test('a timeout after journal acknowledgement reports traffic separately', async t => {

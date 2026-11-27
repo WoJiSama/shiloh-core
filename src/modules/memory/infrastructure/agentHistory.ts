@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks'
 import type { AgentBindingSnapshot, ConversationAddress, PlatformUserRef } from '../../../contracts/agentBinding.js'
 import type { AgentHistoryConfig, AgentHistoryRecall, AgentHistoryRequestSource } from '../../../contracts/agentHistory.js'
 import type { IncomingMessage } from '../../../contracts/platformMessage.js'
@@ -158,10 +159,10 @@ export function createAgentHistory(ports: {
       clearInterval(poll); clearTimeout(deadline); controller.abort(); requests.delete(request); turn?.release()
     }
   }
-  async function permitted(binding: AgentBindingSnapshot, row: AgentHistoryRow, boundedAge = true, afterRecall?: () => void) {
+  async function permitted(binding: AgentBindingSnapshot, row: AgentHistoryRow, boundedAge = true, afterRecall?: () => boolean) {
     if (boundedAge && row.at < now() - retention() || row.at > now() + 60_000 || !ports.allowsText(row.text) ||
         binding.target.kind === 'private' && ports.privatePeer(binding.target) !== row.authorId || await ports.isRecalled(binding.target, row.messageId)) return false
-    afterRecall?.()
+    if (afterRecall?.() === false) return false
     return !isPersonMemoryRedacted(sourceOf(binding, row), row.text, await ports.memory.getRedactions({ identity: identity(binding), subjectId: row.authorId }))
   }
   function requestRow(binding: AgentBindingSnapshot, source: AgentHistoryRequestSource): AgentHistoryRow | undefined {
@@ -189,41 +190,72 @@ export function createAgentHistory(ports: {
     const row: AgentHistoryRow = { messageId: incoming.messageId, authorId: incoming.sender.id, name: (incoming.senderName ?? '').slice(0, 24), text, at: incoming.occurredAt,
       ...(binding.target.kind === 'private' ? { peerId: incoming.sender.id } : {}),
     }
-    const started = performance.now()
-    let step: string = 'acquire', stepStarted = started
-    let confirmationPending = false
-    const advance = (next: string) => { step = next; stepStarted = performance.now() }
-    try {
-      await withContext(binding, guard, undefined, async context => {
-        advance('check_recall')
-        if (!await permitted(binding, row, true, () => advance('authorization')) || !context.isCurrent()) return
-        advance('register_source')
-        if (!await ports.memory.registerSource({ identity: identity(binding), subjectId: row.authorId, source: sourceOf(binding, row) }, context.isCurrent)) return
-        const saved = await store.update(agentHistoryId(binding), saved => {
-          if (saved?.rows.some(item => item.messageId === row.messageId)) return saved
-          return { version: 1, id: agentHistoryId(binding), scope: { agentId: binding.agentId, target: structuredClone(binding.target) },
-            rows: [...(saved?.rows ?? []).filter(item => item.at >= now() - retention()), row].slice(-maxRows()),
+    for (const attempt of [1, 2]) {
+      const started = performance.now(), loop = performance.eventLoopUtilization()
+      let step: string = 'acquire', stepStarted = started
+      let confirmationPending = false
+      const advance = (next: string) => { step = next; stepStarted = performance.now() }
+      const cancelRetry = () => {
+        try {
+          ports.diagnostics?.emit({ stage: 'memory', operation: 'history_capture', outcome: 'cancelled',
+            code: 'history_source_retry_cancelled', details: { step, result: 'not_saved', attempt: 2 } })
+        } catch { /* Reporting must not restart intake. */ }
+      }
+      try {
+        const saved = await withContext(binding, guard, undefined, async context => {
+          advance('check_recall')
+          if (!await permitted(binding, row, true, () => {
+            if (context.signal.aborted) return false
+            advance('authorization')
+            return true
+          }) || !context.isCurrent()) return false
+          advance('register_source')
+          if (!await ports.memory.registerSource({ identity: identity(binding), subjectId: row.authorId, source: sourceOf(binding, row) }, context.isCurrent)) return false
+          const saved = await store.update(agentHistoryId(binding), saved => {
+            if (saved?.rows.some(item => item.messageId === row.messageId)) return saved
+            return { version: 1, id: agentHistoryId(binding), scope: { agentId: binding.agentId, target: structuredClone(binding.target) },
+              rows: [...(saved?.rows ?? []).filter(item => item.at >= now() - retention()), row].slice(-maxRows()),
+            }
+          }, context.isCurrent, advance)
+          if (saved && (attempt === 2 || confirmationPending)) {
+            try {
+              ports.diagnostics?.emit({ stage: 'memory', operation: 'history_capture', outcome: 'succeeded',
+                code: confirmationPending ? 'history_source_late_confirmed' : 'history_source_retry_recovered',
+                durationMs: performance.now() - started, details: { step, result: 'recovered', attempt } })
+            } catch { /* Reporting cannot change a committed write. */ }
           }
-        }, context.isCurrent, advance)
-        if (confirmationPending && saved) {
-          try {
-            ports.diagnostics?.emit({ stage: 'memory', operation: 'history_capture', outcome: 'succeeded', code: 'history_source_late_confirmed',
-              durationMs: performance.now() - started, details: { step, result: 'recovered' } })
-          } catch { /* Reporting cannot change a committed write. */ }
+          return saved
+        })
+        if (attempt === 2 && !saved) cancelRetry()
+        return
+      } catch (error) {
+        const evidence = agentErrorDetails(error), timedOut = error instanceof HistoryDeadlineError
+        const failedAt = performance.now(), durationMs = failedAt - started
+        const elapsedLoop = timedOut ? Math.round(performance.eventLoopUtilization(loop).active) : undefined
+        confirmationPending = step === 'history_store_commit' && evidence?.dispatched !== false
+        // These reads cannot leave an unconfirmed archive write. Repeat authorization on a fresh lease.
+        const retry = attempt === 1 && (step === 'check_recall' || step === 'authorization' || step === 'history_store_read') &&
+          (timedOut || evidence?.cause === 'redis_command_queue_timeout') && safeGuard(guard) && current(binding)
+        reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'history_capture',
+          code: timedOut ? 'history_source_timeout' :
+            step.startsWith('history_store_') ? 'history_source_write_failed' : step === 'register_source' ? 'history_source_registration_failed' : 'history_source_check_failed',
+          outcome: confirmationPending ? 'unknown' : 'failed', durationMs,
+          details: { step, stepMs: Math.round(failedAt - stepStarted),
+            result: confirmationPending ? 'confirmation_pending' : retry ? 'retry_scheduled' : 'not_saved',
+            ...(retry || attempt === 2 ? { attempt, maxAttempts: 2 } : {}),
+            ...(timedOut ? { limit: error.limit, loopActiveMs: elapsedLoop!,
+              timeoutOverrunMs: Math.max(0, Math.round(durationMs - error.limit)) } : {}) }, error },
+          () => ports.logger.warn('[Agent] 历史原始来源未能保存'))
+        if (!retry) return
+        await new Promise<void>(resolve => setImmediate(resolve))
+        if (!safeGuard(guard) || !current(binding)) {
+          cancelRetry()
+          return
         }
-      })
-    } catch (error) {
-      confirmationPending = step === 'history_store_commit' && agentErrorDetails(error)?.dispatched !== false
-      reportAgentFailure(ports.diagnostics, { stage: 'memory', operation: 'history_capture',
-        code: error instanceof HistoryDeadlineError ? 'history_source_timeout' :
-          step.startsWith('history_store_') ? 'history_source_write_failed' : step === 'register_source' ? 'history_source_registration_failed' : 'history_source_check_failed',
-        outcome: confirmationPending ? 'unknown' : 'failed',
-        durationMs: performance.now() - started,
-        details: { step, stepMs: Math.round(performance.now() - stepStarted), result: confirmationPending ? 'confirmation_pending' : 'not_saved',
-          ...(error instanceof HistoryDeadlineError ? { limit: error.limit } : {}) }, error },
-        () => ports.logger.warn('[Agent] 历史原始来源未能保存'))
+      }
     }
   }
+
   /** Background style extraction consumes only this group's already captured originals. */
   async function readStyleSources(binding: AgentBindingSnapshot, days: number, guard: () => boolean, signal?: AbortSignal): Promise<AgentHistoryStyleSources> {
     const unavailable = (): AgentHistoryStyleSources => ({ messages: [], isCurrent: async () => false })

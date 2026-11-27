@@ -1,4 +1,5 @@
 import type { SimMessage, SimWakeConfig, SimWakeReason, SimWakeReasonKind } from '../../../contracts/simulation.js'
+import { isAddressedElsewhere } from './groupTurnRouting.js'
 
 /** 唤醒原因优先级：合并窗口内只升不降（值越大越优先）。 */
 export const WAKE_PRIORITY: Record<SimWakeReasonKind, number> = {
@@ -52,6 +53,7 @@ function escapeRegExp(text: string): string {
 
 export function directGroupAddress(message: SimMessage, names: readonly string[], acceptsQuote: boolean): SimWakeReason | null {
   if (message.atSelf || (acceptsQuote && message.quoteToSelf)) return { kind: 'atMention', seq: message.seq }
+  if (isAddressedElsewhere(message)) return null
   const normalized = message.text.normalize('NFKC').toLowerCase()
   const name = names.find(value => {
     const candidate = value.trim().normalize('NFKC').toLowerCase()
@@ -61,6 +63,13 @@ export function directGroupAddress(message: SimMessage, names: readonly string[]
       : normalized.includes(candidate)
   })
   return name === undefined ? null : { kind: 'nameMention', seq: message.seq, detail: name }
+}
+
+export function hasExplicitGroupSalutation(message: SimMessage, name: string): boolean {
+  const normalized = message.text.trim().normalize('NFKC').toLowerCase()
+  const salutation = name.trim().normalize('NFKC').toLowerCase()
+  return !isAddressedElsewhere(message) && !!salutation && normalized.startsWith(salutation) &&
+    (normalized.length === salutation.length || ',:!?、 '.includes(normalized.charAt(salutation.length)))
 }
 
 export interface WakeTriggerContext {
@@ -86,7 +95,7 @@ export function evaluateWakeTrigger(message: SimMessage, config: SimWakeConfig, 
   const t = config.triggers
   if (t.anyMessage) return { kind: 'anyMessage', seq: message.seq }
   if (t.atMention && (message.atSelf || message.quoteToSelf)) return { kind: 'atMention', seq: message.seq }
-  if (t.nameMention && ctx.selfName && message.text && message.text.includes(ctx.selfName)) {
+  if (t.nameMention && ctx.selfName && message.text && message.text.includes(ctx.selfName) && !isAddressedElsewhere(message)) {
     return { kind: 'nameMention', seq: message.seq, detail: ctx.selfName }
   }
   if (message.text) {
@@ -95,14 +104,14 @@ export function evaluateWakeTrigger(message: SimMessage, config: SimWakeConfig, 
       if (pattern && pattern.test(message.text)) return { kind: 'keyword', seq: message.seq, detail: keyword }
     }
   }
-  if (t.question && isQuestionDirectedAtAi(message.text, ctx.selfName)) return { kind: 'question', seq: message.seq }
+  if (t.question && !isAddressedElsewhere(message) && isQuestionDirectedAtAi(message.text, ctx.selfName)) return { kind: 'question', seq: message.seq }
   // 会话延续：窗口内、说话的是刚才的对话对象、且没在 @ 别人（@ 别人 = 明显不是对机器人说）。
   // 醒来后由模型读上下文自行决定接不接（不想接可以安静 markRead），所以这里放宽是安全的。
   // 插话熔断：我上次发言后若有第三人插过话，对话对象这条更可能是接那人的话——不当延续唤醒。
   const conversation = ctx.conversation
   if (conversation && conversation.activeUntil > 0
     && conversation.activeUntil >= message.at
-    && !message.atOther
+    && !isAddressedElsewhere(message)
     && !ctx.interveningSinceBotTurn
     && conversation.interlocutorIds.includes(message.userId)) {
     return { kind: 'continuation', seq: message.seq, detail: message.name }

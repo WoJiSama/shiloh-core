@@ -1,7 +1,7 @@
 import type { CharacterState, CharacterMemory, CharacterGoal, CharacterDecision } from '../../../contracts/character.js'
 import { annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { AbstractTool, type ParameterSchema } from '../../toolSupport/infrastructure/AbstractTool.js'
-import { normalizeStringArrayInput } from '../domain/paramTolerance.js'
+import { normalizeMessageTextsInput } from '../domain/paramTolerance.js'
 import { isQqSimulationUserId } from '../domain/simConfig.js'
 import { createCharacterTools, type CharacterToolContext } from './characterTools.js'
 import { prepareSimulationToolInput } from './simulationToolInput.js'
@@ -87,7 +87,7 @@ function parse(input: Record<string, unknown>, memoryFields: string[], goalField
   let messages: string[] | undefined
   if (Object.hasOwn(input, 'messages')) {
     if (choice === 'silent' || choice === 'deferred') throw new FinishParameterError('silent/deferred 不接受 messages', { field: 'messages', rule: 'incompatible' })
-    const values = normalizeStringArrayInput(input.messages)
+    const values = normalizeMessageTextsInput(input.messages)
     if (!Array.isArray(values) || values.length < 1 || values.length > 5 || values.some(value => typeof value !== 'string' || !value.trim() || value.length > 500))
       throw new FinishParameterError('messages 必须是 1 至 5 条非空字符串，每条至多 500 字符', { field: 'messages', rule: 'message_list' })
     messages = values as string[]
@@ -157,7 +157,7 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
       const normalized = { ...input }
       if (Object.hasOwn(input, 'messages')) {
         if (input.messages === null && (input.choice === 'silent' || input.choice === 'deferred')) delete normalized.messages
-        else normalized.messages = normalizeStringArrayInput(input.messages)
+        else normalized.messages = normalizeMessageTextsInput(input.messages)
       }
       const reason = typeof input.choice === 'string' && !Object.hasOwn(input, 'reason') ? ROUTINE_REASONS.get(input.choice) : undefined
       if (reason !== undefined) normalized.reason = reason

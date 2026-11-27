@@ -7,7 +7,8 @@ import { AgentConsoleError } from '../contracts/agentConsole.js'
 import { initializeStandaloneConfigDatabase, isStandaloneConfigDatabase, nextStandaloneConfigDatabaseContent, openStandaloneConfigDatabase,
   readStandaloneConfigDatabase, writeStandaloneConfigDatabase } from './standaloneAgentConfigDatabase.js'
 import type { ConfigDatabaseContent } from './standaloneAgentConfigDatabase.js'
-import { commitConfigTransaction, inspectConfigTransaction, readConfigTransactionGroup, recoverConfigTransaction, tryConfigTransactionLease } from './standaloneAgentConfigTransaction.js'
+import { canReuseConfigMetadata, commitConfigTransaction, configMetadataReuseCutoff, createConfigExecutionTransactionReader, inspectConfigTransaction,
+  readConfigTransactionGroup, recoverConfigTransaction, sameConfigFileState, tryConfigTransactionLease } from './standaloneAgentConfigTransaction.js'
 import type { ConfigRecoveryHooks, ConfigTransactionHooks, ConfigTransactionInspection, TransactionRoot } from './standaloneAgentConfigTransaction.js'
 export type { ConfigRecoveryHooks, ConfigTransactionHooks, ConfigTransactionInspection } from './standaloneAgentConfigTransaction.js'
 
@@ -29,7 +30,10 @@ const absentFile = { source: undefined, version: 'absent' } as const
 type FileRead = typeof absentFile | { readonly source: string; readonly version: string; readonly stat: BigIntStats; readonly bytes: Buffer }
 const snapshots = new WeakMap<SourceSnapshot, Root>()
 const observations = new WeakMap<Root, SourceSnapshot>()
-const verifiedFiles = new WeakMap<Root, Readonly<Record<ConfigSourceName, FileRead>>>()
+type SourceReads = Readonly<Record<ConfigSourceName, FileRead>>
+const verifiedSources = new WeakMap<Root, { reads: SourceReads; snapshot: SourceSnapshot; reusable: boolean }>()
+const executionReaders = new WeakMap<Root, ReturnType<typeof createConfigExecutionTransactionReader> | null>()
+type ObservationMode = 'full' | 'execution'
 const maximum = 2 * 1024 * 1024
 const sourceKeys = ['host', 'personas', 'bindings'] as const
 const importStage = /^\.agent-config\.import-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u
@@ -46,8 +50,6 @@ const fail = (code: 'conflict' | 'unavailable' = 'conflict'): never => { throw n
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 const missing = (error: unknown) => !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
 const identity = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino
-const sameFileState = (a: BigIntStats, b: BigIntStats) => identity(a, b) && a.size === b.size && a.mtimeNs === b.mtimeNs &&
-  a.ctimeNs === b.ctimeNs && a.mode === b.mode && a.uid === b.uid && a.nlink === b.nlink
 const stat = (name: string) => fs.lstatSync(name, { bigint: true })
 function rootFor(hostFile: string): Root {
   const absolute = path.resolve(hostFile), root = fs.realpathSync(path.dirname(absolute)), pins: Pin[] = []
@@ -77,11 +79,11 @@ function readFile(name: string, optional: boolean, previous?: FileRead, limit = 
     fd = fs.openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     const before = fs.fstatSync(fd, { bigint: true })
     if (!before.isFile() || before.nlink !== 1n || before.uid !== BigInt(process.getuid!()) || before.size > BigInt(limit) ||
-        (before.mode & 0o022n) !== 0n || !sameFileState(before, stat(name))) fail('unavailable')
+        (before.mode & 0o022n) !== 0n || !sameConfigFileState(before, stat(name))) fail('unavailable')
     const bytes = fs.readFileSync(fd), after = fs.fstatSync(fd, { bigint: true })
-    if (bytes.length !== Number(after.size) || !sameFileState(before, after) || !sameFileState(after, stat(name))) fail()
+    if (bytes.length !== Number(after.size) || !sameConfigFileState(before, after) || !sameConfigFileState(after, stat(name))) fail()
     // Reuse decoded text and its digest only after observing and comparing every byte.
-    if (previous?.source !== undefined && sameFileState(after, previous.stat) && bytes.equals(previous.bytes)) return previous
+    if (previous?.source !== undefined && sameConfigFileState(after, previous.stat) && bytes.equals(previous.bytes)) return previous
     if (!isUtf8(bytes)) fail()
     // Keep binding revisions identical to the runtime's agentBindingConfig reader.
     const nativeStamp = [after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs].join(':')
@@ -131,12 +133,37 @@ function readDatabaseSnapshot(root: Root, opened?: ReturnType<typeof openDatabas
   } finally { if (!opened) session.db.close() }
 }
 
-function readRoot(root: Root): SourceSnapshot {
+function executionReader(root: Root) {
+  let read = executionReaders.get(root)
+  if (read !== undefined) return read
+  // Metadata fast paths require local Linux inode and change-time semantics.
+  let local = false
+  try { local = process.platform === 'linux' && [0xef53, 0x01021994, 0x58465342, 0x9123683e].includes(fs.statfsSync(root.root).type >>> 0) }
+  catch { /* The complete read remains available. */ }
+  read = local ? createConfigExecutionTransactionReader(transactionRoot(root), root.pins[0]!.stat.dev) : null
+  executionReaders.set(root, read)
+  return read
+}
+function matchesFiles(files: ReturnType<typeof names>, reads: SourceReads): boolean {
+  return sourceKeys.every(key => {
+    const current = fs.lstatSync(files[key], { bigint: true, throwIfNoEntry: false }), prior = reads[key]
+    return prior.source === undefined ? !current : !!current && sameConfigFileState(current, prior.stat)
+  })
+}
+function readRoot(root: Root, mode: ObservationMode = 'full'): SourceSnapshot {
   if (isStandaloneConfigDatabase(root.hostFile)) return readDatabaseSnapshot(root)
+  const previous = verifiedSources.get(root), files = names(root)
+  const query = mode === 'execution' ? executionReader(root) : null
+  if (query && previous?.reusable) {
+    // Reuse only validated bytes. Verify both the files and durable transaction fence on every check.
+    const unchanged = measureConfigRead(() => query(fence => fence === previous.snapshot.fence && matchesFiles(files, previous.reads)))
+    if (unchanged) return previous.snapshot
+  }
+  const cutoff = configMetadataReuseCutoff(), device = root.pins[0]!.stat.dev
   const { reads, snapshot } = measureConfigRead(() => readConfigTransactionGroup(transactionRoot(root), fence => {
-    const files = names(root), previous = verifiedFiles.get(root)
-    const host = readFile(files.host, false, previous?.host), personas = readFile(files.personas, true, previous?.personas),
-      bindings = readFile(files.bindings, false, previous?.bindings)
+    const prior = previous?.reads
+    const host = readFile(files.host, false, prior?.host), personas = readFile(files.personas, true, prior?.personas),
+      bindings = readFile(files.bindings, false, prior?.bindings)
     const reads = { host, personas, bindings }
     const versions = Object.freeze({ host: host.version, personas: personas.version, bindings: bindings.version })
     // Verify the complete read set, not only the last file read.
@@ -146,7 +173,8 @@ function readRoot(root: Root): SourceSnapshot {
       revision: digest(JSON.stringify([root.root, root.pins[0]!.stat.dev.toString(), root.pins[0]!.stat.ino.toString(), versions, fence])) })
     return { reads, snapshot }
   }))
-  verifiedFiles.set(root, reads)
+  const reusable = sourceKeys.every(key => { const file = reads[key]; return file.source === undefined || canReuseConfigMetadata(file.stat, device, cutoff) })
+  verifiedSources.set(root, { reads, snapshot, reusable })
   snapshots.set(snapshot, root)
   return snapshot
 }
@@ -250,7 +278,7 @@ export function recoverStandaloneAgentConfigTransaction(hostFile: string, hooks:
       const db = openStandaloneConfigDatabase(root.hostFile, true)
       try { readStandaloneConfigDatabase(db) } finally { db.close() }
       hooks.ensureOfflineCurrent(); checkRoot(root)
-      if (!sameFileState(published, stat(root.hostFile)) || !sameFileState(published, stat(alias))) return fail()
+      if (!sameConfigFileState(published, stat(root.hostFile)) || !sameConfigFileState(published, stat(alias))) return fail()
       fs.unlinkSync(alias)
       syncConfigDirectory(root.root)
     }
@@ -267,19 +295,19 @@ export function readStandaloneAgentSourceSnapshot(hostFile: string): SourceSnaps
   if (!lock) return fail()
   try { return lock.read() } finally { lock.release() }
 }
-export function isStandaloneAgentSourceSnapshotCurrent(snapshot: SourceSnapshot): boolean {
-  try { const root = snapshots.get(snapshot); return !!root && (observations.get(root) ?? readRoot(root)).revision === snapshot.revision } catch { return false }
+export function isStandaloneAgentSourceSnapshotCurrent(snapshot: SourceSnapshot, mode: ObservationMode = 'full'): boolean {
+  try { return inspectStandaloneAgentSourceSnapshot(snapshot, mode).revision === snapshot.revision } catch { return false }
 }
 /** Observation only. Mutations must acquire the root lock and compare the entire read set. */
-export function inspectStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot): SourceSnapshot {
+export function inspectStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot, mode: ObservationMode = 'full'): SourceSnapshot {
   const root = snapshots.get(snapshot)
   if (!root) return fail('unavailable')
-  return observations.get(root) ?? readRoot(root)
+  return observations.get(root) ?? readRoot(root, mode)
 }
-/** Pure synchronous checks share one complete observation. A second complete read owns
- * the outer result; no observation survives a return, an await, or an actual effect.
+/** Pure synchronous checks share one read set, with a fresh fence on return.
  * Callers retain their loaded-version policy, including live bindings without a console. */
-export function observeStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot, check: () => boolean): Readonly<{ current: boolean; accepted: boolean }> {
+export function observeStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot, check: () => boolean,
+  mode: ObservationMode = 'full'): Readonly<{ current: boolean; accepted: boolean }> {
   const root = snapshots.get(snapshot)
   const failed = { current: false, accepted: false } as const
   if (!root) return failed
@@ -294,8 +322,7 @@ export function observeStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot, c
   }
   if (observations.has(root)) return { current: true, accepted: evaluate() }
   let entry: SourceSnapshot
-  try { entry = readRoot(root) } catch { return failed }
-  const reads = verifiedFiles.get(root)
+  try { entry = readRoot(root, mode) } catch { return failed }
   observations.set(root, entry)
   let accepted: boolean
   try { accepted = evaluate() } finally { observations.delete(root) }
@@ -304,11 +331,12 @@ export function observeStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot, c
       const current = readRoot(root).revision === entry.revision
       return { current, accepted: current && accepted }
     }
-    // Compare every exit byte and file identity against the already verified
-    // entry read set, inside a fresh transaction fence.
-    const files = names(root)
-    const current = measureConfigRead(() => readConfigTransactionGroup(transactionRoot(root), fence =>
-      !!reads && fence === entry.fence && sourceKeys.every(key => readFile(files[key], key === 'personas', reads[key]) === reads[key])))
+    const { reads, reusable } = verifiedSources.get(root)!
+    const files = names(root), query = mode === 'execution' && reusable ? executionReader(root) : null
+    const current = measureConfigRead(() => query
+      ? query(fence => fence === entry.fence && matchesFiles(files, reads))
+      : readConfigTransactionGroup(transactionRoot(root), fence =>
+        fence === entry.fence && sourceKeys.every(key => readFile(files[key], key === 'personas', reads[key]) === reads[key])))
     return { current, accepted: current && accepted }
   } catch { return failed }
 }

@@ -74,6 +74,35 @@ test('verified visit feeds drive bounded like and fs comment with live membershi
   for (const value of ['PRIVATE_FEED_BODY', 'PRIVATE_TEST_SECRET', '这片风景']) assert.equal(data.includes(value), false)
 })
 
+test('personal group and friend reactions require the current feed proof and no user actor', async t => {
+  for (const kind of ['private', 'group']) {
+    const f = await fixture(t)
+    const runtime = createAgentQzoneRuntime({ ledger: f.ledger, provider: f.provider,
+      personal: { read: true, publish: true, interact: true }, diagnostics: { emit() {} } })
+    const selected = kind === 'group' ? binding : { ...binding, id: 'private', target: { account, kind, id: peerId } }
+    let authorized = true
+    const execute = (operation, identity = 'personal-fixture') => runtime.execute({ binding: selected,
+      actor: { kind: 'autonomous' }, identity, operation, signal: f.context.signal, isCurrent: () => true,
+      async ensureCurrent() {}, async authorize() { return authorized }, async allowsText() { return true },
+      async readMember(id, guard) {
+        await guard.ensureCurrent(); assert.equal(kind, 'group'); assert.equal(id, peerId)
+        return { target, observedAt: Date.now(), member: { user: { ...account, id }, displayName: '已核验群友', role: 'member' } }
+      },
+    })
+    const view = await execute({ kind: kind === 'group' ? 'visit' : 'read', userId: peerId })
+    assert.equal(view.state, 'confirmed'); assert.ok(view.visitId)
+    const like = { kind: 'like', userId: peerId, postId: post, visitId: view.visitId }
+    assert.equal((await execute(like, 'another-observation')).state, 'failed')
+    assert.equal((await execute({ ...like, postId: 'not-in-feed' })).state, 'failed')
+    assert.equal((await execute(like)).state, 'confirmed')
+    assert.equal((await execute(like)).state, 'failed')
+    const comment = { ...like, kind: 'comment', text: '这里真安静。' }
+    f.credentials(() => { authorized = false })
+    assert.equal((await execute(comment)).state, 'failed')
+    assert.deepEqual(f.http.map(row => row.method), ['GET', 'POST'])
+  }
+})
+
 test('credentials completion cannot carry revoked policy or membership into the following HTTP write', async t => {
   for (const revoke of ['deny', 'disable', 'removeMember', 'revoke']) {
     const f = await fixture(t), seen = await f.visit(); f.credentials(() => f[revoke]())

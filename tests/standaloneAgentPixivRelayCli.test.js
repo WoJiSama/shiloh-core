@@ -116,19 +116,19 @@ for (const scenario of [{ kind: 'gallery', unknown: false }, { kind: 'partial', 
           else if (action === 'get_msg') { assert.equal(Number(params.message_id), source.message_id); data = source }
           else if (action === 'send_group_forward_msg') {
             deliveries.push({ action, params }); assert.equal(String(params.group_id), String(groupId)); assert.equal(params.messages.length, 1 + expectedIndices.length)
-            assert.deepEqual(params.messages.map(node => node.data.content.map(part => part.type)), [['text'], ...expectedIndices.map(() => ['image'])])
-            const info = params.messages[0].data.content[0].data.text
-            assert.ok(info.includes(pageUrl)); assert.ok(info.includes('合成画师')); assert.ok(info.includes('合成标签')); assert.ok(info.includes('页数:3'))
-            assert.ok(info.includes(description.replace(/<br>/gu, ' ')))
-            if (scenario.kind === 'restricted') assert.ok(info.includes('受限内容'))
-            if (scenario.kind === 'partial') assert.ok(info.includes('第2页图片暂时获取失败'))
+            assert.deepEqual(params.messages.map(node => node.data.content.map(part => part.type)), [['image'], ...expectedIndices.map(() => ['image'])])
             for (const [index, node] of params.messages.entries()) {
               assert.equal(node.type, 'node'); assert.equal(String(node.data.uin), String(botId))
-              if (!index) continue
               const segment = node.data.content[0]; capabilities.push(segment.data.file)
               assert.match(segment.data.file, /^http:\/\/127\.0\.0\.1:\d+\/agent-media-relay\/[a-f\d]{64}$/u)
               const response = await fetch(segment.data.file); assert.equal(response.status, 200)
-              const bytes = Buffer.from(await response.arrayBuffer()), expected = images[expectedIndices[index - 1]]
+              const bytes = Buffer.from(await response.arrayBuffer())
+              if (!index) {
+                assert.equal(response.headers.get('content-type'), 'image/png')
+                assert.equal(bytes.readUInt32BE(16), 920, 'the first node is a rendered card even when artwork is restricted')
+                continue
+              }
+              const expected = images[expectedIndices[index - 1]]
               assert.deepEqual(bytes, expected); assert.equal(Number(response.headers.get('content-length')), expected.length)
               resources.push({ index: expectedIndices[index - 1], sha256: sha(bytes), bytes: bytes.length })
             }

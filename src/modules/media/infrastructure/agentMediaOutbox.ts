@@ -261,10 +261,10 @@ export function createAgentMediaOutbox(options: {
     return receipt
   }
   const linkText = (value: Prepared) => `${value.infoText}${value.infoText.includes(value.pageUrl) ? '' : '\n' + value.pageUrl}\n（媒体转发资源暂不可用，已附原作品链接）`
-  async function text(entry: Entry, name: 'directIntro' | 'link', value: string) {
+  async function sendLink(entry: Entry, value: string) {
     if (!safeText(value)) throw failure()
     const binding = entry.session.record.binding
-    return effect(entry, name, () => options.actions.send({ version: 1, kind: 'message.send', target: binding.target,
+    return effect(entry, 'link', () => options.actions.send({ version: 1, kind: 'message.send', target: binding.target,
       binding, parts: [{ kind: 'text', text: value }] }, { isCurrent: () => sendCurrent(entry) }))
   }
   async function deliver(id: string, entry: Entry) {
@@ -273,54 +273,36 @@ export function createAgentMediaOutbox(options: {
       try {
         const value = entry.prepared!
         const binding = record.binding
-        const relay = (name: 'forward' | 'forwardRetry' | 'forwardCard' | 'directIntro' | 'directVideo', plan: AgentMediaRelayPlan) => effect(entry, name,
+        const relay = (name: 'forward' | 'forwardRetry' | 'forwardCard', plan: AgentMediaRelayPlan) => effect(entry, name,
           async () => options.actions.sendMediaRelay ? options.actions.sendMediaRelay({ version: 1, kind: 'media-relay.send',
-            target: binding.target, binding, mode: name === 'directIntro' || name === 'directVideo' ? 'direct-video' : 'forward', plan },
+            target: binding.target, binding, mode: 'forward', plan },
           { signal: entry.cancel.signal, isCurrent: () => sendCurrent(entry) }) : { state: 'failed', code: 'media_relay_unavailable' })
-        const bilibili = record.source.share.provider === 'bilibili'
-        if (value.linkOnly) {
-          if (bilibili) {
-            const card = await relay('forward', { version: 1, items: [{ parts: [{ kind: 'text', text: linkText(value) }] }] })
-            if (card.state === 'sent') { await entry.session.close('completed'); return }
-          }
-          const sent = await text(entry, 'link', linkText(value))
+        const intro = value.plan.items[0]!.parts
+        const card = intro.find(part => part.kind === 'image')
+        if (value.linkOnly || !card) {
+          const sent = await sendLink(entry, linkText(value))
           await entry.session.close(sent.state === 'sent' ? 'completed' : 'failed'); return
         }
-        const videos = bilibili ? [] : value.plan.items.flatMap(item => item.parts.flatMap(part => part.kind === 'video' ? [{ parts: [part] }] : []))
-        if (videos.length) {
-          const introParts = value.plan.items.flatMap(item => item.parts.flatMap(part => part.kind !== 'video' ? [part] : []))
-          if (introParts.length) {
-            const intro = await relay('directIntro', { version: 1, items: [{ parts: introParts }] })
-            if (intro.state !== 'sent') {
-              const linked = await text(entry, 'link', linkText(value))
-              await entry.session.close(linked.state === 'sent' ? 'completed' : 'failed'); return
-            }
-          }
-          const direct = await relay('directVideo', { version: 1, items: videos })
-          if (direct.state === 'sent') { await entry.session.close('completed'); return }
-          const linked = await text(entry, 'link', linkText(value))
-          await entry.session.close(linked.state === 'sent' ? 'completed' : 'failed'); return
+        let forwardPlan = value.plan
+        if (intro.length > 1) {
+          const media = intro.filter(part => part.kind !== 'text' && part !== card)
+          forwardPlan = { version: 1, items: [{ parts: [card] }, ...(media.length ? [{ parts: media }] : []), ...value.plan.items.slice(1)] }
         }
-        let result = await relay('forward', value.plan)
-        const retryVideo = bilibili && result.state === 'failed' && result.code === 'media_resource_fetch_closed'
-        if (retryVideo) result = await relay('forwardRetry', value.plan)
-        if (result.state === 'failed' && bilibili) {
-          // Keep the image-only intro after a confirmed video rejection.
-          const textPart = { kind: 'text' as const, text: linkText(value) }
-          const intro = value.plan.items[0]!.parts
-          const covers = intro.filter(part => part.kind === 'image')
-          if (value.plan.items.some(item => item.parts.some(part => part.kind === 'video'))) {
-            const parts = covers.length && intro.every(part => part.kind === 'image') ? covers : [textPart, ...covers]
-            result = await relay(retryVideo ? 'forwardCard' : 'forwardRetry', { version: 1, items: [{ parts }] })
-          } else if (result.code === 'media_resource_preprocessing_failed') {
-            result = await relay('forwardRetry', { version: 1, items: [{ parts: [textPart] }] })
-          }
+        const hasForwardVideo = forwardPlan.items.some(item => item.parts.some(part => part.kind === 'video'))
+        let result = await relay('forward', forwardPlan)
+        const retryVideo = hasForwardVideo && result.state === 'failed' && result.code === 'media_resource_fetch_closed'
+        if (retryVideo) result = await relay('forwardRetry', forwardPlan)
+        if (result.state === 'failed' && hasForwardVideo) {
+          const items = forwardPlan.items.map(item => ({ parts: item.parts.filter(part => part.kind !== 'video') })).filter(item => item.parts.length)
+          result = await relay(retryVideo ? 'forwardCard' : 'forwardRetry', { version: 1, items })
         } else if (result.state === 'failed' && result.code === 'media_resource_preprocessing_failed') {
-          result = await relay('forwardRetry', value.plan)
+          result = await relay('forwardRetry', forwardPlan)
         }
         if (result.state === 'sent') { await entry.session.close('completed'); return }
-        if (result.state !== 'failed' || !bilibili && result.code !== 'media_resource_preprocessing_failed') { await entry.session.close('failed'); return }
-        const linked = await text(entry, 'link', linkText(value))
+        if (result.state !== 'failed' || record.source.share.provider !== 'bilibili' && !hasForwardVideo && result.code !== 'media_resource_preprocessing_failed') {
+          await entry.session.close('failed'); return
+        }
+        const linked = await sendLink(entry, linkText(value))
         await entry.session.close(linked.state === 'sent' ? 'completed' : 'failed')
       } catch (error) {
         // finish() already durably closed an unknown effect and released its

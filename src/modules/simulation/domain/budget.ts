@@ -56,8 +56,8 @@ export function checkWakeBudget(state: SimSessionState, config: SimRuntimeConfig
   return { allowed: true, reason: 'ok' }
 }
 
-export function recordWake(state: SimSessionState, now: number): void {
-  state.wakeTimes = pruneWindow([...state.wakeTimes, now], now, 3600_000, 200)
+export function recordWake(state: SimSessionState, now: number, countTowardRate = true): void {
+  if (countTowardRate) state.wakeTimes = pruneWindow([...state.wakeTimes, now], now, 3600_000, 200)
   state.lastWakeAt = now
   state.budget.turns += 1
 }

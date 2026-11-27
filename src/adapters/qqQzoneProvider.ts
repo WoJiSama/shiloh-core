@@ -73,7 +73,9 @@ function operation(input: unknown): AgentQzoneOperation {
   const row = data(input, ['kind', 'text', 'postId', 'userId', 'visitId']), keys = Object.keys(row)
   if (row.kind === 'publish' && keys.length === 2 && Object.hasOwn(row, 'text')) return Object.freeze({ kind: row.kind, text: text(row.text, 2000) })
   if (row.kind === 'delete' && keys.length === 2 && Object.hasOwn(row, 'postId')) return Object.freeze({ kind: row.kind, postId: postId(row.postId) })
-  if (row.kind === 'visit' && keys.length === 2 && Object.hasOwn(row, 'userId')) return Object.freeze({ kind: row.kind, userId: qqId(row.userId) })
+  if ((row.kind === 'visit' || row.kind === 'read') && keys.length === 2 && Object.hasOwn(row, 'userId')) {
+    return Object.freeze({ kind: row.kind, userId: qqId(row.userId) })
+  }
   if ((row.kind === 'like' || row.kind === 'comment') && keys.length === (row.kind === 'like' ? 4 : 5) &&
       ['userId', 'postId', 'visitId'].every(key => Object.hasOwn(row, key)) && (row.kind === 'comment' || !Object.hasOwn(row, 'text'))) {
     const selected = { userId: qqId(row.userId), postId: postId(row.postId), visitId: token(row.visitId) }
@@ -84,7 +86,10 @@ function operation(input: unknown): AgentQzoneOperation {
 function action(input: unknown, expectedAccount: PlatformAccountRef, connectionId: string): AgentQzoneAction {
   const row = data(input, ['version', 'binding', 'operation']), selected = binding(row.binding), op = operation(row.operation)
   if (row.version !== 1 || selected.target.account.id !== expectedAccount.id || selected.connectionId !== connectionId ||
-      ['visit', 'like', 'comment'].includes(op.kind) && selected.target.kind !== 'group') throw invalid()
+      'userId' in op && op.userId === expectedAccount.id ||
+      op.kind === 'read' && (selected.target.kind !== 'private' || selected.target.id !== op.userId) ||
+      op.kind === 'visit' && selected.target.kind !== 'group' ||
+      (op.kind === 'like' || op.kind === 'comment') && selected.target.kind === 'private' && selected.target.id !== op.userId) throw invalid()
   return Object.freeze({ version: 1, binding: selected, operation: op })
 }
 function nativeId(input: unknown): string | undefined {
@@ -166,15 +171,16 @@ function feeds(input: unknown, userId: string): readonly AgentQzoneFeed[] {
   }
   return Object.freeze(result)
 }
-function httpReceipt(body: string, op: Extract<AgentQzoneOperation, { kind: 'visit' | 'like' | 'comment' }>): AgentQzoneReceipt {
+function httpReceipt(body: string, op: Extract<AgentQzoneOperation, { kind: 'read' | 'visit' | 'like' | 'comment' }>): AgentQzoneReceipt {
+  const readsFeed = op.kind === 'visit' || op.kind === 'read'
   try {
     const row = jsonBody(body, op.kind === 'comment'), decoded = status(row)
     if (Object.hasOwn(row, 'messageId') || Object.hasOwn(row, 'message_id')) throw invalid()
     if (decoded === 'rejected') return failed('qzone_remote_rejected')
     if (decoded !== 'confirmed') throw invalid()
-    if (op.kind === 'visit') return { state: 'confirmed', feeds: feeds(row.msglist, op.userId) }
+    if (readsFeed) return { state: 'confirmed', feeds: feeds(row.msglist, op.userId) }
     return { state: 'confirmed' }
-  } catch { return op.kind === 'visit' ? failed('qzone_invalid_feed') : unknown() }
+  } catch { return readsFeed ? failed('qzone_invalid_feed') : unknown() }
 }
 function checkSignal(input: unknown): AbortSignal {
   if (!input || typeof input !== 'object' || types.isProxy(input) || Object.getPrototypeOf(input) !== AbortSignal.prototype) throw invalid()
@@ -267,11 +273,12 @@ export function createQqQzoneProvider(options: QqQzoneProviderOptions): AgentQzo
         }
         const secret = credentials(await native('get_credentials', { domain: 'qzone.qq.com' }), selected)
         await ensureCurrent()
-        const url = new URL(endpoints[op.kind], origin), form = new URLSearchParams()
+        const readsFeed = op.kind === 'read' || op.kind === 'visit'
+        const url = new URL(endpoints[op.kind === 'read' ? 'visit' : op.kind], origin), form = new URLSearchParams()
         url.searchParams.set('g_tk', secret.token)
-        if (op.kind === 'visit') {
-          for (const [key, value] of Object.entries({ uin: expectedAccount.id, hostUin: op.userId, ftype: '0', sort: '0', pos: '0', num: '8', replynum: '20',
-            code_version: '1', format: 'json', need_private_comment: '1' })) url.searchParams.set(key, value)
+        if (readsFeed) {
+          for (const [key, value] of Object.entries({ uin: expectedAccount.id, hostUin: op.userId, ftype: '0', sort: '0', pos: '0', num: '8', replynum: '0',
+            code_version: '1', format: 'json', need_private_comment: '0' })) url.searchParams.set(key, value)
         } else if (op.kind === 'like') {
           for (const [key, value] of Object.entries({ qzreferrer: `${origin}/${expectedAccount.id}/main`, opuin: expectedAccount.id, unikey: op.postId,
             curkey: `${origin}/${op.userId}/mood/${op.postId}`, appid: '311', typename: '0', abstime: '0', fid: op.postId, active: '0', fupdatever: '0', format: 'json' })) form.set(key, value)
@@ -285,13 +292,13 @@ export function createQqQzoneProvider(options: QqQzoneProviderOptions): AgentQzo
           await ensureCurrent()
           const response = await wait(withDeliveryGuard(current, () => {
             if (!current()) throw invalid()
-            if (op.kind !== 'visit') dispatched = true
-            return fetcher(url.href, { method: op.kind === 'visit' ? 'GET' : 'POST', redirect: 'error', signal: httpSignal,
-              headers: { Cookie: secret.cookies, ...(op.kind === 'visit' ? {} : { 'Content-Type': 'application/x-www-form-urlencoded' }) },
-              ...(op.kind === 'visit' ? {} : { body: form.toString() }) })
+            if (!readsFeed) dispatched = true
+            return fetcher(url.href, { method: readsFeed ? 'GET' : 'POST', redirect: 'error', signal: httpSignal,
+              headers: { Cookie: secret.cookies, ...(readsFeed ? {} : { 'Content-Type': 'application/x-www-form-urlencoded' }) },
+              ...(readsFeed ? {} : { body: form.toString() }) })
           }), httpSignal)
           const body = await boundedBody(response, httpSignal)
-          if (op.kind === 'visit') await ensureCurrent()
+          if (readsFeed) await ensureCurrent()
           return httpReceipt(body, op)
         } finally { clearTimeout(httpTimer); httpCancel.abort() }
       } catch { return dispatched ? unknown() : failed(signal.aborted ? 'qzone_cancelled' : 'qzone_provider_unavailable') }

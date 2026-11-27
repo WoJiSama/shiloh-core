@@ -1,8 +1,8 @@
 import { readFile, access, constants } from 'node:fs/promises'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { validateFileTextZip } from './agentFileTextZip.js'
-import { AgentFileTextError, MAX_FILE_TEXT_BYTES, MAX_FILE_TEXT_CHARS, nativeFormats, pagination } from './agentFileTextTypes.js'
+import { readFileTextArchive, validateFileTextZip } from './agentFileTextZip.js'
+import { AgentFileTextError, fileTextArchiveEntry, MAX_FILE_TEXT_BYTES, MAX_FILE_TEXT_CHARS, nativeFormats, pagination } from './agentFileTextTypes.js'
 import type { FileTextNativeFormat } from './agentFileTextTypes.js'
 import { sanitizeUnicodeText } from '../../models/domain/unicodeText.js'
 import { stripFileTextHtmlDoctype } from './agentFileTextMarkup.js'
@@ -37,10 +37,13 @@ function looksText(bytes: Uint8Array) {
 async function extractUsing(extractor: Extractor, options: Record<string, unknown> = {}): Promise<string> {
   return await new Promise((resolve, reject) => extractor.extract(path.join(process.cwd(), 'input'), { preserveLineBreaks: true, ...options }, (error, text) => error || typeof text !== 'string' ? reject(new AgentFileTextError()) : resolve(text)))
 }
+function fileTextDecoder(bytes: Uint8Array) {
+  const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le' : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8'
+  return new TextDecoder(encoding, { fatal: true })
+}
 async function decodeText(bytes: Uint8Array): Promise<string> {
   if (!looksText(bytes)) throw new AgentFileTextError('unsupported')
-  const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le' : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8'
-  try { return new TextDecoder(encoding, { fatal: true }).decode(bytes) }
+  try { return fileTextDecoder(bytes).decode(bytes) }
   catch { return await extractUsing(requireFromHere('textract/lib/extractors/text.js') as Extractor) }
 }
 async function requireNative(kind: FileTextNativeFormat, enabled: readonly FileTextNativeFormat[]) {
@@ -51,12 +54,22 @@ async function requireNative(kind: FileTextNativeFormat, enabled: readonly FileT
   }
   throw new AgentFileTextError('native_unavailable')
 }
-async function extract(bytes: Uint8Array, source: { name: string; mime: string }, enabled: readonly FileTextNativeFormat[], zipBudget: Record<string, number>): Promise<string> {
+async function extract(bytes: Uint8Array, source: { name: string; mime: string }, enabled: readonly FileTextNativeFormat[],
+  zipBudget: Record<string, number>, archiveEntry?: string): Promise<string> {
   const extension = source.name.split('.').at(-1)?.toLowerCase() ?? ''
   const guessed = mimeTypes.lookup(source.name)
   const mime = (guessed || source.mime).toLowerCase()
   const kind = officeMimes[mime]
   const zipped = bytes[0] === 0x50 && bytes[1] === 0x4b
+  if (extension === 'zip' || mime === 'application/zip' || mime === 'application/x-zip-compressed') {
+    if (!zipped) throw new AgentFileTextError()
+    const archive = await readFileTextArchive(bytes, zipBudget, archiveEntry)
+    if (!archive.bytes) return `ZIP 文件清单（${archive.paths.length} 个普通文件条目）。如需正文，用 archiveEntry 指定其中的完整路径。\n${archive.paths.join('\n')}`
+    if (!looksText(archive.bytes) || archive.bytes.subarray(0, 4).toString('ascii') === '%PDF') throw new AgentFileTextError('archive_entry_not_text')
+    try { return fileTextDecoder(archive.bytes).decode(archive.bytes) }
+    catch { throw new AgentFileTextError('archive_entry_not_text') }
+  }
+  if (archiveEntry !== undefined) throw new AgentFileTextError('unsupported')
   if (zipped) await validateFileTextZip(bytes, zipBudget)
   if (kind === 'pdf') {
     // PDF.js 1.x ignores byteOffset in substreams; never pass a pooled Buffer.
@@ -94,11 +107,12 @@ async function extract(bytes: Uint8Array, source: { name: string; mime: string }
 process.once('message', (raw: unknown) => {
   void (async () => {
     if (!raw || typeof raw !== 'object') throw new AgentFileTextError()
-    const input = raw as { source: { name: string; mime: string }; offset?: number; limit?: number; nativeFormats?: readonly FileTextNativeFormat[]; zipBudget: Record<string, number> }
+    const input = raw as { source: { name: string; mime: string }; archiveEntry?: string; offset?: number; limit?: number;
+      nativeFormats?: readonly FileTextNativeFormat[]; zipBudget: Record<string, number> }
     const page = pagination(input), enabled = nativeFormats(input.nativeFormats)
     const bytes = await readFile(path.join(process.cwd(), 'input'))
     if (!bytes.length || bytes.length > MAX_FILE_TEXT_BYTES) throw new AgentFileTextError()
-    const text = sanitizeUnicodeText(await extract(Uint8Array.from(bytes), input.source, enabled, input.zipBudget))
+    const text = sanitizeUnicodeText(await extract(Uint8Array.from(bytes), input.source, enabled, input.zipBudget, fileTextArchiveEntry(input.archiveEntry)))
     if (text.length > MAX_FILE_TEXT_CHARS * 2) throw new AgentFileTextError()
     const characters = Array.from(text)
     if (characters.length > MAX_FILE_TEXT_CHARS) throw new AgentFileTextError()

@@ -14,7 +14,7 @@ const { createAgentDouyinRelayProvider } = await moduleAt('agentDouyinRelayProvi
 const { createAgentMediaArtifactStore } = await moduleAt('agentMediaArtifactStore')
 const { createDouyinHttp, douyinBody, douyinGuard, douyinOfficialUrl, nativeAgentDouyinRequest } = await moduleAt('agentDouyinRelayHttp')
 const { nativeAgentDouyinCommand } = await moduleAt('agentDouyinRelayNative')
-const { douyinDocumentMetadata, douyinMetadata } = await moduleAt('agentDouyinRelayMetadata')
+const { douyinDocumentMetadata, douyinMetadata, inspectDouyinDocument } = await moduleAt('agentDouyinRelayMetadata')
 const MiB = 1024 * 1024, ID = '7651971027728274617', OTHER = '7651971027728274618'
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6d8AAAAASUVORK5CYII=', 'base64')
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0])
@@ -74,8 +74,10 @@ test('static video owns all media and JPEG thumbnail, keeps metadata and never e
   assert.equal(result.status, 'ready'); assert.equal(result.pageUrl, `https://www.douyin.com/video/${ID}`)
   assert.equal(result.plan.items.length, 2)
   const info = result.plan.items[0].parts, video = result.plan.items[1].parts[0]
-  assert.equal(info[0].kind, 'text'); assert.equal(info[1].kind, 'image'); assert.equal(video.kind, 'video')
-  assert.deepEqual(await f.bytes(info[1].artifact), PNG); assert.deepEqual(await f.bytes(video.artifact), mp4()); assert.deepEqual(await f.bytes(video.thumbnail), JPEG)
+  assert.deepEqual(info.map(part => part.kind), ['image']); assert.equal(video.kind, 'video')
+  const card = await f.bytes(info[0].artifact)
+  assert.deepEqual(card.subarray(0, 8), PNG.subarray(0, 8)); assert.ok(card.readUInt32BE(16) > 100, 'the intro is a rendered card')
+  assert.deepEqual(await f.bytes(video.artifact), mp4()); assert.deepEqual(await f.bytes(video.thumbnail), JPEG)
   assert.equal(video.artifact.sha256, digest(mp4()))
   for (const value of ['目标作品', '作者:作者', `作品:${ID}`, '时长:0:16', '点赞:123', '播放:0']) assert.ok(result.infoText.includes(value), value)
   for (const value of ['upstream-private', 'douyinvod.com', 'douyinpic.com', f.directory]) assert.equal(JSON.stringify(result).includes(value), false)
@@ -99,6 +101,7 @@ test('note preserves twenty-image cap, exact failed positions, independent image
     respond: url => url.pathname === '/image-3.png' ? response('', '', { status: 404 }) : undefined })
   const result = await f.prepare(share('note'))
   assert.equal(result.status, 'ready'); assert.equal(result.pageUrl, `https://www.douyin.com/note/${ID}`)
+  assert.deepEqual(result.plan.items[0].parts.map(part => part.kind), ['image'])
   assert.equal(result.plan.items.length, 21); assert.ok(result.plan.items.slice(1, -1).every(node => node.parts[0].kind === 'image'))
   assert.equal(result.plan.items.at(-1).parts[0].kind, 'video'); assert.ok(result.plan.items.at(-1).parts[0].thumbnail)
   assert.match(result.infoText, /共25张，仅附前20张/); assert.match(result.infoText, /第3张图片暂时获取失败/)
@@ -171,6 +174,56 @@ test('static JSON with a literal percent sign does not unnecessarily launch the 
   assert.equal(result.status, 'ready')
   assert.match(result.infoText, /进度到 100%/u)
   assert.equal(f.browsers.length, 0)
+})
+
+function desktopPage(...props) {
+  const element = values => ['$', 'div', null, { children: values.map(value => ['$', 'main', null, { children: ['$', '$L1', null, value] }]) }]
+  const text = '中文首段\n0:' + JSON.stringify(element([{ awemeId: ID, statusCode: 999, aweme: null }]))
+  const records = '1:T' + Buffer.byteLength(text).toString(16) + ',' + text + '2:' + JSON.stringify(element(props)) + '\n'
+  const split = records.lastIndexOf('awemeId') + 2
+  return '<script id="RENDER_DATA">' + encodeURIComponent(JSON.stringify({ app: { isLogin: false } })) + '</script>' +
+    [records.slice(0, split), records.slice(split)].map(part => '<script>self.__pace_f.push(' + JSON.stringify([1, part]) + ')</script>').join('')
+}
+
+test('desktop streamed work data keeps the exact work, skips unrelated rows and prepares a card plus its video', async t => {
+  const authorized = { awemeId: ID, description: '桌面作品', author: { nickname: '源作者' },
+    video: { duration: 16_000, playAddr: { urlList: ['https://v3.douyinvod.com/video.mp4'] } } }
+  const page = desktopPage({ awemeId: OTHER, statusCode: 0, aweme: { ...authorized, awemeId: OTHER } },
+    { awemeId: ID, statusCode: 0, aweme: { ...authorized, awemeId: OTHER } }, { awemeId: ID, statusCode: 0, aweme: authorized })
+  const f = await fixture(t, { respond: url => url.hostname === 'www.douyin.com' ? response(page) : undefined })
+  const result = await f.prepare()
+  assert.equal(result.status, 'ready')
+  assert.deepEqual(result.plan.items.map(item => item.parts.map(part => part.kind)), [['image'], ['video']])
+  assert.match(result.infoText, /桌面作品.+源作者/su)
+  assert.equal(f.browsers.length, 0)
+  assert.deepEqual(inspectDouyinDocument(desktopPage({ awemeId: OTHER, statusCode: 0, aweme: authorized }), ID, 'video'),
+    { issue: 'douyin_page_target_missing' })
+})
+
+test('HTTP 200 verification and an empty target work remain distinguishable when only the card can be delivered', async t => {
+  const diagnostics = []
+  const verification = '<script>document.cookie; __ac_nonce; window.location.reload()</script>'
+  const empty = desktopPage({ awemeId: ID, statusCode: 0, aweme: null })
+  const f = await fixture(t, {
+    respond: url => url.hostname === 'www.douyin.com' ? response(verification) : undefined,
+    browser: async input => {
+      const { issue, nativeCode } = inspectDouyinDocument(empty, input.id, input.kind)
+      input.observeStep('douyin_browser_document', 200, { cause: issue, nativeCode })
+    },
+    options: { diagnostics: { emit(event) { diagnostics.push(event) } } },
+  })
+  const result = await f.prepare()
+  assert.equal(result.status, 'metadata-only')
+  assert.deepEqual(result.plan.items.map(item => item.parts.map(part => part.kind)), [['image']])
+  assert.match(result.infoText, /抖音网页未提供原作品媒体/u)
+  assert.deepEqual(diagnostics.map(({ operation, code, httpStatus, details }) => [operation, code, httpStatus, details.step]), [
+    ['douyin_metadata_page', 'douyin_page_verification_required', 200, 'douyin_page_parse'],
+    ['douyin_provider_prepare', 'metadata_unavailable', 200, 'douyin_browser_document'],
+  ])
+  assert.equal(diagnostics[1].details.cause, 'douyin_page_work_empty')
+  assert.equal(diagnostics[1].details.nativeCode, 0)
+  assert.equal(diagnostics[1].details.result, 'fallback_used')
+  assert.doesNotMatch(JSON.stringify(diagnostics), /__ac_nonce|7651971027728274617/u)
 })
 
 test('a first HTTP failure is recorded even when the browser supplies a full result', async t => {
@@ -346,10 +399,11 @@ test('real isolated Chrome keeps anonymous first-party challenge cookies, uses p
   t.after(() => { if (previousChrome === undefined) delete process.env.PUPPETEER_EXECUTABLE_PATH; else process.env.PUPPETEER_EXECUTABLE_PATH = previousChrome })
   const cookie = 'ANONYMOUS_BROWSER_SESSION_12345', jsCookie = 'ANONYMOUS_BROWSER_JS_TOKEN_12345', observations = []
   let pages = 0, detailCookies = '', inFlight = 0, maximum = 0, detailedAt = 0
+  const stalledStylesheet = Promise.withResolvers()
   const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'douyin-browser-test-'))), artifacts = await createAgentMediaArtifactStore({ directory })
   let prepared
   t.after(async () => { await prepared?.release(); await artifacts.close(); assert.deepEqual(await readdir(directory), []); await rm(directory, { recursive: true, force: true }) })
-  const server = http.createServer((request, output) => {
+  const server = http.createServer(async (request, output) => {
     observations.push({ path: request.url, cookie: request.headers.cookie }); inFlight++; maximum = Math.max(maximum, inFlight); output.on('close', () => inFlight--)
     if (request.url.startsWith(`/note/${ID}`)) {
       output.setHeader('content-type', 'text/html'); if (++pages === 1) { output.end('<html><body>Static data unavailable</body></html>'); return }
@@ -360,8 +414,11 @@ test('real isolated Chrome keeps anonymous first-party challenge cookies, uses p
         fetch('http://127.0.0.1:${server.address().port}/forbidden').catch(()=>{});
         fetch('https://evil.test/forbidden').catch(()=>{});
         fetch('https://lf-private.bytegoofy.com/private').catch(()=>{});
-      </script></body></html>`)
+      </script><link rel="stylesheet" href="https://lf3.bytegoofy.com/slow.css"><script>window.afterStyle=true</script></body></html>`)
+    } else if (request.url === '/slow.css') {
+      stalledStylesheet.resolve()
     } else if (request.url.startsWith('/aweme/v1/web/aweme/detail/')) {
+      await stalledStylesheet.promise
       detailCookies = request.headers.cookie || ''; output.setHeader('content-type', 'application/json')
       detailedAt = performance.now()
       output.end(JSON.stringify({ recommended: [gallery(1, { aweme_id: OTHER })], aweme_detail: gallery(2) }))
@@ -381,7 +438,7 @@ test('real isolated Chrome keeps anonymous first-party challenge cookies, uses p
     }) })
   prepared = await provider.prepare(share('note'), scope())
   assert.equal(prepared.status, 'ready'); assert.equal(prepared.plan.items.length, 3); assert.equal(pages, 2)
-  assert.ok(detailedAt && performance.now() - detailedAt < 7500, 'the matching detail response must not wait for an absent DOM node')
+  assert.ok(detailedAt && performance.now() - detailedAt < 7500, 'the matching detail response finishes while an unrelated stylesheet still blocks page loading')
   assert.ok(detailCookies.includes(`ttwid=${cookie}`)); assert.ok(detailCookies.includes(`msToken=${jsCookie}`))
   assert.ok(maximum <= 4, `browser transport concurrency ${maximum}`)
   assert.equal(observations.some(value => value.path.includes('forbidden') || value.path.includes('private')), false)

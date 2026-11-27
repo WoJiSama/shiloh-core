@@ -18,7 +18,7 @@ const { createAgentMediaOutboxLedger, agentMediaOutboxId } = await load('modules
 const share = { provider: 'bilibili', reference: { kind: 'video', id: 'BV1H7Gq6zEiC' } }
 const video = { id: '1'.repeat(32), kind: 'video', mime: 'video/mp4', sizeBytes: 64, sha256: '2'.repeat(64) }
 const thumbnail = { id: '3'.repeat(32), kind: 'image', mime: 'image/jpeg', sizeBytes: 16, sha256: '4'.repeat(64) }
-const plan = { version: 1, items: [{ parts: [{ kind: 'text', text: '合成搬运视频介绍' }] }, { parts: [{ kind: 'video', artifact: video, thumbnail }] }] }
+const plan = { version: 1, items: [{ parts: [{ kind: 'image', artifact: thumbnail }] }, { parts: [{ kind: 'video', artifact: video, thumbnail }] }] }
 const gate = () => { let release; const promise = new Promise(resolve => { release = resolve }); return { promise, release } }
 async function waitFor(probe, label, timeout = 7000) {
   const end = Date.now() + timeout
@@ -190,7 +190,7 @@ const douyinShare = { provider: 'douyin', reference: { kind: 'note', id: '748223
 const youtubeShare = { provider: 'youtube', reference: { kind: 'video', id: 'AbC_123-xYz' } }
 const pixivShare = { provider: 'pixiv', reference: { kind: 'artwork', id: '123456789' } }
 const image = { id: '5'.repeat(32), kind: 'image', mime: 'image/png', sizeBytes: 32, sha256: '6'.repeat(64) }
-const gallery = { version: 1, items: [{ parts: [{ kind: 'text', text: '合成抖音图集' }] }, { parts: [{ kind: 'image', artifact: image }] }] }
+const gallery = { version: 1, items: [{ parts: [{ kind: 'image', artifact: thumbnail }] }, { parts: [{ kind: 'image', artifact: image }] }] }
 const xhsShare = { provider: 'xiaohongshu', reference: { kind: 'note', id: '66aabbccddeeff0011223344' } }
 const xhsPage = `https://www.xiaohongshu.com/explore/${xhsShare.reference.id}`
 for (const mode of ['simulation', 'text']) test(`Core ${mode} persists safe Xiaohongshu references while refreshing ephemeral access from the exact original source`, { timeout: 20000 }, async t => {
@@ -304,12 +304,11 @@ for (const selectedShare of [youtubeShare, pixivShare]) for (const mode of ['sim
   const text = youtube ? 'https://youtu.be/AbC_123-xYz' : `https://www.pixiv.net/artworks/${selectedShare.reference.id}`
   await f.emit(f.message(native ? { text: '', parts: [{ kind: 'extension', platform: 'fixture', type: selectedShare.provider }] } : { parts: [{ kind: 'text', text }] }))
   await f.drain(); assert.equal((await f.terminal()).state, 'completed')
-  const expectedModes = youtube ? ['direct-video', 'direct-video'] : ['forward']
   assert.deepEqual(f.preparations[0].selected, selectedShare)
-  assert.deepEqual(f.calls.map(row => row.action.mode), expectedModes)
-  if (youtube) assert.deepEqual(f.calls.map(row => row.action.plan.items.flatMap(item => item.parts.map(part => part.kind))), [['text'], ['video']])
+  assert.deepEqual(f.calls.map(row => row.action.mode), ['forward'])
+  assert.deepEqual(f.calls[0].action.plan.items.map(item => item.parts.map(part => part.kind)), youtube ? [['image'], ['video']] : [['image'], ['image']])
   await f.emit(); await f.drain(); await f.restart(); await f.emit(); await f.drain()
-  assert.equal(f.calls.length, expectedModes.length); await f.assertPrivate()
+  assert.equal(f.calls.length, 1); await f.assertPrivate()
 })
 
 for (const selectedShare of [youtubeShare, pixivShare]) for (const queued of [false, true]) test(`${selectedShare.provider} remains disabled under the original Bilibili-only activation (${queued ? 'persisted' : 'new'})`, { timeout: 20000 }, async t => {

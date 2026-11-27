@@ -240,9 +240,11 @@ test('Bilibili falls back to native forward text and cover when an optional rend
     await result.release(); await f.clean()
   })
   await t.test('a summary without a video prepares a single card with the explicit reason and original page', async t => {
-    const f = await fixture(t, { view: { duration: 1801 } })
+    const f = await fixture(t, { view: { duration: 1801 }, options: { cardRenderer: 'summary' } })
     const result = await f.prepare(); assert.equal(result.status, 'metadata-only')
-    assert.deepEqual(result.plan.items.map(item => item.parts.map(part => part.kind)), [['text']])
+    assert.deepEqual(result.plan.items.map(item => item.parts.map(part => part.kind)), [['image']])
+    const bytes = await f.read(result.plan.items[0].parts[0].artifact)
+    assert.ok(bytes.readUInt32BE(16) > 100, 'the metadata-only result still renders a PNG card')
     assert.match(result.infoText, /超过30分钟，未附带视频本体/u)
     assert.ok(result.infoText.includes(result.pageUrl))
     await result.release(); await f.clean()

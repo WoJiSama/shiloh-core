@@ -4,10 +4,11 @@ import { mkdtemp, chmod, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { AgentToolContext } from '../../../contracts/agentTool.js'
-import { AgentFileTextError, MAX_FILE_TEXT_BYTES, nativeFormats, pagination, fileTextPage } from './agentFileTextTypes.js'
+import { AgentFileTextError, fileTextArchiveEntry, isFileTextErrorCode, MAX_FILE_TEXT_BYTES, nativeFormats, pagination, fileTextPage } from './agentFileTextTypes.js'
 import type { AgentFileTextRequest, AgentFileTextPage, FileTextNativeFormat } from './agentFileTextTypes.js'
 import { fileTextZipBudget } from './agentFileTextZip.js'
 import type { FileTextZipBudget } from './agentFileTextZip.js'
+import type { AgentFileTextTemporaryDirectory } from './agentFileTextWorkspace.js'
 
 export type AgentFileTextContext = Pick<AgentToolContext, 'signal' | 'isCurrent' | 'ensureCurrent'>
 export interface AgentFileTextService { extract(input: AgentFileTextRequest, context: AgentFileTextContext): Promise<AgentFileTextPage> }
@@ -17,6 +18,7 @@ export interface AgentFileTextServiceOptions {
   readonly timeoutMs?: number
   readonly maxQueued?: number
   readonly zipBudget?: Partial<FileTextZipBudget>
+  readonly createTemporaryDirectory?: () => Promise<AgentFileTextTemporaryDirectory>
   /** Trusted test/host seam. Never exposed to model parameters or file contents. */
   readonly childFactory?: (url: URL, options: ForkOptions) => ChildProcess
 }
@@ -40,7 +42,7 @@ interface Job {
   cleanup(): void
   authority?: Promise<void>
   preparation?: Promise<void>
-  directory?: string
+  directory?: AgentFileTextTemporaryDirectory
   child?: ChildProcess
   closed?: Promise<void>
   ending: boolean
@@ -62,6 +64,10 @@ async function stopChild(child: ChildProcess, closed: Promise<void>) {
     }
   }
   await closed
+}
+async function createLocalTemporaryDirectory(): Promise<AgentFileTextTemporaryDirectory> {
+  const directory = await mkdtemp(path.join(tmpdir(), 'bl-agent-file-'))
+  return { path: directory, remove: () => rm(directory, { recursive: true, force: true, maxRetries: 2 }) }
 }
 /** A single detached parser process group, four bounded waiters, and no cross-turn text or file caches. */
 export function createAgentFileTextService(options: AgentFileTextServiceOptions = {}): AgentFileTextService {
@@ -91,7 +97,7 @@ export function createAgentFileTextService(options: AgentFileTextServiceOptions 
       // Cancellation during temp creation must wait for ownership before deleting it.
       await job.preparation?.catch(() => {})
       if (job.child && job.closed) await stopChild(job.child, job.closed)
-      if (job.directory) await rm(job.directory, { recursive: true, force: true, maxRetries: 2 })
+      await job.directory?.remove()
       if (!current(job.context, job.signal) || error || !page) job.reject(current(job.context, job.signal) && error ? error : unavailable())
       else job.resolve(page)
     } catch { job.reject(unavailable()) }
@@ -101,15 +107,16 @@ export function createAgentFileTextService(options: AgentFileTextServiceOptions 
     try {
       await authorize(job); if (job.ending) return
       job.preparation = (async () => {
-        job.directory = await mkdtemp(path.join(tmpdir(), 'bl-agent-file-'))
-        await chmod(job.directory, 0o700)
-        await writeFile(path.join(job.directory, 'input'), job.input.bytes, { mode: 0o600, flag: 'wx' })
+        job.directory = await (options.createTemporaryDirectory ?? createLocalTemporaryDirectory)()
+        await chmod(job.directory.path, 0o700)
+        await writeFile(path.join(job.directory.path, 'input'), job.input.bytes, { mode: 0o600, flag: 'wx' })
       })()
       await job.preparation
       if (job.ending) return
       await authorize(job); if (job.ending) return
+      const directory = job.directory!.path
       const child = childFactory(new URL('./agentFileTextChild.js', import.meta.url), {
-        cwd: job.directory!, env: childEnvironment(job.directory!), detached: true, execArgv: ['--max-old-space-size=256'],
+        cwd: directory, env: childEnvironment(directory), detached: true, execArgv: ['--max-old-space-size=256'],
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'], serialization: 'advanced', windowsHide: true,
       })
       job.child = child
@@ -123,15 +130,15 @@ export function createAgentFileTextService(options: AgentFileTextServiceOptions 
           if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw unavailable()
           const value = raw as Record<string, unknown>
           if (value.ok !== true) {
-            const code = ['unsupported', 'native_disabled', 'native_unavailable'].includes(String(value.code)) ? value.code as 'unsupported' | 'native_disabled' | 'native_unavailable' : 'invalid'
-            await finish(job, new AgentFileTextError(code)); return
+            await finish(job, new AgentFileTextError(isFileTextErrorCode(value.code) ? value.code : 'invalid')); return
           }
           const page = fileTextPage(value.page, job.input.offset, job.input.limit)
           await authorize(job)
           await finish(job, undefined, page)
         })().catch(() => { void finish(job, unavailable()) })
       })
-      child.send({ source: job.input.source, offset: job.input.offset, limit: job.input.limit, nativeFormats: enabled, zipBudget: budget }, error => { if (error) void finish(job, unavailable()) })
+      child.send({ source: job.input.source, archiveEntry: job.input.archiveEntry, offset: job.input.offset, limit: job.input.limit,
+        nativeFormats: enabled, zipBudget: budget }, error => { if (error) void finish(job, unavailable()) })
       if (!current(job.context, job.signal)) void finish(job, unavailable())
     } catch { void finish(job, unavailable()) }
   }
@@ -148,8 +155,9 @@ export function createAgentFileTextService(options: AgentFileTextServiceOptions 
           typeof input.source.mime !== 'string' || input.source.mime.length > 128 || !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/iu.test(input.source.mime) ||
           input.source.origin !== undefined && !['current', 'reply', 'recent', 'group_file', 'explicit'].includes(input.source.origin)) throw unavailable()
       const page = pagination(input)
+      const archiveEntry = fileTextArchiveEntry(input.archiveEntry)
       const owned = { bytes: Uint8Array.from(input.bytes), source: Object.freeze({ name: input.source.name, mime: input.source.mime,
-        ...(input.source.origin ? { origin: input.source.origin } : {}) }), ...page }
+        ...(input.source.origin ? { origin: input.source.origin } : {}) }), ...(archiveEntry === undefined ? {} : { archiveEntry }), ...page }
       if (!current(context, context.signal) || active && queue.length >= maxQueued) throw unavailable()
       return await new Promise<AgentFileTextPage>((resolve, reject) => {
         const signal = AbortSignal.any([context.signal, AbortSignal.timeout(timeoutMs)])

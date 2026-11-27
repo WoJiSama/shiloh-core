@@ -93,6 +93,7 @@ test('迁移后的群不开场，保持上下文，旧触发器和睡眠时段�
   assert.equal(prior.modelInputs.length, 1)
   await prior.runtime.setGroupReplyMode(prior.scope, 'auto')
   assert.equal(await prior.runtime.canInitiateGroupChat(group), true)
+  assert.equal(await prior.runtime.canInitiateGroupChat(group, true), false)
 })
 
 test('自我修订和计划跟随个人，重启后仍使用新名字且保留版本', async t => {
