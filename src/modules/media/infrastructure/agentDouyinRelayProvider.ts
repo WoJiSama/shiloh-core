@@ -17,6 +17,7 @@ import { douyinCanonicalPage, douyinDocumentMetadata, douyinPageIdentity } from 
 import type { AgentDouyinResolvedMedia } from './agentDouyinRelayMetadata.js'
 import { douyinConvertImage, douyinFileChunks, douyinSlideshow, douyinThumbnail } from './agentDouyinRelayNative.js'
 import type { AgentDouyinNative } from './agentDouyinRelayNative.js'
+import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 
 export type { AgentDouyinLookup, AgentDouyinRequest, AgentDouyinResponse, AgentDouyinRequestPolicy } from './agentDouyinRelayHttp.js'
 export type { AgentDouyinBrowser, AgentDouyinBrowserInput, AgentDouyinBrowserRead } from './agentDouyinRelayBrowser.js'
@@ -30,6 +31,7 @@ export interface AgentDouyinRelayProviderOptions {
   readonly request?: AgentDouyinRequest
   readonly browser?: AgentDouyinBrowser
   readonly native?: AgentDouyinNative
+  readonly diagnostics?: Pick<AgentDiagnostics, 'emit'>
   /** May shorten the preparation and every external stage's deadline. */
   readonly timeoutMs?: number
 }
@@ -142,6 +144,7 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
       }
       await guard.ensure()
       const media = metadata
+      let degradation = !complete() ? 'metadata_unavailable' : undefined
       if (media && (media.id !== id || !['video', 'note'].includes(media.kind) || !Number.isFinite(media.duration) || media.duration < 0 || !Array.isArray(media.images) || media.images.length > 2000 ||
         ![media.title, media.description, media.author].every(value => typeof value === 'string' && Array.from(value).length <= 1000 && (!value || safeText(value))))) throw douyinFailure()
       if (media) kind = media.kind
@@ -153,7 +156,7 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
       if (media?.stats) { const stats = Object.entries(labels).filter(([key]) => Number.isSafeInteger(media.stats[key]) && media.stats[key]! >= 0).map(([key, label]) => `${label}:${media.stats[key]}`); if (stats.length) lines.push(`数据:${stats.join(' ')}`) }
       let cover: AgentMediaArtifactLease | undefined
       if (kind === 'video' && media?.cover) {
-        try { cover = (await image(media.cover)).lease } catch { await guard.ensure(); lines.push('封面暂时获取失败') }
+        try { cover = (await image(media.cover)).lease } catch { await guard.ensure(); degradation ??= 'cover_unavailable'; lines.push('封面暂时获取失败') }
       }
       if (kind === 'note' && media?.images.length) {
         const images = media.images.slice(0, 20), localImages: string[] = []
@@ -164,7 +167,10 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
         }
         lines.push(`图集:${media.images.length}张`)
         if (media.images.length > 20) lines.push(`图集共${media.images.length}张，仅附前20张`)
-        if (failed.length) lines.push(`图集第${failed.join('、')}张图片暂时获取失败，已保留其余图片和作品页面`)
+        if (failed.length) {
+          degradation ??= 'image_unavailable'
+          lines.push(`图集第${failed.join('、')}张图片暂时获取失败，已保留其余图片和作品页面`)
+        }
         if (!localImages.length) lines.push('图集图片暂时获取失败，已保留作品页面')
         if (media.music && localImages.length) {
           try {
@@ -172,14 +178,14 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
             const audioFormat = audio.mime === 'audio/mp4' || audio.mime === 'audio/x-m4a' ? 'mov' : ['audio/aac', 'audio/aacp'].includes(audio.mime) ? 'aac' : 'mp3'
             await douyinSlideshow(localImages, audio.file, audioFormat, output, options.native, guard)
             items.push({ parts: [await video(output, 'video/mp4')] })
-          } catch { await guard.ensure(); lines.push('配乐视频暂时无法合成，已保留图集') }
+          } catch { await guard.ensure(); degradation ??= 'slideshow_unavailable'; lines.push('配乐视频暂时无法合成，已保留图集') }
         }
       } else if (kind === 'video' && media) {
         if (media.duration > 1800) lines.push('视频超过30分钟，未附带视频本体')
         else if (media.duration <= 0) lines.push('视频时长未通过验证，已保留作品页面')
         else if (media.video) {
           try { const downloaded = await download(media.video, 'video'); items.push({ parts: [await video(downloaded.file, downloaded.mime)] }) }
-          catch { await guard.ensure(); lines.push('视频本体暂时获取失败，已保留作品页面') }
+          catch { await guard.ensure(); degradation = 'video_unavailable'; lines.push('视频本体暂时获取失败，已保留作品页面') }
         } else lines.push('视频播放地址暂时获取失败，已保留作品页面')
       } else lines.push('作品详情暂时未解析完成，已保留作品页面')
       lines.push(pageUrl)
@@ -187,6 +193,10 @@ export function createAgentDouyinRelayProvider(options: AgentDouyinRelayProvider
       if (!safeText(infoText)) throw douyinFailure()
       const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [{ kind: 'text', text: infoText }, ...(cover ? [{ kind: 'image', artifact: cover.artifact } as const] : [])] }, ...items] }, { allowsText: safeText })
       await guard.ensure(); transferred = true
+      if (degradation) {
+        try { options.diagnostics?.emit({ stage: 'runtime', operation: 'douyin_provider_prepare', outcome: 'failed', code: degradation }) }
+        catch { /* A diagnostic observer cannot change an owned media result. */ }
+      }
       return { status: items.length ? 'ready' : 'metadata-only', pageUrl, infoText, plan, release } satisfies AgentPreparedMediaRelay
     } catch { throw douyinFailure() }
     finally { guard.close(); if (!transferred) await release(); if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {}) }

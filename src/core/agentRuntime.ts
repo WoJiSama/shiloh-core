@@ -1344,7 +1344,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
   })
   const mediaOutbox = createAgentMediaOutbox({
-    ...workflowDiagnostics,
+    diagnostics, withDiagnosticScope: diagnostics.run,
     storage, actions: messageActions, ...(options.mediaRelayProvider ? { provider: options.mediaRelayProvider } : {}),
     allowsText: text => options.allowsText?.(text, 'outgoing') !== false,
     ...(options.now ? { now: options.now } : {}), openContext: openMediaRelayContext,
@@ -3102,13 +3102,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     const pending = guardPendingSend(conversationAddressKey(target), () => !signal.aborted && mediaRelayCurrent() &&
       adapter.isReady() && adapterFor(target) === adapter && conversationEnabled(target) && memoryTurn.isCurrent() &&
       bindingIsCurrent(target, expected) && (!observed || mediaResponsible(observed)))
-    const isCurrent = () => !signal.aborted && pending.isCurrent() && (!source.share || mediaProviderEnabled(source.share.provider))
+    const isCurrent = () => !signal.aborted && observeCurrent(() => pending.isCurrent() && (!source.share || mediaProviderEnabled(source.share.provider)))
     const { botId, scene } = personMemoryAddress(target), identity = { botId, personaId: agentPersonaScopeId(binding.agentId) }
     const allowsSource = async (message: IncomingMessage): Promise<boolean> => {
-      if (!isCurrent() || message.messageId !== source.messageId || message.occurredAt !== source.occurredAt ||
-          conversationAddressKey(message.conversation) !== conversationAddressKey(target) ||
-          platformAccountKey(message.sender) !== platformAccountKey(source.sender) || !mediaResponsible(message) ||
-          options.allowsText?.(message.text, 'incoming') === false || !allowsFileNames(message)) return false
+      if (!observeCurrent(() => isCurrent() && message.messageId === source.messageId && message.occurredAt === source.occurredAt &&
+          conversationAddressKey(message.conversation) === conversationAddressKey(target) &&
+          platformAccountKey(message.sender) === platformAccountKey(source.sender) && mediaResponsible(message) &&
+          options.allowsText?.(message.text, 'incoming') !== false && allowsFileNames(message))) return false
       if (!await inbox.canReply(target, source.messageId) || await inbox.isRecalled(target, source.messageId) || !isCurrent()) return false
       const excerpt = message.text || '[媒体分享]'
       const redactions = await personMemory.getRedactions({ identity, subjectId: message.sender.id })
