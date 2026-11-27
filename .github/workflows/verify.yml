@@ -23,8 +23,25 @@ jobs:
       - name: Install Chromium for rendering acceptance
         run: |
           sudo apt-get update
-          sudo apt-get install -y fonts-noto-cjk zip
+          sudo apt-get install -y apparmor fonts-noto-cjk zip
           npx puppeteer browsers install chrome
+          chrome=$(node --input-type=module -e 'import puppeteer from "puppeteer"; console.log(puppeteer.executablePath())')
+          test -x "$chrome"
+          userns_policy=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [[ -r "$userns_policy" && $(< "$userns_policy") == 1 ]]; then
+            # Chrome for Testing lives in Puppeteer's cache, outside Ubuntu's Chrome profile.
+            case "$chrome" in
+              "$HOME"/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome) ;;
+              *) echo "Unexpected Chrome for Testing path" >&2; exit 1 ;;
+            esac
+            sudo apparmor_parser -r <<EOF
+          abi <abi/4.0>,
+          profile shiloh-ci-chrome "$chrome" flags=(unconfined) {
+            userns,
+          }
+          EOF
+          fi
+          node --input-type=module -e 'import puppeteer from "puppeteer"; const browser = await puppeteer.launch(); await browser.close()'
       - name: Set up Redis for integration tests
         run: |
           if ! command -v redis-server >/dev/null; then

@@ -24,7 +24,7 @@
     "test:boundaries": "node scripts/check-boundaries.mjs",
     "test:artifacts": "node --test tests/backendArtifacts.test.js",
     "migration:report": "node scripts/migration-report.mjs",
-    "verify:phase": "npm run backend:typecheck && npm run test:boundaries && npm test && npm run console:check && npm run console:test && npm run console:build && npm run migration:report",
+    "verify:phase": "npm run backend:typecheck && npm run test:boundaries && npm run console:build && npm test && npm run console:check && npm run console:test && npm run migration:report",
     "release:pack": "node scripts/release.mjs pack",
     "release:verify": "node scripts/release.mjs verify"
   },
