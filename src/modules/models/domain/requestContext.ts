@@ -58,8 +58,14 @@ export function decodeModelContextLimits(value: unknown): Readonly<Record<string
   return Object.freeze(limits)
 }
 
-export function modelContextLimits(limits: Readonly<Record<string, ModelContextLimits>> | undefined, model: unknown): ModelContextLimits | undefined {
-  return typeof model === 'string' && limits && Object.hasOwn(limits, model) ? limits[model] : undefined
+export function modelContextLimits(limits: Readonly<Record<string, ModelContextLimits>> | undefined, model: unknown, endpoint: string): ModelContextLimits | undefined {
+  if (!limits || typeof model !== 'string') return
+  let key = model
+  try {
+    const qualified = new URL(endpoint).host + '/' + model
+    if (Object.hasOwn(limits, qualified)) key = qualified
+  } catch { /* Legacy hosts can supply an endpoint without a URL. */ }
+  return Object.hasOwn(limits, key) ? limits[key] : undefined
 }
 
 const encoder = new TextEncoder()

@@ -20,7 +20,8 @@ test('a narrower fallback uses its own wire budget and keeps current sources and
     return url.includes('tools.invalid') ? new Response('busy', { status: 503 }) : success()
   }).YTapi(modelContextRequest({ messages: [{ role: 'system', content: 'fixed' }, carry, read, readResult, authority],
     tools: [{ type: 'function', function: { name: 'reminderTool', description: 'file' } }], tool_choice: 'auto' }, 'text'),
-    { ...config, useTools: true, modelContext: decodeModelContextLimits({ chat: { windowTokens: 2048, maxRequestBytes: 4096 }, tools: { windowTokens: 32768 } }) })
+    { ...config, useTools: true, toolsAiConfig: { ...config.toolsAiConfig, toolsAiModel: 'chat' },
+      modelContext: decodeModelContextLimits({ chat: { windowTokens: 32768 }, 'chat.invalid/chat': { windowTokens: 2048, maxRequestBytes: 4096 } }) })
   assert.equal(result.choices[0].message.content, 'ok')
   assert.equal(calls.length, 2)
   assert.match(calls[0].url, /tools\.invalid/u)

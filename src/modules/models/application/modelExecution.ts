@@ -164,8 +164,8 @@ function preserveReasoningEffort(options: ExecutionOptions, effort: unknown): Ex
 async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, toolContent?: unknown, toolName?: string, options: ProviderExecution = {}): Promise<ChatResponse> {
     const provider = config.providers?.toLowerCase();
     if (!options.contextAttempt) options = { ...options, contextAttempt: { calls: 0 } }
-    function contextFor(model: unknown, route: ProviderContext['route']): ProviderContext | undefined {
-        const metadata = modelContextMetadata(requestData), limits = modelContextLimits(config.modelContext, model)
+    function contextFor(model: unknown, endpoint: string, route: ProviderContext['route']): ProviderContext | undefined {
+        const metadata = modelContextMetadata(requestData), limits = modelContextLimits(config.modelContext, model, endpoint)
         return metadata || limits ? { purpose: 'configured', ...metadata, route, ...(limits ? { limits } : {}) } : undefined
     }
     function capOutput(request: ProviderChatRequestData, context: ProviderContext | undefined) {
@@ -221,7 +221,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
                     ...buildGenerationOptions(requestData, options, toolsBackend)
                 }, openaiUrl);
                 options = preserveReasoningEffort(options, openaiRequestData.reasoning_effort)
-                const context = contextFor(toolsBackend.model, 'tools')
+                const context = contextFor(toolsBackend.model, openaiUrl, 'tools')
                 toolAttempt = await fetchWithGenerationCompatibility(openaiUrl, openaiHeaders, capOutput(openaiRequestData, context), options, context)
                 openaiResponse = toolAttempt.response
                 if (!current()) return { error: bindingChanged }
@@ -334,7 +334,7 @@ async function YTapi(requestData: ChatRequestData, config: ExecutionConfig, tool
         logger.info('模型请求已准备');
         options = preserveReasoningEffort(options, finalRequestData.reasoning_effort)
         try {
-            const context = contextFor(finalRequestData.model, options.taskBackend ? 'task' : 'chat')
+            const context = contextFor(finalRequestData.model, url, options.taskBackend ? 'task' : 'chat')
             textAttempt = await fetchWithGenerationCompatibility(url, headers, capOutput(finalRequestData, context), options, context)
             response = textAttempt.response
             if (!current()) return { error: bindingChanged }
