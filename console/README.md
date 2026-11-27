@@ -8,7 +8,7 @@
 
 各分类页及其模块内保留功能导航；`⌘K` / `Ctrl+K` 可按名称和关键词直达模块、机器人、连接或会话。连接分类可直接进入群管理。人物记忆和托付面板由机器人详情的 `panel=person-profiles` / `panel=trusteeship` 保存到地址，刷新和返回可恢复；从会话卡片进入“管理此会话”会自动打开对应详情，保留完整会话地址与绑定版本。机器人到人设资源的链接会选中当前模板，并保留返回来源。
 
-人物页显示已有来源的记忆条目，删除仅作用于所选完整来源会话；托付页保留原任务 ID、未知结果和真实取消状态。管理员可见的聚合不会授予机器人跨场景使用原始资料的权限。新增 QQ 连接、本人创建、服务端配置候选预览及跨文件事务已实现；统一认知与完整遗忘影响状态仍按 [项目当前状态](../docs/project-status.md) 推进。
+人物页显示已有来源的记忆条目，删除仅作用于所选完整来源会话；托付页保留原任务 ID、未知结果和真实取消状态。管理员可见的聚合不会授予机器人跨场景使用原始资料的权限。新增 QQ 连接、本人创建和配置候选预览使用原子配置提交；统一认知与完整遗忘影响状态仍按 [项目当前状态](../docs/project-status.md) 推进。
 
 ## QQ 掉线后重新登录
 
@@ -16,7 +16,7 @@
 
 「连接」页可为已有连接选择机器人并绑定群聊或好友。宿主配置了账号容器管理时，账号卡片提供启用、停用和重启，页面也可为新 QQ 开通容器。开通后的账号在应用配置后出现，可扫码并单独接入会话。
 
-独立宿主在 `agent-host.yaml` 的 `console.qqLogin` 中为对应账号配置 NapCat 的本机 WebUI 端口和令牌环境变量名。配置需要与宿主已有连接和 QQ 号匹配。配置加载后，扫码页面在 OneBot 离线时也可用。
+独立宿主通过 `console.qqLogin` 为对应账号配置 NapCat 的本机 WebUI 端口和令牌环境变量名。初始配置包在 `host.console.qqLogin` 声明同名字段。配置需要匹配已有连接和 QQ 号，加载后扫码页面在 OneBot 离线时也可用。
 
 ```yaml
 console:
@@ -51,25 +51,25 @@ console:
 
 流程依次使用 `GET /api/configuration/catalog`、`POST /api/configuration/preview` 和 `POST /api/configuration/commit`。预览展示字段差异、受影响本人、连接、完整会话及权限变化，完整候选保留在服务端；提交只携带 `previewId`、`revision`、`candidateDigest` 和包含 host/personas/bindings 的完整 `readSet`。候选过期、身份撤销或配置变化后须重新预览，不能用旧预览覆盖新配置。
 
-宿主配置（示例名 `agent-host.yaml`，实际路径由 `--config` 指定）、`persona-library.yaml` 和 `agent-bindings.yaml` 是权威配置源。事务按完整候选一致提交三份配置，分别记录保存版本和本进程已加载版本。使用附带的 systemd 重启配置时，管理员可点「重启并应用配置」，再核对新进程的已加载版本。直接使用标准启动器时，控制台提交会先交付响应并释放 Redis 租约，再在同一进程加载并核对保存版本。控制台等 QQ 重新核验和宿主恢复后才恢复编辑。
+默认把宿主设置、人设库和绑定一起提交到 `agent-config.sqlite`，分别记录已保存和已加载的版本。涉及启动期装配的提交可通过「重启并应用配置」生效。使用标准启动器且由它管理应用生命周期时，提交先交付响应，再释放 Redis 租约并重新装配。控制台等宿主重新核验账号后恢复编辑。 [初始化和旧配置导入](../docs/architecture/agent-bindings.md#独立-core-配置库)
 
-提交结果未知时不能自动补交。残留事务使用显式离线恢复；正常启动不抢残留锁，也不按 PID 自动删除锁。先单独检查安全状态：
-
-```sh
-node scripts/start-agent.mjs --config /path/to/agent-host.yaml --inspect-config-transaction
-```
-
-需要恢复时先停止宿主，再单独运行：
+提交结果未知时先核对配置状态。SQLite 在下次可写打开时处理上次未完成的事务。以下命令检查能否读到有效配置。
 
 ```sh
-node scripts/start-agent.mjs --config /path/to/agent-host.yaml --recover-config
+node scripts/start-agent.mjs --config /path/to/agent-config.sqlite --inspect-config-transaction
 ```
 
-检查和恢复不能互相组合，也不能与 `--check`、迁移等命令混用；这两项命令不启动 QQ、Redis 或模型。无有效 commit 时恢复 old，有有效 commit 时完成 new；损坏记录或未知文件身份保留现场并拒绝覆盖。恢复只输出安全回执，不输出配置原文或凭据；完成后仍需正常启动宿主加载配置。
+需要恢复时先停止宿主，再单独运行以下命令。
+
+```sh
+node scripts/start-agent.mjs --config /path/to/agent-config.sqlite --recover-config
+```
+
+检查和恢复独立运行，只输出状态和版本回执。使用旧 YAML 路径的部署沿用其原有离线恢复流程。配置库损坏时保留现场，以可用的数据库备份恢复。
 
 ## 安装、构建和启动
 
-独立宿主需要 **Node 22.12 及以上**，建议使用受支持的 LTS。以下命令均从源码仓库根目录执行；先安装根目录和前端的锁定依赖。
+SQLite 配置需要 **Node 22.13 及以上**，建议使用受支持的 LTS。从源码仓库根目录安装根目录和前端的锁定依赖。
 
 ```sh
 npm ci
@@ -80,7 +80,7 @@ npm run agent:pack
 `agent:pack` 会检查并构建前后端，生成含控制台的 `.release/agent-*` 独立发布包。`dist`、前端 `node_modules` 和 Vite 缓存不提交 Git。安装发布包与生产依赖、校验 `release-manifest.json` 后，由同一个宿主启动聊天和控制台：
 
 ```sh
-node scripts/start-agent.mjs --config /path/to/agent-host.yaml
+node scripts/start-agent.mjs --config /path/to/agent-config.sqlite
 ```
 
 宿主配置须显式开启 `console.enabled`，默认监听 `127.0.0.1:8787`；认证及初始化按 [独立 QQ 宿主](../docs/architecture/agent-bindings.md#独立-qq-宿主) 配置。
@@ -98,7 +98,7 @@ node scripts/start-agent.mjs --config /path/to/agent-host.yaml
 | `npm run console:check` | 仅运行前端 TypeScript 检查 |
 | `npm run console:test` | 运行前端 Vitest 测试 |
 | `npm run console:smoke` | 用构建产物、localhost 假 API 和 Chrome 运行跨页/主题/宽度浏览器检查 |
-| `npm run agent:start -- --config /path/to/agent-host.yaml` | 启动独立宿主及内置控制台 |
+| `npm run agent:start -- --config /path/to/agent-config.sqlite` | 启动独立宿主及内置控制台 |
 | `npm run console:start` | 兼容插件模式的旧 Node 服务入口 |
 
 开发模式下分别启动配置了控制台的 `agent:start` 和 `console:dev`，Vite 默认代理到本机 8787。

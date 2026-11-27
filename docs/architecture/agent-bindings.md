@@ -103,33 +103,59 @@ QQ 私聊近期记录按接收账号和对方 QQ 分区。普通私聊回合和�
 
 独立进程通过 OneBot v11 的正向或反向 WebSocket 处理显式绑定的 QQ 群和好友私聊。群聊默认使用仿真，也可显式切换普通文字触发模式；已接入的附图、搜索、文件、图片、媒体和 QQ 动作由各自独立提供器与权限策略装配。普通文字群和好友私聊的通用工具须另有会话授权，见下文。旧 TRSS-Yunzai 与旧控制台已从生产移除，冻结配置及数据备份独立保留；新增接续不再依赖旧入口运行。仍在迁移或待真实验收的范围见[项目当前状态](../project-status.md)。
 
-在现有示例的 `agent-bindings.yaml` 同目录新建 `agent-host.yaml`。以下 `qq-main` 对应示例里的连接，`persona` 定义 `default` 人设，其余人设从同目录的 `persona-library.yaml` 读取。
+### 独立 Core 配置库
 
-```yaml
-version: 1
-instance: qq-agent
-dataDir: data/qq-agent
-model:
-  baseUrl: https://model.example.com/v1
-  name: your-tool-capable-model
-  apiKeyEnv: BL_AGENT_MODEL_KEY
-persona:
-  name: 希洛
-connections:
-  - id: qq-main
-    url: ws://127.0.0.1:6700/
-    accessTokenEnv: BL_AGENT_QQ_TOKEN
+独立 Core 默认从 `config/agent-config.sqlite` 启动。数据库统一保存宿主设置、账号和会话绑定以及人设模板。控制台的表单和预览继续使用同一套配置校验。模型密钥、平台令牌和 Redis 地址由运行环境提供。
+
+已有部署可以导入旧 `agent-host.yaml`、同目录的 `agent-bindings.yaml` 和可选的 `persona-library.yaml`。先运行预检，再在停止旧 Core 后执行导入。目标数据库放在原配置目录，保持相对路径、实例、绑定版本和现有 Redis 状态的归属。导入成功后，将服务的 `--config` 改为数据库路径再启动。旧文件可保留作为切换前备份。
+
+```sh
+npm run agent:start -- --config /path/to/agent-config.sqlite --import-config /path/to/agent-host.yaml
+npm run agent:start -- --config /path/to/agent-config.sqlite --import-config /path/to/agent-host.yaml --apply
 ```
 
-省略 `transport` 时使用正向连接。NapCat 使用反向 WebSocket 时，将对应连接改为以下配置，并让 NapCat 的 WebSocket 客户端连接该地址，使用相同 access token。每个连接单独配置监听地址和路径。
+新建实例先创建配置目录，再用相同命令导入一次 JSON 配置包。配置包里的相对路径以数据库所在目录为基准。省略 `personas` 时，默认人设取自 `host.persona`。
 
-```yaml
-connections:
-  - id: qq-main
-    transport: reverse-websocket
-    url: ws://127.0.0.1:6701/onebot/qq-main
-    accessTokenEnv: BL_AGENT_QQ_TOKEN
+```json
+{
+  "host": {
+    "version": 1,
+    "instance": "qq-agent",
+    "model": {
+      "baseUrl": "https://model.example.com/v1",
+      "name": "your-tool-capable-model",
+      "apiKeyEnv": "BL_AGENT_MODEL_KEY"
+    },
+    "persona": { "name": "希洛" },
+    "console": { "enabled": true, "allowSetup": true },
+    "connections": [
+      { "id": "qq-main", "url": "ws://127.0.0.1:6700/", "accessTokenEnv": "BL_AGENT_QQ_TOKEN" }
+    ]
+  },
+  "bindings": {
+    "version": 1,
+    "agents": [{ "id": "shiloh", "personaId": "default" }],
+    "connections": [{ "id": "qq-main", "platform": "qq", "namespace": "global", "accountId": "123456789" }],
+    "bindings": []
+  }
+}
 ```
+
+导入完成后，服务只需要数据库，JSON 配置包可独立备份。旧部署可显式指定原 YAML 启动以便回退。后文 YAML 片段也可用于辨认旧字段，导入 JSON 时使用同名字段放在 `host` 对象下。
+
+```sh
+npm run agent:start -- --config /path/to/agent-config.sqlite --import-config /path/to/seed.json --apply
+```
+
+日常通过控制台保存。暂未提供表单的管理项可离线修改，先把当前数据库导出为私有 JSON。保留其中的 `revision`，编辑后用 `--import-config` 预检并加 `--apply` 提交到原库。保存时会核对导出版本，并保留未变更部分的版本。
+
+```sh
+npm run agent:start -- --config /path/to/agent-config.sqlite --export-config /path/to/draft.json
+npm run agent:start -- --config /path/to/agent-config.sqlite --import-config /path/to/draft.json
+npm run agent:start -- --config /path/to/agent-config.sqlite --import-config /path/to/draft.json --apply
+```
+
+省略 `transport` 时使用正向连接。NapCat 使用反向 WebSocket 时，在控制台添加 `reverse-websocket` 连接并配置监听地址和路径，例如 `ws://127.0.0.1:6701/onebot/qq-main`。NapCat 使用同一个 access token 连接该地址。
 
 反向监听要求 access token，以及 OneBot 的 `X-Self-ID` 和 `X-Client-Role: Universal` 握手头。服务只接受精确路径及一个活动连接，随后查询 `get_login_info` 核验实际账号。监听地址使用 `ws://`，需要 TLS 时由部署代理提供。独立宿主保留监听直至收到可验证的账号，断线后继续监听，重新核验后恢复处理。正向与反向连接沿用同一回执、心跳和事件队列。
 
@@ -140,19 +166,19 @@ connections:
 ```sh
 npm ci
 npm run backend:build
-npm run agent:start -- --config /path/to/agent-host.yaml
+npm run agent:start -- --config /path/to/agent-config.sqlite
 ```
 
 也可以在已经安装构建依赖的仓库运行 `npm run agent:pack`。命令输出 `.release/agent-*` 下的发布包目录，并在旁边生成同名的 `.tar.gz`。交付到 Linux 时使用该归档，以保留 Chromium 启动器的执行权限。解包后从包目录安装锁定的运行依赖。
 
 ```sh
 npm ci --omit=dev --ignore-scripts
-npm start -- --config /path/to/agent-host.yaml
+npm start -- --config /path/to/agent-config.sqlite
 ```
 
-发布包要求 Node.js 22.12 或更高版本，包含 Core、QQ 适配器、启动入口和依赖锁。启动时核对构建与发布清单。把配置、Redis 数据和 `dataDir` 放在发布包外即可在替换版本时继续使用原绑定和存储分区。
+SQLite 配置使用 Node.js 22.13 或更高版本内置的 SQLite。发布包包含 Core、QQ 适配器、启动入口和依赖锁，启动时核对构建与发布清单。配置数据库、Redis 数据和 `dataDir` 放在发布包外，替换版本后继续沿用同一配置和存储分区。
 
-发布包的 `scripts/bl-chat-agent.service` 提供 systemd 模板，默认使用独立的 `bl-chat-agent` 用户和组。先创建该系统用户，将配置目录及 `dataDir` 交给该用户，保持目录 `0700`、凭据文件 `0600`；发布目录由 root 管理，只授予服务用户读取及目录遍历权限。模板使用 `/opt/bl-chat-agent/current`、`/opt/bl-chat-agent/config/agent-host.yaml` 及同目录的 `agent.env`，其他安装位置须同步修改。私有 HOME、XDG 和临时运行目录由 systemd 管理。
+发布包的 `scripts/bl-chat-agent.service` 使用独立的 `bl-chat-agent` 用户和组。用服务的运行账号导入配置，保持配置目录及 `dataDir` 权限 `0700`，数据库和凭据文件 `0600`。发布目录由 root 管理。模板使用 `/opt/bl-chat-agent/current`、`/opt/bl-chat-agent/config/agent-config.sqlite` 及同目录的 `agent.env`。私有 HOME、XDG 和临时运行目录由 systemd 管理。
 
 文字文档、知识卡和思维导图使用 Chromium，须以非 root 身份保留默认沙箱运行。已安装系统 Chromium 时，在 `agent.env` 中设置 `PUPPETEER_EXECUTABLE_PATH`；安装依赖可设置 `PUPPETEER_SKIP_DOWNLOAD=true` 复用该浏览器。启用渲染前，应使用服务的实际用户验证浏览器及字体可读、HOME 可写。调整现有配置文件的所有权会改变绑定版本；已有状态的 root 实例不应直接递归 chown 迁移。
 
@@ -161,7 +187,7 @@ npm start -- --config /path/to/agent-host.yaml
 连接真实部署前可以单独检查配置、绑定人设、Redis 连通性和每条 OneBot 连接的实际登录账号。从已安装的独立包运行检查。
 
 ```sh
-npm start -- --config /path/to/agent-host.yaml --check
+npm start -- --config /path/to/agent-config.sqlite --check
 ```
 
 检查读取启动所需的凭据，以 `PING` 检查 Redis 连通性，并向 OneBot 查询 `get_login_info`。结果列出在本宿主管理的账号下配置的仿真群、文字群和好友绑定数量，同时列出仿真总开关和私聊开关。检查期间丢弃平台入站事件，跳过宿主租约、模型请求及账本写入。配置失效、Redis 无法连接或任一账号不符时退出码非零。部署时仍在启动和每次重连核验登录账号。
@@ -182,7 +208,7 @@ Webhook 请求体形如 `{"version":1,"id":"<batch-id>","alerts":[{"stage":"mode
 
 ### 连接与入站队列
 
-每次连接及重连核对 `get_login_info` 的 QQ 号，收件按账号与显式会话绑定校验。独立宿主在读取仿真上下文期间保留已落入 Redis 的唤醒，在开始模型调用或动作前领取。断线发生在领取期间时，仍有效的唤醒写回待处理队列，重连后重新检查。已开始的仿真回合按实际动作回执结算，发送结果未知时跳过重发。OneBot WebSocket 没有事件确认与补投递协议，断线期间的事件由平台端决定是否送达。`simulation.enabled: false` 停用独立宿主的新消息处理和到期承诺。绑定文件热读取，连接、模型与 `agent-host.yaml` 设置在下次进程启动时读取。 [OneBot v11 正向 WebSocket](https://github.com/botuniverse/onebot-11/blob/master/communication/ws.md)
+每次连接及重连核对 `get_login_info` 的 QQ 号，收件按账号与显式会话绑定校验。独立宿主在读取仿真上下文期间保留已落入 Redis 的唤醒，在开始模型调用或动作前领取。断线发生在领取期间时，仍有效的唤醒写回待处理队列，重连后重新检查。已开始的仿真回合按实际动作回执结算，发送结果未知时跳过重发。OneBot WebSocket 没有事件确认与补投递协议，断线期间的事件由平台端决定是否送达。`simulation.enabled: false` 停用独立宿主的新消息处理和到期承诺。宿主装配连接、绑定和模型时加载同一配置版本。 [OneBot v11 正向 WebSocket](https://github.com/botuniverse/onebot-11/blob/master/communication/ws.md)
 
 仿真和群文字分别按完整平台账号排队，好友私聊按完整会话地址排队，每个账号最多同时处理四段私聊。OneBot 普通收件保持顺序，撤回和明确的隐私命令有独立的优先队列。WebSocket 缓冲达到水位会背压，等待 OneBot API 应答期间仍会读取帧；超出有界收件容量和普通入队出错分别记录。一个账号的引用查询或收件重试不阻塞其他账号。升级后首次启动会在连接平台之前分批将旧仿真收件队列移入对应账号队列，沿用原收件回执、绑定版本和互动标识。迁移可以从已经提交的批次继续。
 
@@ -192,7 +218,7 @@ OneBot 群消息可用消息段数组或 CQ 字符串。QQ 适配器把两种格
 
 独立群仿真可通过 `simGetForward` 查看本回合可见消息中的合并转发，参数是消息序号。适配器先用 `get_msg` 核对原消息的群号、消息 ID 和转发段，再用 `get_forward_msg` 展开最多三层。工具返回有界文字摘录，图片、语音和文件显示为类型标记。转发正文工具结果只用于当前回合。撤回、换绑、原消息无法核验或人物隐私规则变化会使读取失效。 [OneBot v11 合并转发](https://github.com/botuniverse/onebot-11/blob/master/api/public.md#get_forward_msg-获取合并转发消息)
 
-在 `agent-host.yaml` 添加可选的 `vision` 后，独立群仿真可以查看本轮可见消息的附图，也可以通过回复消息查看已核验的同群原图。视觉模型需支持 OpenAI Chat Completions 的图片内容。修改配置后重启。
+配置可选的 `host.vision` 后，独立群仿真可以查看本轮可见消息的附图，也可以通过回复消息查看已核验的同群原图。视觉模型需支持 OpenAI Chat Completions 的图片内容。修改配置后重新装配服务。
 
 ```yaml
 vision:
@@ -209,7 +235,7 @@ QQ 扩展动作与文字触发的同一次纯同步权限判断，共享一份�
 
 ### 人物事实学习
 
-独立 QQ 群仿真可以从群友的新自述学习结构化人物事实。在 `agent-host.yaml` 显式配置提取模型，设置凭据环境变量并重启。
+独立 QQ 群仿真可以从群友的新自述学习结构化人物事实。在宿主设置中配置提取模型，设置凭据环境变量并重启。
 
 ```yaml
 personMemoryExtraction:
@@ -376,7 +402,7 @@ groupMemory:
 
 ### 联网搜索与网页读取
 
-独立群仿真的联网能力默认关闭。在 `agent-host.yaml` 显式配置以下字段，设置搜索服务的环境变量后重启。两项可分别配置。
+独立群仿真的联网能力默认关闭。在配置包的 `host` 下声明以下字段，设置搜索服务的环境变量后重启。两项可分别配置。
 
 ```yaml
 tools:
@@ -413,7 +439,7 @@ Core 在成功读取网页时从正文选一小段与提问相关的原文，附
 
 ### GitHub 仓库查询
 
-在 `agent-host.yaml` 显式启用公开仓库查询，然后重启。默认以匿名身份访问，不读取插件或部署机已有的 GitHub 凭据。可选 `tokenEnv` 仅用于提高 GitHub API 额度；声明后启动及 `--check` 都要求该环境变量存在，`--check` 不调用 GitHub。
+在宿主设置中启用公开仓库查询，然后重启。默认以匿名身份访问。可选 `tokenEnv` 用于提高 GitHub API 额度，声明后启动及 `--check` 都要求该环境变量存在。`--check` 只验证配置。
 
 ```yaml
 tools:
@@ -507,7 +533,7 @@ tools:
 
 这两项工具沿用普通工具策略。自主回合还须在 `simulation.autonomousTools` 显式授权对应名称；当前不进入好友私聊或群文字模式。移除对应后端并重启即可停用，`--check` 检查已声明的凭据但不调用图片服务。没有生产图片任务迁移；进程中断后的既有动作回执按原规则记为待核实，不自动重新生成或重发。
 
-原群使用角色一致性审核时，可在独立宿主配置单独的 OpenAI 兼容审核模型。将以下字段并入 `agent-host.yaml`，设置对应环境变量并重启。审核密钥通过单独声明的环境变量读取。
+原群使用角色一致性审核时，可在独立宿主配置单独的 OpenAI 兼容审核模型。将以下字段并入配置包的 `host`，设置对应环境变量并重启。审核密钥通过单独声明的环境变量读取。
 
 ```yaml
 simulation:
@@ -973,12 +999,12 @@ Core先持久领取再确认消费入站，最多8个活跃任务、全局下载
 
 ### 接续现有 QQ 插件的会话状态
 
-独立包的启动入口也提供按会话迁移。将 `BL_AGENT_REDIS_URL` 指向现有插件使用的同一个 Redis 数据库，独立宿主从该数据库下的 `bl-agent:<instance>:` 分区读取。来源与目标配置须显式绑定同一个 QQ 账号、会话、连接 ID、角色和人设。目标仍使用 `agent-host.yaml` 旁的角色绑定文件。
+独立包的启动入口也提供按会话迁移。将 `BL_AGENT_REDIS_URL` 指向现有插件使用的同一个 Redis 数据库，独立宿主从该数据库下的 `bl-agent:<instance>:` 分区读取。来源与目标须显式绑定同一个 QQ 账号、会话、连接 ID、角色和人设。目标绑定从独立配置库读取。
 
 停止会处理所选会话及提醒和承诺账本的源 QQ 插件进程、控制台写入及目标宿主后，先预览。预览读取配置、Redis 和本地用量账本。
 
 ```sh
-node scripts/start-agent.mjs --config /path/to/agent-host.yaml \
+node scripts/start-agent.mjs --config /path/to/agent-config.sqlite \
   --migrate-qq-state --source-bindings /path/to/plugin/config/agent-bindings.yaml \
   --connection qq-main --group 111111
 ```
@@ -1049,14 +1075,14 @@ node scripts/start-agent.mjs --config /path/to/agent-host.yaml \
 
 ### 启用好友私聊
 
-在 `agent-host.yaml` 增加以下设置，然后重启独立进程。私聊默认关闭。示例中的 `qq-secondary` 也需要在独立宿主的 `connections` 中配置对应的 OneBot 连接，或者将私聊绑定指向独立宿主已经配置的账号。
+在控制台「对话配置」启用已绑定的好友私聊，然后应用宿主配置。初始配置包也支持 `host.privateChat`。私聊默认关闭。示例中的 `qq-secondary` 需要配置对应的 OneBot 连接。
 
 ```yaml
 privateChat:
   enabled: true
 ```
 
-好友准入由 `agent-bindings.yaml` 中 `kind: private` 的会话声明。处理 OneBot 上报的好友文字。临时会话不参与，`#` 命令仅接收下述本人记忆操作。附件字节及引用原文不随私聊文字入队；已显式授权的工具可按当前或引用原消息重新核验读取。模型请求使用当前角色人设、好友文字、同一会话的近期对话和最多四条本好友在本会话自述的结构化事实。回复通过 OneBot `send_private_msg` 发给原好友。 [OneBot v11 私聊事件](https://github.com/botuniverse/onebot-11/blob/master/event/message.md#私聊消息) [OneBot v11 私聊发送](https://github.com/botuniverse/onebot-11/blob/master/api/public.md#send_private_msg-发送私聊消息)
+在控制台或配置包的 `bindings.bindings` 登记 `kind: private` 的会话，即可准入对应好友。处理 OneBot 上报的好友文字。临时会话不参与，`#` 命令仅接收下述本人记忆操作。附件字节及引用原文不随私聊文字入队；已显式授权的工具可按当前或引用原消息重新核验读取。模型请求使用当前角色人设、好友文字、同一会话的近期对话和最多四条本好友在本会话自述的结构化事实。回复通过 OneBot `send_private_msg` 发给原好友。 [OneBot v11 私聊事件](https://github.com/botuniverse/onebot-11/blob/master/event/message.md#私聊消息) [OneBot v11 私聊发送](https://github.com/botuniverse/onebot-11/blob/master/api/public.md#send_private_msg-发送私聊消息)
 
 近期对话按完整会话地址、角色绑定版本、人设版本及人物记忆失效水位核对，每段最多保留 6 轮已确认收发，最后一次确认后 1 小时过期。好友撤回会清空该会话的近期上下文，让匹配的结构化事实及尚未发送的旧回复失效。直接召回结果只进入本轮模型请求。私聊按完整会话地址排队，同会话保序，不同会话在账号内可并行。宿主在连接平台前按会话迁移旧账号队列，保留原收件回执与消息内容。换绑使已排队的旧消息和未发送的旧回复失效。重启后可处理仍在有效期内且尚未尝试发送的收件。已有投递尝试的收件按去重记录跳过重发。一次性提醒支持登记、到期投递和本人查看、取消。好友也可托付到指定共同群发送文本。仅传送本次私聊明确指定的原文，登记和实际发送前都复核私聊来源、本账号、同一 Agent 的目标群绑定及委托人仍在群内。结果未知时保留回执，避免重发。 [OneBot v11 好友消息撤回](https://github.com/botuniverse/onebot-11/blob/master/event/notice.md#好友消息撤回)
 
@@ -1093,32 +1119,37 @@ featureSwitches:
 
 ### 独立控制台
 
-独立发布包包含控制台前端和宿主内置 HTTP 服务，无需启动 Yunzai 或单独执行 `console:start`。在 `agent-host.yaml` 中显式开启：
+独立发布包包含控制台前端和宿主内置 HTTP 服务。配置包中 `host` 的 `console` 设置可以写成以下形式。
 
-```yaml
-console:
-  enabled: true
-  host: 127.0.0.1
-  port: 8787
-  allowSetup: true
+```json
+{
+  "console": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8787,
+    "allowSetup": true
+  }
+}
 ```
 
 ```sh
-node scripts/start-agent.mjs --config /path/to/agent-host.yaml
+node scripts/start-agent.mjs --config /path/to/agent-config.sqlite
 ```
 
 此配置在 `http://127.0.0.1:8787` 提供控制台，首次访问可创建用户名和密码，之后通过登录会话访问。`allowSetup` 默认关闭，且只允许回环监听地址；已有用户时不能再次初始化。用户文件默认位于 `dataDir` 下的 `console/users.json`。可用 `legacyUserFile` 指定兼容格式的旧用户文件，仅在目标用户文件不存在时导入，源文件保留。
 
 `tokenEnv` 可选，值为环境变量名；配置后正常启动要求该变量有值。令牌可通过 `X-Console-Token` 请求头认证，也可在尚无用户时授权首次创建用户。`host` 默认 `127.0.0.1`，`port` 默认 `8787`；`frontendDir` 默认使用包内前端，`userFile`、`legacyUserFile` 和自定义 `frontendDir` 的相对路径以宿主配置目录为基准。
 
-控制台通过候选预览和事务提交宿主配置、人设库及绑定文件。实际保存变更后，已加载版本与已保存版本分别记录，当前执行实例退休。直接使用标准启动器时，提交响应送达后会在同一进程重新加载宿主。使用附带的 systemd 重启配置时，可通过控制台的「重启并应用配置」启动新进程。退休期间仍可认证读取工作区、配置状态和运行观测，其他业务操作等待宿主恢复。提交结果未知时先检查事务状态，停止宿主后再离线恢复：
+控制台通过候选预览和单次 SQLite 事务提交宿主配置、人设库及绑定数据。宿主配置事务保存变更时分别记录已加载和已保存版本，当前执行实例退休。直接使用标准启动器时，提交响应送达后会在同一进程重新加载宿主。使用附带的 systemd 重启配置时，可通过控制台的「重启并应用配置」启动新进程。退休期间仍可认证读取工作区、配置状态和运行观测，其他业务操作等待宿主恢复。
+
+提交结果未知时先核对控制台的已保存版本。SQLite 路径可离线检查能否读到有效配置。需要恢复时先停止宿主，再以可写方式打开数据库，让 SQLite 处理未完成的事务。
 
 ```sh
-node scripts/start-agent.mjs --config /path/to/agent-host.yaml --inspect-config-transaction
-node scripts/start-agent.mjs --config /path/to/agent-host.yaml --recover-config
+node scripts/start-agent.mjs --config /path/to/agent-config.sqlite --inspect-config-transaction
+node scripts/start-agent.mjs --config /path/to/agent-config.sqlite --recover-config
 ```
 
-两条命令须分别运行，也不能与 `--check` 或迁移参数混用；它们不启动 QQ、Redis 或模型。无有效 commit 时恢复旧配置，有有效 commit 时完成新配置；损坏记录或未知文件身份会保留现场并拒绝覆盖。正常启动不会抢残留锁，不应通过删除锁或事务文件绕过恢复。恢复后再正常启动宿主。
+检查和恢复独立运行，只输出状态和版本回执。显式使用旧 YAML 路径的部署继续使用跨文件事务及原有日志恢复流程。用实际宿主 YAML 路径运行上述命令时，恢复依据日志中的有效提交记录决定保留旧配置或完成新配置。损坏记录和未知文件身份会保留现场。恢复后再正常启动宿主。
 
 ### 统一认知
 

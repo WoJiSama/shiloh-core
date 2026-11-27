@@ -1,15 +1,18 @@
 import fs, { constants, type BigIntStats } from 'node:fs'
 import path from 'node:path'
 import { isUtf8 } from 'node:buffer'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { types } from 'node:util'
 import { AgentConsoleError } from '../contracts/agentConsole.js'
+import { initializeStandaloneConfigDatabase, isStandaloneConfigDatabase, nextStandaloneConfigDatabaseContent, openStandaloneConfigDatabase,
+  readStandaloneConfigDatabase, writeStandaloneConfigDatabase } from './standaloneAgentConfigDatabase.js'
+import type { ConfigDatabaseContent } from './standaloneAgentConfigDatabase.js'
 import { commitConfigTransaction, inspectConfigTransaction, readConfigTransactionGroup, recoverConfigTransaction, tryConfigTransactionLease } from './standaloneAgentConfigTransaction.js'
 import type { ConfigRecoveryHooks, ConfigTransactionHooks, ConfigTransactionInspection, TransactionRoot } from './standaloneAgentConfigTransaction.js'
 export type { ConfigRecoveryHooks, ConfigTransactionHooks, ConfigTransactionInspection } from './standaloneAgentConfigTransaction.js'
 
-export type ConfigSources = Readonly<{ host: string; personas: string | undefined; bindings: string }>
-export type ConfigSourceName = keyof ConfigSources
+export type ConfigSourceName = 'host' | 'personas' | 'bindings'
+export type ConfigSources = Readonly<{ host: string; personas: string | undefined; bindings: string; format?: 'json' }>
 export interface SourceSnapshot {
   readonly hostFile: string
   readonly root: string
@@ -29,6 +32,7 @@ const observations = new WeakMap<Root, SourceSnapshot>()
 const verifiedFiles = new WeakMap<Root, Readonly<Record<ConfigSourceName, FileRead>>>()
 const maximum = 2 * 1024 * 1024
 const sourceKeys = ['host', 'personas', 'bindings'] as const
+const importStage = /^\.agent-config\.import-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u
 let configReadCount = 0, configReadMs = 0
 export function standaloneConfigReadWork() {
   return { configReadCount, configReadMs }
@@ -67,12 +71,12 @@ function checkRoot(root: Root) {
 function names(root: Root): Record<ConfigSourceName, string> {
   return { host: root.hostFile, personas: path.join(root.root, 'persona-library.yaml'), bindings: path.join(root.root, 'agent-bindings.yaml') }
 }
-function readFile(name: string, optional: boolean, previous?: FileRead): FileRead {
+function readFile(name: string, optional: boolean, previous?: FileRead, limit = maximum): FileRead {
   let fd: number | undefined
   try {
     fd = fs.openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     const before = fs.fstatSync(fd, { bigint: true })
-    if (!before.isFile() || before.nlink !== 1n || before.uid !== BigInt(process.getuid!()) || before.size > BigInt(maximum) ||
+    if (!before.isFile() || before.nlink !== 1n || before.uid !== BigInt(process.getuid!()) || before.size > BigInt(limit) ||
         (before.mode & 0o022n) !== 0n || !sameFileState(before, stat(name))) fail('unavailable')
     const bytes = fs.readFileSync(fd), after = fs.fstatSync(fd, { bigint: true })
     if (bytes.length !== Number(after.size) || !sameFileState(before, after) || !sameFileState(after, stat(name))) fail()
@@ -89,7 +93,46 @@ function readFile(name: string, optional: boolean, previous?: FileRead): FileRea
   } finally { if (fd !== undefined) fs.closeSync(fd) }
 }
 function transactionRoot(root: Root): TransactionRoot { return { root: root.root, hostFile: root.hostFile, ensureRoot: () => checkRoot(root) } }
+
+function privateFile(file: BigIntStats, links = 1n): boolean {
+  return file.isFile() && file.nlink === links && file.uid === BigInt(process.getuid!()) && (file.mode & 0o077n) === 0n
+}
+
+function databaseFile(root: Root): BigIntStats {
+  checkRoot(root)
+  const current = stat(root.hostFile)
+  const journal = fs.lstatSync(root.hostFile + '-journal', { bigint: true, throwIfNoEntry: false })
+  if (!privateFile(current) || journal && !privateFile(journal) ||
+      ['-wal', '-shm'].some(suffix => fs.lstatSync(root.hostFile + suffix, { throwIfNoEntry: false }))) return fail('unavailable')
+  return current
+}
+
+function openDatabase(root: Root, readOnly: boolean) {
+  const current = databaseFile(root)
+  const ensureCurrent = () => { if (!identity(current, databaseFile(root))) fail() }
+  const db = openStandaloneConfigDatabase(root.hostFile, readOnly)
+  try { ensureCurrent(); return { db, ensureCurrent, identity: current } }
+  catch (error) { db.close(); throw error }
+}
+
+function readDatabaseSnapshot(root: Root, opened?: ReturnType<typeof openDatabase>): SourceSnapshot {
+  const session = opened ?? openDatabase(root, true)
+  try {
+    return measureConfigRead(() => {
+      session.ensureCurrent()
+      const { sources, versions, generation } = readStandaloneConfigDatabase(session.db)
+      session.ensureCurrent()
+      const fence = digest(JSON.stringify([generation, versions, sources]))
+      const revision = digest(JSON.stringify([root.hostFile, String(session.identity.dev), String(session.identity.ino), fence]))
+      const snapshot = Object.freeze({ hostFile: root.hostFile, root: root.root, sources, versions, fence, revision })
+      snapshots.set(snapshot, root)
+      return snapshot
+    })
+  } finally { if (!opened) session.db.close() }
+}
+
 function readRoot(root: Root): SourceSnapshot {
+  if (isStandaloneConfigDatabase(root.hostFile)) return readDatabaseSnapshot(root)
   const { reads, snapshot } = measureConfigRead(() => readConfigTransactionGroup(transactionRoot(root), fence => {
     const files = names(root), previous = verifiedFiles.get(root)
     const host = readFile(files.host, false, previous?.host), personas = readFile(files.personas, true, previous?.personas),
@@ -114,7 +157,52 @@ export interface StandaloneAgentConfigLock {
   commit(target: ConfigSourceName, source: string, expected: SourceSnapshot, ensureCurrent: () => void, onCommitted: () => void): SourceSnapshot
   release(): void
 }
+
+function tryDatabaseLock(root: Root): StandaloneAgentConfigLock | undefined {
+  let session: ReturnType<typeof openDatabase> | undefined
+  try {
+    session = openDatabase(root, false)
+    session.db.exec('BEGIN IMMEDIATE')
+  } catch (error) {
+    session?.db.close()
+    const code = (error as { errcode?: number })?.errcode
+    if (code === 5 || code === 6) return undefined
+    throw error
+  }
+  const opened = session, { db } = opened
+  let released = false
+  const ensureCurrent = () => { if (released) fail(); opened.ensureCurrent() }
+  const read = () => { ensureCurrent(); return readDatabaseSnapshot(root, opened) }
+  const commitSources = (next: ConfigSources, expected: SourceSnapshot, hooks: ConfigTransactionHooks) => {
+    ensureCurrent(); hooks.ensureActorCurrent()
+    if (!snapshots.has(expected) || read().revision !== expected.revision) return fail()
+    if (sourceKeys.every(key => next[key] === expected.sources[key])) return { txId: '', snapshot: expected }
+    const content = nextStandaloneConfigDatabaseContent(next, readStandaloneConfigDatabase(db))
+    const txId = content.generation
+    hooks.onFenced(txId)
+    ensureCurrent(); hooks.ensureActorCurrent()
+    writeStandaloneConfigDatabase(db, content)
+    ensureCurrent(); hooks.ensureActorCurrent()
+    db.exec('COMMIT')
+    hooks.onCommitPublished(txId)
+    // Keep the published revision stable while its HTTP receipt is verified.
+    db.exec('BEGIN IMMEDIATE')
+    if (readStandaloneConfigDatabase(db).generation !== txId) return fail()
+    return { txId, snapshot: read() }
+  }
+  return {
+    ensureCurrent, read, commitSources,
+    release() { if (!released) { released = true; db.close() } },
+    commit(target, source, expected, guard, onCommitted) {
+      if (!sourceKeys.includes(target) || typeof source !== 'string') return fail()
+      return commitSources({ ...expected.sources, [target]: source }, expected,
+        { ensureActorCurrent: guard, onFenced() {}, onCommitPublished: onCommitted }).snapshot
+    },
+  }
+}
+
 function tryLock(root: Root): StandaloneAgentConfigLock | undefined {
+  if (isStandaloneConfigDatabase(root.hostFile)) return tryDatabaseLock(root)
   const io = transactionRoot(root), lease = tryConfigTransactionLease(io)
   if (!lease) return undefined
   const commitSources = (next: ConfigSources, expected: SourceSnapshot, hooks: ConfigTransactionHooks) => {
@@ -136,7 +224,12 @@ function tryLock(root: Root): StandaloneAgentConfigLock | undefined {
 }
 /** Only fixed transaction metadata is exposed; source bytes and arbitrary errors are never returned. */
 export function inspectStandaloneAgentConfigTransaction(hostFile: string): ConfigTransactionInspection {
-  try { return inspectConfigTransaction(transactionRoot(rootFor(hostFile))) }
+  try {
+    const root = rootFor(hostFile)
+    if (!isStandaloneConfigDatabase(root.hostFile)) return inspectConfigTransaction(transactionRoot(root))
+    readRoot(root)
+    return { phase: 'clean' }
+  }
   catch { return { phase: 'blocked', reason: 'invalid-state' } }
 }
 /** Explicit offline recovery only. Normal readers and acquire never reclaim an abandoned owner. */
@@ -144,6 +237,28 @@ export function recoverStandaloneAgentConfigTransaction(hostFile: string, hooks:
   readonly phase: 'clean' | 'recovered'; readonly txId?: string; readonly direction?: 'undo' | 'redo'; readonly snapshot: SourceSnapshot
 } {
   const root = rootFor(hostFile)
+  if (isStandaloneConfigDatabase(root.hostFile)) {
+    hooks.ensureOfflineCurrent()
+    const published = stat(root.hostFile)
+    const interruptedImport = privateFile(published, 2n)
+    if (interruptedImport) {
+      // A crash between the no-replace publication and removal of its private staging name.
+      const aliases = fs.readdirSync(root.root).filter(name => importStage.test(name)).map(name => path.join(root.root, name))
+        .filter(name => identity(stat(name), published))
+      const alias = aliases[0]
+      if (aliases.length !== 1 || !alias) return fail()
+      const db = openStandaloneConfigDatabase(root.hostFile, true)
+      try { readStandaloneConfigDatabase(db) } finally { db.close() }
+      hooks.ensureOfflineCurrent(); checkRoot(root)
+      if (!sameFileState(published, stat(root.hostFile)) || !sameFileState(published, stat(alias))) return fail()
+      fs.unlinkSync(alias)
+      syncConfigDirectory(root.root)
+    }
+    const lock = tryDatabaseLock(root)
+    if (!lock) return fail()
+    try { hooks.ensureOfflineCurrent(); return { phase: interruptedImport ? 'recovered' : 'clean', snapshot: lock.read() } }
+    finally { lock.release() }
+  }
   return recoverConfigTransaction(transactionRoot(root), hooks, () => readRoot(root))
 }
 /** Startup reader: one synchronous, non-reentrant root lock; never accepts an async callback. */
@@ -180,18 +295,77 @@ export function observeStandaloneAgentSourceSnapshot(snapshot: SourceSnapshot, c
   if (observations.has(root)) return { current: true, accepted: evaluate() }
   let entry: SourceSnapshot
   try { entry = readRoot(root) } catch { return failed }
-  const reads = verifiedFiles.get(root)!
+  const reads = verifiedFiles.get(root)
   observations.set(root, entry)
   let accepted: boolean
   try { accepted = evaluate() } finally { observations.delete(root) }
   try {
+    if (isStandaloneConfigDatabase(root.hostFile)) {
+      const current = readRoot(root).revision === entry.revision
+      return { current, accepted: current && accepted }
+    }
     // Compare every exit byte and file identity against the already verified
     // entry read set, inside a fresh transaction fence.
     const files = names(root)
     const current = measureConfigRead(() => readConfigTransactionGroup(transactionRoot(root), fence =>
-      fence === entry.fence && sourceKeys.every(key => readFile(files[key], key === 'personas', reads[key]) === reads[key])))
+      !!reads && fence === entry.fence && sourceKeys.every(key => readFile(files[key], key === 'personas', reads[key]) === reads[key])))
     return { current, accepted: current && accepted }
   } catch { return failed }
+}
+
+export function checkStandaloneAgentConfigDatabaseDestination(file: string): string {
+  const root = rootFor(file)
+  if (!isStandaloneConfigDatabase(root.hostFile) || fs.lstatSync(root.hostFile, { throwIfNoEntry: false }) ||
+      ['-journal', '-wal', '-shm'].some(suffix => fs.lstatSync(root.hostFile + suffix, { throwIfNoEntry: false }))) return fail()
+  return root.hostFile
+}
+
+export function readStandaloneAgentConfigImportFile(file: string): { readonly source: string; readonly isCurrent: () => boolean } {
+  const root = rootFor(file)
+  const input = readFile(root.hostFile, false, undefined, 8 * 1024 * 1024)
+  return { source: input.source!, isCurrent: () => {
+    checkRoot(root)
+    return readFile(root.hostFile, false, input, 8 * 1024 * 1024) === input
+  } }
+}
+
+function syncConfigDirectory(root: string): void {
+  const directory = fs.openSync(root, constants.O_RDONLY | constants.O_DIRECTORY)
+  try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+}
+
+function publishConfigFile(file: string, write: (stage: string) => void, ensureCurrent: () => void): void {
+  const root = rootFor(file)
+  if (fs.lstatSync(root.hostFile, { throwIfNoEntry: false })) return fail()
+  const stage = path.join(root.root, '.agent-config.import-' + randomUUID())
+  const fd = fs.openSync(stage, 'wx', 0o600)
+  const staged = fs.fstatSync(fd, { bigint: true })
+  fs.closeSync(fd)
+  try {
+    write(stage)
+    checkRoot(root)
+    ensureCurrent()
+    if (!identity(staged, stat(stage))) return fail()
+    fs.linkSync(stage, root.hostFile)
+  } finally {
+    checkRoot(root)
+    if (identity(staged, stat(stage))) fs.unlinkSync(stage)
+  }
+  syncConfigDirectory(root.root)
+}
+
+/** A validated import is visible at its final path only after SQLite has committed. */
+export function publishStandaloneAgentConfigDatabase(file: string, content: ConfigDatabaseContent, ensureCurrent: () => void): void {
+  publishConfigFile(checkStandaloneAgentConfigDatabaseDestination(file),
+    stage => initializeStandaloneConfigDatabase(stage, content), ensureCurrent)
+}
+
+export function exportStandaloneAgentConfigFile(file: string, source: string, ensureCurrent: () => void): void {
+  if (path.extname(file).toLowerCase() !== '.json' || Buffer.byteLength(source) > 8 * 1024 * 1024) return fail()
+  publishConfigFile(file, stage => {
+    const fd = fs.openSync(stage, constants.O_WRONLY | constants.O_NOFOLLOW)
+    try { fs.writeFileSync(fd, source); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+  }, ensureCurrent)
 }
 /** Compatibility entry point using the complete synchronous configuration observation. */
 export function withStandaloneAgentConfigObservation(snapshot: SourceSnapshot, check: () => boolean): boolean {

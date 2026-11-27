@@ -1,6 +1,5 @@
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import YAML from 'yaml'
 import type { ConversationAddress, PlatformConnection } from '../contracts/agentBinding.js'
 import type { ExecutionConfig } from '../contracts/modelExecution.js'
 import { decodeModelContextLimits } from '../modules/models/domain/requestContext.js'
@@ -48,6 +47,8 @@ import type { ConfigSources, SourceSnapshot } from './standaloneAgentConfigSourc
 import type { ConsoleModelSlot, ConsoleModelView, ValidatedConsoleCandidate } from './standaloneAgentConsolePersistence.js'
 import { inspectStandaloneAgentSourceSnapshot, observeStandaloneAgentSourceSnapshot, readStandaloneAgentSourceSnapshot } from './standaloneAgentConfigSources.js'
 import type { AgentConsoleJson } from '../contracts/agentConsole.js'
+import { readConfigJson, readStandaloneConfigDocument } from './standaloneAgentConfigDocument.js'
+import { isStandaloneConfigDatabase } from './standaloneAgentConfigDatabase.js'
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('独立宿主配置应为对象')
@@ -449,9 +450,10 @@ function readTools(value: unknown, env: NodeJS.ProcessEnv, requireCredentials: b
   return { qqActions, deferredActions, localEmoji, ...(deltaForce ? { deltaForce } : {}), ...(search ? { search } : {}), ...(web ? { web } : {}), ...(images ? { images } : {}), ...(imageSearch ? { imageSearch } : {}), ...(mcp ? { mcp } : {}), ...(github ? { github } : {}), ...(modrinth ? { modrinth } : {}), ...(rendering ? { rendering } : {}), ...(excel ? { excel } : {}), ...(files ? { files } : {}), ...(voice ? { voice } : {}), ...(music ? { music } : {}), ...(pixiv.enabled ? { pixiv } : {}), ...(videoAnalysis ? { videoAnalysis } : {}), ...(videoSearch.enabled ? { videoSearch } : {}), ...(magnetSearch.enabled ? { magnetSearch } : {}), ...(interactions ? { interactions } : {}) }
 }
 
-function parseSource(source: string, label: string): Record<string, unknown> {
+function parseSource(source: string, label: string, format: ConfigSources['format']): Record<string, unknown> {
   if (typeof source !== 'string' || Buffer.byteLength(source) > 2 * 1024 * 1024) throw new Error(`${label} 配置源无效`)
-  const document = YAML.parseDocument(source)
+  if (format === 'json') return readConfigJson(source)
+  const document = readStandaloneConfigDocument(source, format)
   if (document.errors.length) throw new Error(`无法解析 ${label}`)
   return object(document.toJS())
 }
@@ -470,9 +472,9 @@ function safeJsonObject(value: Record<string, unknown>): Readonly<Record<string,
   return safeJson(value) as Readonly<Record<string, AgentConsoleJson>>
 }
 
-/** Strict source templates; never fall back to a cached library after invalid YAML or references. */
-function parsedPersonaLibrary(source: string | undefined, base: { name?: string; [key: string]: unknown }) {
-  const raw = source === undefined ? {} : parseSource(source, 'persona-library.yaml')
+/** Strict source templates; invalid sources or references invalidate the snapshot. */
+function parsedPersonaLibrary(source: string | undefined, base: { name?: string; [key: string]: unknown }, format: ConfigSources['format']) {
+  const raw = source === undefined ? {} : parseSource(source, '人设库', format)
   const entries = raw.personas === undefined ? [] : raw.personas
   if (!Array.isArray(entries) || entries.length > 500) throw new Error('人设库 personas 必须是不超过 500 项的列表')
   const byId = new Map<string, ReturnType<typeof normalizePersonaEntry>>(), names = new Set<string>()
@@ -531,7 +533,7 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   isConfigCurrent?(): boolean
 }) {
   const directory = path.dirname(file)
-  const raw = parseSource(input.sources.host, path.basename(file))
+  const raw = parseSource(input.sources.host, path.basename(file), input.sources.format)
   const featureSwitches = normalizeAgentFeatureSwitches(raw.featureSwitches)
   if (raw.version !== 1 || typeof raw.instance !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(raw.instance)) throw new Error('独立宿主配置需要 version: 1 和有效的 instance')
   const instance = raw.instance
@@ -620,11 +622,11 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
   const privateTextTools: readonly string[] = Object.freeze([...privateAllowTools])
   if (raw.systemContent !== undefined && typeof raw.systemContent !== 'string') throw new Error('systemContent 必须是文本')
   const systemContent = typeof raw.systemContent === 'string' ? raw.systemContent : ''
-  const rawBindings = parseSource(input.sources.bindings, 'agent-bindings.yaml')
+  const rawBindings = parseSource(input.sources.bindings, '角色绑定', input.sources.format)
   const bindings = createAgentBindingDirectory(rawBindings, input.bindingRevision, validateQqBindingAddress)
   const diceEngineConfig = readStandaloneDiceEngine(raw.dice, bindings.listBindings())
   const readBindings = () => input.readBindings ? input.readBindings(bindings) : bindings
-  const library = parsedPersonaLibrary(input.sources.personas, hostConfig.persona ?? {})
+  const library = parsedPersonaLibrary(input.sources.personas, hostConfig.persona ?? {}, input.sources.format)
   for (const value of rawBindings.agents as unknown[]) {
     const agent = object(value)
     if (!library.detailById(String(agent.personaId))) throw new Error('角色绑定引用的人设不存在')
@@ -774,15 +776,17 @@ function decodeStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, optio
 
 /** Complete offline validation of caller-supplied source bytes in the original host directory. */
 export function createStandaloneAgentCandidateValidator(file: string, env: NodeJS.ProcessEnv, options?: {
-  requireCredentials?: boolean; sourceSnapshot?: SourceSnapshot
+  requireCredentials?: boolean; sourceSnapshot?: Pick<SourceSnapshot, 'hostFile' | 'sources' | 'versions'>
 }): (sources: ConfigSources) => ValidatedConsoleCandidate {
   const hostFile = path.resolve(file)
   if (options?.sourceSnapshot && options.sourceSnapshot.hostFile !== hostFile) throw new Error('配置候选快照不属于当前宿主')
   return sources => {
+    if (isStandaloneConfigDatabase(hostFile) !== (sources.format === 'json')) throw new Error('配置候选格式与宿主不一致')
     const result = decodeStandaloneAgentConfig(hostFile, env, options, { sources,
       bindingRevision: options?.sourceSnapshot?.sources.bindings === sources.bindings ? options.sourceSnapshot.versions.bindings
         : createHash('sha256').update(sources.bindings).digest('hex'),
-      hostVersion: createHash('sha256').update(sources.host).digest('hex') })
+      hostVersion: options?.sourceSnapshot?.sources.host === sources.host ? options.sourceSnapshot.versions.host
+        : createHash('sha256').update(sources.host).digest('hex') })
     result.config.checkBindings()
     return result.candidate
   }
@@ -808,7 +812,7 @@ export function readStandaloneAgentConfig(file: string, env: NodeJS.ProcessEnv, 
         // Preserve the initial directory identity used by checkBindings while its revision is unchanged.
         if (current.versions.bindings === sourceSnapshot.versions.bindings) return initial
         if (liveBindingRevision !== current.versions.bindings) {
-          liveBindings = createAgentBindingDirectory(parseSource(current.sources.bindings, 'agent-bindings.yaml'), current.versions.bindings, validateQqBindingAddress)
+          liveBindings = createAgentBindingDirectory(parseSource(current.sources.bindings, '角色绑定', current.sources.format), current.versions.bindings, validateQqBindingAddress)
           liveBindingRevision = current.versions.bindings
         }
         return liveBindings

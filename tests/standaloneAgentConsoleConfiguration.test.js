@@ -10,11 +10,11 @@ import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 
 const [{ readStandaloneAgentConfig, createStandaloneAgentCandidateValidator },
   { createStandaloneAgentConsolePersistence }, { createStandaloneAgentConsole },
-  { createStandaloneAgentConsoleServices }, sources, { openStandaloneAgentConsoleAuth }] = await Promise.all([
+  { createStandaloneAgentConsoleServices }, sources, { openStandaloneAgentConsoleAuth }, { exportStandaloneAgentConfig, importStandaloneAgentConfig }] = await Promise.all([
   load('bootstrap/standaloneAgentConfig.js'), load('bootstrap/standaloneAgentConsolePersistence.js'),
   load('bootstrap/standaloneAgentConsole.js'), load('bootstrap/standaloneAgentConsoleServices.js'),
   load('bootstrap/standaloneAgentConfigSources.js'),
-  load('bootstrap/standaloneAgentConsoleAuth.js'),
+  load('bootstrap/standaloneAgentConsoleAuth.js'), load('bootstrap/standaloneAgentConfigImport.js'),
 ])
 
 const tokens = { admin: 'configuration-admin-token-4918', second: 'configuration-second-token-5921' }
@@ -64,7 +64,8 @@ function diskTree(root) {
 async function fixture(t, options = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'agent-console-configuration-')), root = fs.realpathSync(directory)
   t.after(() => rm(root, { recursive: true, force: true }))
-  const hostFile = path.join(root, 'agent-host.yaml'), bindingFile = path.join(root, 'agent-bindings.yaml'), personaFile = path.join(root, 'persona-library.yaml')
+  const oldHostFile = path.join(root, 'agent-host.yaml'), bindingFile = path.join(root, 'agent-bindings.yaml'), personaFile = path.join(root, 'persona-library.yaml')
+  const hostFile = options.sqlite ? path.join(root, 'agent-config.sqlite') : oldHostFile
   const host = { version: 1, instance: 'configuration-integration', dataDir: './unopened-data',
     model: { baseUrl: 'https://models.example.test/v1', name: 'fixture-main', apiKeyEnv: 'MAIN_KEY' },
     persona: { name: 'Default persona', identity: 'A single daily self' },
@@ -73,7 +74,7 @@ async function fixture(t, options = {}) {
     simulation: { enabled: false, extraTools: [], toolPolicy: { mode: 'legacy', allowTools: [], denyTools: [] } },
     privateChat: { enabled: false, allowTools: ['likeTool'] },
     extensionOwned: { privateSentinel: 'HOST_PRIVATE_EXTENSION_2964', preserved: true } }
-  await writeFile(hostFile, '# keep host comment\n' + YAML.stringify(host))
+  await writeFile(oldHostFile, '# keep host comment\n' + YAML.stringify(host))
   await writeFile(bindingFile, '# keep bindings comment\n' + YAML.stringify({ version: 1,
     agents: [{ id: 'daily', personaId: 'default' }, { id: 'reader', personaId: options.noLibrary ? 'default' : 'p-shared' }],
     connections: [{ id: 'qq-main', platform: 'qq', namespace: 'global', accountId: target.account.id }],
@@ -85,7 +86,19 @@ async function fixture(t, options = {}) {
   await writeFile(path.join(retainedDirectory, 'reader.json'), '{"agentId":"reader","memories":["a different life"]}\n')
   const frontendDir = path.join(root, 'frontend'); await mkdir(frontendDir)
   await writeFile(path.join(frontendDir, 'index.html'), '<!doctype html><title>configuration fixture</title>')
-  const loadedConfig = readStandaloneAgentConfig(hostFile, env), lifetime = new AbortController()
+  const lifetime = new AbortController()
+  if (options.sqlite) {
+    const old = readStandaloneAgentConfig(oldHostFile, env)
+    const plan = await importStandaloneAgentConfig(oldHostFile, hostFile, { env, apply: false, signal: lifetime.signal })
+    assert.equal(plan.phase, 'validated')
+    assert.equal(fs.existsSync(hostFile), false)
+    const imported = await importStandaloneAgentConfig(oldHostFile, hostFile, { env, apply: true, signal: lifetime.signal })
+    assert.equal(imported.phase, 'imported')
+    assert.deepEqual(imported.versions, old.sourceSnapshot.versions)
+    await assert.rejects(importStandaloneAgentConfig(oldHostFile, hostFile, { env, apply: true, signal: lifetime.signal }))
+    for (const file of [oldHostFile, personaFile, bindingFile]) if (fs.existsSync(file)) fs.renameSync(file, file + '.backup')
+  }
+  const loadedConfig = readStandaloneAgentConfig(hostFile, env)
   const control = { session: true, lease: true, filter: true, forbidden: new Set(), authorizations: [], beforeAuthorize: undefined }
   const authority = { signal: lifetime.signal, isCurrent: () => control.lease }
   const persistence = createStandaloneAgentConsolePersistence({ enabled: true, hostFile, loaded: loadedConfig.sourceSnapshot,
@@ -140,6 +153,53 @@ async function fixture(t, options = {}) {
   return { root, hostFile, bindingFile, personaFile, loadedConfig, persistence, control, lifetime, app, request, files, preview, authEnv,
     privateValues, retainedDirectory, tree: () => diskTree(root), growth: () => diskTree(retainedDirectory) }
 }
+
+test('SQLite migration keeps binding versions and console commits without YAML files', {
+  skip: process.platform === 'win32' || !process.getBuiltinModule('node:sqlite')?.DatabaseSync,
+}, async t => {
+  const f = await fixture(t, { sqlite: true })
+  const loaded = f.loadedConfig.sourceSnapshot
+  assert.equal(loaded.sources.format, 'json')
+  assert.equal(f.loadedConfig.dataDir, path.join(f.root, 'unopened-data'))
+  const initial = readInFreshProcess(f)
+  assert.equal(initial.bindings[0].revision, loaded.versions.bindings)
+  const preview = await f.preview(createAgent())
+  const result = await post(f, '/api/configuration/commit', commitPayload(preview))
+  assert.equal(result.status, 200, result.text)
+  const saved = readInFreshProcess(f)
+  assert.equal(saved.revision, result.data.committedRevision)
+  assert.ok(saved.agents.some(agent => agent.id === 'research' && agent.personaId === 'p-research'))
+  assert.equal(f.persistence.execution.isCurrent(), false)
+  const current = readStandaloneAgentConfig(f.hostFile, env).sourceSnapshot
+  assert.equal(current.sources.host, loaded.sources.host)
+  assert.equal(current.versions.host, loaded.versions.host)
+  assert.deepEqual(JSON.parse(current.sources.host).extensionOwned, { privateSentinel: 'HOST_PRIVATE_EXTENSION_2964', preserved: true })
+  assert.ok(!fs.readdirSync(f.root).some(name => /\.yaml$/u.test(name)))
+
+  const draft = path.join(f.root, 'draft.json'), signal = f.lifetime.signal
+  const exported = exportStandaloneAgentConfig(f.hostFile, draft, signal)
+  assert.equal(exported.revision, current.revision)
+  const bundle = JSON.parse(await readFile(draft, 'utf8'))
+  assert.equal(bundle.host.model.apiKeyEnv, 'MAIN_KEY')
+  assert.equal(bundle.host.model.apiKey, undefined)
+  bundle.host.privateChat.enabled = true
+  await writeFile(draft, JSON.stringify(bundle))
+  await importStandaloneAgentConfig(draft, f.hostFile, { env, apply: false, signal })
+  assert.equal(readStandaloneAgentConfig(f.hostFile, env).privateChatEnabled, false)
+  await importStandaloneAgentConfig(draft, f.hostFile, { env, apply: true, signal })
+  const edited = readStandaloneAgentConfig(f.hostFile, env)
+  assert.equal(edited.privateChatEnabled, true)
+  assert.equal(edited.sourceSnapshot.versions.bindings, current.versions.bindings)
+  await assert.rejects(importStandaloneAgentConfig(draft, f.hostFile, { env, apply: true, signal }), /版本已改变/u)
+
+  const link = path.join(f.root, '.agent-config.import-00000000-0000-4000-8000-000000000001')
+  fs.linkSync(f.hostFile, link)
+  assert.equal(sources.inspectStandaloneAgentConfigTransaction(f.hostFile).phase, 'blocked')
+  const recovered = sources.recoverStandaloneAgentConfigTransaction(f.hostFile, { ensureOfflineCurrent() {} })
+  assert.equal(recovered.phase, 'recovered')
+  assert.equal(recovered.snapshot.revision, edited.sourceSnapshot.revision)
+  assert.equal(fs.existsSync(link), false)
+})
 
 test('feature switches list bound groups and live tools and atomically persist only the host policy', { skip: process.platform === 'win32' }, async t => {
   const f = await fixture(t, { toolNames: ['mcp_fixture_catalog'] })

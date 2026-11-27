@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util'
 import path from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { createOneBotConnection, verifyOneBotLogin } from '../adapters/oneBotConnection.js'
+import { exportStandaloneAgentConfig, importStandaloneAgentConfig } from './standaloneAgentConfigImport.js'
 import { createAgentQzoneLedger } from '../modules/runtime/infrastructure/agentQzoneLedger.js'
 import { sideLLMCall } from '../adapters/sideLLM.js'
 import { normalizeUsage } from '../modules/models/domain/modelPrices.js'
@@ -127,6 +128,7 @@ async function checkStandaloneQq(config: ReturnType<typeof readStandaloneAgentCo
 export async function main(argv: string[], options?: { readonly restartOnConfigSave?: boolean }): Promise<void> {
   const { values } = parseArgs({ args: argv, options: {
     config: { type: 'string' }, help: { type: 'boolean', short: 'h' }, check: { type: 'boolean' },
+    'import-config': { type: 'string' }, 'export-config': { type: 'string' },
     'inspect-config-transaction': { type: 'boolean' }, 'recover-config': { type: 'boolean' },
     'migrate-qq-state': { type: 'boolean' }, 'source-bindings': { type: 'string' }, 'source-config': { type: 'string' },
     'migrate-legacy-qq-memory': { type: 'boolean' }, 'source-root': { type: 'string' }, 'backup-dir': { type: 'string' },
@@ -137,22 +139,49 @@ export async function main(argv: string[], options?: { readonly restartOnConfigS
     'include-message-archive': { type: 'boolean' }, 'source-archive-dir': { type: 'string' },
   } })
   if (values.help) {
-    console.log('用法  node scripts/start-agent.mjs --config /path/to/agent-host.yaml')
-    console.log('检查  node scripts/start-agent.mjs --config /path/to/agent-host.yaml --check')
-    console.log('配置事务状态  node scripts/start-agent.mjs --config /path/to/agent-host.yaml --inspect-config-transaction')
-    console.log('离线配置恢复  停止宿主后运行 node scripts/start-agent.mjs --config /path/to/agent-host.yaml --recover-config；不启动 QQ、Redis 或模型')
-    console.log('迁移  node scripts/start-agent.mjs --config /path/to/agent-host.yaml --migrate-qq-state --source-bindings /path/to/plugin/config/agent-bindings.yaml --connection qq-main (--group 111111 | --friend 222222) [--apply]')
+    console.log('用法  node scripts/start-agent.mjs --config /path/to/agent-config.sqlite')
+    console.log('检查  node scripts/start-agent.mjs --config /path/to/agent-config.sqlite --check')
+    console.log('导入配置  node scripts/start-agent.mjs --config /path/to/agent-config.sqlite --import-config /path/to/agent-host.yaml [--apply]。也支持 JSON 配置包。')
+    console.log('导出配置  node scripts/start-agent.mjs --config /path/to/agent-config.sqlite --export-config /path/to/agent-config.json。保留 JSON 版本可离线更新原库。')
+    console.log('配置事务状态  node scripts/start-agent.mjs --config /path/to/agent-config.sqlite --inspect-config-transaction')
+    console.log('离线配置恢复  停止宿主后运行 node scripts/start-agent.mjs --config /path/to/agent-config.sqlite --recover-config；不启动 QQ、Redis 或模型')
+    console.log('迁移  node scripts/start-agent.mjs --config /path/to/agent-config.sqlite --migrate-qq-state --source-bindings /path/to/plugin/config/agent-bindings.yaml --connection qq-main (--group 111111 | --friend 222222) [--apply]')
     console.log('群迁移及显式私聊归档接续可指定 --source-config /path/to/plugin/config/message.yaml；--source-data-dir /path/to/plugin/data 仅用于群迁移')
     console.log('目标群可完成原任务时，用 --include-agent-commitments 接续待执行的仿真承诺')
     console.log('用 --include-character-state 接续仿真角色记忆、目标、作品、排期及可核验的初始提示词')
     console.log('用 --include-group-teaching 从源 data/message_archive 核验并复制群教学；停止源写入，旧共享记录保留')
     console.log('用 --deferred-reminders /path/to/explicit-selections.json 指定延期提醒工具映射和迁移授权；缺授权继续留源，默认仅预览')
     console.log('用 --include-message-archive 接续有完整账号、角色和隐私证据的群或私聊原文；缺来源角色证据继续留源，可用 --source-archive-dir 显式覆盖旧归档目录')
-    console.log('旧默认人格长期记忆  node scripts/start-agent.mjs --config /path/to/agent-host.yaml --migrate-legacy-qq-memory --source-root /path/to/plugin --backup-dir /path/to/verified-cutover-backup --connection qq-main --group 111111 [--apply]；只接续来源闭包可核验的记忆及已结回执，不迁移执行状态')
-    console.log('旧群原文  node scripts/start-agent.mjs --config /path/to/agent-host.yaml --migrate-legacy-group-archive --backup-dir /path/to/verified-cutover-backup --connection qq-main [--apply]；写入前停止 Core')
+    console.log('旧默认人格长期记忆  node scripts/start-agent.mjs --config /path/to/agent-config.sqlite --migrate-legacy-qq-memory --source-root /path/to/plugin --backup-dir /path/to/verified-cutover-backup --connection qq-main --group 111111 [--apply]；只接续来源闭包可核验的记忆及已结回执，不迁移执行状态')
+    console.log('旧群原文  node scripts/start-agent.mjs --config /path/to/agent-config.sqlite --migrate-legacy-group-archive --backup-dir /path/to/verified-cutover-backup --connection qq-main [--apply]；写入前停止 Core')
     return
   }
-  const configPath = path.resolve(values.config ?? 'config/agent-host.yaml')
+  const configPath = path.resolve(values.config ?? 'config/agent-config.sqlite')
+  const sourceConfigPackage = values['import-config'], exportConfigPackage = values['export-config']
+  if (sourceConfigPackage !== undefined || exportConfigPackage !== undefined) {
+    const allowed = sourceConfigPackage === undefined ? ['config', 'export-config'] : ['config', 'import-config', 'apply']
+    if (!(sourceConfigPackage ?? exportConfigPackage) || Object.entries(values).some(([key, value]) =>
+      !allowed.includes(key) && value !== undefined && value !== false)) {
+      throw new Error('配置导入或导出须单独运行')
+    }
+    const interrupted = new AbortController(), stopImport = () => interrupted.abort()
+    process.once('SIGTERM', stopImport); process.once('SIGINT', stopImport)
+    try {
+      const result = sourceConfigPackage === undefined ? exportStandaloneAgentConfig(configPath, exportConfigPackage!, interrupted.signal) :
+        await importStandaloneAgentConfig(sourceConfigPackage, configPath, {
+        env: process.env, apply: values.apply === true, signal: interrupted.signal,
+      })
+      console.log(JSON.stringify(result))
+    } catch (error) {
+      const details = error instanceof Error ? error.message : ''
+      const reason = error instanceof AgentConsoleError && error.code === 'conflict' ? 'destination_exists_or_changed' :
+        details.startsWith('SQLite 配置需要 Node.js') ? 'sqlite_unavailable' :
+        details.startsWith('旧 YAML 的目标数据库应放在原配置目录') ? 'legacy_directory_mismatch' : 'invalid_source_or_unavailable'
+      console.error(JSON.stringify({ error: sourceConfigPackage === undefined ? 'configuration_export_failed' : 'configuration_import_failed', reason }))
+      process.exitCode = 1
+    } finally { process.off('SIGTERM', stopImport); process.off('SIGINT', stopImport) }
+    return
+  }
   if (values['inspect-config-transaction'] || values['recover-config']) {
     if (values['inspect-config-transaction'] && values['recover-config'] || Object.entries(values).some(([key, value]) =>
       !['config', 'inspect-config-transaction', 'recover-config'].includes(key) && value !== undefined && value !== false)) {

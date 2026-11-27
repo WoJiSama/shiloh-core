@@ -10,6 +10,7 @@ import { standalonePolicyView, updateStandalonePolicy } from './standaloneAgentC
 import { standaloneDiceConsoleView, updateStandaloneDiceConsole } from './standaloneAgentConsoleDice.js'
 import { defaultAgentGroupPolicy, readAgentGroupPolicy, readAgentGroupPolicyValues } from '../modules/groupAdmin/domain/agentGroupPolicy.js'
 import type { ConfigSourceName, ConfigSources, SourceSnapshot } from './standaloneAgentConfigSources.js'
+import { readStandaloneConfigDocument, stringifyStandaloneConfigDocument } from './standaloneAgentConfigDocument.js'
 import { createStandaloneAgentConsoleCommitCoordinator } from './standaloneAgentConsoleCommit.js'
 import { agentBindingToken, agentConversationKey, createAgentBindingDirectory } from '../modules/runtime/domain/agentBindings.js'
 import { validateQqBindingAddress } from '../adapters/qqIdentity.js'
@@ -77,8 +78,8 @@ function ordered(value: unknown): unknown {
   return value
 }
 const equal = (a: unknown, b: unknown) => JSON.stringify(ordered(a)) === JSON.stringify(ordered(b))
-function document(source: string | undefined) {
-  const doc: YAML.Document = YAML.parseDocument(source ?? '')
+function document(source: string | undefined, format: ConfigSources['format']) {
+  const doc = readStandaloneConfigDocument(source, format)
   if (doc.errors.length) return fail()
   if (doc.contents === null) doc.contents = doc.createNode({})
   record(doc.toJS())
@@ -120,7 +121,7 @@ function templates(value: unknown, input = false): Data[] {
   })
 }
 function parsed(sources: ConfigSources, revision: string) {
-  const host = document(sources.host), library = document(sources.personas), bindings = document(sources.bindings)
+  const host = document(sources.host, sources.format), library = document(sources.personas, sources.format), bindings = document(sources.bindings, sources.format)
   const rawLibrary = record(library.toJS()), rawBindings = record(bindings.toJS())
   const personas = templates(rawLibrary.personas ?? [])
   const directory = createAgentBindingDirectory(rawBindings, revision, validateQqBindingAddress)
@@ -156,6 +157,7 @@ function field(key: string, label: string, component: string, value: unknown, pr
 export function createStandaloneAgentConsolePersistence(options: StandaloneConsolePersistenceOptions) {
   if (path.join(fs.realpathSync(path.dirname(path.resolve(options.hostFile))), path.basename(options.hostFile)) !== options.loaded.hostFile || !isStandaloneAgentSourceSnapshotCurrent(options.loaded)) return fail('conflict')
   const loaded = options.loaded, processEpoch = randomUUID(), retirement = new AbortController()
+  const serialize = (doc: YAML.Document) => stringifyStandaloneConfigDocument(doc, loaded.sources.format)
   const signal = AbortSignal.any([options.authority.signal, retirement.signal]), { port: commits, writer } = createStandaloneAgentConsoleCommitCoordinator()
   let retired = false, phase: 'active' | 'restart-required' | 'uncertain' = 'active', ownTransition: object | undefined
   const previews = new Map<string, { principal: string; revision: string; candidateDigest: string; expiresAt: number;
@@ -212,13 +214,13 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
   }
   function schema(snapshot: SourceSnapshot, candidate: ValidatedConsoleCandidate, kind: string): Data {
     let selected: Field[]
-    const hostDocument = document(snapshot.sources.host)
+    const hostDocument = document(snapshot.sources.host, snapshot.sources.format)
     const policy = standalonePolicyView(hostDocument, kind) ?? standaloneDiceConsoleView(hostDocument, kind)
     if (policy) return { ...base(snapshot, 'config:' + kind), key: kind, title: policy.title,
       groups: [{ label: '当前设置', fields: policy.fields }], ...('packages' in policy ? { packages: policy.packages } : {}) }
     const settings = gameSettingsFor(kind)
     if (settings) {
-      const host = document(snapshot.sources.host)
+      const host = document(snapshot.sources.host, snapshot.sources.format)
       const defaults = settings.defaults as unknown as Data
       const ranges = settings.ranges as Readonly<Record<string, readonly [number, number]>>
       selected = settings.fields.flatMap(item => {
@@ -310,7 +312,10 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
       held = true
       return response
     } catch (error) {
-      if (fenced || committed) { retire('uncertain'); return fail(committed ? 'commit_outcome_unknown' : 'configuration_recovery_required') }
+      if (fenced || committed) {
+        retire('uncertain')
+        return fail(committed || loaded.sources.format === 'json' ? 'commit_outcome_unknown' : 'configuration_recovery_required')
+      }
       // A failed publication may have retained a lease before onFenced was
       // reached. Release only what the journal permits, then inspect its gate.
       lock.release()
@@ -342,7 +347,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
         const names = options.listToolNames?.() ?? []
         return save(context, payload, 'config.write', 'config:feature-switches', 'host', (state, candidate) => {
           const changed = writeFeatureSwitches(state.host, candidate.featureSwitches, policy)
-          return { source: changed ? state.host.toString() : loaded.sources.host, changed }
+          return { source: changed ? serialize(state.host) : loaded.sources.host, changed }
         }, (snapshot, candidate) => featureSwitchView(snapshot, candidate, names))
       }
       const values = record(payload.values ?? {})
@@ -350,7 +355,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
       if (Object.keys(values).some(key => !defined.some(item => item.field === key))) return fail()
       return save(context, payload, 'config.write', 'config:' + kind, 'host', (state, candidate) => {
         const policyChanges = updateStandalonePolicy(state.host, kind, values) ?? updateStandaloneDiceConsole(state.host, kind, values)
-        if (policyChanges !== undefined) return { changed: policyChanges, source: String(state.host) }
+        if (policyChanges !== undefined) return { changed: policyChanges, source: serialize(state.host) }
         let changed = 0
         const current = schema(loaded, candidate, kind), existing = ((current.groups as Data[])[0]!.fields as Field[])
         for (const [key, value] of Object.entries(values)) {
@@ -377,13 +382,13 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
           else if (typeof value !== 'boolean') return fail()
           state.host.setIn([section, name], next); changed++
         }
-        return { source: changed ? state.host.toString() : loaded.sources.host, changed }
+        return { source: changed ? serialize(state.host) : loaded.sources.host, changed }
       }, (snapshot, candidate) => schema(snapshot, candidate, kind))
     },
   }
   function groupAdminView(snapshot: SourceSnapshot, context: AgentConsoleContext) {
     const binding = context.binding!
-    const host = document(snapshot.sources.host)
+    const host = document(snapshot.sources.host, snapshot.sources.format)
     const policy = readAgentGroupPolicy(host.toJS()?.groupAdmin)
     const row = policy.groups.find(item => item.connectionId === binding.connectionId && item.groupId === binding.target.id)
     const { connectionId: _connection, groupId: _group, ...overrides } = row ?? {}
@@ -411,14 +416,14 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
         const previous = index < 0 ? undefined : groups[index]
         const next = { ...previous, ...values, connectionId: binding.connectionId, groupId: binding.target.id }
         for (const key of resets) delete next[key as keyof typeof defaultAgentGroupPolicy]
-        if (equal(next, previous) || !previous && Object.keys(next).length === 2) return { changed: 0, source: String(state.host) }
+        if (equal(next, previous) || !previous && Object.keys(next).length === 2) return { changed: 0, source: loaded.sources.host }
         const at = ['groupAdmin', 'groups']
         if (index < 0) {
           if (!state.host.hasIn(at)) state.host.setIn(at, [])
           state.host.addIn(at, next)
         } else if (Object.keys(next).length === 2) state.host.deleteIn([...at, index])
         else state.host.setIn([...at, index], next)
-        return { changed: 1, source: String(state.host) }
+        return { changed: 1, source: serialize(state.host) }
       }, snapshot => groupAdminView(snapshot, context))
     },
   }
@@ -434,7 +439,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
         if (state.rawLibrary.privateBinding && !ids.has(String(state.rawLibrary.privateBinding))) return fail('conflict')
         if (equal(state.personas, next)) return { source: loaded.sources.personas ?? '', changed: 0 }
         replaceTemplates(state.library, next)
-        return { source: state.library.toString(), changed: 1 }
+        return { source: serialize(state.library), changed: 1 }
       }, library)
     },
   }
@@ -471,7 +476,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
       if (slot === 'developmentModel' && payload.providers.length === 0) {
         return save(context, payload, 'providers.write', 'provider:' + slot, 'host', state => {
           if (!state.host.delete(slot)) return { source: loaded.sources.host, changed: 0 }
-          return { source: state.host.toString(), changed: 1 }
+          return { source: serialize(state.host), changed: 1 }
         }, ai)
       }
       if (payload.providers.length !== 1) return fail()
@@ -485,7 +490,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
         const next = { baseUrl: url.href, name, apiKeyEnv }, current = candidate.models[slot]
         if (current && equal(next, { baseUrl: current.baseUrl, name: current.name, apiKeyEnv: current.apiKeyEnv })) return { source: loaded.sources.host, changed: 0 }
         for (const [key, value] of Object.entries(next)) state.host.setIn([slot, key], value)
-        return { source: state.host.toString(), changed: 1 }
+        return { source: serialize(state.host), changed: 1 }
       }, ai)
     },
   }
@@ -510,7 +515,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
           if (index < 0 || !available.has(update.personaId)) return fail('conflict')
           if (state.agents[index]!.personaId !== update.personaId) { state.bindings.setIn(['agents', index, 'personaId'], update.personaId); changed++ }
         }
-        return { source: changed ? state.bindings.toString() : loaded.sources.bindings, changed }
+        return { source: changed ? serialize(state.bindings) : loaded.sources.bindings, changed }
       }, snapshot => assignments(snapshot))
     },
   }
@@ -587,7 +592,7 @@ export function createStandaloneAgentConsolePersistence(options: StandaloneConso
       if (!next.host.hasIn(['console', 'qqLogin'])) next.host.setIn(['console', 'qqLogin'], [])
       next.host.addIn(['console', 'qqLogin'], login)
       next.bindings.addIn(['connections'], { id: login.connectionId, platform: 'qq', namespace: 'global', accountId })
-      return { changed: 3, sources: { host: String(next.host), personas: snapshot.sources.personas, bindings: String(next.bindings) } }
+      return { changed: 3, sources: { ...snapshot.sources, host: serialize(next.host), bindings: serialize(next.bindings) } }
     }, snapshot => ({ ...base(snapshot, 'accounts:add'), id: login.connectionId, accountId }))
   }
   return { execution, commits, config, groupAdmin, persona, providers, assignments: assignmentPort, configuration, state, enrollmentState, enrollAccount }

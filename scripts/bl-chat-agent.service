@@ -17,7 +17,7 @@ StateDirectory=bl-chat-agent
 StateDirectoryMode=0700
 RuntimeDirectory=bl-chat-agent
 RuntimeDirectoryMode=0700
-ExecStart=/usr/bin/node scripts/start-agent.mjs --config /opt/bl-chat-agent/config/agent-host.yaml
+ExecStart=/usr/bin/node scripts/start-agent.mjs --config /opt/bl-chat-agent/config/agent-config.sqlite
 Restart=on-failure
 RestartForceExitStatus=75
 Environment=BL_AGENT_MANAGED_RESTART=1
