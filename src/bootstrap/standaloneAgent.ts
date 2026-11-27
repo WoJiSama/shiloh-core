@@ -557,7 +557,7 @@ export async function main(argv: string[]): Promise<void> {
     // The old side paths used memoryAiConfig; this slot carries that backend in standalone.
     const wakeGateJudge = extractionBackend && createAgentSimulationWakeGate({
       baseUrl: extractionBackend.apiUrl, name: config.simulation.wakeGate?.model?.trim() || extractionBackend.model,
-      apiKey: extractionBackend.apiKey, secrets: hostSecrets,
+      apiKey: extractionBackend.apiKey, secrets: hostSecrets, throwOnFailure: true,
     })
     const memeExtract = extractionBackend && createAgentSimulationMemeExtractor({
       baseUrl: extractionBackend.apiUrl, name: extractionBackend.model, apiKey: extractionBackend.apiKey, secrets: hostSecrets,

@@ -7,6 +7,7 @@ import type { PersonProfileExtractionContext } from '../../../contracts/personPr
 import type { ConversationEpisodeInput, ConversationMemoryState, ConversationMemoryRecord, ConversationSummaryModel, MidtermMemoryConfig, EpisodicMemoryConfig,
   AgentConversationMemoryPurgeSubject, AgentConversationMemoryCleanupGuard, AgentConversationMemoryCleanupReceipt } from '../../../contracts/conversationMemory.js'
 import type { AgentInboxRedis } from '../../runtime/infrastructure/agentInbox.js'
+import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { agentBindingToken, agentPersonaScopeId, conversationAddressKey } from '../../runtime/domain/agentBindings.js'
 import { simulationAddressKey } from '../../simulation/infrastructure/simulationAddress.js'
 import { isPersonMemoryRedacted } from '../domain/personMemory.js'
@@ -15,6 +16,7 @@ import { createConversationMemoryStore, conversationMemoryId } from './conversat
 import { conversationCleanupSelector, conversationCleanupMatchesScope, conversationCleanupCurrent, ensureConversationCleanup } from './conversationMemoryCleanup.js'
 import { hasTemporalDeixis } from '../domain/temporalDeixis.js'
 import { describeMemoryTime } from './engine/temporalContext.js'
+import { AgentConversationSummaryError } from './agentConversationSummary.js'
 
 type MemoryTurn = { isCurrent(): boolean; signal: AbortSignal; release(): void }
 const DAY = 86_400_000
@@ -29,14 +31,16 @@ export function createConversationMemory(ports: {
   midterm(): MidtermMemoryConfig | undefined
   episodic(): EpisodicMemoryConfig | undefined
   summarize?: ConversationSummaryModel
-  resolve(target: ConversationAddress): { binding: AgentBindingSnapshot; viewer: PersonaScope } | undefined
+  resolve(target: ConversationAddress): { binding: AgentBindingSnapshot } | undefined
   available(target: ConversationAddress): boolean
   privatePeer(target: ConversationAddress): string | undefined
   isRecalled(target: ConversationAddress, messageId: string): Promise<boolean>
   begin(binding: AgentBindingSnapshot): Promise<MemoryTurn>
   isRunning(): boolean
+  observeCurrent?(check: () => boolean): boolean
   allowsText(text: string): boolean
   logger: { warn(message: string): void }
+  diagnostics?: Pick<AgentDiagnostics, 'emit'>
   recordUsage?(input: { scope: string; stage: string; model?: string; usage?: unknown; ms?: number }): void
   now?(): number
 }) {
@@ -54,6 +58,14 @@ export function createConversationMemory(ports: {
   const episodeLimit = () => boundedNumber(ports.episodic()?.maxPerGroup, 200, 20, 1000)
   const retention = () => boundedNumber(ports.midterm()?.retentionDays, 3, 1, 30) * DAY
   const recallDays = () => boundedNumber(ports.episodic()?.recallDays, 7, 1, 30) * DAY
+  function reportFailure(code: string, message: string, error: unknown, durationMs?: number) {
+    if (!ports.diagnostics) { ports.logger.warn(message); return }
+    const provider = error instanceof AgentConversationSummaryError ? error : undefined
+    try {
+      ports.diagnostics.emit({ stage: provider ? 'model' : 'memory', operation: 'conversation_summary', outcome: 'failed', code: provider?.code ?? code,
+        ...(provider?.httpStatus === undefined ? {} : { httpStatus: provider.httpStatus }), ...(durationMs === undefined ? {} : { durationMs }), error })
+    } catch { /* An observer cannot change retry state. */ }
+  }
   const identity = (binding: AgentBindingSnapshot) => ({ botId: personMemoryAddress(binding.target).botId, personaId: agentPersonaScopeId(binding.agentId) })
   const scene = (target: ConversationAddress, peer?: string) => personMemoryAddress(target, peer).scene
   function current(binding: AgentBindingSnapshot): boolean {
@@ -205,8 +217,9 @@ export function createConversationMemory(ports: {
     let invalidatedAt = state.dueInvalidatedAt ?? 0
     let cleanupToken = state.dueCleanupToken
     let rows: ConversationMemoryRecord[] = []
+    const ready = () => activeTurn && summaryEnabled() && current(binding) && ports.available(target) && turn?.isCurrent() !== false
     const scopeCurrent = () => {
-      try { return activeTurn && summaryEnabled() && current(binding) && ports.available(target) && turn?.isCurrent() !== false }
+      try { return ports.observeCurrent ? ports.observeCurrent(ready) === true : ready() }
       catch { return false }
     }
     const isCurrent = () => scopeCurrent() && !controller.signal.aborted
@@ -260,12 +273,12 @@ export function createConversationMemory(ports: {
         return { ...saved, summary: { text: text.trim(), updatedAt: now(), coveredSeq, invalidatedAt, ...(cleanupToken ? { cleanupToken } : {}) },
           dueAt: remaining.length >= minMessages() ? now() + debounce() : 0, dueInvalidatedAt: invalidatedAt, attempts: 0, retryAt: 0 }
       }, isCurrent)
-    } catch {
+    } catch (error) {
       const canRecordFailure = () => isCurrent() || timedOut && scopeCurrent()
       if (canRecordFailure() && await store.cleanupToken(binding) === cleanupToken) {
         await store.update(state.id, saved => saved && saved.token === state.token && sameScheduleGeneration(saved, invalidatedAt, cleanupToken) ? { ...saved, attempts: saved.attempts + 1,
           retryAt: now() + Math.min(300_000, 15_000 * 2 ** saved.attempts) } : saved, canRecordFailure).catch(() => {})
-        ports.logger.warn('[Agent] 主线摘要未完成，保留来源等待有限重试')
+        reportFailure(timedOut ? 'summary_timeout' : 'summary_failed', '[Agent] 主线摘要未完成，保留来源等待有限重试', error, now() - startedAt)
       }
     } finally {
       activeTurn = false; clearTimeout(timer); clearInterval(poll)
@@ -308,10 +321,11 @@ export function createConversationMemory(ports: {
         }
         if (state.dueAt > now()) continue
         const controller = new AbortController()
-        const promise = summarize(state, controller).catch(() => ports.logger.warn('[Agent] 主线摘要存储暂时不可用')).finally(() => { active.delete(state.id) })
+        const promise = summarize(state, controller).catch(error => reportFailure('summary_store_unavailable', '[Agent] 主线摘要存储暂时不可用', error))
+          .finally(() => { active.delete(state.id) })
         active.set(state.id, { ...state.scope, controller, promise })
       }
-    })().catch(() => ports.logger.warn('[Agent] 会话记忆队列暂时不可用')).finally(() => { sweep = undefined })
+    })().catch(error => reportFailure('summary_queue_unavailable', '[Agent] 会话记忆队列暂时不可用', error)).finally(() => { sweep = undefined })
     return sweep
   }
   async function purgeSubject(input: AgentConversationMemoryPurgeSubject, authority: AgentConversationMemoryCleanupGuard): Promise<AgentConversationMemoryCleanupReceipt> {

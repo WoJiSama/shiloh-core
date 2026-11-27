@@ -1,5 +1,6 @@
 import type { PersonProfileExtractionContext, PersonProfileExtractor } from '../../../contracts/personProfileExtraction.js'
 import { resolveChatCompletionUrl } from '../../models/domain/chatCompletionUrl.js'
+import { glmFlashJsonOptions } from '../../models/domain/modelGateway.js'
 import { buildPersonProfileExtractPrompt } from '../../simulation/domain/personProfile.js'
 
 export interface AgentPersonExtractorOptions {
@@ -15,6 +16,13 @@ export interface AgentPersonExtractorOptions {
 const MAX_RESPONSE_BYTES = 512 * 1024
 const MAX_RESULT_CHARS = 64_000
 const FAILURE = '人物事实抽取失败：请求已取消、授权失效或模型服务不可用。'
+
+export class PersonProfileExtractionError extends Error {
+  constructor(readonly code: 'request_invalid' | 'provider_timeout' | 'provider_transport_error' | 'http_error' | 'model_response_invalid',
+    readonly httpStatus?: number) {
+    super(FAILURE)
+  }
+}
 
 function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -83,10 +91,12 @@ export function createAgentPersonExtractor(options: AgentPersonExtractorOptions)
   const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Math.min(40_000, Math.floor(options.timeoutMs!))) : 40_000
   return async (messages, isCurrent, context) => {
     let response: Response | undefined
+    let signal: AbortSignal | undefined
+    let requestStarted = false
     const lifecycle = new AbortController()
     try {
       if (!context) throw new Error(FAILURE)
-      const signal = AbortSignal.any([context.signal, lifecycle.signal, AbortSignal.timeout(timeoutMs)])
+      signal = AbortSignal.any([context.signal, lifecycle.signal, AbortSignal.timeout(timeoutMs)])
       assertCurrent(context, signal, isCurrent)
       const endpoint = new URL(options.baseUrl)
       if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
@@ -100,10 +110,12 @@ export function createAgentPersonExtractor(options: AgentPersonExtractorOptions)
       const prompt = buildPersonProfileExtractPrompt(messages.map(({ userId, name, text }) => ({ userId, name, text })))
       if (context.target.kind === 'private') prompt.system += '\n本次资料来自一对一会话，所有候选只保留在本会话，portable 必须为 false。'
       await ensureCurrent(context, signal, isCurrent)
+      requestStarted = true
       response = await abortable((options.fetchImpl ?? fetch)(url, {
         method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: options.name, messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }], stream: false, max_tokens: 2000 }),
+        body: JSON.stringify({ model: options.name, messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
+          stream: false, max_tokens: 2000, ...glmFlashJsonOptions(endpoint, options.name) }),
       }), signal)
       assertCurrent(context, signal, isCurrent)
       if (response.redirected) throw new Error(FAILURE)
@@ -121,7 +133,11 @@ export function createAgentPersonExtractor(options: AgentPersonExtractorOptions)
           !Array.isArray(JSON.parse(content))) throw new Error(FAILURE)
       await ensureCurrent(context, signal, isCurrent)
       return content
-    } catch { throw new Error(FAILURE) }
+    } catch {
+      if (signal?.reason instanceof DOMException && signal.reason.name === 'TimeoutError') throw new PersonProfileExtractionError('provider_timeout')
+      if (response && !response.ok) throw new PersonProfileExtractionError('http_error', response.status)
+      throw new PersonProfileExtractionError(response ? 'model_response_invalid' : requestStarted ? 'provider_transport_error' : 'request_invalid')
+    }
     finally {
       lifecycle.abort()
       void response?.body?.cancel().catch(() => {})

@@ -204,7 +204,8 @@ test('optional wake and memory read failures preserve one normal turn with fixed
     const diagnostics = spy(), reads = []
     const unavailable = name => async () => { reads.push(name); throw Error(`private-read-body-${name}`) }
     const h = fixture({ diagnostics, proactiveProbability: 1,
-      wakeGateJudge: unavailable('wake'), loadDelegatedMemories: unavailable('delegated'), getStyleDigest: unavailable('style'),
+      wakeGateJudge: semanticReader === 'current' ? unavailable('wake') : async () => { reads.push('wake'); return null },
+      loadDelegatedMemories: unavailable('delegated'), getStyleDigest: unavailable('style'),
       ...(semanticReader === 'current' ? { readSemanticMemory: unavailable('semantic') } : { getSemanticRecall: unavailable('semantic') }),
       readConversationMemory: unavailable('narrative'), readGroupMemory: unavailable('group'),
       script: () => tools(toolCall('simFinishTurn', { choice: 'silent', reason: '本轮无需发言' })),
@@ -228,6 +229,23 @@ test('optional wake and memory read failures preserve one normal turn with fixed
     assert.equal(character.decision.kind, 'silent')
     assert.equal(character.decision.reason, '本轮无需发言')
   }
+})
+
+test('stopping during wake screening records cancellation and never starts the main model', { timeout: 10000 }, async t => {
+  const diagnostics = spy(), started = Promise.withResolvers(), verdict = Promise.withResolvers()
+  const h = fixture({ diagnostics, proactiveProbability: 1,
+    wakeGateJudge: () => { started.resolve(); return verdict.promise },
+  })
+  t.after(() => { h.runtime.stop(); verdict.resolve(null) })
+  await h.ingest('普通群聊背景', '40000', { at: false })
+  h.clock.value += 2 * 60 * 60_000
+  await h.runtime.sweepOnce()
+  await started.promise
+  h.runtime.stop()
+  await h.runtime.drain()
+  assert.equal(h.calls.length, 0)
+  assert.deepEqual(diagnostics.events.filter(row => row.operation === 'simulation_wake_gate')
+    .map(row => [row.outcome, row.code]), [['cancelled', 'wake_gate_cancelled']])
 })
 
 test('reply and episode record failures keep confirmed delivery without another model or send', async t => {
@@ -298,6 +316,7 @@ test('failed closing validation or review cannot be bypassed by a later failure 
     t.after(() => h.runtime.stop()); await h.ingest(); await settled(h, 2)
     assert.equal(h.calls.length, 2, mode); assert.equal(h.sent.length, 0, mode)
     assert.ok(diagnostics.events.some(row => row.operation === 'simulation_failure_notice' && row.code === 'notice_not_authorized'))
+    assert.equal(diagnostics.events.filter(row => row.stage === 'tool' && row.operation === 'simFinishTurn' && row.outcome === 'failed').length, 1, mode)
   }
 })
 

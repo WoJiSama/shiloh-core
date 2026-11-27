@@ -14,7 +14,7 @@ import { createPersonMemoryStore } from '../dist/backend/modules/memory/infrastr
 import { createTextPersonMemoryStore } from '../dist/backend/modules/memory/infrastructure/textPersonMemoryStore.js'
 import { agentPersonaScopeId } from '../dist/backend/modules/runtime/domain/agentBindings.js'
 import { simulationAddressKey } from '../dist/backend/modules/simulation/infrastructure/simulationAddress.js'
-import { simulationBusyKey, simulationSessionKey } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
+import { SIMULATION_OVERRIDES_KEY, simulationBusyKey, simulationSessionKey } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
 
 const repo = fileURLToPath(new URL('../', import.meta.url))
 const entry = path.join(process.env.BL_CHAT_AGENT_RELEASE_DIR || repo, 'scripts/start-agent.mjs')
@@ -125,7 +125,7 @@ test('standalone extracts real inbound sources, persists them across restart and
     model: { baseUrl: `http://127.0.0.1:${port}/main/v1`, name: 'standalone-person-main', apiKeyEnv: 'TEST_PERSON_MAIN_KEY' },
     personMemoryExtraction: { baseUrl: `http://127.0.0.1:${port}/extract/v1`, name: 'standalone-person-extractor', apiKeyEnv: 'TEST_PERSON_EXTRACTION_KEY' },
     connections: [{ id: 'qq-person', url: `ws://127.0.0.1:${port}/onebot`, accessTokenEnv: 'TEST_PERSON_ONEBOT_TOKEN' }],
-    simulation: { wake: { batchWindowMs: 1_000, probability: 0, proactiveProbability: 0 },
+    simulation: { wakeGate: { enabled: false }, wake: { batchWindowMs: 1_000, probability: 0, proactiveProbability: 0 },
       mood: { enabled: false }, rhythm: { enabled: false }, reflection: { enabled: false }, userStyle: { enabled: false },
       meme: { enabled: false }, lifeThreads: { enabled: false }, personProfile: { enabled: true }, turn: { minSendGapMs: 0 } },
   }
@@ -168,6 +168,9 @@ test('standalone extracts real inbound sources, persists them across restart and
     scene: { kind: 'group', id: String(group) }, viewerUserId: subjectId,
   })
 
+  await reader.set(prefix + SIMULATION_OVERRIDES_KEY, JSON.stringify({
+    explicitEnabled: [], disabled: [], atOnly: [address(sourceGroup)], budgetCaps: {}, turnCaps: {},
+  }))
   await start()
   for (let index = 0; index < 20; index++) send(sourceGroup, index === 0 ? sourceText : `本人闲聊记录第${index + 1}条`, index)
   await waitFor(async () => (await stateOf(sourceGroup))?.seq === 20, 'twenty durable inbound sources')
