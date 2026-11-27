@@ -7,11 +7,12 @@ import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js
 const [{ createAgentBindingDirectory, createAgentRuntime }, { personMemoryCommandText: commands },
   { personMemoryAddress }, { createPersonMemoryStore }, { createTextPersonMemoryStore },
   { agentBindingToken, agentPersonaScopeId, conversationAddressKey, platformAccountKey }, { simulationAddressKey },
-  { createAgentInbox }] = await Promise.all([
+  { createAgentInbox }, { createAgentDiagnostics }] = await Promise.all([
   load('core/index.js'), load('modules/memory/domain/personMemoryCommands.js'),
   load('modules/memory/infrastructure/personMemoryContext.js'), load('modules/memory/infrastructure/personMemoryStore.js'),
   load('modules/memory/infrastructure/textPersonMemoryStore.js'), load('modules/runtime/domain/agentBindings.js'),
   load('modules/simulation/infrastructure/simulationAddress.js'), load('modules/runtime/infrastructure/agentInbox.js'),
+  load('modules/runtime/infrastructure/agentDiagnostics.js'),
 ])
 
 const redisTest = { skip: !redisAvailable, timeout: 20_000 }
@@ -67,6 +68,7 @@ async function withFixture(t, options, run) {
   const storage = options.wrapStorage?.(redis.storage) ?? redis.storage
   const clock = { at: Date.now() }
   const requests = [], deliveries = [], attempts = [], extractions = [], tokens = [], warnings = [], errors = [], hosts = []
+  const failures = []
   const peers = new Map(targets.filter(target => target.kind === 'private').map(target => [conversationAddressKey(target), actor]))
   let bindings = directory()
   let current
@@ -77,6 +79,8 @@ async function withFixture(t, options, run) {
     : { enabled: true, userExtractDebounceSeconds: 0, userExtractMaxBatchMessages: 1 }
   const fixture = {
     ...redis, storage, clock, store, requests, deliveries, attempts, extractions, tokens, warnings, errors,
+    retryScheduled: target => failures.some(event => event.stage === 'inbox' && event.operation === `consume_${target.kind}` &&
+      event.code === 'inbox_retry_ingest' && event.details?.result === 'retry_scheduled'),
     inbox: target => redis.reader.lRange(redis.prefix + `agent:inbox:${target.kind === 'group' ? 'group-text' : target.kind}:${platformAccountKey(target.account)}`, 0, -1),
     replyConfirmed: (target, id) => inbox.isTextReplyConfirmed(target, id),
     history: target => inbox.loadTextHistory(target),
@@ -132,9 +136,11 @@ async function withFixture(t, options, run) {
           stop() { ready = false },
         }
       })
+      const logger = { info() {}, warn: message => warnings.push(message), error: message => errors.push(message) }
       const runtime = createAgentRuntime({
         storage, adapters, now: () => clock.at, isExecutionCurrent: redis.isCurrent,
-        logger: { info() {}, warn: message => warnings.push(message), error: message => errors.push(message) },
+        logger,
+        diagnostics: createAgentDiagnostics({ logger, now: () => clock.at, onFailure: event => failures.push(event) }),
         privateChatEnabled: true, useTextGroup: target => target.kind === 'group',
         memorySystem,
         resolvePersona(target) {
@@ -366,7 +372,7 @@ for (const target of [privateRoom, group]) test(`${target.kind}: a confirmed rep
   }, async f => {
     await f.emit(f.event(target, 'confirmed-before-admission', '我一直喜欢骑行'))
     await waitFor(() => failures > 0 && f.errors.length > 0, 'confirmed reply admission fails durably')
-    await waitFor(async () => f.errors.some(line => line.includes('inbox_retry_pending')) || (await f.inbox(target)).length === 0, 'first inbox attempt settles')
+    await waitFor(() => f.retryScheduled(target), 'first inbox attempt schedules a retry')
     assert.equal(f.deliveries.length, 1)
     assert.equal(f.extractions.length, 0)
     assert.equal(await f.replyConfirmed(target, 'confirmed-before-admission'), true)
@@ -404,7 +410,7 @@ for (const mode of ['privacy', 'recall', 'rebind', 'peer-change']) test(`a retai
   }, async f => {
     const messageId = `confirmed-before-${mode}`
     await f.emit(f.event(privateRoom, messageId, '我一直喜欢骑行'))
-    await waitFor(() => f.errors.some(line => line.includes('inbox_retry_pending')), 'failed admission retains its inbox source')
+    await waitFor(() => f.retryScheduled(privateRoom), 'failed admission retains its inbox source')
     assert.equal((await f.inbox(privateRoom)).length, 1)
     assert.equal(await f.replyConfirmed(privateRoom, messageId), true)
     if (mode === 'privacy') {

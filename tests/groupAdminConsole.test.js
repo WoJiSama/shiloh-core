@@ -176,7 +176,7 @@ test('group HTTP saves and resets preserve comments on untouched fields and sibl
   })
   const doc = YAML.parseDocument(fs.readFileSync(f.configFile, 'utf8'))
   const annotations = [
-    [['groupAdmin', 'overrides', 0, 'groupGuard', 'kickOnTimeout'], ' preserve-current-unmodified-guard-field'],
+    [['groupAdmin', 'overrides', 0, 'groupGuard', 'maxWrongTimes'], ' preserve-current-unmodified-guard-field'],
     [['groupAdmin', 'overrides', 1, 'groupGuard', 'timeoutSeconds'], ' preserve-sibling-override-field'],
     [['groupNotice', 'groupRules', 1, 'welcomeMessage'], ' preserve-sibling-legacy-notice'],
     [['groupModeration', 'groupAdmins', 1, 'admins'], ' preserve-sibling-legacy-admins']

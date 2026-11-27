@@ -563,7 +563,10 @@ test('malformed extraction output leaves the batch cursor available for a later 
       assert.equal(JSON.parse(h.data.get(sessionKey)).personProfileCursor, undefined, raw)
       assert.deepEqual((await h.scoped(B).loadPersonProfile(USER)).interests, [])
       await runtime.sweepOnce()
-      assert.equal(calls(), 2, 'invalid output must not consume the extraction cooldown')
+      assert.equal(calls(), 1, 'invalid output backs off before retrying')
+      h.clock.at += 60_000
+      await runtime.sweepOnce()
+      assert.equal(calls(), 2, 'invalid output leaves the source batch available after backoff')
     } finally { runtime.stop() }
   }
 })

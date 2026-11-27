@@ -81,7 +81,8 @@ async function raw(url, request) {
   return bounded(new Promise((resolve, reject) => {
     const socket = connect({ host: parsed.hostname.replace(/^\[|\]$/gu, ''), port: Number(parsed.port) })
     let received = ''
-    socket.on('connect', () => socket.end(request)); socket.on('data', chunk => { received += chunk })
+    socket.setTimeout(1800, () => socket.destroy(new Error('raw HTTP response timed out')))
+    socket.on('connect', () => socket.write(request)); socket.on('data', chunk => { received += chunk })
     socket.on('error', reject); socket.on('close', () => resolve(received))
   }), 'raw HTTP request')
 }
