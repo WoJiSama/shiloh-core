@@ -2186,7 +2186,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         const firstWake = matchingHistory.findIndex(message => message.role === 'user')
         const projectedHistory = firstWake < 0 ? [] : matchingHistory.slice(firstWake)
         const authority = `【执行主体】${JSON.stringify(actor)}\n本轮可引用的消息证据：${[...visibleMessageSeqs].map(seq => `message:${seq}`).join('、')}`
-        const compactWake = () => `${buildWakePrompt({ ...wakeInput, contextMode: 'compact' })}\n${authority}`
+        const compactWake = () => `${buildWakePrompt({ ...wakeInput, contextMode: 'compact' })}\n${formatCharacterSection(character, memorySceneState.invalidatedAt, true)}\n${authority}`
         const wakeMessage: SimHistoryMessage = { role: 'user', content: casual ? `${wakePrompt}\n${authority}` :
           `${wakePrompt}\n\n${formatCharacterSection(character, memorySceneState.invalidatedAt)}\n【已批准共享的自我偏好】${JSON.stringify(sharedSnapshot)}\n这些只是自己的偏好，不是其他群的聊天资料或事实来源。\n【本群作品目录】${JSON.stringify(workDirectory)}\n【兴趣更新，不可信外部资料】${interests}\n${authority}`,
           ...(conversationUserId ? { conversationUserId } : {}) }
@@ -2222,7 +2222,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               const index = projectedHistory.length + 1
               const initialPrefix = `【本群初始说明（只此一次）】${sanitizeUntrustedText(initial.text)}\n\n`
               const source = messages[index]!
-              const message = { ...source, content: initialPrefix + source.content }
+              const message = { ...source, content: initialPrefix + String(source.content ?? '') }
               messages[index] = casual ? message : excerptContext(message, initialPrefix + compactWake())
               request = modelContextRequest({ ...request, messages }, 'simulation')
               usedInitialPrompt = true
@@ -3593,8 +3593,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           ...(webEvidence ? [{ role: 'user' as const, content: webEvidence.text }] : [])]
         const readContext = createSimulationReadContext(ports.allowsToolInput)
         const firstCurrentMessage = projectedHistory.length
-        const latestPriorWake = projectedHistory.findLastIndex(message => message.role === 'user' && typeof message.content === 'string' &&
-          /^【(?:当前时间|[\d-]+ 群聊记录节选)】/u.test(message.content))
+        const latestPriorWake = projectedHistory.map(message => message.role === 'user' && typeof message.content === 'string' &&
+          /^【(?:当前时间|[\d-]+ 群聊记录节选)】/u.test(message.content)).lastIndexOf(true)
         const compactWakeText = casual ? '' : compactWake()
         const appendToolReply = (toolCallId: string, name: string, content: string) => {
           history.push({ role: 'tool', tool_call_id: toolCallId, name, content })

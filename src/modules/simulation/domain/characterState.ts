@@ -504,10 +504,10 @@ export function characterMemoryVisibility(state: CharacterState, invalidatedAt =
   return { memories, goals, receipts: state.receipts.filter(receipt => !hiddenReceiptIds.has(receipt.id)), hiddenMemoryIds, hiddenReceiptIds }
 }
 
-export function formatCharacterSection(state: CharacterState, invalidatedAt = 0): string {
+export function formatCharacterSection(state: CharacterState, invalidatedAt = 0, compact = false): string {
   const valid = validateCharacterState(state)
   const view = characterMemoryVisibility(valid, invalidatedAt)
-  const memories = view.memories.slice(-12).map(memory => ({
+  const memories = (compact ? [] : view.memories.slice(-12)).map(memory => ({
     id: memory.id, kind: memory.kind, epistemic: memory.epistemic, content: memory.content, evidenceRefs: memory.evidenceRefs,
   }))
   const goals = view.goals.filter(goal => !TERMINAL.has(goal.status)).map(goal => ({
