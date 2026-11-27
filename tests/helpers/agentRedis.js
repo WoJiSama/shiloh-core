@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -13,9 +14,19 @@ export const redisAvailable = spawnSync('redis-server', ['--version'], { stdio: 
 export async function createAgentRedisFixture(t, instance = 'agent-core-test') {
   const directory = await mkdtemp(join(tmpdir(), 'agent-redis-'))
   const socket = join(directory, 'redis.sock')
-  const server = spawn('redis-server', ['--port', '0', '--unixsocket', socket, '--save', '', '--appendonly', 'no'], { stdio: 'ignore' })
+  let port
+  if (process.platform === 'win32') {
+    const listener = createServer().listen(0, '127.0.0.1')
+    await once(listener, 'listening')
+    port = listener.address().port
+    await new Promise(resolve => listener.close(resolve))
+  }
+  const server = spawn('redis-server', [...(port ? ['--bind', '127.0.0.1', '--port', String(port)] : ['--port', '0', '--unixsocket', socket]),
+    '--save', '', '--appendonly', 'no'], { stdio: port ? ['ignore', 'pipe', 'ignore'] : 'ignore', windowsHide: true })
+  let output = ''
+  server.stdout?.on('data', chunk => { output = (output + chunk.toString()).slice(-2048) })
   const exited = once(server, 'exit').catch(() => {})
-  const url = `unix://${socket}`
+  const url = port ? `redis://127.0.0.1:${port}` : `unix://${socket}`
   let reader
   let fixture
   t.after(async () => {
@@ -29,7 +40,7 @@ export async function createAgentRedisFixture(t, instance = 'agent-core-test') {
     }
   })
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (await stat(socket).then(() => true, () => false)) {
+    if (port ? /ready to accept connections/iu.test(output) : await stat(socket).then(() => true, () => false)) {
       reader = await connectAgentRedis(url)
       fixture = await openAgentRedis({ url, instance, onLost: () => {} })
       return { reader, url, storage: fixture.storage, isCurrent: fixture.isCurrent, prefix: agentRedisPrefix(instance) }
