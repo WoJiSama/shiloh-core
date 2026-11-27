@@ -45,24 +45,26 @@ async function fixture(t, settings = {}) {
 }
 async function bytes(store, artifact) { const reader = await store.open(artifact, context()); try { const chunks = []; for await (const chunk of reader.chunks) chunks.push(chunk); return Buffer.concat(chunks) } finally { await reader.close() } }
 
-test('YouTube selected progressive MP4, cover and full metadata become one ordered neutral item with owned bytes', async t => {
-  const f = await fixture(t), prepared = await f.prepare(), parts = prepared.plan.items[0].parts
+test('YouTube prepares a PNG card followed by the progressive MP4 and its owned thumbnail', async t => {
+  const f = await fixture(t), prepared = await f.prepare()
+  const [card, media] = prepared.plan.items
+  const part = media.parts[0]
   assert.equal(prepared.status, 'ready'); assert.equal(prepared.pageUrl, PAGE)
-  assert.deepEqual(parts.map(part => part.kind), ['text', 'image', 'video'])
+  assert.deepEqual(prepared.plan.items.map(item => item.parts.map(part => part.kind)), [['image'], ['video']])
   assert.match(prepared.infoText, /测试频道.*AbC_123-xYz.*1:00/u)
   assert.match(prepared.infoText, /播放:12345 点赞:12/u); assert.match(prepared.infoText, /保留简介和统计/u)
   assert.equal(f.commands.length, 1); assert.equal(f.commands[0].command, 'yt-dlp')
   assert.ok(f.commands[0].args.includes('--skip-download')); assert.ok(f.commands[0].args.includes('--no-playlist'))
-  assert.deepEqual(await bytes(f.artifacts, parts[1].artifact), PNG)
-  assert.deepEqual(await bytes(f.artifacts, parts[2].artifact), video())
-  assert.deepEqual(await bytes(f.artifacts, parts[2].thumbnail), JPEG)
-  assert.equal(parts[2].artifact.sha256, createHash('sha256').update(video()).digest('hex'))
+  assert.equal((await bytes(f.artifacts, card.parts[0].artifact)).readUInt32BE(16), 920)
+  assert.deepEqual(await bytes(f.artifacts, part.artifact), video())
+  assert.deepEqual(await bytes(f.artifacts, part.thumbnail), JPEG)
+  assert.equal(part.artifact.sha256, createHash('sha256').update(video()).digest('hex'))
   assert.equal(JSON.stringify(prepared.plan).includes('PRIVATE_CDN_SIGNATURE'), false)
   assert.equal(JSON.stringify(prepared.plan).includes(f.directory), false)
   for (const call of f.calls) assert.equal(Object.keys(call.policy.headers).some(key => /cookie|authorization/i.test(key)), false)
   assert.equal(f.closed(), 2)
   await prepared.release(); await prepared.release()
-  await assert.rejects(f.artifacts.open(parts[2].artifact, context()))
+  await assert.rejects(f.artifacts.open(part.artifact, context()))
 })
 
 test('YouTube keeps metadata when the description limit lands on whitespace', async t => {
@@ -87,7 +89,7 @@ test('YouTube cover survives all pre-download metadata-only conditions without a
   ]) await t.test(name, async t => {
     const f = await fixture(t, { metadata: patch }), item = await f.prepare()
     assert.equal(item.status, 'metadata-only'); assert.match(item.infoText, notice)
-    assert.deepEqual(item.plan.items[0].parts.map(part => part.kind), ['text', 'image'])
+    assert.deepEqual(item.plan.items.map(item => item.parts.map(part => part.kind)), [['image']])
     assert.equal(f.calls.length, 1); assert.match(f.calls[0].url, /ytimg/u)
   })
 })
@@ -108,10 +110,10 @@ test('YouTube never accepts another work, playlist, extractor, external page, in
 
 test('YouTube cover failures retain the complete video and thumbnail failures retain the complete neutral video', async t => {
   const f = await fixture(t, { metadata: { thumbnail: 'http://127.0.0.1/secret' }, options: { thumbnail: async () => { throw Error('private native failure') } } })
-  const item = await f.prepare(), parts = item.plan.items[0].parts
-  assert.equal(item.status, 'ready'); assert.deepEqual(parts.map(part => part.kind), ['text', 'video'])
-  assert.equal(parts[1].thumbnail, undefined); assert.equal(f.calls.length, 1)
-  assert.deepEqual(await bytes(f.artifacts, parts[1].artifact), video())
+  const item = await f.prepare(), media = item.plan.items[1].parts[0]
+  assert.equal(item.status, 'ready'); assert.deepEqual(item.plan.items.map(node => node.parts.map(part => part.kind)), [['image'], ['video']])
+  assert.equal(media.thumbnail, undefined); assert.equal(f.calls.length, 1)
+  assert.deepEqual(await bytes(f.artifacts, media.artifact), video())
 })
 
 test('YouTube rejects unavailable, partial, compressed and size-mismatched media but keeps info and cover', async t => {
@@ -125,7 +127,7 @@ test('YouTube rejects unavailable, partial, compressed and size-mismatched media
   ]) await t.test(name, async t => {
     const f = await fixture(t, settings), item = await f.prepare()
     assert.equal(item.status, 'metadata-only'); assert.match(item.infoText, /单文件 MP4/u)
-    assert.equal(item.plan.items[0].parts.some(part => part.kind === 'video'), false)
+    assert.equal(item.plan.items.some(node => node.parts.some(part => part.kind === 'video')), false)
   })
 })
 
@@ -162,8 +164,9 @@ test('YouTube refuses host credentials and escaped encodings split across otherw
       const start = kind === 'image' ? PNG : video(), split = Math.floor(encoded.length / 2)
       return response((async function* () { yield Buffer.concat([start, Buffer.from(encoded.slice(0, split))]); yield Buffer.from(encoded.slice(split)) })(), kind === 'image' ? 'image/png' : 'video/mp4')
     } })
-    const item = await f.prepare(), parts = item.plan.items[0].parts
-    assert.equal(parts.some(part => part.kind === kind), false)
+    const item = await f.prepare(), parts = item.plan.items.flatMap(node => node.parts)
+    if (kind === 'video') assert.equal(parts.some(part => part.kind === 'video'), false)
+    else assert.equal((await bytes(f.artifacts, parts[0].artifact)).readUInt32BE(16), 920)
     assert.equal(item.status, kind === 'image' ? 'ready' : 'metadata-only')
   })
 })
@@ -183,7 +186,7 @@ test('YouTube permits exactly the 512MiB transport budget and retains every byte
   const f = await fixture(t, { metadata: { thumbnail: '', filesize: size },
     request: () => response(stream(), 'video/mp4', { headers: { 'content-type': 'video/mp4', 'content-length': String(size) } }),
     options: { thumbnail: async () => { throw Error('synthetic transport needs no codec') } } })
-  const item = await f.prepare(), part = item.plan.items[0].parts.find(part => part.kind === 'video')
+  const item = await f.prepare(), part = item.plan.items.flatMap(node => node.parts).find(part => part.kind === 'video')
   assert.equal(item.status, 'ready'); assert.equal(part.artifact.sizeBytes, size)
   assert.equal(part.artifact.sha256, expected.digest('hex'))
   const reader = await f.artifacts.open(part.artifact, context()), actual = createHash('sha256'); let read = 0

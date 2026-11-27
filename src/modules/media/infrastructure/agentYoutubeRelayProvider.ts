@@ -2,12 +2,14 @@ import path from 'node:path'
 import { lstat, realpath } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import { StringDecoder } from 'node:string_decoder'
-import type { AgentMediaArtifactLease, AgentMediaRelayPart } from '../../../contracts/agentMediaRelay.js'
+import type { AgentMediaArtifactLease, AgentMediaRelayItem } from '../../../contracts/agentMediaRelay.js'
 import type { AgentMediaRelayProvider, AgentPreparedMediaRelay } from '../../../contracts/agentMediaRelayWorkflow.js'
 import { sanitizeFinalReplyText } from '../../conversation/domain/replySanitizer.js'
 import { createAgentSecretTextCheck } from '../../messaging/infrastructure/agentSecretText.js'
-import { validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
+import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import { firstAgentMediaRelayImage, validateAgentMediaRelayPlan } from '../domain/agentMediaRelayPlan.js'
 import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
+import { stageAgentMediaRelayCard } from './agentMediaRelayCard.js'
 import { validateAgentMediaShare, agentMediaSharePageUrl } from './agentMediaRelayReference.js'
 import { parseAgentYoutubeReference } from './agentYoutubeRelayReference.js'
 import { createYoutubeHttp, youtubeCookieSecrets, youtubeFailure, youtubeGuard, youtubeOfficialUrl } from './agentYoutubeRelayHttp.js'
@@ -32,6 +34,7 @@ export interface AgentYoutubeRelayProviderOptions {
   readonly request?: AgentYoutubeRequest
   readonly native?: AgentYoutubeNative
   readonly thumbnail?: AgentYoutubeThumbnail
+  readonly diagnostics?: Pick<AgentDiagnostics, 'emit'>
   /** May only shorten preparation and stage deadlines. */
   readonly timeoutMs?: number
 }
@@ -148,29 +151,31 @@ export function createAgentYoutubeRelayProvider(options: AgentYoutubeRelayProvid
         }
       }
       const resolved = Object.keys(data).length > 0
-      const lines = [resolved ? `YouTube视频搬一下：分享了《${text(data.title, 300, 'YouTube 视频')}》` : 'YouTube视频搬一下：视频信息未获取']
+      const title = resolved ? text(data.title, 300, 'YouTube 视频') : '视频信息未获取'
+      const lines = [resolved ? `YouTube视频搬一下：分享了《${title}》` : 'YouTube视频搬一下：视频信息未获取']
       const basic = [`视频:${share.reference.id}`], channel = text(data.channel ?? data.uploader, 120)
       if (channel) basic.unshift(`频道:${channel}`)
       const duration = data.duration === undefined || data.duration === null ? 0 : data.duration
       if (typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0 || duration > 1_000_000_000) throw youtubeFailure()
       if (duration) basic.push(`时长:${durationText(duration)}`)
       lines.push(basic.join(' | '))
-      const stats: string[] = []
+      const stats: (readonly [string, number])[] = []
       for (const [key, label] of [['view_count', '播放'], ['like_count', '点赞'], ['comment_count', '评论'], ['repost_count', '转发']] as const) {
         const value = data[key]
-        if (value !== undefined && value !== null) { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw youtubeFailure(); stats.push(`${label}:${value}`) }
+        if (value !== undefined && value !== null) { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw youtubeFailure(); stats.push([label, value]) }
       }
-      if (stats.length) lines.push(`数据：${stats.join(' ')}`)
+      if (stats.length) lines.push(`数据：${stats.map(([label, count]) => `${label}:${count}`).join(' ')}`)
       const description = text(data.description, 240)
       if (description) lines.push(`简介：${description}`)
-      const infoParts: AgentMediaRelayPart[] = [], mediaParts: AgentMediaRelayPart[] = []
+      const items: AgentMediaRelayItem[] = []
+      let cover: AgentMediaArtifactLease | undefined
       if (resolved && typeof data.thumbnail === 'string' && data.thumbnail) {
         const coverGuard = youtubeGuard(guard.context, stageTime(15_000)); let response: Awaited<ReturnType<typeof read>> | undefined
         try {
           response = await read(data.thumbnail, 'image', coverGuard, COVER_BYTES)
           if (!imageMimes.has(response.mime)) throw youtubeFailure()
           const lease = await coverGuard.wait(options.artifacts.stage({ kind: 'image', mime: response.mime, chunks: safeChunks(response.chunks) }, coverGuard.context), late => late.release())
-          leases.push(lease); await coverGuard.ensure(); infoParts.push({ kind: 'image', artifact: lease.artifact })
+          leases.push(lease); await coverGuard.ensure(); cover = lease
         } catch { await guard.ensure() } finally { await response?.close(); coverGuard.close() }
       }
       if (!resolved) lines.push(reason)
@@ -198,15 +203,22 @@ export function createAgentYoutubeRelayProvider(options: AgentYoutubeRelayProvid
           try { thumbnail = await prepareBilibiliThumbnail(video.artifact, { directory: options.directory, artifacts: options.artifacts, guard,
             ...(options.thumbnail ? { thumbnail: options.thumbnail } : {}) }); leases.push(thumbnail) }
           catch { await guard.ensure() }
-          mediaParts.push({ kind: 'video', artifact: video.artifact, ...(thumbnail ? { thumbnail: thumbnail.artifact } : {}) })
+          items.push({ parts: [{ kind: 'video', artifact: video.artifact, ...(thumbnail ? { thumbnail: thumbnail.artifact } : {}) }] })
         }
       }
+      const notice = items.length ? '' : lines.at(-1) ?? ''
       lines.push(pageUrl)
       const infoText = lines.join('\n')
       if (!safeText(infoText)) throw youtubeFailure()
-      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [{ kind: 'text', text: infoText }, ...infoParts, ...mediaParts] }] }, { allowsText: safeText })
+      const preview = firstAgentMediaRelayImage(items)
+      const card = await stageAgentMediaRelayCard({ platform: 'youtube', kind: '视频', title, author: channel,
+        detail: duration ? durationText(duration) : '', description, stats, pageUrl, notice,
+      }, { artifacts: options.artifacts, covers: [cover?.artifact, preview], guard, allowsText: safeText, diagnostics: options.diagnostics })
+      if (card) leases.push(card)
+      const intro = card?.artifact ?? cover?.artifact ?? preview
+      const plan = validateAgentMediaRelayPlan({ version: 1, items: [{ parts: [intro ? { kind: 'image', artifact: intro } : { kind: 'text', text: infoText }] }, ...items] }, { allowsText: safeText })
       await guard.ensure(); transferred = true
-      return { status: mediaParts.length ? 'ready' : 'metadata-only', pageUrl, infoText, plan, release } satisfies AgentPreparedMediaRelay
+      return { status: items.length ? 'ready' : 'metadata-only', pageUrl, infoText, plan, release } satisfies AgentPreparedMediaRelay
     } catch { throw youtubeFailure() } finally { guard.close(); if (!transferred) await release() }
   } }
 }

@@ -29,7 +29,8 @@ async function fixture(t,settings={}){
 test('fixed artwork metadata and pages prepare parallel, regular images stay in page order and every byte is leased',async t=>{
  const entered=gate(),held=gate();let metadata=0
  const f=await fixture(t,{respond:async url=>{if(url.hostname==='www.pixiv.net'){metadata++;if(metadata===2)entered.resolve();await held.promise}}}),operation=f.prepare();await entered.promise;held.resolve();const result=await operation
- assert.equal(result.status,'ready');assert.equal(result.pageUrl,`https://www.pixiv.net/artworks/${ID}`);assert.deepEqual(result.plan.items.map(item=>item.parts[0].kind),['text','image','image','image'])
+ assert.equal(result.status,'ready');assert.equal(result.pageUrl,`https://www.pixiv.net/artworks/${ID}`);assert.deepEqual(result.plan.items.map(item=>item.parts[0].kind),['image','image','image','image'])
+ assert.equal((await f.bytes(result.plan.items[0].parts[0].artifact)).readUInt32BE(16),920)
  assert.match(result.infoText,/画师:画师/);assert.match(result.infoText,/浏览:0/);assert.match(result.infoText,/风景、艺术/);assert.match(result.infoText,/完整 简介 & 文字/)
  assert.deepEqual(f.requests.slice(2).map(call=>call.url),[image(0),image(1),image(2)])
  for(const item of result.plan.items.slice(1)){assert.deepEqual(await f.bytes(item.parts[0].artifact),PNG);assert.equal(item.parts[0].artifact.sha256,createHash('sha256').update(PNG).digest('hex'))}

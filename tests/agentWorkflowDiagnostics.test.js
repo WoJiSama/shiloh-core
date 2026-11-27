@@ -47,7 +47,8 @@ async function mediaFixture(t, mode) {
   let clock = 1_800_000_000_000, calls = 0, preparations = 0, active = true
   const incoming = message('media-source', '媒体分享'), share = { provider: 'pixiv', reference: { kind: 'artwork', id: '126649495' } }
   const source = { ...sourceOf(incoming), share }, id = agentMediaOutboxId(binding, incoming.messageId)
-  const sends = [], plan = { version: 1, items: [{ parts: [{ kind: 'text', text: '作品介绍' }] }] }
+  const sends = [], plan = { version: 1, items: [{ parts: [{ kind: 'image',
+    artifact: { id: '1'.repeat(32), sha256: '2'.repeat(64), kind: 'image', mime: 'image/png', sizeBytes: 64 } }] }] }
   const outbox = createAgentMediaOutbox({ storage, now: () => clock, ...seen.ports,
     actions: { async send(action) { sends.push(action); calls++; return sent(`media-${calls}`) }, async sendMediaRelay() { calls++; return { state: 'unknown' } } },
     provider: { async prepare() { preparations++; if (mode !== 'unknown') throw Error(secret); return { status: 'metadata-only', pageUrl: 'https://www.pixiv.net/artworks/126649495', infoText: '作品介绍', plan, async release() {} } } },

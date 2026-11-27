@@ -282,12 +282,14 @@ export async function openStandaloneMediaRelay(options: {
     if (options.config.enabled && options.config.xiaohongshu?.enabled) {
       const directory = path.join(run, 'xiaohongshu-provider'); await mkdir(directory, { mode: 0o700 })
       xiaohongshu = createAgentXiaohongshuRelayProvider({ directory, artifacts, secrets: options.secrets, allowsText: options.allowsText,
+        ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
         ...(options.config.xiaohongshu.authCookie ? { authCookie: options.config.xiaohongshu.authCookie } : {}) })
     }
     let youtube: AgentMediaRelayProvider | undefined
     if (options.config.enabled && options.config.youtube?.enabled) {
       const directory = path.join(run, 'youtube-provider'); await mkdir(directory, { mode: 0o700 })
       youtube = createAgentYoutubeRelayProvider({ directory, artifacts, secrets: options.secrets, allowsText: options.allowsText,
+        ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
         ...(options.config.youtube.authCookie ? { authCookie: options.config.youtube.authCookie } : {}),
         ...(options.config.youtube.poToken ? { poToken: options.config.youtube.poToken } : {}),
         ...(options.config.youtube.proxyUrl ? { proxyUrl: options.config.youtube.proxyUrl } : {}) })
@@ -297,6 +299,7 @@ export async function openStandaloneMediaRelay(options: {
       const directory = path.join(run, 'pixiv-provider'); await mkdir(directory, { mode: 0o700 })
       pixiv = createAgentPixivRelayProvider({ directory, artifacts, secrets: options.secrets, allowsText: options.allowsText,
         allowRestricted: options.config.pixiv.allowRestricted,
+        ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
         ...(options.config.pixiv.authCookie ? { authCookie: options.config.pixiv.authCookie } : {}),
         ...(options.config.pixiv.proxyUrl ? { proxyUrl: options.config.pixiv.proxyUrl } : {}) })
     }
@@ -314,7 +317,7 @@ export async function openStandaloneMediaRelay(options: {
     if (options.pixivTools?.enabled) {
       const directory = path.join(run, 'pixiv-tools-provider'); await mkdir(directory, { mode: 0o700 })
       pixivToolProvider = createAgentPixivRelayProvider({ directory, artifacts, secrets: options.secrets, allowsText: options.allowsText,
-        allowRestricted: options.pixivTools.allowRestricted,
+        allowRestricted: options.pixivTools.allowRestricted, introCard: false,
         ...(options.pixivTools.authCookie ? { authCookie: options.pixivTools.authCookie } : {}),
         ...(options.pixivTools.proxyUrl ? { proxyUrl: options.pixivTools.proxyUrl } : {}) })
     }

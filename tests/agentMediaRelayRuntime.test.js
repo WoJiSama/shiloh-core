@@ -19,7 +19,6 @@ const share = { provider: 'bilibili', reference: { kind: 'video', id: 'BV1H7Gq6z
 const video = { id: '1'.repeat(32), kind: 'video', mime: 'video/mp4', sizeBytes: 64, sha256: '2'.repeat(64) }
 const thumbnail = { id: '3'.repeat(32), kind: 'image', mime: 'image/jpeg', sizeBytes: 16, sha256: '4'.repeat(64) }
 const plan = { version: 1, items: [{ parts: [{ kind: 'image', artifact: thumbnail }] }, { parts: [{ kind: 'video', artifact: video, thumbnail }] }] }
-const youtubePlan = { version: 1, items: [{ parts: [{ kind: 'text', text: '合成搬运视频介绍' }] }, plan.items[1]] }
 const gate = () => { let release; const promise = new Promise(resolve => { release = resolve }); return { promise, release } }
 async function waitFor(probe, label, timeout = 7000) {
   const end = Date.now() + timeout
@@ -91,7 +90,7 @@ async function fixture(t, settings = {}) {
       mediaRelayProvider: { async prepare(selected, context) {
         preparations.push({ selected: structuredClone(selected), context })
         if (settings.prepare) return settings.prepare(selected, context, f)
-        return { status: 'ready', pageUrl: selectedPage, infoText: '合成搬运视频介绍', plan: structuredClone(settings.plan ?? (selectedShare.provider === 'youtube' ? youtubePlan : plan)), async release() { releases++ } }
+        return { status: 'ready', pageUrl: selectedPage, infoText: '合成搬运视频介绍', plan: structuredClone(settings.plan ?? plan), async release() { releases++ } }
       } },
       ...(settings.allowsText ? { allowsText: settings.allowsText } : {}),
       logger: { info() {}, warn(...args) { logs.push(args.map(String).join(' ')) }, error(...args) { logs.push(args.map(String).join(' ')) } },
@@ -163,8 +162,7 @@ const douyinShare = { provider: 'douyin', reference: { kind: 'note', id: '748223
 const youtubeShare = { provider: 'youtube', reference: { kind: 'video', id: 'AbC_123-xYz' } }
 const pixivShare = { provider: 'pixiv', reference: { kind: 'artwork', id: '123456789' } }
 const image = { id: '5'.repeat(32), kind: 'image', mime: 'image/png', sizeBytes: 32, sha256: '6'.repeat(64) }
-const gallery = { version: 1, items: [{ parts: [{ kind: 'text', text: '合成抖音图集' }] }, { parts: [{ kind: 'image', artifact: image }] }] }
-const douyinGallery = { version: 1, items: [{ parts: [{ kind: 'image', artifact: thumbnail }] }, gallery.items[1]] }
+const gallery = { version: 1, items: [{ parts: [{ kind: 'image', artifact: thumbnail }] }, { parts: [{ kind: 'image', artifact: image }] }] }
 const xhsShare = { provider: 'xiaohongshu', reference: { kind: 'note', id: '66aabbccddeeff0011223344' } }
 const xhsPage = `https://www.xiaohongshu.com/explore/${xhsShare.reference.id}`
 for (const mode of ['simulation', 'text']) test(`Core ${mode} persists safe Xiaohongshu references while refreshing ephemeral access from the exact original source`, { timeout: 20000 }, async t => {
@@ -230,11 +228,11 @@ test('Xiaohongshu unknown forward survives restart without a fallback or another
 })
 
 for (const mode of ['simulation', 'text']) test(`Core ${mode} routes verified Douyin gallery through the same neutral outbox with no model`, { timeout: 20000 }, async t => {
-  const f = await fixture(t, { mode, share: douyinShare, providers: ['bilibili', 'douyin'], plan: douyinGallery })
+  const f = await fixture(t, { mode, share: douyinShare, providers: ['bilibili', 'douyin'], plan: gallery })
   await f.emit(f.message({ text: '', parts: [{ kind: 'extension', platform: 'fixture', type: 'douyin' }] })); await f.drain()
   assert.equal((await f.terminal()).state, 'completed')
   assert.deepEqual(f.preparations[0].selected, douyinShare); assert.deepEqual(f.calls.map(row => row.stage), ['forward'])
-  assert.deepEqual(f.calls[0].action.plan, douyinGallery); await f.assertPrivate()
+  assert.deepEqual(f.calls[0].action.plan, gallery); await f.assertPrivate()
   await f.emit(); await f.drain(); await f.restart(); await f.emit(); await f.drain()
   assert.equal(f.calls.length, 1)
 })
@@ -267,7 +265,7 @@ test('removing only Douyin provider permission aborts preparation while global r
 })
 
 test('Douyin unknown forward cannot emit links or repeat after restart', { timeout: 20000 }, async t => {
-  const f = await fixture(t, { share: douyinShare, providers: ['douyin'], plan: douyinGallery, deliver: async () => ({ state: 'unknown' }) })
+  const f = await fixture(t, { share: douyinShare, providers: ['douyin'], plan: gallery, deliver: async () => ({ state: 'unknown' }) })
   await f.emit(); await f.drain(); assert.equal((await f.terminal()).state, 'unknown')
   await f.restart(); await f.emit(); await f.drain(); assert.equal(f.calls.length, 1); await f.assertPrivate()
 })
@@ -278,12 +276,11 @@ for (const selectedShare of [youtubeShare, pixivShare]) for (const mode of ['sim
   const text = youtube ? 'https://youtu.be/AbC_123-xYz' : `https://www.pixiv.net/artworks/${selectedShare.reference.id}`
   await f.emit(f.message(native ? { text: '', parts: [{ kind: 'extension', platform: 'fixture', type: selectedShare.provider }] } : { parts: [{ kind: 'text', text }] }))
   await f.drain(); assert.equal((await f.terminal()).state, 'completed')
-  const expectedModes = youtube ? ['direct-video', 'direct-video'] : ['forward']
   assert.deepEqual(f.preparations[0].selected, selectedShare)
-  assert.deepEqual(f.calls.map(row => row.action.mode), expectedModes)
-  if (youtube) assert.deepEqual(f.calls.map(row => row.action.plan.items.flatMap(item => item.parts.map(part => part.kind))), [['text'], ['video']])
+  assert.deepEqual(f.calls.map(row => row.action.mode), ['forward'])
+  assert.deepEqual(f.calls[0].action.plan.items.map(item => item.parts.map(part => part.kind)), youtube ? [['image'], ['video']] : [['image'], ['image']])
   await f.emit(); await f.drain(); await f.restart(); await f.emit(); await f.drain()
-  assert.equal(f.calls.length, expectedModes.length); await f.assertPrivate()
+  assert.equal(f.calls.length, 1); await f.assertPrivate()
 })
 
 for (const selectedShare of [youtubeShare, pixivShare]) for (const queued of [false, true]) test(`${selectedShare.provider} remains disabled under the original Bilibili-only activation (${queued ? 'persisted' : 'new'})`, { timeout: 20000 }, async t => {

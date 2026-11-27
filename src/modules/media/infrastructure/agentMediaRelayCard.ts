@@ -1,10 +1,13 @@
 import sharp from 'sharp'
 import type { OverlayOptions } from 'sharp'
-import type { AgentMediaArtifact, AgentMediaResourceContext, AgentMediaResourcePort } from '../../../contracts/agentMediaRelay.js'
+import type { AgentMediaArtifact, AgentMediaArtifactLease, AgentMediaResourceContext, AgentMediaResourcePort } from '../../../contracts/agentMediaRelay.js'
+import type { AgentMediaShare } from '../../../contracts/agentMediaRelayWorkflow.js'
+import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
+import type { AgentMediaArtifactStore } from './agentMediaArtifactStore.js'
 
 interface CardView {
-  readonly platform: 'bilibili' | 'douyin'
-  readonly kind: '视频' | '番剧' | '图文'
+  readonly platform: AgentMediaShare['provider']
+  readonly kind: '视频' | '番剧' | '图文' | '插画' | '漫画' | '作品'
   readonly title: string
   readonly author?: string
   readonly detail?: string
@@ -18,6 +21,9 @@ const WIDTH = 920, INSET = 38, CONTENT = WIDTH - 2 * INSET, COVER_HEIGHT = 416
 const themes = {
   bilibili: { name: '哔哩哔哩', accent: '#71d8ff', background: '#122d40', shadow: '#0b1727' },
   douyin: { name: '抖音', accent: '#ff93a5', background: '#3b2337', shadow: '#161322' },
+  xiaohongshu: { name: '小红书', accent: '#ff9b9c', background: '#41262a', shadow: '#23171d' },
+  youtube: { name: 'YouTube', accent: '#ff9890', background: '#352725', shadow: '#19181d' },
+  pixiv: { name: 'Pixiv', accent: '#83caff', background: '#25294b', shadow: '#121a2d' },
 }
 const compactNumber = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 })
 const graphemes = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' })
@@ -120,4 +126,41 @@ export async function renderAgentMediaRelayCard(view: CardView, options: {
   const bytes = await sharp(backdrop).timeout({ seconds: 5 }).composite(layers).png().toBuffer()
   check()
   return bytes
+}
+
+/** Stage a rendered card under the same resource authority and lifetime as its media. */
+export async function stageAgentMediaRelayCard(view: CardView, options: {
+  readonly artifacts: AgentMediaArtifactStore
+  readonly covers: readonly (AgentMediaArtifact | undefined)[]
+  readonly allowsText: (value: string) => boolean
+  readonly diagnostics: Pick<AgentDiagnostics, 'emit'> | undefined
+  readonly guard: {
+    readonly context: AgentMediaResourceContext
+    ensure(): Promise<void>
+    wait<T>(operation: Promise<T>, late?: (value: T) => unknown): Promise<T>
+  }
+}): Promise<AgentMediaArtifactLease | undefined> {
+  const { guard, artifacts } = options
+  const report = (step: 'media_card_cover' | 'media_card_render' | 'media_card_store', error: unknown) => {
+    try {
+      options.diagnostics?.emit({ stage: 'runtime', operation: `${view.platform}_provider_card`, outcome: 'failed',
+        code: step === 'media_card_cover' ? 'relay_card_cover_failed' : 'relay_card_render_failed', details: { step }, error })
+    } catch { /* Diagnostics cannot prevent a valid fallback. */ }
+  }
+  let step: 'media_card_render' | 'media_card_store' = 'media_card_render'
+  try {
+    await guard.ensure()
+    const bytes = await guard.wait(renderAgentMediaRelayCard(view, {
+      covers: options.covers, resources: artifacts, context: guard.context, allowsText: options.allowsText,
+      onCoverError: error => report('media_card_cover', error),
+    }))
+    step = 'media_card_store'
+    await guard.ensure()
+    return await guard.wait(artifacts.stage({ kind: 'image', mime: 'image/png',
+      chunks: (async function* () { yield bytes })() }, guard.context), late => late.release())
+  } catch (error) {
+    await guard.ensure()
+    report(step, error)
+    return undefined
+  }
 }
