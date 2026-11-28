@@ -6,6 +6,7 @@ import { createDefaultSimSession } from '../dist/backend/modules/simulation/doma
 import { createAgentSimulationWakeGate } from '../dist/backend/modules/simulation/infrastructure/agentSimulationModels.js'
 import { simulationSessionKey } from '../dist/backend/modules/simulation/infrastructure/simSessionStore.js'
 import { agentBindingToken } from '../dist/backend/modules/runtime/domain/agentBindings.js'
+import { createAgentDiagnostics } from '../dist/backend/modules/runtime/infrastructure/agentDiagnostics.js'
 import { commitmentRedis } from './helpers/commitmentRedis.js'
 
 const account = { platform: 'qq', namespace: 'global', id: '985300001' }
@@ -137,6 +138,43 @@ test('group replay distinguishes a case of mentioning the bot from choosing to j
   assert.match(f.requests.at(-1), /旁听中的话题/u)
   assert.match(f.requests.at(-1), /"kind"\s*:\s*"autonomous"/u)
   assert.doesNotMatch(f.requests.at(-1), /物流/u)
+})
+
+test('a join turn rejects excess finish messages before saving and accepts a corrected single reply', async t => {
+  const events = [], requests = []
+  const diagnostics = createAgentDiagnostics({ logger: { info() {}, warn() {}, error() {} }, sink: { async append(event) { events.push(event); return true } } })
+  let focusSeq
+  const f = await fixture(t, route => {
+    focusSeq = route.triggerSeq
+    return { engage: true, selection: { mode: 'join', seq: focusSeq } }
+  }, 1, {
+    diagnostics,
+    async YTapi(request) {
+      requests.push(structuredClone(request))
+      const first = requests.length === 1
+      const reply = '可以试试双人模式，顺便看看存档能不能同步。'
+      return { choices: [{ message: { content: '', tool_calls: [{ id: `join-${requests.length}`, type: 'function', function: {
+        name: 'simFinishTurn', arguments: JSON.stringify(first
+          ? { choice: 'chat', messages: ['可以试试双人模式。', '看看存档能不能同步。'] }
+          : { choice: 'chat', messages: [reply], replyToSeq: focusSeq }),
+      } }] } }] }
+    },
+  })
+  const source = await f.receive(ch, '今晚要不要试试这个游戏的双人模式？')
+  await until(() => events.some(row => row.operation === 'simFinishTurn' && row.outcome === 'succeeded'), 'corrected join reply did not finish')
+  assert.equal(requests.length, 2)
+  assert.match(requests[0].messages.find(message => message.role === 'user').content, /messages 的一项/u)
+  for (const name of ['simSendMessage', 'simFinishTurn']) {
+    const tool = requests[0].tools.find(tool => tool.function.name === name)
+    assert.equal(tool.function.parameters.properties.messages.maxItems, 1)
+  }
+  assert.match(requests[1].messages.find(message => message.role === 'tool').content, /合为 messages 的一项/u)
+  assert.deepEqual(f.replies.map(reply => reply.replyTo), [source.id])
+  assert.equal(events.filter(row => row.operation === 'simFinishTurn' && row.outcome === 'started').length, 1)
+  assert.equal(events.filter(row => row.operation === 'simSendMessage' && row.outcome === 'started').length, 1)
+  const failure = events.find(row => row.operation === 'simFinishTurn' && row.code === 'sim_send_join_limit')
+  assert.deepEqual(failure?.details, { attempt: 1, step: 'send_route', field: 'messages', rule: 'maxItems', limit: 1,
+    dispatched: false, result: 'not_dispatched' })
 })
 
 test('a delayed refusal from the gate keeps a later direct message queued', async t => {

@@ -508,6 +508,11 @@ const failureReasons = new Map(Object.entries({
   sim_send_turn_limit: '已达到本轮发送条数上限。',
   sim_send_minute_limit: '已达到本分钟的发送条数上限。',
   sim_send_hour_limit: '普通续聊已达到过去一小时的发送条数上限。',
+  sim_send_join_limit: '主动加入话题每轮只允许发送一条消息，本次提交超出额度。',
+  sim_send_follow_up_limit: '社交跟进每轮只允许发送一条消息，本次提交超出额度。',
+  sim_send_join_mentions: '主动加入话题时提交了不允许的 @ 提及。',
+  sim_send_join_reply: '主动加入话题时引用了选中消息之外的内容。',
+  sim_send_continuation_reply: '续话时引用了当前消息之外的内容。',
   sim_send_continuation_invalid: '模型提交的聊天选择不适用中途发言。',
   sim_send_messages_invalid: '待发送消息的条数或格式无效。',
   sim_send_messages_empty: '清理后的群消息没有可发送的文字。',
@@ -656,6 +661,7 @@ const ruleNames = new Map(Object.entries({
   required: '缺少必填项', type: '类型错误', enum: '值超出允许选项', const: '与要求的固定值不符',
   additionalProperties: '包含未声明字段', minLength: '字符数不足', maxLength: '字符数超限',
   minItems: '条目数不足', maxItems: '条目数超限', minimum: '低于最小值', maximum: '高于最大值',
+  send_count: '本轮已发过一条', mentions_forbidden: '本轮不允许提及成员', selected_message: '只可引用本轮选中消息',
   format: '格式不符', pattern: '格式不符', oneOf: '与允许的结构不符', anyOf: '与允许的结构不符',
   uniqueItems: '条目重复', incompatible: '字段组合不允许', requires_messages: '只能与本次 messages 一起使用', normalization: '参数规范化失败',
   cognition_json_object: '未返回有效 JSON', cognition_output_truncated: '响应在输出上限处截断',
@@ -689,7 +695,7 @@ const stepNames = new Map(Object.entries({
   qzone_delete: '删除说说', qzone_like: '点赞说说', qzone_comment: '评论说说',
   response_headers: '等待响应头',
   search_query: '校验查询词', search_usage: '记录搜索用量',
-  send_validation: '检查待发消息', send_budget: '检查发送额度', send_review: '校验待发消息一致性',
+  send_route: '校验本轮允许的发送方式', send_validation: '检查待发消息', send_budget: '检查发送额度', send_review: '校验待发消息一致性',
   send_authorization: '复核发送权限', send_dispatch: '投递群消息', send_session_save: '保存已发送状态', send_memory_save: '保存被引用的群梗',
   qq_media_dispatch: '派发 QQ 媒体投递', qq_media_response: '核验 QQ 媒体回执',
   qq_media_preprocess: '准备合并转发资源', qq_media_final_send: '发送已上传的合并转发包',
@@ -805,7 +811,8 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
       : 'Node.js 已运行发送调度探针，Redis 命令到超时时仍留在客户端队列。'
     : undefined
   const limitUnit = code === 'search_body_too_large' || details?.cause === 'bilibili_size_limit' || details?.cause === 'bilibili_length_mismatch' ? ' 字节' :
-    code === 'sim_send_turn_limit' || code === 'sim_send_minute_limit' || code === 'sim_send_hour_limit' ? ' 条' :
+    code === 'sim_send_turn_limit' || code === 'sim_send_minute_limit' || code === 'sim_send_hour_limit' ||
+      code === 'sim_send_join_limit' || code === 'sim_send_follow_up_limit' ? ' 条' :
     code === 'model_response_truncated' || details?.cause === 'model_response_truncated' || details?.rule === 'cognition_output_truncated' ? ' token' :
     code?.includes('timeout') || code === 'semantic_provider_budget_elapsed' || details?.cause === 'semantic_recall_budget_elapsed' || details?.cause?.startsWith('douyin_browser_') && details.cause.endsWith('timeout') ? ' ms' : ''
   const evidence = [!journalReason && location && `环节 ${location}`, details?.field &&

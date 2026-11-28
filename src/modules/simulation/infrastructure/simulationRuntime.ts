@@ -2836,19 +2836,36 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         ctx.proactiveSourceSeq = () => proactiveSourceSeq
         if (anchor && groupSelection?.mode !== 'join') ctx.waitMessageFilter = message => message.userId === anchor.userId &&
           (routedGroup ? message.atSelf || message.quoteToSelf : !isAddressedElsewhere(message))
+        const joiningTopic = groupSelection?.mode === 'join'
+        const singleMessageLimit = joiningTopic || followUpId ? 1 : undefined
+        const continuationMessageId = routedGroup && reason.kind === 'continuation' ? triggerMessage?.messageId : undefined
+        const checkSendRoute = (messageCount: number, replyToMessageId?: SimMessage['messageId'], mentions = false) => {
+          const reject = (code: string, error: string, field: string, rule: string, limit?: number) => ({ error,
+            failure: { code, details: { step: 'send_route', field, rule, dispatched: false, result: 'not_dispatched',
+              ...(limit === undefined ? {} : { limit }) } } satisfies ToolExecutionFailure,
+          })
+          if (singleMessageLimit && (sends > 0 || messageCount > singleMessageLimit)) {
+            return reject(joiningTopic ? 'sim_send_join_limit' : 'sim_send_follow_up_limit', sends > 0
+              ? '本轮已发过一条，请省略 messages 并直接收尾。' : '本轮只允许发一条消息，请将正文合为 messages 的一项后重提。',
+            'messages', messageCount > singleMessageLimit ? 'maxItems' : 'send_count', singleMessageLimit)
+          }
+          if (joiningTopic && mentions) {
+            return reject('sim_send_join_mentions', '主动加入话题请省略 atUserIds。', 'atUserIds', 'mentions_forbidden')
+          }
+          if (joiningTopic && replyToMessageId != null && String(replyToMessageId) !== String(anchor?.messageId)) {
+            return reject('sim_send_join_reply', '主动加入话题只可引用当前选中的消息。', 'replyToSeq', 'selected_message')
+          }
+          if (continuationMessageId && replyToMessageId != null && String(replyToMessageId) !== String(continuationMessageId)) {
+            return reject('sim_send_continuation_reply', '这条续话应引用当前那句，请省略 replyToSeq。', 'replyToSeq', 'selected_message')
+          }
+        }
         const sendMessage = ctx.sendMessage
         const confirmedExpressions: CognitionTurnProjection['expressions'][number][] = []
         ctx.sendMessage = async (messages, opts) => {
-          if (groupSelection?.mode === 'join' && (sends > 0 || messages.length > 1 || opts.atUserIds?.length ||
-              opts.replyToMessageId != null && String(opts.replyToMessageId) !== String(anchor?.messageId))) {
-            return { ok: false, sent: 0, error: '主动加入话题请只发一句，说明你在接什么。可引用选中的消息。' }
-          }
-          if (routedGroup && triggerMessage?.messageId && reason.kind === 'continuation') {
-            if (opts.replyToMessageId != null && String(opts.replyToMessageId) !== String(triggerMessage.messageId)) {
-              return { ok: false, sent: 0, error: '这条续话应引用当前那句，请去掉其他引用。' }
-            }
-            if (opts.replyToMessageId == null && sends === 0) opts = { ...opts, replyToMessageId: triggerMessage.messageId }
-          }
+          if (followUpId) opts = {}
+          const blocked = checkSendRoute(messages.length, opts.replyToMessageId, Boolean(opts.atUserIds?.length))
+          if (blocked) return { ok: false, sent: 0, ...blocked }
+          if (continuationMessageId && opts.replyToMessageId == null && sends === 0) opts = { ...opts, replyToMessageId: continuationMessageId }
           const beforeIds = new Set(state!.confirmedMessageIds ?? []), beforeTexts = memoryBox.sentTexts.length
           const result = await sendMessage(messages, opts)
           const ids = (state!.confirmedMessageIds ?? []).filter(id => !beforeIds.has(id)), texts = memoryBox.sentTexts.slice(beforeTexts)
@@ -2856,13 +2873,6 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             participantIds: [...new Set([target.account.id, ...(opts.atUserIds ?? []).map(String), ...(opts.replyToMessageId ? ['quoted-source'] : [])])],
           }))
           return result
-        }
-        if (followUpId) {
-          const sendFollowUp = ctx.sendMessage
-          ctx.sendMessage = messages => {
-            if (sends > 0 || messages.length > 1) return Promise.resolve({ ok: false, error: '社交跟进只发一句；请安静收尾或合为一条' })
-            return sendFollowUp(messages, {})
-          }
         }
         const visibleCharacterRefs = new Set([
           ...characterMemoryVisibility(character, memorySceneState.invalidatedAt).memories.slice(-12).map(memory => `memory:${memory.id}`),
@@ -2920,9 +2930,11 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           }),
         ]
         ctx.requireExplicitContinuation = true
+        ctx.singleMessage = singleMessageLimit === 1
         const simulationTools = createSimTools(ctx).filter(tool => !ownsQzone || tool.name !== 'simQzoneInteract')
         const finishTool = createCharacterTurnTool({
           now, read: () => characters.load(characterScope),
+          singleMessage: ctx.singleMessage,
           ...(ctx.platformUserId ? { platformUserId: ctx.platformUserId } : {}),
           update: updateCharacter,
           visibleEvidenceRefs, makeId: prefix => `${prefix}-${randomUUID()}`,
@@ -3661,6 +3673,11 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             const input = prepareSimulationToolInput(tool, args, event, invalid => { issue = invalid })
             if (typeof input === 'string') {
               if (tool === finishTool) requiresClosing = true
+              if (singleMessageLimit && (tool === finishTool || tool.name === 'simSendMessage') && issue?.field === 'messages' && issue.rule === 'maxItems') {
+                const messages = normalizeMessageTextsInput(args.messages)
+                const blocked = Array.isArray(messages) && checkSendRoute(messages.length)
+                if (blocked) return reject(blocked.failure.code, `error: ${blocked.error}`, undefined, blocked.failure.details)
+              }
               let repair = tool === finishTool && issue?.field === 'choice' && issue.rule === 'required' ? ` ${FINISH_CHOICE_GUIDANCE}` : ''
               let details: AgentDiagnosticDetails | undefined = issue
               if ((tool === finishTool || tool.name === 'simSendMessage') && issue?.field === 'messages' && issue.rule === 'type') {
@@ -3724,10 +3741,15 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                   ...(firstUnseenSeq === undefined ? {} : { firstUnseenSeq }) })
             }
           }
-          if (tool === finishTool && Object.hasOwn(args, 'replyToSeq') &&
-              (typeof args.replyToSeq !== 'number' || !Number.isSafeInteger(args.replyToSeq) || args.replyToSeq < 1 || ![...state!.unread, ...state!.recent].some(message => message.seq === args.replyToSeq))) {
-            return reject('finish_reply_reference_invalid', 'error: replyToSeq 不是近期消息的有效序号，本次未保存',
+          if (tool === finishTool && Array.isArray(args.messages)) {
+            const quoteSeq = args.replyToSeq
+            const quote = typeof quoteSeq === 'number' && Number.isSafeInteger(quoteSeq) && quoteSeq > 0
+              ? state!.unread.find(message => message.seq === quoteSeq) ?? state!.recent.find(message => message.seq === quoteSeq)
+              : undefined
+            if (quoteSeq !== undefined && !quote) return reject('finish_reply_reference_invalid', 'error: replyToSeq 不是近期消息的有效序号，本次未保存',
               undefined, { field: 'replyToSeq', rule: 'visible_sequence' })
+            const blocked = checkSendRoute(args.messages.length, quote?.messageId, Array.isArray(args.atUserIds) && args.atUserIds.length > 0)
+            if (blocked) return reject(blocked.failure.code, `error: ${blocked.error} 本次未保存。`, undefined, blocked.failure.details)
           }
           const internal = tool === finishTool || characterTools.includes(tool) || ['simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simMarkRead', 'simWaitForMessages', 'simSetWakeConfig', 'simGetGroupMembers', 'simGetMessageImages', 'simGetForward'].includes(tool.name)
             || (['simRemember', 'simLifeThread'].includes(tool.name) && args.action === 'list')

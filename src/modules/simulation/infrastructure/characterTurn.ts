@@ -25,6 +25,7 @@ export interface CharacterTurnFinishResult {
 
 export interface CharacterTurnToolContext extends Pick<CharacterToolContext, 'now' | 'read' | 'update' | 'visibleEvidenceRefs' | 'makeId' | 'sharedSourceIds' | 'memoryInvalidatedAt'> {
   ensureActive(): Promise<void>
+  singleMessage?: boolean
   platformUserId?(value: string): boolean
   review?(input: { candidate: Record<string, unknown>; state: CharacterState }): Promise<void>
   finish(result: CharacterTurnFinishResult, reportFailure?: ReportToolFailure): Promise<unknown>
@@ -130,14 +131,14 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
     constructor() {
       super()
       this.name = 'simFinishTurn'
-      this.description = '结束本轮时必须提交顶层 choice。chat普通聊天、interest_only仅有兴趣不承诺后续、silent旁听、cannot做不到、unauthorized未授权、unwilling不愿意、deferred暂缓；这些选择不自动建目标。schedule创建新自主目标，wait调整已有目标，complete完成有本目标成功回执的目标，abandon放弃目标。可显式保存至多两条有来源记忆；所有变更先完整校验再一次保存，成功后才交运行时发送可选消息、标读并结束本轮。reason只写简短选择理由。goal与memories都不传action，schedule也不传id；不支持focus。不推测聊天文字、不补来源、不自动发消息或重试。保存失败不表示安排或完成已生效，拒绝仍然自由。silent/deferred禁止messages；其余选择可发1至5条消息。需要标读时用 markRead=true，由系统计算连续已展示的位置。'
+      this.description = `结束本轮时必须提交顶层 choice。chat普通聊天、interest_only仅有兴趣不承诺后续、silent旁听、cannot做不到、unauthorized未授权、unwilling不愿意、deferred暂缓；这些选择不自动建目标。schedule创建新自主目标，wait调整已有目标，complete完成有本目标成功回执的目标，abandon放弃目标。可显式保存至多两条有来源记忆；所有变更先完整校验再一次保存，成功后才交运行时发送可选消息、标读并结束本轮。reason只写简短选择理由。goal与memories都不传action，schedule也不传id；不支持focus。不推测聊天文字、不补来源、不自动发消息或重试。保存失败不表示安排或完成已生效，拒绝仍然自由。silent/deferred禁止messages；其余选择可发${ctx.singleMessage ? '一条' : '1至5条'}消息。需要标读时用 markRead=true，由系统计算连续已展示的位置。`
       this.parameters = {
         type: 'object', additionalProperties: false, required: ['choice'], properties: {
           choice: { type: 'string', enum: [...CHARACTER_TURN_CHOICES], description: '必填。依据本轮实际选择，普通回话填 chat，安静旁听填 silent。' },
           reason: { type: 'string', minLength: 1, maxLength: 600, description: '本轮选择的简短理由。chat、interest_only、silent 可省略，其余 choice 必填。' },
           memories: { type: 'array', maxItems: 2, description: '仅角色自己的经历、兴趣、观点。社交待办 pendingEvent 和本群相处习惯 interaction 请在收尾前单独调用 simRemember。每项不传 action 或新记录 id。', items: nestedSchema(memoryTool) },
           goal: { ...nestedSchema(goalTool), description: `仅 schedule/wait/complete/abandon 使用，操作由 choice 固定，不传 action。${goalTool.description}` },
-          messages: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', minLength: 1, maxLength: 500 }, description: '可选的最终群消息，填写字符串数组，例如 ["你好"]。silent/deferred 省略此字段。' },
+          messages: { type: 'array', minItems: 1, maxItems: ctx.singleMessage ? 1 : 5, items: { type: 'string', minLength: 1, maxLength: 500 }, description: '可选的最终群消息，填写字符串数组，例如 ["你好"]。silent/deferred 省略此字段。' },
           replyToSeq: { type: 'number', minimum: 1, description: '仅随本次 messages 使用。填写已展示的被引用消息整数序号。' },
           atUserIds: { type: 'array', maxItems: 3, description: '仅随本次 messages 使用。填写本次正文要提及的成员 ID。', items: { type: 'string', ...(ctx.platformUserId ? { minLength: 1, maxLength: 128 } : { pattern: '^\\d{1,12}$' }) } },
           markRead: { type: 'boolean', description: '传 true 标读已经连续展示的消息，遇到未展示的消息时停下。省略或传 false 保留已读位置。' },

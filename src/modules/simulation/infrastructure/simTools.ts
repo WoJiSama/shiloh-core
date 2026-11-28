@@ -26,6 +26,7 @@ export interface SimToolContext {
   platformUserId?(value: string): boolean
   /** Production turns require a declared ordinary-chat continuation. */
   requireExplicitContinuation?: boolean
+  singleMessage?: boolean
   /** Only the runtime can set this after checking the triggering user's words. */
   proactiveSourceSeq?(): number | undefined
   noteVisibleMessages?(seqs: number[]): number
@@ -245,8 +246,8 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
       this.name = 'simSendMessage'
       this.description = [
         '在当前群发送中途普通聊天。continuation必填chat（普通聊天）或interest_only（仅感兴趣，不承诺后续）。保存记忆、拒绝选择、后续排期或完成说明请用simFinishTurn先保存再发送。',
-        'messages 是一层正文字符串数组，例如 {"continuation":"chat","messages":["你好"]}。每项直接写正文，不加子数组或对象。通常只放一条。',
-        '条与条之间系统会自动加间隔，不要自己写停顿标记。',
+        'messages 是一层正文字符串数组，例如 {"continuation":"chat","messages":["你好"]}。每项直接写正文，不加子数组或对象。',
+        ctx.singleMessage ? '本轮只允许发送一条消息，messages 只填一项。' : '通常只放一条。条与条之间系统会自动加间隔，不要自己写停顿标记。',
         '想引用某条消息就传 replyToSeq（视图里的 seq）；想 @ 人就传 atUserIds（消息中的成员 ID）。',
         '发送失败会返回 error，此时可换措辞重试或放弃，不要原样重试超过一次。',
       ].join('\n')
@@ -254,7 +255,8 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
         type: 'object',
         properties: {
           continuation: { type: 'string', enum: ['chat', 'interest_only'], description: '本次仅为普通聊天或兴趣表达，不声明尚未保存的后续安排/完成结果。' },
-          messages: { type: 'array', items: { type: 'string' }, description: '要发的内容，1-5 条，每条 ≤500 字。' },
+          messages: { type: 'array', items: { type: 'string' }, ...(ctx.singleMessage ? { maxItems: 1 } : {}),
+            description: ctx.singleMessage ? '要发的一条消息，≤500 字。' : '要发的内容，1-5 条，每条 ≤500 字。' },
           replyToSeq: { type: 'number', description: '可选：引用哪条消息（seq）。' },
           atUserIds: { type: 'array', items: { type: 'string' }, description: '可选：要 @ 的成员 ID，最多 3 个。' },
         },

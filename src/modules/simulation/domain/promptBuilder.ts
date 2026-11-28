@@ -261,8 +261,8 @@ export function buildWakePrompt(input: WakePromptInput): string {
     lines.push(input.focusSeq === undefined
       ? `【未读消息快照】以下是最早的未读消息（共 ${input.unreadTotal} 条未读，另有 at/ago 时间标注；快照里已有的不要重复查询）：`
       : input.focusMode === 'join'
-        ? `【旁听中的话题】#${input.focusSeq} 是可以考虑加入的话题。发言时用简短的话说明你在接什么，并贡献具体内容。也可以用 simFinishTurn choice=silent 继续旁听。`
-        : `【当前对话】回应 #${input.focusSeq}。其他消息仅在与这句同一话题时参考。明确问到群历史时再查相关发言。`)
+        ? `【旁听中的话题】#${input.focusSeq} 是可以考虑加入的话题。发言时只发一条，把具体内容放进 messages 的一项，省略 atUserIds。如需引用，只引用 #${input.focusSeq}。也可以用 simFinishTurn choice=silent 继续旁听。`
+        : `【当前对话】回应 #${input.focusSeq}。其他消息仅在与这句同一话题时参考。明确问到群历史时再查相关发言。${input.groupRouting && input.reason?.kind === 'continuation' ? '续话可省略 replyToSeq，首条消息由系统引用当前那句。' : ''}`)
     lines.push(input.snapshotText || '（没有未读消息）')
     if (input.priorTopicReply) lines.push('【这条话题里你已发送过的回复】\n' + JSON.stringify(input.priorTopicReply))
     const lastChat = state.lastConfirmedChat

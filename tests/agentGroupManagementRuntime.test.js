@@ -172,7 +172,7 @@ async function fixture(t, settings = {}) {
 test('confirmed auto fold survives recall cleanup failure and retries only an unsent inbox write', redisTest, async t => {
   let attempts = 0
   const f = await fixture(t, { fold: true, simulation: true, beforeEval(args) {
-    if (args.arguments.some(value => typeof value === 'string' && value.startsWith('{"event":{"kind":"recall"')) && ++attempts === 1) {
+    if (args.keys[1]?.startsWith('agent:inbox:receipt:') && args.arguments[0]?.startsWith('{"event":{"kind":"recall"') && ++attempts === 1) {
       throw annotateAgentError(new Error('fixture queued write expired'), { cause: 'redis_command_queue_timeout', dispatched: false })
     }
   } })
