@@ -7,6 +7,22 @@ import { buildVisibleFailureDetail } from "../../models/domain/visibleFailure.js
 import type { AgentDiagnosticDetails } from '../../../contracts/agentDiagnostics.js'
 type ParameterIssue = Pick<AgentDiagnosticDetails, 'field' | 'rule' | 'limit'>
 
+/** Host-only evidence for a returned failure. This never enters the tool reply. */
+export interface ToolExecutionFailure {
+  readonly code: string
+  readonly outcome?: 'unknown'
+  readonly details?: AgentDiagnosticDetails
+  readonly httpStatus?: number
+  readonly error?: unknown
+  readonly causeReceipt?: ToolExecutionFailure
+}
+export type ReportToolFailure = (failure: ToolExecutionFailure) => void
+export interface ToolExecutionObserver {
+  invalid(issue: ParameterIssue): void
+  failed(error: unknown): void
+  returnedFailure?: ReportToolFailure
+}
+
 export class AbstractTool {
  /** Captured only by the platform-neutral host tool bridge. */
  agentDataPolicy?: 'ephemeral';
@@ -160,7 +176,7 @@ export class AbstractTool {
    * @param {Object} event - 事件对象
    * @returns {Promise<unknown>} - 工具执行的结果或错误信息
    */
-  async execute(params:unknown, event:unknown, observe?: { invalid(issue: ParameterIssue): void; failed(error: unknown): void }):Promise<unknown> {
+  async execute(params:unknown, event:unknown, observe?: ToolExecutionObserver):Promise<unknown> {
     let normalizedParams;
     try {
       normalizedParams = this.normalizeParameters(params, { event });
@@ -176,7 +192,7 @@ export class AbstractTool {
       return `error: ${validation}`;
     }
     try {
-      return await this.func(normalizedParams, event);
+      return await this.func(normalizedParams, event, observe?.returnedFailure);
     } catch (error) {
       observe?.failed(error);
       if (error !== null && typeof error === 'object' && 'uncertain' in error && error.uncertain === true) {
@@ -192,7 +208,7 @@ export class AbstractTool {
    * @param {Object} opts - 参数选项
    * @param {Object} e - 事件对象
    */
-  async func(opts:Record<string,unknown>, e:unknown):Promise<unknown> {
+  async func(opts:Record<string,unknown>, e:unknown, _reportFailure?: ReportToolFailure):Promise<unknown> {
     throw new Error('工具函数必须实现');
   }
 }

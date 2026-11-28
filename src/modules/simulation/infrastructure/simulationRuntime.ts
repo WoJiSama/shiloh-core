@@ -80,7 +80,7 @@ import { buildGroupWakeRouting, currentGroupReplies, isAddressedElsewhere, isImp
   type GroupWakeSelection } from '../domain/groupTurnRouting.js'
 import { buildSocialPermissionRequest, readSocialVerdict, type SocialAction } from '../domain/socialPermission.js'
 import { computeWaitOutcome, normalizeWaitPlan, type SimWaitPlan } from '../domain/waitGate.js'
-import { checkSendAllowance, checkWakeBudget, describeBudgetLimit, isDirectAddressKind, limitNoticeDue, shouldAnnounceBudgetLimit, invalidatePreSleepWaitByParticipation, markPreSleepSatisfied, recordSend, recordWake, recordWakeTokens, resetPreSleepWait, rollBudgetDay } from '../domain/budget.js'
+import { checkSendAllowance, checkWakeBudget, describeBudgetLimit, isDirectAddressKind, limitNoticeDue, shouldAnnounceBudgetLimit, invalidatePreSleepWaitByParticipation, markPreSleepSatisfied, recordSend, recordWake, recordWakeTokens, resetPreSleepWait, rollBudgetDay, type SendDenial } from '../domain/budget.js'
 import { buildCharacterTurnContext, buildSimSystemPrompt, buildWakePrompt, FINISH_CHOICE_GUIDANCE, isSimpleSimulationGreeting, trimAgentHistory } from '../domain/promptBuilder.js'
 import { prepareEarlierSimulationRead, projectSimulationToolResult, type SimulationActionReceipt } from '../domain/toolContextExcerpt.js'
 import { isSilentDeclaration, isWrappedAnnotation, mentionsSilenceVocabulary } from '../domain/silentDeclaration.js'
@@ -102,7 +102,7 @@ import { canReadUnattributedMemory, formatPersonMemoryFacts, personMemoryAddress
 import type { AgentSemanticMemoryRecall } from '../../../contracts/semanticMemory.js'
 import type { WebEvidenceQuestion, WebEvidenceRecall } from '../../../contracts/webEvidence.js'
 import { isPersonMemoryRedacted } from '../../memory/domain/personMemory.js'
-import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { AbstractTool, type ReportToolFailure, type ToolExecutionFailure } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { redactInternalStatusLeaks } from '../../conversation/domain/internalStatusLeak.js'
 import { sanitizeFinalReplyText, looksLikeToolArguments } from '../../conversation/domain/replySanitizer.js'
 import { normalizeDelegatedEntries, formatDelegatedSection } from '../../memory/domain/delegatedMemory.js'
@@ -140,7 +140,7 @@ interface NudgeIngressOptions extends MessageActionOptions {
 
 export interface SimulationRuntimePorts {
   coreCapabilityTool?: CoreCapabilityToolFactory
-  diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'> & Partial<Pick<AgentDiagnostics, 'withScope' | 'emitFailure'>>
+  diagnostics?: Pick<AgentDiagnostics, 'emit' | 'traceId'> & Partial<Pick<AgentDiagnostics, 'withScope' | 'emitFailure' | 'emitReceipt'>>
   /** Start a scope after resolving the actual wake owner; timers must not inherit an unrelated ingress. */
   withDiagnosticScope?<T>(scope: AgentDiagnosticScope, operation: string, run: () => Promise<T>): Promise<T>
   /** Optional trusted last-resort text when every explanation model is unavailable. */
@@ -373,7 +373,7 @@ interface SimTransportReceipt {
   unknown?: boolean
 }
 
-interface SimulationToolObservation { failureReported?: boolean; round?: number; receipt?: SimulationActionReceipt }
+interface SimulationToolObservation { failureReported?: boolean; round?: number; receipt?: SimulationActionReceipt; executionFailure?: ToolExecutionFailure }
 
 class CharacterBackgroundRevokedError extends Error {}
 
@@ -639,9 +639,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     } catch { return [] }
   }
 
-  const diagnose = (event: Parameters<AgentDiagnostics['emit']>[0], fallback?: () => void) => {
+  const diagnose = (event: Parameters<AgentDiagnostics['emit']>[0], fallback?: () => void, causeReceipt?: ToolExecutionFailure) => {
     try {
-      if (ports.diagnostics) ports.diagnostics.emit(event)
+      if (causeReceipt && ports.diagnostics?.emitReceipt) ports.diagnostics.emitReceipt(event, causeReceipt)
+      else if (ports.diagnostics) ports.diagnostics.emit(event)
       else fallback?.()
     } catch { /* Diagnostics never affect execution. */ }
   }
@@ -725,18 +726,20 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     }
     if (!tool.agentDiagnosesExecution) diagnose({ stage: 'tool', operation, outcome: 'started' })
     try {
-      let invalid: ToolParameterIssue | undefined, error: unknown
+      let invalid: ToolParameterIssue | undefined, error: unknown, returned: ToolExecutionFailure | undefined
       let reported: 'succeeded' | 'failed' | undefined
       const reporter = event.simulationReportOutcome
       const toolEvent = reporter ? { ...event, simulationReportOutcome(status: 'succeeded' | 'failed') { reported = status; reporter(status) } } : event
-      const result = await tool.execute(args, toolEvent, { invalid: issue => { invalid = issue }, failed: failure => { error = failure } })
+      const result = await tool.execute(args, toolEvent, { invalid: issue => { invalid = issue }, failed: failure => { error = failure },
+        returnedFailure: failure => { returned ??= failure } })
+      error = returned?.error ?? error
       const text = typeof result === 'string' ? result : JSON.stringify(result) ?? 'null'
       const classified = classifyCharacterResult(text)
-      const status = classified === 'unknown' && typeof result === 'string' && error === undefined
-        ? reported ?? (confirmedReadResult(tool.name, text) ? 'succeeded' : 'unknown') : classified
+      const status = returned?.outcome ?? (classified === 'unknown' && typeof result === 'string' && error === undefined
+        ? reported ?? (confirmedReadResult(tool.name, text) ? 'succeeded' : 'unknown') : classified)
       if (!tool.agentDiagnosesExecution) {
-        let code: string | undefined
-        let httpStatus: number | undefined
+        let code = returned?.code
+        let httpStatus = returned?.httpStatus
         if (status !== 'succeeded' && ['simGetMessageImages', 'simGetForward', 'simSendPoke'].includes(tool.name)) {
           try {
             const { code: resultCode, httpStatus: resultStatus } = record(JSON.parse(text))
@@ -746,24 +749,28 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         }
         const imageStep = tool.name === 'simGetMessageImages' && code && Object.hasOwn(messageImageReadSteps, code)
           ? messageImageReadSteps[code as keyof typeof messageImageReadSteps] : undefined
-        const details: AgentDiagnosticDetails | undefined = invalid ? { ...invalid, result: 'not_dispatched' } :
+        const details: AgentDiagnosticDetails | undefined = invalid ? { ...invalid, result: 'not_dispatched' } : returned?.details ?? (
           status === 'unknown' ? { result: 'confirmation_pending' } :
           code === 'image_turn_limit' ? { limit: 2, result: 'not_dispatched' } :
           code === 'image_source_is_file' ? { step: 'image_attachment_select', result: 'not_dispatched' } :
           code === 'poke_rate_limit' ? { limit: 6, result: 'not_dispatched' } :
           imageStep ? { step: imageStep, result: 'discarded' } :
-          code === 'image_description_unavailable' ? { step: 'response_validation', result: 'discarded' } : undefined
-        diagnose({ stage: 'tool', operation, outcome: status, code: invalid ? 'tool_schema_invalid' : status === 'succeeded' ? 'completed' :
-          code ?? (error === undefined ? `returned_${status}` : 'tool_threw'),
+          code === 'image_description_unavailable' ? { step: 'response_validation', result: 'discarded' } : undefined)
+        const diagnosticCode = invalid ? 'tool_schema_invalid' : status === 'succeeded' ? 'completed' : code ?? (error === undefined ? `returned_${status}` : 'tool_threw')
+        const failure: ToolExecutionFailure | undefined = status === 'succeeded' ? undefined : returned ?? { code: diagnosticCode,
+          ...(status === 'unknown' ? { outcome: status } : {}), ...(details ? { details } : {}), ...(error === undefined ? {} : { error }) }
+        if (observed && failure) observed.executionFailure = failure
+        diagnose({ stage: 'tool', operation, outcome: status, code: diagnosticCode,
           durationMs: Date.now() - started, ...(error === undefined ? {} : { error }), ...(httpStatus === undefined ? {} : { httpStatus }),
-          ...(details ? { details } : {}) })
+          ...(details ? { details } : {}) }, undefined, failure?.causeReceipt ?? failure)
       }
       if (observed && status !== 'succeeded') observed.failureReported = true
       return text
     } catch (error) {
       const uncertain = error && typeof error === 'object' && 'uncertain' in error && error.uncertain === true
-      if (!tool.agentDiagnosesExecution) diagnose({ stage: 'tool', operation, outcome: uncertain ? 'unknown' : 'failed', code: 'tool_threw', error, durationMs: Date.now() - started })
-      if (observed) observed.failureReported = true
+      const failure: ToolExecutionFailure = { code: 'tool_threw', error, ...(uncertain ? { outcome: 'unknown' } : {}) }
+      if (!tool.agentDiagnosesExecution) diagnose({ stage: 'tool', operation, outcome: failure.outcome ?? 'failed', code: failure.code, error, durationMs: Date.now() - started }, undefined, failure)
+      if (observed) { observed.failureReported = true; observed.executionFailure = failure }
       if (uncertain) return JSON.stringify({ kind: 'tool_outcome', status: 'unknown', error: { message: safeToolErrorText(String(tool.name || ''), error) } })
       return safeToolErrorText(String(tool.name || ''), error)
     }
@@ -2914,7 +2921,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           update: updateCharacter,
           visibleEvidenceRefs, makeId: prefix => `${prefix}-${randomUUID()}`,
           sharedSourceIds: () => sharedIds,
-          memoryInvalidatedAt: () => memorySceneState.invalidatedAt, ensureActive: () => ensureExecution(), finish: result => finishTurn(result),
+          memoryInvalidatedAt: () => memorySceneState.invalidatedAt, ensureActive: () => ensureExecution(), finish: (result, reportFailure) => finishTurn(result, reportFailure),
           review: ({ candidate, state }) => reviewCandidate('simFinishTurn', candidate, state),
         })
         const finishToolInfo = finishTool.getToolInfo()
@@ -2947,9 +2954,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           if (qqActionTerminal) throw new Error('QQ 动作已结束本回合，不再发送或调用')
           if (decision === 'silent' || decision === 'deferred') throw new Error('本轮已选择沉默或暂缓')
         }
+        const currentSendAllowance = () => checkSendAllowance(state!, cfg, now(), sends, isDirectAddressKind(reason?.kind))
         const assertToolSendAllowance = () => {
-          const allowance = checkSendAllowance(state!, cfg, now(), sends, isDirectAddressKind(reason?.kind))
-          if (!allowance.allowed) throw new Error(allowance.reason)
+          const allowance = currentSendAllowance()
+          if (!allowance.allowed) throw annotateAgentError(new Error(allowance.reason), { step: 'send_budget', cause: allowance.code, limit: allowance.limit })
         }
         const recordToolSend = async () => {
           sends += 1
@@ -3453,7 +3461,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           if (!allowsConversationAI(target) || activityTurn?.isCurrent() === false) throw new Error('本会话 AI 活动已暂停')
         }
         let modelReadThroughSeq = 0
-        const finishTurn = async (result: CharacterTurnFinishResult) => {
+        const finishTurn = async (result: CharacterTurnFinishResult, reportFailure?: ReportToolFailure) => {
           turnClosed = true
           if (result.decision) decision = result.decision
           const committedGoal = result.state.goals.find(goal => goal.id === focusedGoalId)
@@ -3470,6 +3478,11 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           const finishErrorText = (failure: unknown) => uncertainAction || memoryBox.deliveryUnknown
             ? '前序外部动作结果未知，已保存收尾状态；核实前不再发送公告'
             : safeToolErrorText('simFinishTurn', failure)
+          const finishEffectFailure = (stage: 'delivery' | 'runtime', operation: string, failure: ToolExecutionFailure) => {
+            const { outcome = 'failed', causeReceipt: _causeReceipt, ...evidence } = failure
+            diagnose({ stage, operation, outcome, ...evidence }, undefined, failure)
+            reportFailure?.({ ...failure, causeReceipt: failure })
+          }
           if (result.messages) {
             sendStatus = 'failed'
             const id = randomUUID()
@@ -3499,13 +3512,19 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               pending = character.receipts.find(receipt => receipt.id === id)!
               announcement = permit
               step = 'finish_send'
-              const response = await runSimTool(sender, input, event)
+              const delivery: SimulationToolObservation = {}
+              const response = await runSimTool(sender, input, event, delivery)
               sendStatus = classifyCharacterResult(response) === 'succeeded' ? 'succeeded' : 'failed'
               try { duplicatesSkipped = Number(record(JSON.parse(response.replace(/^error: /, ''))).duplicatesSkipped) || 0 } catch { /* error response retains its own delivery evidence */ }
-              if (sendStatus === 'failed') error = response
+              if (sendStatus === 'failed') {
+                error = response
+                const cause = delivery.executionFailure
+                reportFailure?.(cause ? { ...cause, code: 'finish_send_failed', causeReceipt: cause,
+                  details: { ...cause.details, step, cause: cause.code } } : { code: 'finish_announcement_failed', details: { step, result: 'not_dispatched' } })
+              }
             } catch (failure) {
               error = finishErrorText(failure)
-              diagnose({ stage: 'delivery', operation: 'simulation_finish_send', outcome: 'failed', code: 'finish_announcement_failed', error: failure,
+              finishEffectFailure('delivery', 'simulation_finish_send', { code: 'finish_announcement_failed', error: failure,
                 details: { step, ...(step === 'finish_send' ? {} : { result: 'not_dispatched' }) } })
             }
             finally { announcement = undefined }
@@ -3519,7 +3538,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                 permit.revision = character.revision
               } catch (failure) {
                 error ??= finishErrorText(failure)
-                diagnose({ stage: 'delivery', operation: 'simulation_finish_receipt', outcome: 'unknown', code: 'finish_receipt_not_saved', error: failure,
+                finishEffectFailure('delivery', 'simulation_finish_receipt', { outcome: 'unknown', code: 'finish_receipt_not_saved', error: failure,
                   details: { step: 'finish_receipt_save', result: 'confirmation_pending' } })
               }
             }
@@ -3544,7 +3563,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                 readStatus = 'succeeded'
               } catch (failure) {
                 error ??= finishErrorText(failure)
-                diagnose({ stage: 'runtime', operation: 'simulation_finish_mark_read', outcome: step === 'finish_read_save' ? 'unknown' : 'failed',
+                finishEffectFailure('runtime', 'simulation_finish_mark_read', { ...(step === 'finish_read_save' ? { outcome: 'unknown' } : {}),
                   code: 'finish_mark_read_failed', error: failure,
                   details: { step, result: step === 'finish_read_save' ? 'confirmation_pending' : 'not_saved' } })
               }
@@ -3832,7 +3851,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (durableWake && rounds === 1) { await discardWake(); return }
             break
           }
+          const allowance = currentSendAllowance()
           const context = buildCharacterTurnContext({ phase: closing ? 'closing' : 'acting', remainingToolRounds: cfg.turn.maxToolRounds - rounds + 1,
+            ...(allowance.allowed ? {} : { sendBlockedReason: allowance.reason }),
             ...(focusedGoalId ? { focusedGoalId } : {}), visibleEvidenceRefs: visibleEvidenceRefs(), sentMessage: memoryBox.sentTexts.length > 0 }) +
             (anchor ? groupSelection?.mode === 'join' ? `\n可主动参与 #${anchor.seq} 的话题。你以自己身份参与，有具体贡献才发言。`
               : `\n当前只回应 #${anchor.seq} 的话题。前文仅在有关时用。` : '') +
@@ -4303,37 +4324,52 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         return value
       },
       sendMessage: async (messages, opts): Promise<SimSendResult> => {
+        const notDispatched = { dispatched: false, result: 'not_dispatched' } as const
+        const budgetFailure = (allowance: SendDenial, sent = 0): ToolExecutionFailure => ({ code: allowance.code,
+          details: { step: 'send_budget', limit: allowance.limit, ...(sent ? { dispatched: true } : notDispatched) } })
         // B2 排队动作发送前重查：回合可能已持续数十秒，期间管理员可能关了仿真/切了群
         if (!groupActive(runtimeConfig(), groupId)) {
-          return { ok: false, error: '仿真模式已对本群关闭，本轮不再发送消息' }
+          return { ok: false, error: '仿真模式已对本群关闭，本轮不再发送消息',
+            failure: { code: 'sim_send_disabled', details: { step: 'send_authorization', ...notDispatched } } }
         }
-        if (memoryBox.deliveryUnknown) return { ok: false, sent: 0, unknown: true, error: '上次发送结果未知，本回合不再发送，请核对回执' }
+        if (memoryBox.deliveryUnknown) return { ok: false, sent: 0, unknown: true, error: '上次发送结果未知，本回合不再发送，请核对回执',
+          failure: { code: 'sim_send_prior_unconfirmed', outcome: 'unknown', details: { step: 'send_authorization', ...notDispatched } } }
         const cleaned: string[] = []
         for (let i = 0; i < messages.length; i++) {
           const redacted = redactInternalStatusLeaks(messages[i])
-          if (redacted.heavy) return { ok: false, sent: 0, error: `第 ${i + 1} 条包含大量内部状态特征，整批未发送，请换一句自然的说法` }
+          if (redacted.heavy) return { ok: false, sent: 0, error: `第 ${i + 1} 条包含大量内部状态特征，整批未发送，请换一句自然的说法`,
+            failure: { code: 'sim_send_content_blocked', details: { step: 'send_validation', field: 'messages', ...notDispatched } } }
           cleaned.push(redacted.text)
         }
         const plan = planMessageDelivery({ messages: cleaned, deliveredTexts: memoryBox.sentTexts, state, config: cfg, at: now(), sendsThisTurn: totalSends?.() ?? sendsThisTurn, directAddress })
-        if (!plan.ok) return { ok: false, sent: 0, error: plan.error, duplicatesSkipped: plan.duplicatesSkipped }
-        let sent = 0, inFlight = false
-        const failed = (error: string): SimSendResult => ({ ok: false, sent, duplicatesSkipped: plan.duplicatesSkipped, ...(memoryBox.deliveryUnknown ? { unknown: true } : {}), error })
+        if (!plan.ok) return { ok: false, sent: 0, error: plan.error, duplicatesSkipped: plan.duplicatesSkipped, failure: budgetFailure(plan.allowance) }
+        let sent = 0, inFlight = false, step = 'send_review'
+        const failed = (error: string, failure: ToolExecutionFailure): SimSendResult => ({ ok: false, sent, duplicatesSkipped: plan.duplicatesSkipped,
+          ...(memoryBox.deliveryUnknown ? { unknown: true } : {}), error, failure })
         try {
           if (plan.messages.length) await reviewSend?.(plan.messages)
           // Review may take time. Check the entire remaining batch again before its first send.
           const latest = planMessageDelivery({ messages: plan.messages, deliveredTexts: memoryBox.sentTexts, state, config: cfg, at: now(), sendsThisTurn: totalSends?.() ?? sendsThisTurn, directAddress })
-          if (!latest.ok) return failed(latest.error)
+          if (!latest.ok) return failed(latest.error, budgetFailure(latest.allowance))
           for (let i = 0; i < latest.messages.length; i++) {
+            step = 'send_authorization'
             await beforeSend?.()
             const itemAllowance = checkSendAllowance(state, cfg, now(), totalSends?.() ?? sendsThisTurn, directAddress)
-            if (!itemAllowance.allowed) return failed(itemAllowance.reason)
+            if (!itemAllowance.allowed) return failed(itemAllowance.reason, budgetFailure(itemAllowance, sent))
             const text = latest.messages[i]!
             const replyTo = i === 0 && opts.replyToMessageId != null ? String(opts.replyToMessageId) : undefined
+            step = 'send_dispatch'
             inFlight = true
             const receipt = await sendTextMessage(groupId, target.account.id, text, sendOptions, (opts.atUserIds || []).map(String), replyTo)
             inFlight = false
-            if (receipt.unknown) { memoryBox.deliveryUnknown = true; return failed(`第 ${sent + 1} 条回执未确认，是否送达未知，本回合不再发送（已确认 ${sent} 条）`) }
-            if (!receipt.ok) return failed(`第 ${sent + 1} 条发送失败：${receipt.error || '网关错误'}（已确认 ${sent} 条，不自动重发）`)
+            if (receipt.unknown) {
+              memoryBox.deliveryUnknown = true
+              return failed(`第 ${sent + 1} 条回执未确认，是否送达未知，本回合不再发送（已确认 ${sent} 条）`,
+                { code: 'sim_send_transport_unconfirmed', outcome: 'unknown', details: { step, result: 'confirmation_pending' } })
+            }
+            if (!receipt.ok) return failed(`第 ${sent + 1} 条发送失败：${receipt.error || '网关错误'}（已确认 ${sent} 条，不自动重发）`,
+              { code: 'sim_send_transport_rejected', details: { step } })
+            step = 'send_session_save'
             rememberDelivery(state, receipt)
             sent++
             sendsThisTurn++
@@ -4346,13 +4382,20 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             invalidatePreSleepWaitByParticipation(state)
             // Confirmed delivery is durable before another network side effect.
             await store.save(groupId, state)
-            if (memeBumped) await store.saveMemories(groupId, memoryBox.list, sendOptions?.isCurrent)
+            if (memeBumped) {
+              step = 'send_memory_save'
+              await store.saveMemories(groupId, memoryBox.list, sendOptions?.isCurrent)
+            }
             if (i < latest.messages.length - 1) await sleep(boundedTimerDelay(cfg.turn.minSendGapMs + 400 + Math.floor(random() * 2600), 60_000))
           }
           return { ok: true, sent, duplicatesSkipped: plan.duplicatesSkipped }
         } catch (error) {
           if (inFlight) memoryBox.deliveryUnknown = true
-          return failed(`${inFlight ? '传输中断，是否送达未知，本回合不再发送' : error instanceof Error ? error.message : '发送中断'}（已确认 ${sent} 条，不自动重发）`)
+          const code = inFlight ? 'sim_send_transport_unconfirmed' : step === 'send_review' ? 'sim_send_review_failed' :
+            step === 'send_authorization' ? 'sim_send_authorization_failed' : 'sim_send_state_save_failed'
+          return failed(`${inFlight ? '传输中断，是否送达未知，本回合不再发送' : error instanceof Error ? error.message : '发送中断'}（已确认 ${sent} 条，不自动重发）`,
+            { code, error, ...(inFlight ? { outcome: 'unknown' } : {}), details: { step,
+              ...(inFlight ? { result: 'confirmation_pending' } : sent ? { dispatched: true } : notDispatched) } })
         }
       },
       waitForMessages: async (rawPlan: SimWaitPlan, filter?: (message: SimMessage) => boolean): Promise<SimWaitResult> => {

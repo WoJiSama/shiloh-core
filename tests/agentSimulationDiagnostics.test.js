@@ -719,6 +719,52 @@ test('finish accepts the serialized string array on the first call and sends onl
   assert.deepEqual(diagnostics.events.filter(row => row.operation === 'simFinishTurn').map(row => row.outcome), ['started', 'succeeded'])
 })
 
+test('a full continuation send window is shown before tool selection and yields one QQ alert tied to the finish receipt', async t => {
+  for (const at of [false, true]) await t.test(at ? 'direct mention' : 'continuation', async t => {
+    const rows = [], batches = []
+    const alerts = createAgentFailureAlerts({ channel: 'qq', logger: { error() {} },
+      async deliver(batch) { batches.push(batch); return { state: 'confirmed' } } })
+    const diagnostics = createAgentDiagnostics({ sink: { async append(row) { rows.push(row); return true } },
+      logger: { info() {}, warn() {}, error() {} }, onFailure: alerts.report })
+    let dispatches = 0
+    const h = fixture({ diagnostics, withDiagnosticScope: (scope, operation, run) => diagnostics.run(scope, operation, run),
+      send() { dispatches++; return { ok: true, messageId: 'confirmed' } },
+      script: () => tools(toolCall('simFinishTurn', { choice: 'chat', messages: ['这条测试正文只能在额度允许时发送'] })) })
+    t.after(async () => { h.runtime.stop(); await diagnostics.flush(); await alerts.close() })
+    const state = JSON.parse(h.kv.get(sessionKey(GROUP)))
+    state.conversation = { activeUntil: BASE_AT + 300_000, interlocutorIds: ['40000'] }
+    state.lastAiSendAt = BASE_AT - 61_000
+    state.sendTimes = Array(10).fill(state.lastAiSendAt)
+    h.kv.set(sessionKey(GROUP), JSON.stringify(state))
+    await h.ingest('接着刚才的游戏聊', '40000', { at })
+    await settled(h)
+    await diagnostics.flush()
+    await alerts.close()
+    const turnContext = h.calls[0].messages.at(-1).content
+    const receipt = JSON.parse(h.kv.get(characterKey(h.scope()))).receipts.find(item => item.toolName === 'simFinishTurn')
+    const failures = rows.filter(row => row.outcome === 'failed' || row.outcome === 'unknown')
+    if (at) {
+      assert.doesNotMatch(turnContext, /当前发送额度为 0/u)
+      assert.equal(dispatches, 1)
+      assert.equal(receipt.status, 'succeeded')
+      assert.deepEqual(failures, [])
+      assert.deepEqual(batches, [])
+      return
+    }
+    assert.match(turnContext, /当前发送额度为 0.*省略 messages.*延后查询/u)
+    assert.equal(dispatches, 0)
+    assert.equal(receipt.status, 'failed')
+    assert.deepEqual(failures.map(row => [row.operation, row.code]), [['simSendMessage', 'sim_send_hour_limit'], ['simFinishTurn', 'finish_send_failed']])
+    const [send, finish] = failures
+    assert.deepEqual(send.details, { step: 'send_budget', limit: 10, dispatched: false, result: 'not_dispatched' })
+    assert.equal(finish.details.causeEventId, send.id)
+    assert.equal(finish.traceId, send.traceId)
+    assert.equal(batches.flatMap(batch => batch.alerts).length, 1)
+    assert.match(batches.map(formatQqOwnerAlerts).join('\n'), /普通续聊已达到过去一小时的发送条数上限/u)
+    assert.doesNotMatch(JSON.stringify([rows, batches]), /这条测试正文/u)
+  })
+})
+
 test('a single nested string array works for both send and finish', async t => {
   for (const name of ['simSendMessage', 'simFinishTurn']) await t.test(name, async t => {
     const diagnostics = spy(), message = '双层数组中的正文'

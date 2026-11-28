@@ -5,6 +5,7 @@ import { Readable } from 'node:stream'
 import test from 'node:test'
 import { createAgentWebTools, observedPublicWebRead } from '../dist/backend/modules/tools/infrastructure/agentWebTools.js'
 import { createAgentTools } from '../dist/backend/modules/tools/infrastructure/agentTools.js'
+import { createAgentDiagnostics } from '../dist/backend/modules/runtime/infrastructure/agentDiagnostics.js'
 
 const apiKey = 'search-private-key-123456'
 const search = { baseUrl: 'https://search.example.com/v1', name: 'search-fixture', apiKey }
@@ -145,6 +146,39 @@ test('search never exposes provider error bodies, thrown details or configured c
     assert.equal(calls, 1)
     assert.ok(!result.content.includes(apiKey))
     assert.ok(!result.content.includes(leaked))
+  }
+})
+
+test('registered search records the first failure phase even when a subsequent search succeeds', async () => {
+  const sensitive = 'private-query-or-provider-body'
+  const results = [
+    [async () => new Response(sensitive, { status: 503 }), 'search_http_error', 'response_headers', 503],
+    [async () => new Response(sensitive), 'search_response_invalid', 'response_body', 200],
+    [async () => answer(''), 'search_content_empty', 'response_validation', 200],
+    [async () => { throw new TypeError(sensitive, { cause: Object.assign(new Error(sensitive), { code: 'ECONNRESET' }) }) }, 'search_request_failed', 'response_headers', undefined, 'connection_reset'],
+    [async () => new Promise(() => {}), 'search_timeout', 'response_headers'],
+  ]
+  for (const [respond, code, step, status, cause] of results) {
+    const rows = [], alerts = []
+    const diagnostics = createAgentDiagnostics({ sink: { async append(event) { rows.push(event); return true } },
+      logger: { info() {}, warn() {}, error() {} }, onFailure: event => alerts.push(event) })
+    const scope = context()
+    let first = true
+    const registry = createAgentTools({ builtIn: [tool({ search, searchTimeoutMs: 20, fetchImpl: (...args) => {
+      if (!first) return Promise.resolve(answer())
+      first = false
+      return respond(...args)
+    } })] }, { diagnostics, signal: scope.signal, context: () => scope })
+    const [registered] = registry.getExtraTools(['searchInformationTool'])
+    const failed = await registered.execute({ query: sensitive }, {})
+    assert.equal(failed.status, 'error')
+    assert.equal((await registered.execute({ query: '另一条公开查询' }, {})).status, 'success')
+    await diagnostics.flush()
+    assert.deepEqual(rows.map(event => event.outcome), ['started', 'failed', 'started', 'succeeded'])
+    assert.equal(alerts.length, 1)
+    assert.deepEqual([alerts[0].code, alerts[0].details.step, alerts[0].httpStatus, alerts[0].details.cause], [code, step, status, cause])
+    assert.equal(alerts[0].details.result, 'discarded')
+    assert.doesNotMatch(JSON.stringify([rows, alerts, failed]), /private-query-or-provider-body|search-private-key/u)
   }
 })
 

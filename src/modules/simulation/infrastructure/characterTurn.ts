@@ -1,6 +1,6 @@
 import type { CharacterState, CharacterMemory, CharacterGoal, CharacterDecision } from '../../../contracts/character.js'
 import { annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
-import { AbstractTool, type ParameterSchema } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { AbstractTool, type ParameterSchema, type ReportToolFailure } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { normalizeMessageTextsInput } from '../domain/paramTolerance.js'
 import { isQqSimulationUserId } from '../domain/simConfig.js'
 import { createCharacterTools, type CharacterToolContext } from './characterTools.js'
@@ -27,7 +27,7 @@ export interface CharacterTurnToolContext extends Pick<CharacterToolContext, 'no
   ensureActive(): Promise<void>
   platformUserId?(value: string): boolean
   review?(input: { candidate: Record<string, unknown>; state: CharacterState }): Promise<void>
-  finish(result: CharacterTurnFinishResult): Promise<unknown>
+  finish(result: CharacterTurnFinishResult, reportFailure?: ReportToolFailure): Promise<unknown>
 }
 
 const GOAL_ACTIONS = { schedule: 'create', wait: 'wait', complete: 'complete', abandon: 'abandon' } as const
@@ -170,7 +170,7 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
         return error instanceof Error ? error.message : '收尾参数无效'
       }
     }
-    override async func(params: Record<string, unknown>): Promise<unknown> {
+    override async func(params: Record<string, unknown>, _event: unknown, reportFailure?: ReportToolFailure): Promise<unknown> {
       const input = parse(params, memoryFields, goalFields, isUserId)
       let step = 'finish_authorization'
       try {
@@ -231,7 +231,7 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
           ...(input.atUserIds === undefined ? {} : { atUserIds: input.atUserIds }),
           ...(input.markRead === undefined ? {} : { markRead: input.markRead }),
           ...(input.throughSeq === undefined ? {} : { throughSeq: input.throughSeq }),
-        })
+        }, reportFailure)
       } catch (error) {
         throw annotateAgentError(error, { step, ...(step !== 'finish_commit' && step !== 'finish_apply' ? { result: 'not_saved' } : {}) })
       }

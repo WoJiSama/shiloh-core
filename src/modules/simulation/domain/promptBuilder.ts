@@ -13,6 +13,7 @@ export interface CharacterTurnContextInput {
   focusedGoalId?: string
   visibleEvidenceRefs: string[]
   sentMessage?: boolean
+  sendBlockedReason?: string
 }
 
 export const FINISH_CHOICE_GUIDANCE = 'simFinishTurn 的参数顶层必须填写 choice。普通回话示例 {"choice":"chat","messages":["实际回复"]}。messages 的每一项是正文字符串。replyToSeq 和 atUserIds 仅与本次 messages 一起使用。安静标读示例 {"choice":"silent","markRead":true}。'
@@ -24,7 +25,7 @@ export function buildCharacterTurnContext(input: CharacterTurnContextInput): str
     JSON.stringify({ phase: input.phase, remainingToolRounds: input.remainingToolRounds,
       focusedGoalId: input.focusedGoalId ?? null, visibleEvidenceRefs: input.visibleEvidenceRefs }),
     input.phase === 'closing' ? '当前允许动作仅 simFinishTurn。' : '结束时调用 simFinishTurn。',
-    FINISH_CHOICE_GUIDANCE,
+    input.sendBlockedReason ? `当前发送额度为 0。${input.sendBlockedReason}。可保存获准的状态或用 {"choice":"silent","markRead":true} 安静收尾，省略 messages、replyToSeq、atUserIds。如果查询仅用于这次群回复，请延后查询。` : FINISH_CHOICE_GUIDANCE,
     ...(input.sentMessage ? ['本轮已有消息确认发送。只收尾时，例如 {"choice":"chat","markRead":true}，省略 messages、replyToSeq、atUserIds。'] : []),
   ].join('\n')
 }

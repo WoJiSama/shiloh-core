@@ -1,7 +1,7 @@
 import type { SimRuntimeConfig, SimSessionState } from '../../../contracts/simulation.js'
 import type { DeliveryReceipt } from '../../../contracts/delivery.js'
 import { normalizeDeliveryReceipt } from '../../messaging/domain/deliveryReceipt.js'
-import { checkSendAllowance, recordSend } from './budget.js'
+import { checkSendAllowance, recordSend, type SendDenial } from './budget.js'
 
 export type PlatformDeliveryReceipt = { ok: true; messageId: string } | { ok: false; error: string; unknown?: boolean }
 
@@ -31,7 +31,7 @@ export interface MessageDeliveryInput {
 
 export type MessageDeliveryPlan =
   | { ok: true; messages: string[]; duplicatesSkipped: number }
-  | { ok: false; error: string; duplicatesSkipped: number }
+  | { ok: false; error: string; duplicatesSkipped: number; allowance: SendDenial }
 
 /** Preflight the whole batch without spending quota or recording a delivery. */
 export function planMessageDelivery(input: MessageDeliveryInput): MessageDeliveryPlan {
@@ -49,7 +49,7 @@ export function planMessageDelivery(input: MessageDeliveryInput): MessageDeliver
   for (let index = 0; index < messages.length; index++) {
     const allowance = checkSendAllowance(projected, input.config, input.at, input.sendsThisTurn + index, input.directAddress === true)
     if (!allowance.allowed) return {
-      ok: false, duplicatesSkipped,
+      ok: false, duplicatesSkipped, allowance,
       error: `本批 ${messages.length} 条消息无法全部发送，整批未发送：${allowance.reason}`,
     }
     recordSend(projected, input.at, 1)

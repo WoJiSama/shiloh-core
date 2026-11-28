@@ -27,8 +27,9 @@ import type { MessageBundleItem } from '../../../contracts/platformMessage.js'
 import { validateAgentToolImage } from '../../image/infrastructure/agentToolImage.js'
 import { validateMessageBundle } from '../../messaging/infrastructure/messageBundle.js'
 import { validateAgentToolMessage } from '../../messaging/infrastructure/agentToolMessage.js'
-import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { AbstractTool, type ReportToolFailure, type ToolExecutionFailure, type ToolExecutionObserver } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { abortableAgentWeb } from './agentPublicWeb.js'
+import { observedSearchFailure } from './agentWebTools.js'
 import { agentToolInputValidator, isAgentToolInput, type ToolParameterIssue } from './agentToolSchema.js'
 import { authorizeAgentToolContext, isAgentToolEffect } from './agentToolAuthorization.js'
 
@@ -148,20 +149,24 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
             this.agentDiagnosesExecution = ports.diagnostics !== undefined
             if (dataPolicy) this.agentDataPolicy = dataPolicy
           }
-          override async execute(input: unknown, event: unknown): Promise<unknown> {
+          override async execute(input: unknown, event: unknown, observe?: ToolExecutionObserver): Promise<unknown> {
+            if (!ports.diagnostics) return super.execute(input, event, observe)
             const started = Date.now()
             diagnose({ stage: 'tool', operation: this.name, outcome: 'started' })
             try {
-              let invalid: ToolParameterIssue | undefined, error: unknown
-              const result = await super.execute(input, event, { invalid: issue => { invalid = issue }, failed: failure => { error = failure } })
+              let invalid: ToolParameterIssue | undefined, error: unknown, returned: ToolExecutionFailure | undefined
+              const result = await super.execute(input, event, { invalid: issue => { invalid = issue }, failed: failure => { error = failure },
+                returnedFailure: failure => { returned ??= failure } })
+              error = returned?.error ?? error
               const status = classify(result)
               const builtinFailure = status === 'failed' && origin === 'builtin'
               const memberFailure = builtinFailure && this.name === 'memberInfoTool' ? memberFailureCode(result) : undefined
               const fileFailure = builtinFailure && this.name === 'fileTextTool' ? fileTextFailure(result) : undefined
               const details = invalid ? { ...invalid, result: 'not_dispatched' as const } :
-                fileFailure ? { step: fileTextFailureSteps[fileFailure], result: 'discarded' as const } : undefined
-              diagnose({ stage: 'tool', operation: this.name, outcome: status, code: invalid ? 'tool_schema_invalid' : status === 'succeeded' ? 'completed' : memberFailure ?? fileFailure ?? `returned_${status}`,
-                durationMs: Date.now() - started, ...(details ? { details } : {}), ...(error === undefined ? {} : { error }) })
+                returned?.details ?? (fileFailure ? { step: fileTextFailureSteps[fileFailure], result: 'discarded' as const } : undefined)
+              diagnose({ stage: 'tool', operation: this.name, outcome: status, code: invalid ? 'tool_schema_invalid' : status === 'succeeded' ? 'completed' : returned?.code ?? memberFailure ?? fileFailure ?? `returned_${status}`,
+                durationMs: Date.now() - started, ...(details ? { details } : {}), ...(error === undefined ? {} : { error }),
+                ...(returned?.httpStatus === undefined ? {} : { httpStatus: returned.httpStatus }) })
               return result
             } catch (error) {
               diagnose({ stage: 'tool', operation: this.name, outcome: 'unknown', code: 'tool_threw', error, durationMs: Date.now() - started })
@@ -196,7 +201,7 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
             const scope = this.resolveScope(input, event)
             return typeof scope === 'string' ? scope : undefined
           }
-          override async func(input: Record<string, unknown>, event: unknown) {
+          override async func(input: Record<string, unknown>, event: unknown, reportFailure?: ReportToolFailure) {
             const scope = this.resolveScope(input, event)
             if (typeof scope === 'string') return outcome('error', scope)
             const cancel = new AbortController()
@@ -488,6 +493,10 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
                     ...(readVideo ? { readVideo } : {}),
                     ...(listFiles ? { listFiles } : {}),
                   })
+                  if (result && origin === 'builtin' && this.name === 'searchInformationTool') {
+                    const failure = observedSearchFailure(result)
+                    if (failure) reportFailure?.(failure)
+                  }
                   await ensureCurrent()
                   if (ports.observeWebRead && origin === 'builtin' && this.name === 'webParserTool' && inherited && result) {
                     await ports.observeWebRead(result, { binding, actor, signal, isCurrent: () => !signal.aborted && scope.isCurrent(),
@@ -511,7 +520,7 @@ export function createAgentTools(registry: AgentToolRegistry | undefined, ports:
               return outcome(result.status === 'succeeded' ? 'success' : result.status === 'failed' ? 'error' : 'unknown', result.content.slice(0, usedHistory ? 32_000 : maxChars))
             } catch (error) {
               const timedOut = signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError'
-              diagnose({ stage: 'tool', operation: this.name, outcome: 'unknown', code: timedOut ? 'tool_timeout' : signal.aborted ? 'tool_cancelled' : 'tool_threw', error })
+              reportFailure?.({ code: timedOut ? 'tool_timeout' : signal.aborted ? 'tool_cancelled' : 'tool_threw', outcome: 'unknown', error })
               return outcome('unknown', '工具执行未能确认结果，核实前不重复执行')
             } finally { clearInterval(timer); cancel.abort(); release?.() }
           }

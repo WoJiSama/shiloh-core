@@ -9,10 +9,10 @@ import { ensureWakeable, isQqSimulationUserId, normalizeSimWakeConfig } from '..
 import { activeMemories, applyAffinityDelta, capMemories, defaultAffinityEntry, dueMemories, normalizeSimMemoryEntry, SIM_MEMORY_LIMIT, SIM_SELF_MEMORY_LIMIT } from '../domain/simMemory.js'
 import { MOOD_AXES, type MoodAxis } from '../domain/mood.js'
 import type { SimWaitPlan } from '../domain/waitGate.js'
-import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { AbstractTool, type ReportToolFailure, type ToolExecutionFailure } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { redactInternalStatusLeaks } from '../../conversation/domain/internalStatusLeak.js'
 
-export type SimSendResult = { ok: true; sent: number; duplicatesSkipped?: number } | { ok: false; error: string; sent?: number; duplicatesSkipped?: number; unknown?: boolean }
+export type SimSendResult = { ok: true; sent: number; duplicatesSkipped?: number } | { ok: false; error: string; sent?: number; duplicatesSkipped?: number; unknown?: boolean; failure?: ToolExecutionFailure }
 export type SimPokeResult = { ok: boolean; error?: string; code?: string; unknown?: boolean }
 export interface SimWaitResult { hint: string; canSleepNow: boolean; newMessagesText: string; newCount: number; readThroughSeq: number; partial: boolean }
 
@@ -277,18 +277,24 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
       return input
     }
 
-    async func(opts: Record<string, unknown>) {
-      if ((ctx.requireExplicitContinuation || opts.continuation !== undefined) && !['chat', 'interest_only'].includes(String(opts.continuation))) return 'error: continuation 必须为 chat 或 interest_only；需要保存或安排时用 simFinishTurn'
+    async func(opts: Record<string, unknown>, _event: unknown, reportFailure?: ReportToolFailure) {
+      const reject = (code: string, field: string, message: string) => {
+        reportFailure?.({ code, details: { step: 'send_validation', field, dispatched: false, result: 'not_dispatched' } })
+        return `error: ${message}`
+      }
+      if ((ctx.requireExplicitContinuation || opts.continuation !== undefined) && !['chat', 'interest_only'].includes(String(opts.continuation))) {
+        return reject('sim_send_continuation_invalid', 'continuation', 'continuation 必须为 chat 或 interest_only；需要保存或安排时用 simFinishTurn')
+      }
       // Keep a complete protocol-sized batch for quota preflight. One extra item
       // detects overflow without silently sending only the prefix of a request.
       const messages = coerceStringArray(opts.messages, { maxLength: 6, itemMaxChars: SEND_TEXT_MAX_CHARS })
-      if (!messages || messages.length > 5) return 'error: messages 必须是非空字符串或字符串数组（最多 5 条）；本批未发送'
+      if (!messages || messages.length > 5) return reject('sim_send_messages_invalid', 'messages', 'messages 必须是非空字符串或字符串数组（最多 5 条）；本批未发送')
       // 硬拦截：模型想要本回合不存在的工具时会把参数 JSON 当聊天内容发（实测 sendLocalEmojiTool 案例）
       const cleaned = messages.map(m => stripAIFlavorPhrases(m)).filter(Boolean)
-      if (!cleaned.length) return 'error: 清理后没有可发送的内容（原内容是客服腔空话），请换成人话重说'
+      if (!cleaned.length) return reject('sim_send_messages_empty', 'messages', '清理后没有可发送的内容（原内容是客服腔空话），请换成人话重说')
       const toolArgsIndex = cleaned.findIndex(m => looksLikeToolArguments(m))
       if (toolArgsIndex >= 0) {
-        return 'error: 第 ' + (toolArgsIndex + 1) + ' 条内容是工具参数 JSON，不是聊天消息，群里看到的就是乱码。你想要的那个工具不在本回合的工具清单里；请直接用自然语言把想说的话说出来（例如把 leadText 的内容当消息发），不要输出任何工具的参数格式。'
+        return reject('sim_send_tool_arguments', 'messages', `第 ${toolArgsIndex + 1} 条内容是工具参数 JSON，不是聊天消息，群里看到的就是乱码。你想要的那个工具不在本回合的工具清单里；请直接用自然语言把想说的话说出来（例如把 leadText 的内容当消息发），不要输出任何工具的参数格式。`)
       }
       const replyToSeq = Math.floor(Number(opts.replyToSeq))
       const state = ctx.getState()
@@ -296,7 +302,7 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
         ? [...state.unread, ...state.recent].find(m => m.seq === replyToSeq)
         : undefined
       if (Number.isFinite(replyToSeq) && replyToSeq > 0 && !replyTarget) {
-        return `error: replyToSeq=${replyToSeq} 在近期消息里不存在，无法引用`
+        return reject('sim_send_reply_missing', 'replyToSeq', `replyToSeq=${replyToSeq} 在近期消息里不存在，无法引用`)
       }
       const atUserIds = Array.isArray(opts.atUserIds)
         ? opts.atUserIds.map(v => String(v)).filter(isUserId).slice(0, 3)
@@ -305,7 +311,11 @@ export function createSimTools(ctx: SimToolContext): AbstractTool[] {
         ...(replyTarget?.messageId ? { replyToMessageId: replyTarget.messageId } : {}),
         ...(atUserIds.length ? { atUserIds } : {}),
       })
-      if (!result.ok) return `error: ${JSON.stringify(result)}`
+      if (!result.ok) {
+        const { failure, ...reply } = result
+        if (failure) reportFailure?.(failure)
+        return `error: ${JSON.stringify(reply)}`
+      }
       return JSON.stringify({ ok: true, sent: result.sent, ...(result.duplicatesSkipped === undefined ? {} : { duplicatesSkipped: result.duplicatesSkipped }), note: '只确认 sent 条新消息，duplicatesSkipped 是本回合已经成功发出的相同正文；不要重复发送。' })
     }
   }
