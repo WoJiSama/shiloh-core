@@ -7,6 +7,7 @@ const { createQqMediaRelayDeliveryPort, QQ_MEDIA_RELAY_SEND_TIMEOUT_MS } = await
 const { createOneBotConnection } = await importBilibiliHost('adapters/oneBotConnection.js')
 const { queuedDeliveryAllowed, withDeliveryGuard } = await importBilibiliHost('modules/messaging/infrastructure/deliveryScope.js')
 const { deliveryFailureEvidence, normalizeDeliveryReceipt } = await importBilibiliHost('modules/messaging/domain/deliveryReceipt.js')
+const { annotateAgentError } = await importBilibiliHost('modules/runtime/infrastructure/agentDiagnostics.js')
 
 const account = { platform: 'qq', namespace: 'global', id: '123456789' }
 const target = { account, kind: 'group', id: '315320' }
@@ -273,13 +274,15 @@ for (const reason of ['signal', 'guard', 'target', 'binding', 'account', 'text-p
     const controller = new AbortController(), d = direct(() => new Promise(resolve => { finish = resolve }), { account: ownAccount, allowsText: () => textAllowed })
     const pending = d.sendMediaRelay(action({ target: ownTarget, binding: ownBinding }), { signal: controller.signal, isCurrent: () => current })
     await waitFor(() => finish)
-    if (reason === 'signal') controller.abort()
+    if (reason === 'signal') controller.abort(annotateAgentError(new Error('fixture revoked'), { cause: 'media_memory_authority_changed' }))
     else if (reason === 'guard') current = false
     else if (reason === 'target') ownTarget.id = '999999'
     else if (reason === 'binding') ownBinding.revision = 'r2'
     else if (reason === 'account') ownAccount.id = '999999'
     else textAllowed = false
-    assert.deepEqual(await Promise.race([pending, delay(500).then(() => 'timeout')]), { state: 'unknown' })
+    const receipt = await Promise.race([pending, delay(500).then(() => 'timeout')])
+    assert.deepEqual(receipt, { state: 'unknown' })
+    if (reason === 'signal') assert.equal(deliveryFailureEvidence(receipt)?.details.cause, 'media_memory_authority_changed')
     assert.ok(d.contexts.every(context => context.signal.aborted && !context.isCurrent()))
     assert.equal(d.released.length, 3)
     finish(success(9999)); await delay(5); assert.equal(d.calls.length, 1)

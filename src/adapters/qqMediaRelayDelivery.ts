@@ -9,6 +9,7 @@ import { validateAgentMediaRelayPlan } from '../modules/media/domain/agentMediaR
 import { conversationAddressKey, platformAccountKey } from '../modules/runtime/domain/agentBindings.js'
 import { annotateDeliveryFailure, type DeliveryFailureEvidence } from '../modules/messaging/domain/deliveryReceipt.js'
 import { queuedDeliveryAllowed, withDeliveryGuard } from '../modules/messaging/infrastructure/deliveryScope.js'
+import { agentErrorDetails } from '../modules/runtime/infrastructure/agentDiagnostics.js'
 import { qqId } from './qqIdentity.js'
 import type { QqMediaRelayBridge } from './qqMediaRelayBridge.js'
 
@@ -215,9 +216,11 @@ export function createQqMediaRelayDeliveryPort(options: {
       if (!isCurrent()) throw Error('QQ媒体转发来源已失效')
     }
     const interrupted = (transport?: DeliveryFailureEvidence) => {
-      if (transport) return unconfirmed(transport.code, transport.details)
+      const cause = agentErrorDetails(callerSignal?.reason)?.cause
+      const authority = cause ? { cause } : {}
+      if (transport) return unconfirmed(transport.code, { ...authority, ...transport.details })
       if (deadline.signal.aborted) return unconfirmed('onebot_timeout', { limit: timeoutMs })
-      return unconfirmed(signal.aborted || !isCurrent() ? 'qq_media_authority_lost' : 'qq_media_transport_unconfirmed')
+      return unconfirmed(signal.aborted || !isCurrent() ? 'qq_media_authority_lost' : 'qq_media_transport_unconfirmed', authority)
     }
     try {
       if (!isCurrent()) return failed('binding_changed')

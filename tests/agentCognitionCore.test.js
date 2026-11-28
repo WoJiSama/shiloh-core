@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js'
 
-const [{ createAgentRuntime }, { createAgentBindingDirectory, agentPersonaScopeId, platformAccountKey },
+const [{ createAgentRuntime }, { createAgentBindingDirectory, agentPersonaScopeId },
   { createCognitionStore }, { cognitionSourceId, recordCognitionSources }, { applyCognitionProposals },
   { createPersonMemoryStore }, { personMemoryAddress }, { createCharacterStore }, { createAgentCognition }] = await Promise.all([
   load('core/agentRuntime.js'), load('modules/runtime/domain/agentBindings.js'),
@@ -13,6 +13,7 @@ const [{ createAgentRuntime }, { createAgentBindingDirectory, agentPersonaScopeI
   load('modules/memory/infrastructure/personMemoryContext.js'),
   load('modules/simulation/infrastructure/characterStore.js'), load('modules/memory/infrastructure/agentCognition.js'),
 ])
+const { agentInboxQueueKey } = await load('modules/runtime/infrastructure/agentInbox.js')
 const settings = { skip: !redisAvailable, timeout: 20_000 }
 const account = { platform: 'fixture', namespace: 'cognition-test', id: 'bot-a' }
 const actor = { ...account, id: 'user-a' }
@@ -97,7 +98,9 @@ async function fixture(t, options = {}) {
   })
   t.after(async () => { options.release?.(); await runtime.stop() })
   await runtime.start()
-  const queueKey = target => `agent:inbox:${target.kind === 'private' ? 'private' : 'group-text'}:${platformAccountKey(target.account)}`
+  const queueKey = target => agentInboxQueueKey(target.kind === 'private'
+    ? { kind: 'private', account: target.account, conversationId: target.id }
+    : { kind: 'group', account: target.account })
   async function drained(target) { await waitFor(() => redis.reader.lLen(redis.prefix + queueKey(target)).then(n => n === 0), 'Core inbox completion') }
   async function emit(target, id, text = '你现在对六角格游戏有什么爱好？') {
     clock++

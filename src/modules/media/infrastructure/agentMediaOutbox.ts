@@ -170,7 +170,7 @@ export function createAgentMediaOutbox(options: {
         if (context === 'wait') return
         if (!context || !options.provider) { await entry.session.close('cancelled'); return }
         entry.context = context
-        const abort = () => entry.cancel.abort()
+        const abort = () => entry.cancel.abort(context.signal.reason)
         entry.abortContext = abort
         if (context.signal.aborted) abort(); else context.signal.addEventListener('abort', abort, { once: true })
         await current(entry, true)

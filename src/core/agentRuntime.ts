@@ -129,7 +129,7 @@ import {
 } from '../modules/runtime/domain/agentBindings.js'
 import { agentInboxQueueKey, createAgentInbox, inboxEventTarget, textConversationSeconds, type AgentInboxQueue, type AgentInboxRedis, type PrivateInbox, type TextInbox } from '../modules/runtime/infrastructure/agentInbox.js'
 import { createAgentInboxDispatch } from '../modules/runtime/application/agentInboxDispatch.js'
-import { agentErrorDetails, createAgentDiagnostics, type AgentDiagnostics } from '../modules/runtime/infrastructure/agentDiagnostics.js'
+import { agentErrorDetails, annotateAgentError, createAgentDiagnostics, type AgentDiagnostics } from '../modules/runtime/infrastructure/agentDiagnostics.js'
 import type { AgentDiagnosticScope } from '../contracts/agentDiagnostics.js'
 import { generateAgentFailureNotice } from '../modules/conversation/infrastructure/agentFailureNotice.js'
 import type { AgentGroupLogConfig } from '../contracts/agentGroupLog.js'
@@ -691,9 +691,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       },
     }
   }
-  function guardPendingSend(targetKey: string, check: () => boolean, requiresAI = controlDelivery.getStore() !== true) {
+  function guardPendingSend(targetKey: string, check: () => boolean, requiresAI = controlDelivery.getStore() !== true, onInvalidate?: () => void) {
     let current = true
-    const invalidate = () => { current = false }
+    const invalidate = () => {
+      current = false
+      onInvalidate?.()
+    }
     if (!requiresAI) controlPendingSends.add(invalidate)
     const waiting = pendingSends.get(targetKey) ?? new Set<() => void>()
     waiting.add(invalidate)
@@ -3804,17 +3807,34 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     const adapter = adapterFor(target)
     if (!adapter?.readMediaShare || !adapter.actions.sendMediaRelay) return undefined
     if (!adapter.isReady() || !activityRecovered(target.account) || privacyBlocked(platformAccountKey(target.account))) return 'wait'
-    const memoryTurn = await beginMemoryTurn(binding), cancel = new AbortController()
-    let signal: AbortSignal
-    try { signal = AbortSignal.any([cancel.signal, memoryTurn.signal, toolCancellation.signal, externalSignal,
-      AbortSignal.timeout(Math.max(1, Math.min(86_400_000, record.expiresAt - (options.now?.() ?? Date.now())))), ...(options.signal ? [options.signal] : [])]) }
+    const memoryTurn = await beginMemoryTurn(binding), cancel = new AbortController(), signal = cancel.signal
+    let deadline: AbortSignal, dependencies: AbortSignal
+    try {
+      deadline = AbortSignal.timeout(Math.max(1, Math.min(86_400_000, record.expiresAt - (options.now?.() ?? Date.now()))))
+      dependencies = AbortSignal.any([memoryTurn.signal, toolCancellation.signal, externalSignal, deadline, ...(options.signal ? [options.signal] : [])])
+    }
     catch { memoryTurn.release(); return undefined }
+    const revoke = (cause: string) => cancel.abort(annotateAgentError(new Error('媒体发送授权已失效'), { cause }))
+    const dependencyRevoked = () => revoke(toolCancellation.signal.aborted || options.signal?.aborted ? 'media_host_stopping' :
+      memoryTurn.signal.aborted ? 'media_memory_authority_changed' : deadline.aborted ? 'media_job_expired' : 'media_job_cancelled')
+    if (dependencies.aborted) dependencyRevoked()
+    else dependencies.addEventListener('abort', dependencyRevoked, { once: true })
     let observed: IncomingMessage | undefined
     const expected = agentBindingToken(binding)
-    const pending = guardPendingSend(conversationAddressKey(target), () => !signal.aborted && mediaRelayCurrent(target) &&
-      adapter.isReady() && adapterFor(target) === adapter && conversationEnabled(target) && memoryTurn.isCurrent() &&
-      bindingIsCurrent(target, expected) && (!observed || mediaResponsible(observed)))
-    const isCurrent = () => !signal.aborted && observeCurrent(() => pending.isCurrent() && (!source.share || mediaProviderEnabled(source.share.provider)))
+    const pending = guardPendingSend(conversationAddressKey(target), () => {
+      if (signal.aborted) return false
+      const cause = !mediaRelayCurrent(target) ? 'media_policy_changed' : !adapter.isReady() || adapterFor(target) !== adapter ? 'media_connection_changed' :
+        !conversationEnabled(target) || !bindingIsCurrent(target, expected) ? 'media_binding_changed' : !memoryTurn.isCurrent() ? 'media_memory_authority_changed' :
+        observed && !mediaResponsible(observed) ? 'media_account_election_changed' : undefined
+      if (cause) revoke(cause)
+      return cause === undefined
+    }, undefined, () => revoke('media_pending_send_revoked'))
+    const isCurrent = () => {
+      if (signal.aborted) return false
+      if (!observeCurrent(() => pending.isCurrent())) revoke('media_pending_send_revoked')
+      else if (source.share && !mediaProviderEnabled(source.share.provider)) revoke('media_policy_changed')
+      return !signal.aborted
+    }
     const { botId, scene } = personMemoryAddress(target), identity = { botId, personaId: agentPersonaScopeId(binding.agentId) }
     const allowsSource = async (message: IncomingMessage): Promise<boolean> => {
       if (!observeCurrent(() => isCurrent() && message.messageId === source.messageId && message.occurredAt === source.occurredAt &&
@@ -3834,7 +3854,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       signal.throwIfAborted()
       if (!isCurrent()) throw new Error('媒体来源已失效')
     }
-    const timer = setInterval(() => { if (!isCurrent()) cancel.abort() }, 25); timer.unref()
+    const timer = setInterval(isCurrent, 25); timer.unref()
     return {
       signal, isCurrent, ensureCurrent,
       async readSource() {
@@ -3846,7 +3866,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         await ensureCurrent()
         return result
       },
-      release() { clearInterval(timer); cancel.abort(); pending.release(); memoryTurn.release() },
+      release() {
+        clearInterval(timer); dependencies.removeEventListener('abort', dependencyRevoked)
+        cancel.abort(); pending.release(); memoryTurn.release()
+      },
     }
   }
   async function handleMediaRelay(incoming: IncomingMessage, binding: AgentBindingSnapshot): Promise<boolean> {
