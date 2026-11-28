@@ -2528,11 +2528,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     },
     async canModerate(source, guard) {
       const { conversation: target, sender } = source, adapter = adapterFor(target)
-      if (!adapter?.moderateMessage || sender.id === adapter.botUserId) return false
+      if (!guard.isCurrent()) return 'moderation_scope_changed'
+      if (!adapter?.moderateMessage) return 'moderation_unavailable'
+      if (sender.id === adapter.botUserId) return 'moderation_self_source'
       const bot = await readGroupMember(target, adapter.botUserId, guard.signal, guard.isCurrent)
-      if (!bot || bot.member.role !== 'owner' && bot.member.role !== 'admin') return false
+      if (!guard.isCurrent()) return 'moderation_scope_changed'
+      if (!bot) return 'moderation_bot_role_unverified'
+      if (bot.member.role !== 'owner' && bot.member.role !== 'admin') return 'moderation_bot_not_admin'
       const member = await readGroupMember(target, sender.id, guard.signal, guard.isCurrent)
-      return member?.member.role === 'member' && guard.isCurrent()
+      if (!guard.isCurrent()) return 'moderation_scope_changed'
+      if (!member) return 'moderation_member_role_unverified'
+      return member.member.role === 'member' ? true : 'moderation_member_protected'
     },
     model: (request, guard) => options.YTapi(request, options.getExecutionConfig(), guard.signal, guard.isCurrent, guard.ensureCurrent),
     async dispatch(binding, source, action, guard) {
@@ -2545,7 +2551,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
         const result = await controlMessageActions.send({ version: 1, kind: 'message.send', target, binding,
           ...(source.messageId ? { replyTo: source.messageId } : {}), parts: [{ kind: 'text', text: '请留意群聊秩序，避免重复刷屏或发送广告。' }] },
           { ...guard, ensureCurrent })
-        return { state: result.state === 'sent' ? 'confirmed' : result.state === 'unknown' ? 'unknown' : 'failed' }
+        if (result.state === 'sent') return { state: 'confirmed' }
+        if (result.state === 'unknown') return result
+        return { state: 'failed', code: result.code ?? 'moderation_rejected' }
       }
       if (!adapter?.moderateMessage) return { state: 'failed', code: 'moderation_unavailable' }
       const result = await adapter.moderateMessage(source, action === 'fold' ? 'recall' : action, { ...guard, ensureCurrent })
@@ -2572,11 +2580,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       return result
     },
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsToolInput?.(text) !== false,
-    observe(binding, messageId, state, action) {
-      void diagnostics.run({ kind: 'conversation', binding, messageId }, 'group_moderation', async () => {
-        diagnostics.emit({ stage: 'tool', operation: 'moderation_' + action, outcome: state === 'confirmed' ? 'succeeded' : state,
-          ...(state === 'confirmed' && action === 'fold' ? { code: 'moderation_fold_recall_confirmed' } : {}) })
-      }, 'runtime')
+    withScope(binding, messageId, run) {
+      return diagnostics.withScope({ kind: 'conversation', binding, messageId }, 'group_moderation', run)
+    },
+    observe(_binding, _messageId, state, action, { step, code, error }) {
+      diagnostics.emitFailure({ stage: 'tool', operation: action ? 'moderation_' + action : 'group_moderation', outcome: state === 'confirmed' ? 'succeeded' : state,
+        ...(state === 'confirmed' && action === 'fold' ? { code: 'moderation_fold_recall_confirmed' } : code === undefined ? {} : { code }),
+        ...(error === undefined ? {} : { error }),
+        ...(state === 'confirmed' ? {} : { details: { step,
+          ...(step === 'moderation_receipt_save' ? {} : state === 'unknown' ? { result: 'confirmation_pending' } :
+            step === 'moderation_dispatch' ? {} : { dispatched: false, result: 'not_dispatched' }) } }) })
     },
   }) : undefined
   const management: AgentManagementModules | undefined = options.managementBindings && (() => {
@@ -2910,14 +2923,27 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
     ...(options.now ? { now: options.now } : {}),
   })
   async function captureCognition(incoming: IncomingMessage, binding: AgentBindingSnapshot, guard: () => boolean): Promise<void> {
-    if (options.cognition?.enabled !== true || !incoming.messageId || !guard() || incoming.parts.some(part => part.kind !== 'text' && part.kind !== 'mention')) return
+    if (options.cognition?.enabled !== true || !incoming.messageId || incoming.parts.some(part => part.kind !== 'text' && part.kind !== 'mention')) return
     const content = incoming.parts.filter(part => part.kind === 'text').map(part => part.text).join('').trim()
     if (!content || content.length > 1600 || matchPersonMemoryCommand(content)) return
-    const source: CognitionSource = { id: cognitionSourceId(binding.agentId, binding.target, 'message', incoming.messageId),
-      agentId: binding.agentId, conversation: binding.target, kind: 'message', nativeId: incoming.messageId,
-      authorId: incoming.sender.id, occurredAt: incoming.occurredAt, content, revision: 1,
-      participantIds: [...new Set([incoming.sender.id, ...incoming.mentions.map(user => user.id)])], status: 'active' }
-    await cognition.record([source], { isCurrent: guard })
+    const nativeId = incoming.messageId
+    await diagnostics.withScope({ kind: 'conversation', binding, messageId: nativeId }, 'cognition_capture', async () => {
+      const started = performance.now()
+      try {
+        if (!guard()) return
+        const source: CognitionSource = { id: cognitionSourceId(binding.agentId, binding.target, 'message', nativeId),
+          agentId: binding.agentId, conversation: binding.target, kind: 'message', nativeId,
+          authorId: incoming.sender.id, occurredAt: incoming.occurredAt, content, revision: 1,
+          participantIds: [...new Set([incoming.sender.id, ...incoming.mentions.map(user => user.id)])], status: 'active' }
+        await cognition.record([source], { isCurrent: guard })
+      } catch (error) {
+        const details = agentErrorDetails(error)
+        const cancelled = details?.cause === 'cognition_authority_changed'
+        const unknown = details?.step === 'cognition_store_commit' && details.result === 'confirmation_pending'
+        diagnostics.emitFailure({ stage: 'memory', operation: 'cognition_capture', outcome: cancelled ? 'cancelled' : unknown ? 'unknown' : 'failed',
+          code: cancelled ? 'cognition_capture_cancelled' : 'cognition_capture_failed', error, durationMs: performance.now() - started })
+      }
+    }, true)
   }
   const groupMemory = createGroupMemory({
     redis: storage, memory: personMemory, config: () => options.groupMemory,
@@ -4194,7 +4220,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
                   await conversationMemory.capture(incoming, persona.binding, isCurrent)
                   attempt.step = 'capture_semantic'
                   await semanticMemory.capture(incoming, persona.binding, isCurrent)
-                  await captureCognition(incoming, persona.binding, isCurrent).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
+                  await captureCognition(incoming, persona.binding, isCurrent)
                   attempt.step = 'capture_history'
                   await diagnostics.withScope(attempt.scope, 'history_capture', () => history.capture(incoming, persona.binding, isCurrent), true)
                   attempt.step = 'capture_group'
@@ -4240,7 +4266,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
                 await conversationMemory.capture(incoming, persona.binding, isCurrent)
                 attempt.step = 'capture_semantic'
                 await semanticMemory.capture(incoming, persona.binding, isCurrent)
-                await captureCognition(incoming, persona.binding, isCurrent).catch(error => diagnostics.emit({ stage: 'memory', operation: 'cognition_capture', outcome: 'failed', error }))
+                await captureCognition(incoming, persona.binding, isCurrent)
                 attempt.step = 'capture_history'
                 await diagnostics.withScope(attempt.scope, 'history_capture', () => history.capture(incoming, persona.binding, isCurrent), true)
                 attempt.step = 'capture_group'

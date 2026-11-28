@@ -541,16 +541,24 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
     }
     const reviewBackend = config.characterConsistency
     const hostSecrets = standaloneAgentSecrets(config, process.env)
-    allowsAlertLabel = label => createAgentSecretTextCheck(hostSecrets)(label)
+    let hostSecretCheck = createAgentSecretTextCheck(hostSecrets)
+    const allowsSecretText = (text: string) => hostSecretCheck(text)
+    const registerHostSecrets = (values: readonly string[]) => {
+      const added = [...new Set(values.filter(value => value && !hostSecrets.includes(value)))]
+      if (!added.length) return
+      const nextCheck = createAgentSecretTextCheck([...hostSecrets, ...added])
+      hostSecrets.push(...added)
+      hostSecretCheck = nextCheck
+    }
+    allowsAlertLabel = allowsSecretText
     options.setAlertLabelCheck(allowsAlertLabel)
     startupStep = 'open_journal'
-    journal = await openAgentOperationJournal({ dataDir: config.dataDir, ...config.operationLogging, allowsText: text => createAgentSecretTextCheck(hostSecrets)(text) })
+    journal = await openAgentOperationJournal({ dataDir: config.dataDir, ...config.operationLogging, allowsText: allowsSecretText })
     diagnostics.emit({ stage: 'host', operation: 'host_start', outcome: 'started' })
     startupStep = 'initialize_services'
     fileTextWorkspace = createAgentFileTextWorkspace({ dataDir: config.dataDir, instance: config.instance, isLeaseCurrent: storage.isCurrent, diagnostics })
     void fileTextWorkspace.sweep()
     let musicProvider: ReturnType<typeof createAgentMusicProvider> | undefined
-    const registerHostSecrets = (values: readonly string[]) => { for (const value of values) if (value && !hostSecrets.includes(value)) hostSecrets.push(value) }
     const musicContext = {
       signal: executionSignal,
       isCurrent() {
@@ -567,7 +575,6 @@ async function runStandaloneAgent(config: ReturnType<typeof readStandaloneAgentC
       })
       registerHostSecrets(musicProvider.getSecrets())
     }
-    const allowsSecretText = (text: string) => createAgentSecretTextCheck([...hostSecrets, ...(musicProvider?.getSecrets() ?? [])])(text)
     const allowsMediaText = (text: string) => allowsSecretText(text) &&
       (config.forbiddenWords.blockOutput === false || !words.findForbiddenWord(text, config.forbiddenWords))
     if (config.projectKnowledge.enabled) {

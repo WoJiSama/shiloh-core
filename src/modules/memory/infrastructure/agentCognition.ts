@@ -4,17 +4,20 @@ import { conversationAddressKey } from '../../runtime/domain/agentBindings.js'
 import { cognitionLinkIsDependency, cognitionSourceId, invalidateCognitionState, recordCognitionSources } from '../domain/cognitionState.js'
 import { applyCognitionProposals, CognitionProposalError } from '../domain/cognitionSelf.js'
 import { buildCognitionRecall } from '../domain/cognitionRecall.js'
+import { annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { createCognitionStore } from './cognitionStore.js'
 import { createCognitionConsolidation } from './cognitionConsolidation.js'
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const current = (guard: CognitionGuard) => !guard.signal?.aborted && guard.isCurrent()
+function assertCurrent(guard: CognitionGuard) {
+  guard.signal?.throwIfAborted()
+  if (!current(guard)) throw annotateAgentError(new Error('认知资料权限已改变'), { step: 'cognition_authorization', cause: 'cognition_authority_changed' })
+}
 async function check(guard: CognitionGuard) {
-  guard.signal?.throwIfAborted()
-  if (!current(guard)) throw new Error('认知资料权限已改变')
+  assertCurrent(guard)
   await guard.ensureCurrent?.(guard.signal)
-  guard.signal?.throwIfAborted()
-  if (!current(guard)) throw new Error('认知资料权限已改变')
+  assertCurrent(guard)
 }
 
 /** Walk only evidence edges, never a related/person association into a private scene. */
@@ -74,7 +77,14 @@ export function createAgentCognition(ports: {
       await check(guard)
       if (!sources.length) return
       const agentId = sources[0]!.agentId
-      for (const source of sources) if (source.agentId !== agentId || ports.allowsText?.(source.content) === false || !await ports.canUseSource(source, guard)) throw new Error('认知来源不可用')
+      for (const source of sources) {
+        if (source.agentId !== agentId || ports.allowsText?.(source.content) === false) throw annotateAgentError(new Error('认知来源不可用'),
+          { step: 'cognition_source_check', cause: source.agentId !== agentId ? 'cognition_source_owner_mismatch' : 'cognition_source_text_blocked' })
+        if (!await ports.canUseSource(source, guard)) {
+          assertCurrent(guard)
+          throw annotateAgentError(new Error('认知来源不可用'), { step: 'cognition_source_check', cause: 'cognition_source_unavailable' })
+        }
+      }
       await store.update(agentId, state => recordCognitionSources(state, sources), guard)
     },
     async propose(agentId, conversation, proposals, guard) {

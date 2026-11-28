@@ -190,6 +190,25 @@ test('群管理拒绝踢人提议，已判断的群消息才可执行短时处�
   await service.stop()
 })
 
+test('群管理复核查不到机器人角色时，不发出提醒并保留原因', async () => {
+  const at = Date.UTC(2026, 10, 20), redis = commitmentRedis()
+  const source = messages(group, () => at)('兼职返利，免费领取')
+  let checks = 0
+  const reports = []
+  const service = createAgentGroupModeration({
+    redis, now: () => at, isCurrent: () => true, source: async () => source, allowsText: () => true,
+    canModerate: async () => ++checks === 1 ? true : 'moderation_bot_role_unverified',
+    model: async () => response(JSON.stringify({ action: 'warn' })),
+    dispatch: async () => { assert.fail('failed preflight must not dispatch') },
+    observe: (_binding, id, state, action, evidence) => reports.push({ id, state, action, ...evidence }),
+  })
+  service.observe(source, bindingFor(group))
+  await delay(30)
+  await service.stop()
+  assert.equal(checks, 2)
+  assert.deepEqual(reports, [{ id: source.messageId, state: 'failed', action: 'warn', step: 'moderation_role_recheck', code: 'moderation_bot_role_unverified' }])
+})
+
 test('编程工作器只能修改源码副本，验证后保留候选文件', async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'shiloh-author-test-'))
   const root = await realpath(directory)

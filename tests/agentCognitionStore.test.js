@@ -6,6 +6,7 @@ import { createAgentRedisFixture, redisAvailable } from './helpers/agentRedis.js
 const { COGNITION_LIMITS, cognitionKey, cognitionSourceId, createEmptyCognitionState, validateCognitionState,
   recordCognitionSources, invalidateCognitionState } = await load('modules/memory/domain/cognitionState.js')
 const { createCognitionStore } = await load('modules/memory/infrastructure/cognitionStore.js')
+const { agentErrorDetails } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
 const agentId = 'daily', at = 1_800_000_000_000
 const scene = (id = 'room-a', kind = 'group') => ({ account: { platform: 'qq', namespace: 'global', id: 'bot-a' }, kind, id })
 function source(nativeId = 'message-1', overrides = {}) {
@@ -78,7 +79,11 @@ test('shared get/set substitute serializes store instances, and write failure re
   assert.equal((await stores[0].read(agentId)).revision, 12)
   assert.equal((await stores[0].read(agentId)).sources.length, 12)
   f.control.failWrite = true
-  await assert.rejects(stores[0].update(agentId, state => recordCognitionSources(state, [source('retry')]), guard()), /write failed/)
+  await assert.rejects(stores[0].update(agentId, state => recordCognitionSources(state, [source('retry')]), guard()), error => {
+    assert.match(error.message, /write failed/u)
+    assert.equal(agentErrorDetails(error)?.step, 'cognition_store_commit')
+    return true
+  })
   f.control.failWrite = false
   assert.equal((await stores[1].update(agentId, state => recordCognitionSources(state, [source('retry')]), guard())).revision, 13)
 })

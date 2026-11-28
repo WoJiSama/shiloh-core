@@ -1,6 +1,6 @@
 import type { ConversationAddress, PlatformAccountRef } from '../../../contracts/agentBinding.js'
 import type { CognitionInvalidation, CognitionLink, CognitionNode, CognitionSource, CognitionState } from '../../../contracts/agentCognition.js'
-import { conversationAddressKey, isConversationAddress, isPlatformAccount, isPlatformIdentifier, platformAccountKey } from '../../runtime/domain/agentBindings.js'
+import { conversationAddressKey, isConversationAddress, isPlatformAccount, isPlatformIdentifier } from '../../runtime/domain/agentBindings.js'
 
 /** Bounded storage fails closed; reaching a limit never discards evidence or tombstones. */
 export const COGNITION_LIMITS = Object.freeze({ sources: 4_000, nodes: 4_000, links: 8_000,
@@ -21,8 +21,10 @@ const identifier = (value: unknown): value is string => typeof value === 'string
 const agent = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)
 const text = (value: unknown, max: number, empty = false): value is string => typeof value === 'string' && value.length <= max && (empty || value.trim().length > 0)
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
-const sameAccount = (left: PlatformAccountRef, right: PlatformAccountRef) => platformAccountKey(left) === platformAccountKey(right)
-const sameScene = (left: ConversationAddress, right: ConversationAddress) => conversationAddressKey(left) === conversationAddressKey(right)
+const sameAccount = (left: PlatformAccountRef, right: PlatformAccountRef) =>
+  left.id === right.id && left.platform === right.platform && left.namespace === right.namespace
+const sameScene = (left: ConversationAddress, right: ConversationAddress) =>
+  left.id === right.id && left.kind === right.kind && sameAccount(left.account, right.account)
 function object(value: unknown, required: string[], optional: string[] = []): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail()
   const record = value as Record<string, unknown>
@@ -77,9 +79,9 @@ function invalidation(value: unknown): CognitionInvalidation {
 /** Selectors are intersected. With no selector, before revokes all evidence up to that event time. */
 export function cognitionSourceIsInvalidated(s: CognitionSource, rules: readonly CognitionInvalidation[]): boolean {
   return rules.some(rule => s.occurredAt <= rule.before &&
+    (!rule.authorId || rule.authorId === s.authorId) && (!rule.sourceIds || rule.sourceIds.includes(s.id)) &&
     (!rule.account || sameAccount(rule.account, s.conversation.account)) &&
-    (!rule.conversation || sameScene(rule.conversation, s.conversation)) &&
-    (!rule.sourceIds || rule.sourceIds.includes(s.id)) && (!rule.authorId || rule.authorId === s.authorId))
+    (!rule.conversation || sameScene(rule.conversation, s.conversation)))
 }
 function assertAcyclic(edges: Map<string, Set<string>>) {
   const indegree = new Map<string, number>()
@@ -172,6 +174,7 @@ export function validateCognitionState(value: unknown, agentId?: string): Cognit
 }
 
 function invalidateDependencies(state: CognitionState, changedSources: Set<string>, changedNodes = new Set<string>()) {
+  if (!changedSources.size && !changedNodes.size) return
   const sources = new Map(state.sources.map(s => [s.id, s])), nodes = new Map(state.nodes.map(n => [n.id, n]))
   const dependencies = new Map<string, Set<string>>()
   const edge = (from: string, to: string) => { const targets = dependencies.get(from) ?? new Set<string>(); targets.add(to); dependencies.set(from, targets) }
@@ -236,7 +239,8 @@ export function validateCognitionTransition(previous: CognitionState, next: Cogn
   const sources = new Map(next.sources.map(s => [s.id, s])), nodes = new Map(next.nodes.map(n => [n.id, n]))
   for (const old of previous.sources) {
     const current = sources.get(old.id)
-    if (!current || !sameSourceIdentity(old, current) || current.revision < old.revision || old.status === 'revoked' && !same(old, current) ||
+    if (!current || !sameSourceIdentity(old, current) || current.revision < old.revision ||
+        current.status === 'revoked' && current.content !== '' || old.status === 'revoked' && !same(old, current) ||
         old.status === 'active' && current.status === 'active' && old.revision === current.revision && !same(old, current)) fail()
   }
   for (const old of previous.nodes) {
@@ -252,13 +256,16 @@ export function validateCognitionTransition(previous: CognitionState, next: Cogn
     return current.revision !== old.revision || current.status !== old.status
   }).map(s => s.id))
   const changedNodes = new Set(previous.nodes.filter(old => old.status !== 'invalid' && nodes.get(old.id)!.status === 'invalid').map(n => n.id))
-  const affected = structuredClone(previous)
-  affected.sources = affected.sources.map(s => structuredClone(sources.get(s.id)!))
-  for (const n of affected.nodes) if (changedNodes.has(n.id)) n.status = 'invalid'
-  invalidateDependencies(affected, changedSources, changedNodes)
-  for (const s of affected.sources) if (s.status === 'revoked' && (sources.get(s.id)?.status !== 'revoked' || sources.get(s.id)?.content !== '')) fail()
-  for (const id of changedNodes) if (nodes.get(id)?.status !== 'invalid') fail()
-  for (const old of previous.invalidations) if (!next.invalidations.some(rule => rule.id === old.id && same(rule, old))) fail()
+  if (changedSources.size || changedNodes.size) {
+    const affected = structuredClone(previous)
+    affected.sources = affected.sources.map(s => structuredClone(sources.get(s.id)!))
+    for (const n of affected.nodes) if (changedNodes.has(n.id)) n.status = 'invalid'
+    invalidateDependencies(affected, changedSources, changedNodes)
+    for (const s of affected.sources) if (s.status === 'revoked' && (sources.get(s.id)?.status !== 'revoked' || sources.get(s.id)?.content !== '')) fail()
+    for (const id of changedNodes) if (nodes.get(id)?.status !== 'invalid') fail()
+  }
+  const currentRules = new Map(next.invalidations.map(rule => [rule.id, rule]))
+  for (const old of previous.invalidations) if (!same(currentRules.get(old.id), old)) fail()
   if (next.invalidations.length > previous.invalidations.length && next.privacyRevision <= previous.privacyRevision) fail()
   const fingerprints = new Set(next.processed)
   if (previous.processed.some(id => !fingerprints.has(id))) fail()

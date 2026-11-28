@@ -9,6 +9,13 @@ import { parseAgentToolArguments } from '../../tools/infrastructure/agentToolSch
 import type { AgentGroupPolicy } from '../domain/agentGroupPolicy.js'
 
 type Disposition = 'warn' | 'recall' | 'mute' | 'unmute' | 'fold'
+type Authorization = true | 'moderation_unavailable' | 'moderation_self_source' | 'moderation_bot_role_unverified' |
+  'moderation_bot_not_admin' | 'moderation_member_role_unverified' | 'moderation_member_protected' | 'moderation_scope_changed'
+interface ModerationEvidence {
+  step: 'moderation_source_recheck' | 'moderation_role_recheck' | 'moderation_dispatch' | 'moderation_receipt_save' | 'moderation_assessment'
+  code?: string
+  error?: unknown
+}
 interface ModerationGuard {
   signal: AbortSignal
   isCurrent(): boolean
@@ -20,11 +27,12 @@ interface Ports {
   policy?(binding: AgentBindingSnapshot): AgentGroupPolicy
   isCurrent(binding: AgentBindingSnapshot): boolean
   source(target: ConversationAddress, id: string, guard: ModerationGuard): Promise<IncomingMessage | undefined>
-  canModerate(source: IncomingMessage, guard: ModerationGuard): Promise<boolean>
+  canModerate(source: IncomingMessage, guard: ModerationGuard): Promise<Authorization>
   model(request: ChatRequestData, guard: ModerationGuard): Promise<ChatResponse>
   dispatch(binding: AgentBindingSnapshot, source: IncomingMessage, action: Disposition, guard: ModerationGuard): Promise<InteractionReceipt>
   allowsText(text: string): boolean
-  observe(binding: AgentBindingSnapshot, id: string, outcome: InteractionReceipt['state'], action: Disposition): void
+  withScope?(binding: AgentBindingSnapshot, id: string, run: () => Promise<void>): Promise<void>
+  observe(binding: AgentBindingSnapshot, id: string, outcome: InteractionReceipt['state'], action: Disposition | undefined, evidence: ModerationEvidence): void
 }
 
 const shortMuteMs = 120_000
@@ -53,7 +61,7 @@ export function createAgentGroupModeration(ports: Ports) {
     const sourceId = report ? incoming.quote?.messageId : incoming.messageId
     if (!sourceId || !isCurrent()) return
     const source = await ports.source(group, sourceId, guard)
-    if (!source || !await ports.canModerate(source, guard) || !isCurrent()) return
+    if (!source || await ports.canModerate(source, guard) !== true || !isCurrent()) return
     const muteKey = 'bl-chat:moderation-mute:v1:' + hash([agentBindingIdentity(binding), source.sender.id])
     const mayUnmute = report && !!await ports.redis.get(muteKey)
     const model = !fold && await ports.model({ messages: [{
@@ -76,16 +84,34 @@ export function createAgentGroupModeration(ports: Ports) {
     const receiptKey = 'bl-chat:moderation-receipt:v1:' + hash([agentBindingIdentity(binding), sourceId, action])
     const receipt = (state: string) => JSON.stringify({ state, at: now(), action, source: sourceId })
     if (await ports.redis.set(receiptKey, receipt('pending'), { NX: true, EX: receiptSeconds }) !== 'OK') return
-    let outcome: InteractionReceipt = { state: 'failed' }
+    let outcome: InteractionReceipt = { state: 'failed', code: 'moderation_source_changed' }
+    let step: ModerationEvidence['step'] = 'moderation_source_recheck'
+    let failure: unknown
     try {
       const fresh = await ports.source(group, sourceId, guard)
-      if (fresh && fresh.sender.id === source.sender.id && fresh.occurredAt === source.occurredAt && fresh.text === source.text &&
-          await ports.canModerate(fresh, guard) && isCurrent()) outcome = await ports.dispatch(binding, fresh, action, guard)
-    } catch { outcome = { state: 'unknown' } }
-    await ports.redis.set(receiptKey, receipt(outcome.state), { EX: receiptSeconds })
-    if (outcome.state === 'confirmed' && action === 'mute') await ports.redis.set(muteKey, receipt('confirmed'), { PX: shortMuteMs })
-    if (outcome.state === 'confirmed' && action === 'unmute') await ports.redis.del(muteKey)
-    ports.observe(binding, sourceId, outcome.state, action)
+      if (fresh && fresh.sender.id === source.sender.id && fresh.occurredAt === source.occurredAt && fresh.text === source.text) {
+        step = 'moderation_role_recheck'
+        const authorization = await ports.canModerate(fresh, guard)
+        if (authorization !== true) outcome = { state: 'failed', code: authorization }
+        else if (!isCurrent()) outcome = { state: 'failed', code: 'moderation_scope_changed' }
+        else {
+          step = 'moderation_dispatch'
+          outcome = await ports.dispatch(binding, fresh, action, guard)
+        }
+      }
+    } catch (error) {
+      failure = error
+      outcome = step === 'moderation_dispatch' ? { state: 'unknown' } : { state: 'failed', code: 'moderation_preflight_failed' }
+    }
+    const code = outcome.state === 'failed' ? outcome.code ?? 'moderation_rejected' : outcome.state === 'unknown' ? 'moderation_unconfirmed' : undefined
+    ports.observe(binding, sourceId, outcome.state, action, { step, ...(code ? { code } : {}), ...(failure === undefined ? {} : { error: failure }) })
+    try {
+      await ports.redis.set(receiptKey, receipt(outcome.state), { EX: receiptSeconds })
+      if (outcome.state === 'confirmed' && action === 'mute') await ports.redis.set(muteKey, receipt('confirmed'), { PX: shortMuteMs })
+      if (outcome.state === 'confirmed' && action === 'unmute') await ports.redis.del(muteKey)
+    } catch (error) {
+      ports.observe(binding, sourceId, 'failed', undefined, { step: 'moderation_receipt_save', code: 'moderation_receipt_not_saved', error })
+    }
   }
 
   function observe(incoming: IncomingMessage, binding: AgentBindingSnapshot): void {
@@ -101,9 +127,12 @@ export function createAgentGroupModeration(ports: Ports) {
     const policy = ports.policy?.(binding)
     const fold = shouldFold(incoming, policy)
     if (runs.size >= 4 || runs.has(key) || !fold && (policy?.enabled === false || !report && !repeated && !advertisingPattern.test(incoming.text))) return
-    const task = assess(binding, incoming, items.slice(-12), !fold && report, fold)
-      .catch(() => { /* A failed review cannot initiate a platform action. */ })
-      .finally(() => { runs.delete(key) })
+    const quoted = !fold && report
+    const sourceId = (quoted ? incoming.quote?.messageId : incoming.messageId)!
+    const run = () => assess(binding, incoming, items.slice(-12), quoted, fold).catch(error => {
+      ports.observe(binding, sourceId, 'failed', undefined, { step: 'moderation_assessment', code: 'moderation_assessment_failed', error })
+    })
+    const task = (ports.withScope ? ports.withScope(binding, sourceId, run) : run()).finally(() => { runs.delete(key) })
     runs.set(key, task)
   }
   return { observe, async stop() { controller.abort(); await Promise.allSettled(runs.values()); groups.clear() } }
