@@ -116,6 +116,33 @@ test('search preserves explicit web_search switches and uses an exact Bigmodel h
   }
 })
 
+test('search disables thinking on the supported GLM route and reports a capped output without returning partial text', async () => {
+  const usage = [], alerts = []
+  const diagnostics = createAgentDiagnostics({ logger: { info() {}, warn() {}, error() {} }, onFailure: event => alerts.push(event) })
+  const scope = context({ recordUsage: (...row) => usage.push(row) })
+  const model = 'glm-5.3-flash'
+  const definition = tool({ search: { ...search, baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', name: model },
+    fetchImpl: async (_url, init) => {
+      const request = JSON.parse(init.body)
+      assert.deepEqual(request.thinking, { type: 'disabled' })
+      assert.equal(request.max_tokens, 2000)
+      assert.equal(request.tools[0].type, 'web_search')
+      return json({ choices: [{ finish_reason: 'length', message: { content: 'private-partial-result', reasoning_content: 'private-reasoning' } }],
+        usage: { prompt_tokens: 4483, completion_tokens: 2000, total_tokens: 6483,
+          completion_tokens_details: { reasoning_tokens: 1994, raw: 'private-usage-detail' } } })
+    } })
+  const [registered] = createAgentTools({ builtIn: [definition] }, { diagnostics, signal: scope.signal, context: () => scope })
+    .getExtraTools(['searchInformationTool'])
+  const result = await registered.execute({ query: '公开资料' }, {})
+  assert.equal(result.status, 'error')
+  assert.deepEqual(usage, [[model, { prompt_tokens: 4483, completion_tokens: 2000, total_tokens: 6483,
+    completion_tokens_details: { reasoning_tokens: 1994 } }]])
+  assert.deepEqual(alerts.map(row => [row.code, row.details]), [['model_response_truncated', {
+    step: 'response_validation', inputTokens: 4483, outputTokens: 2000, reasoningTokens: 1994, limit: 2000, dispatched: true, result: 'discarded',
+  }]])
+  assert.doesNotMatch(JSON.stringify([result, alerts, usage]), /private-partial-result|private-reasoning|private-usage-detail/u)
+})
+
 test('search refuses real HTTP redirects without sending credentials to their target', async t => {
   let targetCalls = 0
   const baseUrl = await listen(t, (request, response) => {

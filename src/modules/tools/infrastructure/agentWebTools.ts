@@ -1,8 +1,10 @@
 import type { AgentTool, AgentToolContext, AgentToolRegistry, AgentToolResult } from '../../../contracts/agentTool.js'
+import type { AgentDiagnosticDetails } from '../../../contracts/agentDiagnostics.js'
 import type { PublicWebRead } from '../../../contracts/webEvidence.js'
 import type { AgentDiagnostics } from '../../runtime/infrastructure/agentDiagnostics.js'
 import { excerptToolText } from '../../conversation/domain/toolTextExcerpt.js'
 import { resolveChatCompletionUrl } from '../../models/domain/chatCompletionUrl.js'
+import { glmFlashJsonOptions } from '../../models/domain/modelGateway.js'
 import type { ToolExecutionFailure } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { abortableAgentWeb, assertAgentWebCurrent, boundedAgentWebTimeout, ensureAgentWebCurrent, normalizeAgentPublicWebUrl, readAgentPublicWeb, type AgentPublicWebDependencies } from './agentPublicWeb.js'
 
@@ -29,6 +31,7 @@ export interface AgentWebToolsOptions {
 }
 
 const SEARCH_MAX_BYTES = 512 * 1024
+const SEARCH_MAX_TOKENS = 2_000
 const SEARCH_UNAVAILABLE = '搜索失败：未能获取最新资料，请勿把旧结果当成最新事实。'
 const SEARCH_RESPONSE_REJECTED = '搜索失败：搜索服务没有返回可用的安全文字结果。'
 const webReads = new WeakMap<AgentToolResult, PublicWebRead>()
@@ -39,6 +42,9 @@ export const observedSearchFailure = (result: AgentToolResult): ToolExecutionFai
 function failed(content: string): AgentToolResult { return { status: 'failed', content } }
 function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+function tokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 function inputText(input: Record<string, unknown>, key: string, maximum: number): string | undefined {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
@@ -99,10 +105,11 @@ export function createAgentWebTools(options: AgentWebToolsOptions = {}): AgentTo
       parameters: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 4000, description: '搜索关键词，不提供会话历史或凭据' } }, required: ['query'], additionalProperties: false },
       async execute(input: Record<string, unknown>, context: AgentToolContext): Promise<AgentToolResult> {
         let response: Response | undefined, step = 'search_query', attempted = false
+        let usageEvidence: AgentDiagnosticDetails = {}
         const reject = (code: string, content = SEARCH_UNAVAILABLE, error?: unknown, limit?: number): AgentToolResult => {
           const result = failed(content)
           searchFailures.set(result, { code, ...(response ? { httpStatus: response.status } : {}), ...(error === undefined ? {} : { error }),
-            details: { step, result: attempted ? 'discarded' : 'not_dispatched',
+            details: { step, ...usageEvidence, result: attempted ? 'discarded' : 'not_dispatched',
               ...(response ? { dispatched: true } : attempted ? {} : { dispatched: false }), ...(limit === undefined ? {} : { limit }) } })
           return result
         }
@@ -126,7 +133,8 @@ export function createAgentWebTools(options: AgentWebToolsOptions = {}): AgentTo
           response = await abortableAgentWeb((options.fetchImpl ?? fetch)(endpoint.href, {
             method: 'POST', redirect: 'error', signal,
             headers: { Authorization: `Bearer ${search.apiKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: search.name, messages: [{ role: 'user', content: query }], stream: false, max_tokens: 2000,
+            body: JSON.stringify({ model: search.name, messages: [{ role: 'user', content: query }], stream: false, max_tokens: SEARCH_MAX_TOKENS,
+              ...glmFlashJsonOptions(endpoint, search.name),
               ...(webSearch ? { tools: [{ type: 'web_search', web_search: { enable: true, search_result: true } }] } : {}) }),
           }), signal)
           step = 'authorization'
@@ -139,9 +147,14 @@ export function createAgentWebTools(options: AgentWebToolsOptions = {}): AgentTo
           const result = await readSearchJson(response, signal)
           step = 'search_usage'
           const usage = object(result.usage)
-          const counts = Object.fromEntries(['prompt_tokens', 'completion_tokens', 'total_tokens']
-            .filter(key => typeof usage[key] === 'number' && Number.isSafeInteger(usage[key]) && Number(usage[key]) >= 0)
-            .map(key => [key, usage[key]]))
+          const inputTokens = tokenCount(usage.prompt_tokens), outputTokens = tokenCount(usage.completion_tokens)
+          const totalTokens = tokenCount(usage.total_tokens)
+          const reasoningTokens = tokenCount(object(usage.completion_tokens_details).reasoning_tokens)
+          usageEvidence = { ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }),
+            ...(reasoningTokens === undefined ? {} : { reasoningTokens }) }
+          const counts = { ...(inputTokens === undefined ? {} : { prompt_tokens: inputTokens }),
+            ...(outputTokens === undefined ? {} : { completion_tokens: outputTokens }), ...(totalTokens === undefined ? {} : { total_tokens: totalTokens }),
+            ...(reasoningTokens === undefined ? {} : { completion_tokens_details: { reasoning_tokens: reasoningTokens } }) }
           if (Object.keys(counts).length) context.recordUsage?.(search.name, counts)
           if (!response.ok) {
             step = 'response_headers'
@@ -151,9 +164,12 @@ export function createAgentWebTools(options: AgentWebToolsOptions = {}): AgentTo
           await ensureAgentWebCurrent(context, signal)
           step = 'response_validation'
           if (result.error) return reject('search_provider_error', SEARCH_RESPONSE_REJECTED)
-          const message = object(object(Array.isArray(result.choices) ? result.choices[0] : undefined).message)
+          const choice = object(Array.isArray(result.choices) ? result.choices[0] : undefined)
+          if (choice.finish_reason === 'length') return reject('model_response_truncated', SEARCH_RESPONSE_REJECTED, undefined, SEARCH_MAX_TOKENS)
+          const message = object(choice.message)
           const content = message.content
-          if (message.tool_calls || message.function_call) return reject('search_unexpected_tool_call', SEARCH_RESPONSE_REJECTED)
+          const hasToolCalls = message.tool_calls != null && (!Array.isArray(message.tool_calls) || message.tool_calls.length > 0)
+          if (hasToolCalls || message.function_call != null) return reject('search_unexpected_tool_call', SEARCH_RESPONSE_REJECTED)
           if (typeof content !== 'string' || !content.trim()) return reject('search_content_empty', SEARCH_RESPONSE_REJECTED)
           if (hasSecret(content, secrets)) return reject('search_content_blocked', SEARCH_RESPONSE_REJECTED)
           step = 'authorization'
