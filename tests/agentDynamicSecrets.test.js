@@ -23,3 +23,15 @@ test('newly refreshed host credentials cannot enter an already registered public
   }
   assert.deepEqual(calls, [{ query: 'ordinary query' }])
 })
+
+test('literal credential matching handles pattern characters and combined escaping', () => {
+  const secret = 'key.[sample](private)+?^$|\\end'
+  const encoded = [...secret].map(char => '%' + char.charCodeAt().toString(16)).join('')
+  const check = createAgentSecretTextCheck([secret, 'other-sealed-key'])
+  for (const value of [secret, JSON.stringify(secret), encodeURIComponent(secret), Buffer.from(secret).toString('base64'),
+    Buffer.from(secret).toString('base64url'), encoded, 'stray % ' + encoded, encoded.replaceAll('%', '\\\\u0025')]) {
+    assert.equal(check('before ' + value + ' after'), false)
+  }
+  assert.equal(check('keyXsampleprivateeeeeend and an unrelated \\u0025'), true)
+  assert.equal(check('0.00001 -0.00001 0.00001\n'.repeat(20_000)), true)
+})

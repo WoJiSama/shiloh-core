@@ -129,7 +129,7 @@ import {
 } from '../modules/runtime/domain/agentBindings.js'
 import { agentInboxQueueKey, createAgentInbox, inboxEventTarget, textConversationSeconds, type AgentInboxQueue, type AgentInboxRedis, type PrivateInbox, type TextInbox } from '../modules/runtime/infrastructure/agentInbox.js'
 import { createAgentInboxDispatch } from '../modules/runtime/application/agentInboxDispatch.js'
-import { createAgentDiagnostics, type AgentDiagnostics } from '../modules/runtime/infrastructure/agentDiagnostics.js'
+import { agentErrorDetails, createAgentDiagnostics, type AgentDiagnostics } from '../modules/runtime/infrastructure/agentDiagnostics.js'
 import type { AgentDiagnosticScope } from '../contracts/agentDiagnostics.js'
 import { generateAgentFailureNotice } from '../modules/conversation/infrastructure/agentFailureNotice.js'
 import type { AgentGroupLogConfig } from '../contracts/agentGroupLog.js'
@@ -2560,14 +2560,22 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
             }
             await controlMessageActions.sendBundle?.({ version: 1, kind: 'message.bundle.send', target, binding, items }, guard)
           }
-        } finally { await acceptEvent(adapter, { kind: 'recall', target, messageId: source.messageId }) }
+        } catch (error) {
+          diagnostics.emitFailure({ stage: 'delivery', operation: 'moderation_fold_forward', outcome: 'unknown', code: 'moderation_fold_forward_unconfirmed', error })
+        } finally {
+          try { await acceptEvent(adapter, { kind: 'recall', target, messageId: source.messageId }) }
+          catch (error) {
+            diagnostics.emitFailure({ stage: 'runtime', operation: 'moderation_recall_cleanup', outcome: 'failed', code: 'moderation_recall_cleanup_failed', error })
+          }
+        }
       }
       return result
     },
     allowsText: text => options.allowsText?.(text, 'incoming') !== false && options.allowsToolInput?.(text) !== false,
     observe(binding, messageId, state, action) {
       void diagnostics.run({ kind: 'conversation', binding, messageId }, 'group_moderation', async () => {
-        diagnostics.emit({ stage: 'tool', operation: 'moderation_' + action, outcome: state === 'confirmed' ? 'succeeded' : state })
+        diagnostics.emit({ stage: 'tool', operation: 'moderation_' + action, outcome: state === 'confirmed' ? 'succeeded' : state,
+          ...(state === 'confirmed' && action === 'fold' ? { code: 'moderation_fold_recall_confirmed' } : {}) })
       }, 'runtime')
     },
   }) : undefined
@@ -3373,6 +3381,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
       return
     }
     if (event.kind === 'recall') {
+      const retryUnsent = async <T>(step: string, run: () => Promise<T>): Promise<T> => {
+        try { return await run() }
+        catch (error) {
+          const details = agentErrorDetails(error)
+          if (!isRunning() || details?.cause !== 'redis_command_queue_timeout' || details.dispatched !== false) throw error
+          const result = await run()
+          diagnostics.emit({ stage: 'runtime', operation: 'recall_cleanup', outcome: 'succeeded', code: 'recall_cleanup_recovered',
+            details: { step, cause: 'redis_command_queue_timeout', result: 'recovered', attempt: 2, maxAttempts: 2 } })
+          return result
+        }
+      }
       textTrigger.invalidateAccount(target.account)
       adapter.redPackets?.revoke(target, event.messageId)
       bilibiliQuality?.invalidateSource(target, event.messageId)
@@ -3395,14 +3414,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions) {
           sourceIds: ['message', 'self-expression'].map(kind => cognitionSourceId(bindingFor(target)!.binding.agentId, target, kind as 'message' | 'self-expression', event.messageId)),
         }, { isCurrent: isRunning })] : []),
         ...(target.kind === 'group' ? [groupLogs.revokeSource(target, event.messageId), revokeDiceSource(target, event.messageId)] : []),
-        ...(mediaRelayConfig.enabled ? [mediaOutbox.cancelSource(target, event.messageId)] : []),
-        ...(torrentConfig.enabled ? [torrent.cancelSource(target, event.messageId)] : []),
+        ...(mediaRelayConfig.enabled ? [retryUnsent('recall_cancel_media', () => mediaOutbox.cancelSource(target, event.messageId))] : []),
+        ...(torrentConfig.enabled ? [retryUnsent('recall_cancel_torrent', () => torrent.cancelSource(target, event.messageId))] : []),
         (async () => {
           const received = await inbox.canReply(target, event.messageId)
           const binding = bindingFor(target)?.binding
           if (!received && !binding) return
-          if ((target.kind === 'group' || privateChat) && await inbox.recallText(target, event.messageId)) textConversation.invalidate(target)
-          const queue = privateChat ? undefined : await inbox.accept({ event })
+          if ((target.kind === 'group' || privateChat) && await retryUnsent('recall_text_fence', () => inbox.recallText(target, event.messageId))) textConversation.invalidate(target)
+          const queue = privateChat ? undefined : await retryUnsent('recall_inbox', () => inbox.accept({ event }))
           const { botId, scene } = personMemoryAddress(target)
           let diagnosticBinding = binding
           if (!diagnosticBinding) try { diagnosticBinding = bindingFor(target)?.binding } catch { /* Keep source revocation independent of diagnostics. */ }

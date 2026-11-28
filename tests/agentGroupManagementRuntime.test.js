@@ -6,7 +6,7 @@ import { importBilibiliHost as load } from './helpers/bilibiliQualitySource.mjs'
 
 const { createAgentRuntime } = await load('core/agentRuntime.js')
 const { createAgentBindingDirectory, agentBindingToken, agentPersonaScopeId, conversationAddressKey, platformAccountKey } = await load('modules/runtime/domain/agentBindings.js')
-const { createAgentDiagnostics } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
+const { annotateAgentError, createAgentDiagnostics } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
 const { createTextPersonMemoryStore } = await load('modules/memory/infrastructure/textPersonMemoryStore.js')
 const { createConversationMemoryStore, conversationMemoryId } = await load('modules/memory/infrastructure/conversationMemoryStore.js')
 const { createDefaultSimSession } = await load('modules/simulation/domain/simConfig.js')
@@ -53,6 +53,10 @@ async function fixture(t, settings = {}) {
   const logger = { info: line => logs.push(line), warn: line => logs.push(line), error: line => logs.push(line) }
   const diagnostics = createAgentDiagnostics({ logger, now: () => clock, sink: { async append(event) { events.push(event); return true } } })
   const queueKeys = ['group-text', 'private', 'privacy', 'simulation', 'group-log'].map(kind => redis.prefix + `agent:inbox:${kind}:${platformAccountKey(account)}`)
+  const storage = settings.beforeEval ? { ...redis.storage, async eval(script, args) {
+    settings.beforeEval(args)
+    return redis.storage.eval(script, args)
+  } } : redis.storage
   if (settings.simulation) {
     const initial = createDefaultSimSession(clock), binding = directory.resolve(group)
     initial.bootstrapSent = true; initial.botId = account.id; initial.bindingToken = agentBindingToken(binding); initial.personaId = agentPersonaScopeId(binding.agentId)
@@ -61,7 +65,9 @@ async function fixture(t, settings = {}) {
     await redis.storage.set(simulationSessionKey(simulationAddressKey(group)), JSON.stringify(initial))
   }
   function makeHost() {
-    return createAgentRuntime({ storage: redis.storage, isExecutionCurrent: redis.isCurrent, now: () => clock, diagnostics,
+    return createAgentRuntime({ storage, isExecutionCurrent: redis.isCurrent, now: () => clock, diagnostics,
+      ...(settings.fold ? { unifiedGroupChat: true, groupPolicy: () => ({ enabled: true, foldLongMessages: true, forwardFolded: true, maxLength: 100, maxLines: 0 }),
+        localEmojiCleanup: { async revokeSource() { throw new Error('fixture cleanup failed') } } } : {}),
       interactions: { enabled: settings.enabled !== false }, isInteractionsCurrent: () => current,
       privateChatEnabled: true, useTextGroup: target => target.kind === 'group' && !settings.simulation,
       groupTextTools: target => target.id === group.id ? settings.tools ?? managementNames : [],
@@ -72,6 +78,11 @@ async function fixture(t, settings = {}) {
       adapters: [{ id: 'connection', account, botUserId: account.id, botName: '群管理验证', isReady: () => ready,
         async start(consume) { accept = consume; ready = true }, stop() { ready = false },
         resolvePrivatePeer: () => sender,
+        ...(settings.fold ? { async moderateMessage(message, action) {
+          assert.equal(action, 'recall')
+          effects.push(message.messageId)
+          return { state: 'confirmed' }
+        } } : {}),
         ...(settings.readPort === false ? {} : { async readMessage(target, id, guard) {
           reads.push(id); await settings.read?.(target, id, f)
           return guard?.isCurrent?.() === false ? undefined : structuredClone(sources.get(sourceKey(target, id)))
@@ -90,6 +101,11 @@ async function fixture(t, settings = {}) {
             if (!guard.isCurrent()) return { state: 'failed', code: 'stale' }
             sends.push(structuredClone(action)); return { state: 'sent', messageId: 'text-' + ++sequence }
           },
+          ...(settings.fold ? { async sendBundle(action, guard) {
+            assert.equal(guard.isCurrent(), true)
+            sends.push(structuredClone(action))
+            return { state: 'sent', messageId: 'fold-' + ++sequence }
+          } } : {}),
           ...(settings.port === false ? {} : { async interact(action, guard) {
             attempts.push({ action: structuredClone(action), guard })
             if (settings.interact) return settings.interact(action, guard, f)
@@ -152,6 +168,25 @@ async function fixture(t, settings = {}) {
   }
   host = makeHost(); await host.start(); return f
 }
+
+test('confirmed auto fold survives recall cleanup failure and retries only an unsent inbox write', redisTest, async t => {
+  let attempts = 0
+  const f = await fixture(t, { fold: true, simulation: true, beforeEval(args) {
+    if (args.arguments.some(value => typeof value === 'string' && value.startsWith('{"event":{"kind":"recall"')) && ++attempts === 1) {
+      throw annotateAgentError(new Error('fixture queued write expired'), { cause: 'redis_command_queue_timeout', dispatched: false })
+    }
+  } })
+  const message = f.message('这里只是一条很长的普通消息。'.repeat(12), { sender: f.first, mentions: [], directedToAccount: false })
+  await f.emit(message)
+  await waitFor(() => f.events.some(row => row.code === 'moderation_fold_recall_confirmed'))
+  await f.drained()
+  assert.equal(attempts, 2)
+  assert.deepEqual(f.effects, [message.messageId])
+  assert.equal(f.sends.length, 1)
+  assert.ok(f.events.some(row => row.code === 'recall_cleanup_recovered' && row.details.step === 'recall_inbox'))
+  assert.ok(f.events.some(row => row.code === 'moderation_recall_cleanup_failed' && row.outcome === 'failed'))
+  assert.ok(!f.events.some(row => row.operation === 'moderation_fold' && row.outcome === 'unknown'))
+})
 
 test('group management requires explicit text-tool exposure and never appears in private chat', redisTest, async t => {
   const f = await fixture(t, { tools: [], privateTools: managementNames })

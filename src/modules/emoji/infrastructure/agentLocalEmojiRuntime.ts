@@ -227,8 +227,9 @@ export function createAgentLocalEmojiRuntime(options: AgentLocalEmojiRuntimeOpti
   function readCatalog(partition: string): EmojiItem[] {
     const folder = path.join(root, partition); directory(path.join(folder, 'emoji_files'), true)
     const bytes = readFile(path.join(folder, 'emoji-packs.ndjson'), EMOJI_LEDGER_LIMITS.bytes)
-    const rows = bytes?.toString('utf8').split('\n').filter(Boolean) ?? []
-    if (rows.length > 10_000 || bytes && !allowed(bytes.toString('utf8'))) throw fail()
+    const text = bytes?.toString('utf8') ?? ''
+    const rows = text.split('\n').filter(Boolean)
+    if (rows.length > 10_000 || text && !allowed(text)) throw fail()
     const items = rows.map(line => {
       const item = decodeEmojiItem(JSON.parse(line))
       if (!item || !/^[a-f0-9]{64}$/u.test(item.hash) || !filename.test(path.basename(item.file)) || item.file !== 'emoji_files/' + path.basename(item.file) ||
@@ -402,19 +403,22 @@ export function createAgentLocalEmojiRuntime(options: AgentLocalEmojiRuntimeOpti
             unsupported ||= unproven.length > 0
             const names = fs.readdirSync(directory(path.join(root, owner, 'emoji_files')))
             if (names.length > 20_128) throw fail()
-            const orphans = names.filter(name => filename.test(name) && !items.some(item => path.basename(item.file) === name) && !before.images[name.slice(0, 64)])
+            const knownFiles = new Set(items.map(item => path.basename(item.file)))
+            const orphans = names.filter(name => filename.test(name) && !knownFiles.has(name) && !before.images[name.slice(0, 64)])
             unattributedImages += orphans.length; unsupported ||= orphans.length > 0
             if (!Object.values(before.images).some(image => image.pendingDelete || image.sources.some(source => emojiSourceRevoked(revocations, owner, source)))) continue
             await serial(owner, async () => {
               await ensure(); loadRevocations()
               const ledger = readSources(owner), rows = readCatalog(owner), deleting = new Set<string>()
+              const byHash = new Map(rows.map(item => [item.hash, item]))
               let sourceCount = 0, changed = false
               for (const [imageHash, image] of Object.entries(ledger.images)) {
                 const kept = image.sources.filter(source => !emojiSourceRevoked(revocations, owner, source))
                 sourceCount += image.sources.length - kept.length
                 if (kept.length !== image.sources.length) {
                   image.sources = kept; changed = true
-                  if (!kept.length && !rows.some(row => row.hash === imageHash && archive(row))) image.pendingDelete = true
+                  const item = byHash.get(imageHash)
+                  if (!kept.length && !(item && archive(item))) image.pendingDelete = true
                 }
                 if (image.pendingDelete) deleting.add(imageHash)
               }
@@ -429,7 +433,7 @@ export function createAgentLocalEmojiRuntime(options: AgentLocalEmojiRuntimeOpti
                   const fd = fs.openSync(directory(images), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
                   try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
                   current(); delete ledger.images[imageHash]
-                  if (bytes || rows.some(row => row.hash === imageHash)) removedImages++
+                  if (bytes || byHash.has(imageHash)) removedImages++
                 } catch { uncertain = true }
               }
               saveSources(owner, ledger)
