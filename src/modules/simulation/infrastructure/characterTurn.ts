@@ -1,6 +1,6 @@
 import type { CharacterState, CharacterMemory, CharacterGoal, CharacterDecision } from '../../../contracts/character.js'
 import { annotateAgentError } from '../../runtime/infrastructure/agentDiagnostics.js'
-import { AbstractTool, type ParameterSchema } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { AbstractTool, type ParameterSchema, type ToolParameters } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { normalizeMessageTextsInput } from '../domain/paramTolerance.js'
 import { isQqSimulationUserId } from '../domain/simConfig.js'
 import { createCharacterTools, type CharacterToolContext } from './characterTools.js'
@@ -34,6 +34,24 @@ const GOAL_ACTIONS = { schedule: 'create', wait: 'wait', complete: 'complete', a
 const DECISION_CHOICES = new Set(['silent', 'cannot', 'unauthorized', 'unwilling', 'deferred'])
 const TOP_FIELDS = ['choice', 'reason', 'memories', 'goal', 'messages', 'replyToSeq', 'atUserIds', 'markRead', 'throughSeq']
 const ROUTINE_REASONS = new Map([['chat', '普通聊天收尾'], ['interest_only', '表达兴趣后收尾'], ['silent', '安静收尾']])
+
+/** Offer only the fields this round can use. The original finish handler owns all commits. */
+export function compactFinishTurnInfo(tool: AbstractTool, greeting: boolean, canSend: boolean) {
+  const full = tool.parameters.properties
+  const compactProperty = (key: string) => {
+    const { description: _description, ...schema } = full[key]!
+    return schema
+  }
+  const properties: ToolParameters['properties'] = {
+    choice: { type: 'string', enum: greeting ? ['chat', 'silent'] : CHARACTER_TURN_CHOICES.filter(choice => !Object.hasOwn(GOAL_ACTIONS, choice)) },
+    reason: { ...compactProperty('reason'), ...(greeting ? {} : { description: '普通聊天、仅兴趣或旁听可省略，其余须给简短理由。' }) },
+    ...(canSend ? { messages: { ...compactProperty('messages'), description: '最终回复的文字数组，旁听或暂缓时省略。' },
+      ...(greeting ? {} : { replyToSeq: { ...compactProperty('replyToSeq'), description: '可引用已展示的消息序号。' } }) } : {}),
+    markRead: { type: 'boolean', description: '仅标读连续已展示的消息。' },
+  }
+  const parameters: ToolParameters = { type: 'object', properties, required: ['choice'], additionalProperties: false }
+  return { name: tool.name, description: '一次提交回复或安静收尾。以宿主的发送和标读回执为准。', parameters }
+}
 
 class FinishParameterError extends Error {
   constructor(message: string, readonly issue: ToolParameterIssue) { super(message) }

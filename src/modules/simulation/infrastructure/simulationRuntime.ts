@@ -29,14 +29,14 @@ import { validateAgentVideoCard } from '../../media/infrastructure/agentVideoCar
 import type { PersonaGuardConfig } from '../../../contracts/persona.js'
 import { validateAgentMedia } from '../../media/infrastructure/agentMediaBytes.js'
 import { agentFileUploadText, normalizeFileDeliveryReceipt, validateAgentFileUpload } from '../../messaging/infrastructure/agentFileDelivery.js'
-import type { PersonaText } from '../../conversation/domain/personaSource.js'
+import { buildPersonaStyleOverride, renderPersonaTemplate, type PersonaText } from '../../conversation/domain/personaSource.js'
 import { randomUUID, createHash } from 'node:crypto'
 import type { CharacterScope, CharacterReceipt, CharacterDecision, CharacterState } from '../../../contracts/character.js'
 import { createPersonaSnapshot } from '../../conversation/infrastructure/personaSnapshot.js'
 import { createCharacterStore } from './characterStore.js'
 import { createSimulationAdministration, type SimulationAdministrationGuard } from './simulationAdministration.js'
 import { createCharacterTools } from './characterTools.js'
-import { createCharacterTurnTool, type CharacterTurnFinishResult } from './characterTurn.js'
+import { compactFinishTurnInfo, createCharacterTurnTool, type CharacterTurnFinishResult } from './characterTurn.js'
 import { createCharacterConsistencyReviewer } from './characterConsistency.js'
 import { formatSimulationDelivery, planMessageDelivery } from '../domain/messageDelivery.js'
 import type { CharacterActivityOperation, CharacterFeedItem } from '../../../contracts/characterActivities.js'
@@ -80,6 +80,7 @@ import { buildSocialPermissionRequest, readSocialVerdict, type SocialAction } fr
 import { computeWaitOutcome, normalizeWaitPlan, type SimWaitPlan } from '../domain/waitGate.js'
 import { checkSendAllowance, checkWakeBudget, describeBudgetLimit, isDirectAddressKind, limitNoticeDue, shouldAnnounceBudgetLimit, invalidatePreSleepWaitByParticipation, markPreSleepSatisfied, recordSend, recordWake, recordWakeTokens, resetPreSleepWait, rollBudgetDay } from '../domain/budget.js'
 import { buildCharacterTurnContext, buildSimSystemPrompt, buildWakePrompt, FINISH_CHOICE_GUIDANCE, isSimpleSimulationGreeting, trimAgentHistory } from '../domain/promptBuilder.js'
+import { selectDirectedToolSurface } from '../domain/simulationToolSurface.js'
 import { prepareEarlierSimulationRead, projectSimulationToolResult, type SimulationActionReceipt } from '../domain/toolContextExcerpt.js'
 import { isSilentDeclaration, isWrappedAnnotation, mentionsSilenceVocabulary } from '../domain/silentDeclaration.js'
 import { parsePersonProfilePatches, groundPersonProfileCandidate, interestMatchesTitle, type PersonProfile } from '../domain/personProfile.js'
@@ -100,7 +101,7 @@ import { canReadUnattributedMemory, formatPersonMemoryFacts, personMemoryAddress
 import type { AgentSemanticMemoryRecall } from '../../../contracts/semanticMemory.js'
 import type { WebEvidenceQuestion, WebEvidenceRecall } from '../../../contracts/webEvidence.js'
 import { isPersonMemoryRedacted } from '../../memory/domain/personMemory.js'
-import { AbstractTool } from '../../toolSupport/infrastructure/AbstractTool.js'
+import { AbstractTool, type ToolParameters } from '../../toolSupport/infrastructure/AbstractTool.js'
 import { redactInternalStatusLeaks } from '../../conversation/domain/internalStatusLeak.js'
 import { sanitizeFinalReplyText, looksLikeToolArguments } from '../../conversation/domain/replySanitizer.js'
 import { normalizeDelegatedEntries, formatDelegatedSection } from '../../memory/domain/delegatedMemory.js'
@@ -2314,7 +2315,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           if (!canCallModel()) throw new Error('模型请求的来源或绑定已改变')
         }
         if (!canCallModel()) return
-        const casual = actor.kind === 'user' && isDirectAddressKind(reason.kind) && !!anchor && !anchor.quoteSource && !anchor.forwardId &&
+        const casual = actor.kind === 'user' && isDirectAddressKind(reason.kind) && !!anchor && !anchor.quoteSource && !anchor.replyMessageId &&
+          !anchor.quoteText && !anchor.atOther && !anchor.quoteImageUrls?.length && !anchor.forwardId && !ephemeralRead &&
           !anchor.imageCount && !anchor.videoCount && !anchor.files?.length && !anchor.textTruncated && !focusedGoalId &&
           !groupMemoryContext && !webEvidence && !semanticRecall && !topic && !cognitionProjection?.text && isSimpleSimulationGreeting(anchor.text)
         const wakeInput: Parameters<typeof buildWakePrompt>[0] = {
@@ -3581,7 +3583,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             return signal.aborted ? 'unclear' : readSocialVerdict(action, triggerMessage.text, response)
           } catch { return 'unclear' }
         }
-        const executeTool = async (tool: AbstractTool, args: Record<string, unknown> | undefined, observed?: SimulationToolObservation, textOutsideTool = false) => {
+        const isPublicWebLookup = (tool: AbstractTool) => webRetention && ['webParserTool', 'searchInformationTool'].includes(tool.name)
+        const isEphemeralTool = (tool: AbstractTool) => tool === coreTool || extraTools.includes(tool) && (tool.agentDataPolicy === 'ephemeral' || isPublicWebLookup(tool))
+        const availableAfterRead = (tool: AbstractTool) => tool === finishTool || isEphemeralTool(tool) ||
+          ['chatHistoryTool', 'excelWorkbookTool', 'simSendMessage', 'simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simMarkRead'].includes(tool.name)
+        const executeTool = async (tool: AbstractTool, args: Record<string, unknown> | undefined, observed?: SimulationToolObservation, textOutsideTool = false,
+          offered?: { names: ReadonlySet<string>; finish?: ToolParameters }) => {
           const reject = (code: string, reply: string, error?: unknown, details?: AgentDiagnosticDetails) => rejectToolCall(tool.name, code, reply, observed, error, details)
           const executionUnavailable = (error: unknown) => reject('tool_execution_guard_failed', safeToolErrorText(tool.name, error), error)
           const resultUnavailable = (error: unknown) => reject('tool_result_guard_failed', safeToolErrorText(tool.name, error), error, { result: 'discarded' })
@@ -3592,8 +3599,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (tool === finishTool) requiresClosing = true
             return reject('tool_arguments_invalid', 'error: 工具参数必须是有效的 JSON 对象，未执行')
           }
-          const publicWebLookup = webRetention && ['webParserTool', 'searchInformationTool'].includes(tool.name)
-          const ephemeralTool = tool === coreTool || extraTools.includes(tool) && (tool.agentDataPolicy === 'ephemeral' || publicWebLookup)
+          const publicWebLookup = isPublicWebLookup(tool)
+          const ephemeralTool = isEphemeralTool(tool)
           if (ephemeralRead) {
             // Explicit historical evidence has a revocable, per-turn grant. Do
             // not turn it (or a model paraphrase) into durable role state/actions.
@@ -3603,7 +3610,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                   typeof args.choice === 'string' && ['schedule', 'wait', 'complete', 'abandon'].includes(args.choice)) {
                 return reject('tool_ephemeral_context_restricted', `error: 本轮${evidenceKind}资料仅供临时查证，不能保存为记忆、目标或派生作品；请回复或安静收尾`)
               }
-            } else if (!ephemeralTool && !['chatHistoryTool', 'excelWorkbookTool', 'simSendMessage', 'simGetState', 'simGetUnreadMessages', 'simGetRecentMessages', 'simGetMessageDetail', 'simMarkRead'].includes(tool.name)) {
+            } else if (!availableAfterRead(tool)) {
               return reject('tool_ephemeral_context_restricted', `error: 本轮${evidenceKind}资料仅供临时查证，请继续查询或回复，不保存派生状态或执行其他动作`)
             }
           }
@@ -3612,6 +3619,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             return reject('finish_social_memory_requires_remember', 'error: 本群社交记忆未保存。请先单独调用 simRemember 保存 pendingEvent 或 interaction，成功后再用 simFinishTurn 收尾。')
           }
           if (!allowedTool(tool.name)) return reject('tool_authority_denied', 'error: 自主执行主体没有此工具权限，不能借用群友身份')
+          if (offered && !offered.names.has(tool.name)) return reject('tool_not_offered', 'error: 本轮工具清单中没有提供此工具，未执行')
           const event = makeToolEvent()
           if (tool.agentPreflight) {
             try {
@@ -3621,7 +3629,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             } catch (error) { return reject('tool_preflight_failed', safeToolErrorText(tool.name, error), error) }
           } else if (internalSchemaTools.has(tool)) {
             let issue: ToolParameterIssue | undefined
-            const input = prepareSimulationToolInput(tool, args, event, invalid => { issue = invalid })
+            const input = prepareSimulationToolInput(tool, args, event, invalid => { issue = invalid }, tool === finishTool ? offered?.finish : undefined)
             if (typeof input === 'string') {
               if (tool === finishTool) requiresClosing = true
               let repair = tool === finishTool && issue?.field === 'choice' && issue.rule === 'required' ? ` ${FINISH_CHOICE_GUIDANCE}` : ''
@@ -3781,8 +3789,23 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           return result
         }
         const executionConfig = ports.getExecutionConfig()
-        const providerConfig = record(executionConfig) as Parameters<typeof buildChatRequestData>[0]
-        const systemPrompt = buildSimSystemPrompt({ persona: persona.persona, systemContent: persona.systemContent, selfName, casual, hasExtraTools: extraTools.length > 0, extraToolNames, hasEmojiTool: extraToolNames.includes('sendLocalEmojiTool'), hasMoodTool: cfg.mood.enabled && toolEnabled('simSetMood'), availableToolNames: tools.filter(tool => allowedTool(tool.name)).map(tool => tool.name) })
+        const providerConfig = record(executionConfig) as NonNullable<Parameters<typeof buildChatRequestData>[0]>
+        const initialTools = new Set(tools.filter(tool => allowedTool(tool.name)).map(tool => tool.name))
+        const expandTool = {
+          name: 'simExpandTools',
+          description: '当前真人请求确实还需要未列出的能力时，单独调用一次以展开本会话的授权工具清单。此调用只改变下轮清单。',
+          parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
+        }
+        const directed = actor.kind === 'user' && anchor && !focusedGoalId && groupSelection?.mode !== 'join' &&
+          (isDirectAddressKind(reason.kind) || groupSelection?.mode === 'reply') && providerConfig.useTools && initialTools.has(finishTool.name)
+        let initialSurface: ReturnType<typeof selectDirectedToolSurface> | { mode: 'greeting' }
+        if (directed) {
+          if (casual) initialSurface = { mode: 'greeting' }
+          else if (cfg.turn.maxToolRounds > 3 && toolEnabled(expandTool.name) && !tools.some(tool => tool.name === expandTool.name)) {
+            initialSurface = selectDirectedToolSurface(anchor, initialTools)
+          }
+        }
+        let expandedTools = false
 
         const history: SimHistoryMessage[] = [...projectedHistory, wakeMessage,
           ...(topic ? [{ role: 'user' as const, content: topic.text }] : []),
@@ -3813,16 +3836,26 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
         while (rounds < cfg.turn.maxToolRounds) {
           rounds += 1
           const closing = requiresClosing || rounds > cfg.turn.maxToolRounds - 2
-          const roundTools = (closing ? [finishTool] : casual ? tools.filter(tool => ['simSendMessage', finishTool.name].includes(tool.name)) : tools)
-            .filter(tool => allowedTool(tool.name))
+          const surface = expandedTools ? undefined : initialSurface
+          const roundTools = (closing ? [finishTool] : tools).filter(tool => allowedTool(tool.name) &&
+            (!surface || tool === finishTool || surface.mode === 'lookup' && surface.reads.has(tool.name) && (!ephemeralRead || availableAfterRead(tool))))
           if (!roundTools.length) {
             if (durableWake && rounds === 1) { await discardWake(); return }
             break
           }
-          const context = buildCharacterTurnContext({ phase: closing ? 'closing' : 'acting', remainingToolRounds: cfg.turn.maxToolRounds - rounds + 1, ...(focusedGoalId ? { focusedGoalId } : {}), visibleEvidenceRefs: visibleEvidenceRefs() }) +
+          const names = new Set(roundTools.map(tool => tool.name))
+          const canExpand = surface && surface.mode !== 'greeting' && !closing && !ephemeralRead && !uncertainAction && !memoryBox.deliveryUnknown && !sends &&
+            rounds < cfg.turn.maxToolRounds - 2 && toolEnabled(expandTool.name) && tools.some(tool => !names.has(tool.name) && allowedTool(tool.name))
+          const compactFinish = surface ? compactFinishTurnInfo(finishTool, surface.mode === 'greeting', toolEnabled('simSendMessage')) : undefined
+          const offered = compactFinish && { names, finish: compactFinish.parameters }
+          const promptMode = surface?.mode ?? (closing ? 'closing' : undefined)
+          const systemPrompt = buildSimSystemPrompt({ persona: persona.persona, systemContent: persona.systemContent, selfName, extraToolNames,
+            availableToolNames: [...names], ...(promptMode ? { mode: promptMode } : {}) })
+          const reviewInstructions = surface ? '用 simFinishTurn 提交最终选择及允许发送的消息。' : '将需要保存的观点、目标和最终消息合并进 simFinishTurn。'
+          const context = buildCharacterTurnContext({ phase: closing ? 'closing' : 'acting', remainingToolRounds: cfg.turn.maxToolRounds - rounds + 1, ...(focusedGoalId ? { focusedGoalId } : {}), visibleEvidenceRefs: visibleEvidenceRefs(), compact: !!surface }) +
             (anchor ? groupSelection?.mode === 'join' ? `\n可主动参与 #${anchor.seq} 的话题。你以自己身份参与，有具体贡献才发言。`
               : `\n当前只回应 #${anchor.seq} 的话题。前文仅在有关时用。` : '') +
-            (reviewer ? `\n本轮剩余提交检查次数：${Math.max(0, 3 - reviewer.stats().checks)}。将需要保存的观点、目标和最终消息合并进 simFinishTurn；检查退回后自行修正或安静放弃，检查提示不发到群里。` : '')
+            (reviewer ? `\n本轮剩余提交检查次数：${Math.max(0, 3 - reviewer.stats().checks)}。${reviewInstructions}检查退回后自行修正或安静放弃，检查提示不发到群里。` : '')
           const { messages: requestHistory, repeatedReads, ...readCompaction } = readContext.project(history)
           if (compactWakeText) excerptContext(requestHistory[firstCurrentMessage]!, compactWakeText)
           for (const [index, message] of requestHistory.entries()) {
@@ -3831,7 +3864,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               optionalContext(message, 'history')
             }
           }
-          const roundFunctions = simToolsAsFunctions(roundTools.map(tool => tool === finishTool ? finishToolInfo : tool).sort((a, b) => a.name.localeCompare(b.name, 'en')))
+          const definitions = roundTools.map(tool => tool === finishTool ? compactFinish ?? finishToolInfo : tool)
+          if (canExpand) definitions.push(expandTool)
+          const roundFunctions = simToolsAsFunctions(definitions.sort((a, b) => a.name.localeCompare(b.name, 'en')))
           const styleContext = styleDigest && !casual ? [optionalContext({ role: 'user', content: `【说话风格参考】\n${safeTruncateUnicode(styleDigest, 900)}` }, 'style')] : []
           const recallContext = personRecall && !casual ? [optionalContext({ role: 'user', content: personRecall }, 'recall')] : []
           const requestData = modelContextRequest(buildChatRequestData(providerConfig, [{ role: 'system', content: systemPrompt }, ...requestHistory, ...styleContext,
@@ -3947,8 +3982,10 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (toolEnabled('simSendMessage') && !decision && text.length >= 6 && sends === 0 && !/^\[(?:不发了|SILENT|沉默)\]$/.test(text) && !isSilentDeclaration(text)) {
               if (!nudgedForUnsent) {
                 nudgedForUnsent = true
-                logger.info(`[仿真] 群 ${groupId} 检测到未外发文本（${text.length} 字，本回合 0 发送），已提醒模型用 simSendMessage 发出`)
-                history.push({ role: 'user', content: '【系统提醒】你刚才写的这段话群友看不到——本模式下只有 simSendMessage 发出的内容才会出现在群里，群里刚才只能看到你发的表情/动作。如果那段话就是你想说的，现在用 simSendMessage 原样（或更口语化、可拆几条）发出去；如果改变主意不想说了，从此不要再输出任何文字——「无需发送」「结束回合」「已静默结束」「不是对我说的」「(已经决定不说话)」这类说明不要写，括号里的状态标注也一样不行，直接停下即可。' })
+                logger.info(`[仿真] 群 ${groupId} 检测到未外发文本（${text.length} 字，本回合 0 发送），已提醒模型用 ${surface ? 'simFinishTurn' : 'simSendMessage'} 发出`)
+                history.push({ role: 'user', content: surface
+                  ? '【系统提醒】正文尚未发送。用 simFinishTurn 提交 messages，或用 silent 安静收尾。'
+                  : '【系统提醒】你刚才写的这段话群友看不到——本模式下只有 simSendMessage 发出的内容才会出现在群里，群里刚才只能看到你发的表情/动作。如果那段话就是你想说的，现在用 simSendMessage 原样（或更口语化、可拆几条）发出去；如果改变主意不想说了，从此不要再输出任何文字——「无需发送」「结束回合」「已静默结束」「不是对我说的」「(已经决定不说话)」这类说明不要写，括号里的状态标注也一样不行，直接停下即可。' })
                 continue
               }
               // 提醒过一次还是把话写在文本里(实测高发:连续多轮 6 字文本 0 发送,群里看着就是已读不回)——
@@ -3962,9 +3999,11 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               } else {
                 logger.info(`[仿真] 群 ${groupId} 提醒后仍未发送，兜底直发 ${text.length} 字`)
                 try {
-                  const sender = simulationTools.find(tool => tool.name === 'simSendMessage')!
-                  const result = await executeTool(sender, { continuation: 'chat', messages: [text.slice(0, cfg.turn.messageTextMaxChars)] })
-                  history.push({ role: 'user', content: classifyCharacterResult(result) === 'succeeded' ? '【系统】已替你把上面那段话发出去了。以后想说的话必须自己调 simSendMessage。' : `【系统】这段文本未确认发送：${result.slice(0, 1000)}` })
+                  const sender = surface ? finishTool : simulationTools.find(tool => tool.name === 'simSendMessage')!
+                  const result = await executeTool(sender, { ...(surface ? { choice: 'chat' } : { continuation: 'chat' }), messages: [text.slice(0, cfg.turn.messageTextMaxChars)] },
+                    undefined, false, offered)
+                  const confirmed = surface ? '【系统】本轮回复通过 simFinishTurn 已确认发送。' : '【系统】已替你把上面那段话发出去了。以后想说的话必须自己调 simSendMessage。'
+                  history.push({ role: 'user', content: classifyCharacterResult(result) === 'succeeded' ? confirmed : `【系统】这段文本未确认发送：${result.slice(0, 1000)}` })
                 } catch (error) {
                   diagnose({ stage: 'delivery', operation: 'simulation_fallback_send', outcome: 'unknown', code: 'fallback_send_not_confirmed', error },
                     () => logger.warn(`[仿真] 群 ${groupId} 兜底直发失败`))
@@ -3976,6 +4015,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             break
           }
           history.push({ role: 'assistant', content: String(message.content || ''), tool_calls: toolCallsRaw })
+          const batchReads = surface?.mode === 'lookup' && toolCallsRaw.some(call =>
+            typeof call.function?.name === 'string' && names.has(call.function.name) && surface.reads.has(call.function.name) && !rejectedToolCalls.has(call))
           const visualContext: SimHistoryMessage[] = []
           for (const call of toolCallsRaw) {
             toolCalls += 1
@@ -3993,7 +4034,15 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               resultText = rejectToolCall(tool?.name, 'tool_content_blocked', 'error: 工具参数包含宿主禁止外发的内容，未执行', observed)
             } else if (closing && name !== finishTool.name) {
               resultText = rejectToolCall(tool?.name, 'tool_closing_only', 'error: 当前仅允许 simFinishTurn 收尾，未执行', observed)
-            } else if (!tool || casual && !roundTools.includes(tool)) {
+            } else if (name === expandTool.name && initialSurface && !tool) {
+              const args = parseAgentToolArguments(fn.arguments, 128)
+              if (canExpand && toolEnabled(expandTool.name) && toolCallsRaw.length === 1 && args && !Object.keys(args).length) {
+                expandedTools = true
+                resultText = '下一轮将提供本会话的授权工具。按原请求和当前来源继续。'
+              } else resultText = rejectToolCall(expandTool.name, 'tool_expansion_unavailable', 'error: 请在工具可用时单独调用，参数为 {}', observed)
+            } else if (tool === finishTool && batchReads) {
+              resultText = rejectToolCall(finishTool.name, 'finish_read_batch_pending', 'error: 请等同一批读取结果返回后再提交最终回复', observed)
+            } else if (!tool) {
               resultText = rejectToolCall(undefined, 'tool_not_available', `error: 未知工具 ${name}`, observed)
             } else {
               const maxChars = tool.agentPreflight ? undefined : internalSchemaTools.has(tool) ? SIMULATION_TOOL_INPUT_MAX_CHARS : Infinity
@@ -4008,13 +4057,13 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                   resultText = rejectToolCall(tool.name, 'tool_emoji_cooldown',
                     `error: 表情包冷却中（还要 ${waitSec} 秒）。请直接用文字回应，本回合不要再发表情。`, observed)
                 } else {
-                  resultText = await executeTool(tool, args, observed)
+                  resultText = await executeTool(tool, args, observed, false, offered)
                   if (!(typeof resultText === 'string' && resultText.startsWith('error:'))) emojiLastSentAt.set(groupId, now())
                 }
               } else {
                 const textOutsideTool = tool === finishTool && toolCallsRaw.length === 1 && typeof message.content === 'string' &&
                   !!message.content.trim() && !isSilentDeclaration(message.content.trim())
-                resultText = await executeTool(tool, args, observed, textOutsideTool)
+                resultText = await executeTool(tool, args, observed, textOutsideTool, offered)
               }
             }
             // simGetMessageImages 的结果带回图片：主模型多为纯文本(实测 glm-5.3 收 image_url 直接 400，
@@ -4099,7 +4148,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               allowsText: text => ports.allowsToolInput?.(text) !== false,
               ...(ports.diagnostics ? { diagnostics: ports.diagnostics } : {}), stage: failureStage, outcome: 'failed',
               detail: failureStage === 'model' ? '本轮模型没有取得可用回复，请求尚未完成' : failureStage === 'tool' ? '本轮工具未完成请求，没有确认成功结果' : '本轮执行额度已用尽，请求尚未完成',
-              personaSystem: `${systemPrompt}\n本次说明只写一条简短群消息，最多200字。`,
+              personaSystem: [renderPersonaTemplate(persona.systemContent, persona.persona), buildPersonaStyleOverride(persona.persona),
+                '本次说明只写一条简短群消息，最多200字。'].filter(Boolean).join('\n'),
               ...(ports.failureNoticeFallback ? { fallbackText: ports.failureNoticeFallback } : {}),
             })
             if (notice && notice.length <= 500 && await failureCurrent()) {

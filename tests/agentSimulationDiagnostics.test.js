@@ -59,7 +59,7 @@ function fixture({
   getStyleDigest, readSemanticMemory, getSemanticRecall, readConversationMemory, readGroupMemory, wakeGateJudge, recalledMessageIds,
   recordGroupReply, recordEpisode,
   getSelf, handlesTarget, messageActions, getTodaySpendCny, durableIngress, isAccountReady, readFault, getBoundTools,
-  describeImages, fetchImageBase64, getForwardContent, allowsToolInput, diagnostics, rawModel, failureNoticeFallback, ephemeralTools = false, withDiagnosticScope, logger,
+  describeImages, fetchImageBase64, getForwardContent, allowsToolInput, isToolEnabled, diagnostics, rawModel, failureNoticeFallback, ephemeralTools = false, withDiagnosticScope, logger,
 } = {}) {
   if (seed) for (const groupId of groups) if (!kv.has(sessionKey(groupId))) seedSession(kv, groupId, botId, clock)
   const calls = []
@@ -127,6 +127,7 @@ function fixture({
     ...(fetchImageBase64 ? { fetchImageBase64 } : {}),
     ...(getForwardContent ? { getForwardContent } : {}),
     ...(allowsToolInput ? { allowsToolInput } : {}),
+    ...(isToolEnabled ? { isToolEnabled } : {}),
     getExtraTools: names => toolDefinitions.filter(tool => names.includes(tool.name)),
     async YTapi(request, _config, ...guard) {
       calls.push(structuredClone(request))
@@ -589,8 +590,9 @@ test('routine closing can omit its reason and confirmed read payloads succeed', 
   assert.equal(JSON.parse(h.kv.get(sessionKey(GROUP))).lastReadThroughSeq, 0)
 })
 
-test('simple group greetings use a small stable surface while reminder and read requests keep their authorized tools', async t => {
-  const h = fixture({ script: () => tools(toolCall('simFinishTurn', { choice: 'silent' })) })
+test('direct greetings send and finish in one compact request while composite tasks keep their tools', async t => {
+  const h = fixture({ script: (_request, round) => tools(toolCall('simFinishTurn', round === 0
+    ? { choice: 'chat', messages: ['你好呀！'], markRead: true } : { choice: 'silent' })) })
   t.after(() => h.runtime.stop())
   await h.ingest('你好！')
   await settled(h, 1)
@@ -598,13 +600,120 @@ test('simple group greetings use a small stable surface while reminder and read 
   await h.ingest('按我们最后定的时间，帮我查清楚，然后提前十分钟提醒。')
   await settled(h, 2)
   const [hello, action] = h.calls
-  assert.deepEqual(hello.tools.map(tool => tool.function.name), ['simFinishTurn', 'simSendMessage'])
+  assert.deepEqual(hello.tools.map(tool => tool.function.name), ['simFinishTurn'])
+  const parameters = hello.tools[0].function.parameters
+  assert.deepEqual(parameters.properties.choice.enum, ['chat', 'silent'])
+  assert.equal(parameters.properties.memories, undefined)
+  assert.equal(parameters.properties.goal, undefined)
+  assert.equal(h.sent.length, 1)
+  assert.match(JSON.stringify(h.sent[0]), /你好呀！/u)
   assert.ok(action.tools.some(tool => tool.function.name === 'searchInformationTool'))
   assert.ok(action.tools.some(tool => tool.function.name === 'simGetRecentMessages'))
-  assert.ok(Buffer.byteLength(JSON.stringify(hello)) < Buffer.byteLength(JSON.stringify(action)) / 2)
+  assert.ok(Buffer.byteLength(JSON.stringify(hello)) < 4_500)
   assert.match(JSON.stringify(hello.messages), /你好！/u)
   assert.doesNotMatch(JSON.stringify(hello.messages), /simRemember|simWaitForMessages/u)
   t.diagnostic('greeting and tool task first request bytes: ' + Buffer.byteLength(JSON.stringify(hello)) + ', ' + Buffer.byteLength(JSON.stringify(action)))
+})
+
+test('compact closing rejects an undisclosed argument before sending or marking messages read', async t => {
+  const diagnostics = spy()
+  const h = fixture({ diagnostics, script(request, round) {
+    if (round === 0) return tools(toolCall('simFinishTurn', { choice: 'chat', messages: ['这条不应投递'], throughSeq: 1 }))
+    assert.equal(request.tool_choice, 'required')
+    assert.equal(request.tools[0].function.parameters.properties.throughSeq, undefined)
+    return tools(toolCall('simFinishTurn', { choice: 'silent' }))
+  } })
+  t.after(() => h.runtime.stop())
+  await h.ingest('你好！')
+  await settled(h, 2)
+  assert.equal(h.calls.length, 2)
+  assert.deepEqual(h.sent, [])
+  assert.equal(JSON.parse(h.kv.get(sessionKey(GROUP))).lastReadThroughSeq, 0)
+  assert.ok(diagnostics.events.some(row => row.code === 'tool_schema_invalid' && row.details?.rule === 'additionalProperties'))
+})
+
+test('direct conversation can expand the authorized surface once and cannot execute an unoffered tool', async t => {
+  const diagnostics = spy()
+  const h = fixture({ diagnostics, isToolEnabled: name => name !== 'simDangerTool',
+    script(request, round) {
+      const names = request.tools.map(tool => tool.function.name)
+      if (round === 0) {
+        assert.deepEqual(names, ['simExpandTools', 'simFinishTurn'])
+        assert.ok(Buffer.byteLength(JSON.stringify(request)) < 8_000)
+        return tools(toolCall('ownerAdminTool', {}))
+      }
+      if (round === 1) return tools(toolCall('simExpandTools', {}))
+      assert.ok(names.includes('simRemember'))
+      assert.ok(names.includes('ownerAdminTool'))
+      assert.ok(!names.includes('simDangerTool'))
+      assert.ok(!names.includes('simExpandTools'))
+      return tools(toolCall('simFinishTurn', { choice: 'chat', messages: ['我喜欢这种玩法。'] }))
+    },
+  })
+  t.after(() => h.runtime.stop())
+  await h.ingest('你觉得这款游戏好玩吗？')
+  await settled(h, 3)
+  assert.equal(h.calls.length, 3)
+  assert.deepEqual(h.events, [])
+  assert.equal(h.sent.length, 1)
+  assert.ok(diagnostics.events.some(row => row.code === 'tool_not_offered'))
+})
+
+test('lookup keeps a narrow read surface and submits independent queries before the only reply', async t => {
+  const batches = [[0, 1, 2], [3, 4, 5], [6]]
+  const calls = batches.flatMap(batch => batch.map(index => toolCall('searchInformationTool', { query: '入口资料 ' + index })))
+  const diagnostics = spy()
+  const h = fixture({ diagnostics, maxToolRounds: 10, execute(_name, args) {
+    const index = Number(args.query.at(-1))
+    return { ok: true, result: '来源：https://example.com/entrance-' + index + '\n' +
+      '公开活动通行说明，请以当天公布信息为准。'.repeat(850) + '\n最终更新：入口 ' + index + ' 需要现场签到。' }
+  }, script(request, round) {
+    const names = request.tools.map(tool => tool.function.name)
+    assert.ok(names.includes('searchInformationTool'))
+    assert.ok(names.includes('simFinishTurn'))
+    assert.ok(!names.some(name => ['simSendMessage', 'simRemember', 'simGoal', 'ownerAdminTool'].includes(name)))
+    assert.match(String(request.messages[0].content), /互不依赖.*一起提交/u)
+    assert.doesNotMatch(String(request.messages[0].content), /【性格沉淀】/u)
+    if (round < batches.length) return tools(...calls.slice(round * 3, round * 3 + batches[round].length))
+    const evidence = request.messages.filter(row => row.role === 'tool')
+    assert.deepEqual(evidence.map(row => row.tool_call_id), calls.map(call => call.id))
+    for (const [index, row] of evidence.entries()) {
+      assert.ok(row.content.includes('entrance-' + index))
+      assert.ok(row.content.includes('入口 ' + index + ' 需要现场签到。'))
+      assert.match(row.content, /【运行时行动回执】/u)
+    }
+    return tools(toolCall('simFinishTurn', { choice: 'chat', messages: ['七份公告都要求到场签到。'] }))
+  } })
+  t.after(() => h.runtime.stop())
+  await h.ingest('比较这些入口，然后再决定走哪边。')
+  await settled(h, 4)
+  assert.equal(h.calls.length, 4)
+  assert.equal(h.events.length, 7)
+  assert.equal(h.sent.length, 1)
+  assert.match(JSON.stringify(h.sent[0]), /七份公告都要求到场签到/u)
+  const total = h.calls.reduce((bytes, request) => bytes + Buffer.byteLength(JSON.stringify(request)), 0)
+  t.diagnostic('seven queries, four model requests, cumulative bytes: ' + total)
+  assert.ok(total < 120_000)
+})
+
+test('lookup waits for the current batch and cannot open other tools after a temporary read', async t => {
+  const diagnostics = spy()
+  const h = fixture({ diagnostics, ephemeralTools: true, execute: () => ({ ok: true, result: '北门签到。' }),
+    script(request, round) {
+      if (round === 0) return tools(toolCall('simFinishTurn', { choice: 'chat', messages: ['尚未核实的地点。'] }),
+        toolCall('searchInformationTool', { query: '入口公告' }))
+      assert.ok(!request.tools.some(tool => tool.function.name === 'simExpandTools'))
+      assert.ok(request.messages.some(row => row.role === 'tool' && row.content.includes('北门签到')))
+      return tools(toolCall('simFinishTurn', { choice: 'chat', messages: ['请在北门签到。'] }))
+    },
+  })
+  t.after(() => h.runtime.stop())
+  await h.ingest('联网查一下入口公告。')
+  await settled(h, 2)
+  assert.equal(h.events.length, 1)
+  assert.equal(h.sent.length, 1)
+  assert.match(JSON.stringify(h.sent[0]), /请在北门签到/u)
+  assert.ok(diagnostics.events.some(row => row.code === 'finish_read_batch_pending'))
 })
 
 test('a failed follow-up request leaves newly retrieved unread rows outside the modeled watermark', async t => {

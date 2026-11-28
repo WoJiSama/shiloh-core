@@ -8,7 +8,7 @@ const schemaError = '工具参数不符合声明的 JSON Schema，未执行'
 
 /** Only in-tree tools use their model-facing schema as the runtime contract. */
 export function prepareSimulationToolInput(tool: AbstractTool, input: Record<string, unknown>, event?: unknown,
-  onInvalid?: (issue: ToolParameterIssue) => void): Record<string, unknown> | string {
+  onInvalid?: (issue: ToolParameterIssue) => void, parameters = tool.parameters): Record<string, unknown> | string {
   if (!isAgentToolInput(input)) { onInvalid?.({ rule: 'type' }); return schemaError }
   let phase = 'normalization'
   try {
@@ -16,10 +16,10 @@ export function prepareSimulationToolInput(tool: AbstractTool, input: Record<str
     if (!isAgentToolInput(normalized)) { onInvalid?.({ rule: 'normalization' }); return schemaError }
     phase = 'schema_unavailable'
     // Scene tools are recreated per turn. Reuse compiled validators for identical definitions.
-    const schema = JSON.stringify(tool.parameters)
+    const schema = JSON.stringify(parameters)
     let validate = validators.get(schema)
     if (!validate) {
-      validate = compileToolInputSchema(tool.parameters, SIMULATION_TOOL_INPUT_MAX_CHARS)
+      validate = compileToolInputSchema(parameters, SIMULATION_TOOL_INPUT_MAX_CHARS)
       if (validators.size < 128) validators.set(schema, validate)
     }
     if (!validate(normalized, onInvalid)) return schemaError
