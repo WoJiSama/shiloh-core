@@ -26,8 +26,13 @@ const endpoints = {
   comment: '/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_re_feeds',
 } as const
 const invalid = () => Error('Invalid QQ Qzone request')
-const failed = (code: string): AgentQzoneReceipt => ({ state: 'failed', code })
+class QzoneFeedOwnerMismatch extends Error {}
+const failed = (code: string, evidence: { httpStatus?: number; nativeCode?: number } = {}): AgentQzoneReceipt =>
+  ({ state: 'failed', code, ...evidence })
 const unknown = (): AgentQzoneReceipt => ({ state: 'unknown' })
+const platformCode = (input: unknown): input is number =>
+  typeof input === 'number' && Number.isInteger(input) && Math.abs(input) <= 2_147_483_647
+const timedOut = (signal: AbortSignal) => signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError'
 
 /** Inspect data properties only; provider/native responses never execute caller getters. */
 function data(input: unknown, allowed?: readonly string[]): Record<string, unknown> {
@@ -109,7 +114,8 @@ function nativeReceipt(input: unknown, selected: AgentQzoneAction): AgentQzoneRe
     if (marker.state === 'failed' && Object.keys(marker).length === 2 && Object.hasOwn(marker, 'code') &&
         (marker.code === 'qq_action_cancelled' || marker.code === 'onebot_disconnected')) return failed('qzone_native_rejected')
     const row = envelope(input, selected)
-    if (row.status === 'failed' && typeof row.retcode === 'number' && Number.isSafeInteger(row.retcode) && row.retcode !== 0) return failed('qzone_native_rejected')
+    if (row.status === 'failed' && typeof row.retcode === 'number' && Number.isSafeInteger(row.retcode) && row.retcode !== 0)
+      return failed('qzone_native_rejected', platformCode(row.retcode) ? { nativeCode: row.retcode } : undefined)
     if (row.status !== 'ok' || row.retcode !== 0) return unknown()
     if (selected.operation.kind === 'publish') {
       const detail = data(row.data, ['tid'])
@@ -118,8 +124,8 @@ function nativeReceipt(input: unknown, selected: AgentQzoneAction): AgentQzoneRe
     return Object.hasOwn(row, 'data') && row.data === null ? { state: 'confirmed' } : unknown()
   } catch { return unknown() }
 }
-function credentials(input: unknown, selected: AgentQzoneAction): { cookies: string; token: string } {
-  const row = envelope(input, selected), detail = data(row.data, ['cookies', 'token'])
+function credentials(row: Record<string, unknown>): { cookies: string; token: string } {
+  const detail = data(row.data, ['cookies', 'token'])
   if (row.status !== 'ok' || row.retcode !== 0 || typeof detail.cookies !== 'string' || !detail.cookies || detail.cookies.length > 16_384 ||
       /[\u0000-\u001f\u007f-\u009f]/u.test(detail.cookies)) throw invalid()
   const value = detail.token
@@ -158,7 +164,8 @@ function feeds(input: unknown, userId: string): readonly AgentQzoneFeed[] {
     const field = Object.getOwnPropertyDescriptor(input, String(index))
     if (!field || !Object.hasOwn(field, 'value')) throw invalid()
     const row = data(field.value), id = postId(row.tid)
-    if (seen.has(id) || ['uin', 'hostuin', 'hostUin'].some(key => Object.hasOwn(row, key) && nativeId(row[key]) !== userId)) throw invalid()
+    if (['uin', 'hostuin', 'hostUin'].some(key => Object.hasOwn(row, key) && nativeId(row[key]) !== userId)) throw new QzoneFeedOwnerMismatch()
+    if (seen.has(id)) throw invalid()
     seen.add(id)
     const content = row.content
     if (typeof content !== 'string' || content.length > 65_536 || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\uD800-\uDFFF]/u.test(content)) throw invalid()
@@ -171,16 +178,21 @@ function feeds(input: unknown, userId: string): readonly AgentQzoneFeed[] {
   }
   return Object.freeze(result)
 }
-function httpReceipt(body: string, op: Extract<AgentQzoneOperation, { kind: 'read' | 'visit' | 'like' | 'comment' }>): AgentQzoneReceipt {
+function httpReceipt(body: string, httpStatus: number, op: Extract<AgentQzoneOperation, { kind: 'read' | 'visit' | 'like' | 'comment' }>): AgentQzoneReceipt {
   const readsFeed = op.kind === 'visit' || op.kind === 'read'
   try {
     const row = jsonBody(body, op.kind === 'comment'), decoded = status(row)
     if (Object.hasOwn(row, 'messageId') || Object.hasOwn(row, 'message_id')) throw invalid()
-    if (decoded === 'rejected') return failed('qzone_remote_rejected')
+    if (decoded === 'rejected') {
+      const nativeCode = [row.code, row.ret, row.subcode].find(platformCode)
+      return failed('qzone_remote_rejected', { httpStatus, ...(nativeCode === undefined ? {} : { nativeCode }) })
+    }
     if (decoded !== 'confirmed') throw invalid()
     if (readsFeed) return { state: 'confirmed', feeds: feeds(row.msglist, op.userId) }
     return { state: 'confirmed' }
-  } catch { return readsFeed ? failed('qzone_invalid_feed') : unknown() }
+  } catch (error) {
+    return readsFeed ? failed(error instanceof QzoneFeedOwnerMismatch ? 'qzone_feed_owner_mismatch' : 'qzone_invalid_feed', { httpStatus }) : unknown()
+  }
 }
 function checkSignal(input: unknown): AbortSignal {
   if (!input || typeof input !== 'object' || types.isProxy(input) || Object.getPrototypeOf(input) !== AbortSignal.prototype) throw invalid()
@@ -203,7 +215,6 @@ async function boundedBody(response: Response, signal: AbortSignal): Promise<str
   const reader = response.body.getReader(), chunks: Uint8Array[] = []
   let size = 0, complete = false
   try {
-    if (response.redirected || response.status < 200 || response.status >= 300) throw invalid()
     const declared = response.headers.get('content-length')
     if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > QQ_QZONE_MAX_RESPONSE_BYTES)) throw invalid()
     while (true) {
@@ -252,7 +263,8 @@ export function createQqQzoneProvider(options: QqQzoneProviderOptions): AgentQzo
         if (!current()) throw invalid()
       }
       if (!current()) return failed('qzone_source_unavailable')
-      const timer = setTimeout(() => cancel.abort(), QQ_QZONE_TIMEOUT_MS), watch = setInterval(() => { if (!current()) cancel.abort() }, 25)
+      const timer = setTimeout(() => cancel.abort(new DOMException('QQ 空间操作超时', 'TimeoutError')), QQ_QZONE_TIMEOUT_MS)
+      const watch = setInterval(() => { if (!current()) cancel.abort() }, 25)
       let dispatched = false
       const native = async (name: QqQzoneApiAction, params: Record<string, unknown>) => {
         await ensureCurrent()
@@ -271,13 +283,21 @@ export function createQqQzoneProvider(options: QqQzoneProviderOptions): AgentQzo
           await ensureCurrent()
           return nativeReceipt(await native('delete_qzone_msg', { tid: op.postId }), selected)
         }
-        const secret = credentials(await native('get_credentials', { domain: 'qzone.qq.com' }), selected)
+        let secret
+        const credentialReply = await native('get_credentials', { domain: 'qzone.qq.com' })
+        try {
+          const row = envelope(credentialReply, selected)
+          if (row.status === 'failed' && platformCode(row.retcode) && row.retcode !== 0)
+            return failed('qzone_credentials_rejected', { nativeCode: row.retcode })
+          secret = credentials(row)
+        } catch { return failed('qzone_credentials_invalid') }
         await ensureCurrent()
         const readsFeed = op.kind === 'read' || op.kind === 'visit'
         const url = new URL(endpoints[op.kind === 'read' ? 'visit' : op.kind], origin), form = new URLSearchParams()
         url.searchParams.set('g_tk', secret.token)
         if (readsFeed) {
-          for (const [key, value] of Object.entries({ uin: expectedAccount.id, hostUin: op.userId, ftype: '0', sort: '0', pos: '0', num: '8', replynum: '0',
+          // This feed endpoint selects the space by uin. The Bot's identity comes from its cookie.
+          for (const [key, value] of Object.entries({ uin: op.userId, ftype: '0', sort: '0', pos: '0', num: '8', replynum: '0',
             code_version: '1', format: 'json', need_private_comment: '0' })) url.searchParams.set(key, value)
         } else if (op.kind === 'like') {
           for (const [key, value] of Object.entries({ qzreferrer: `${origin}/${expectedAccount.id}/main`, opuin: expectedAccount.id, unikey: op.postId,
@@ -287,21 +307,35 @@ export function createQqQzoneProvider(options: QqQzoneProviderOptions): AgentQzo
             feedstype: '100', to_uin: '0', replyid: '0', ver: '1', face: '0', fontsize: '', richval: '', weibo: '0', need_feed: '0', appid: '311',
             cb: 'sharrpCallback', code_version: '1', format: 'fs', inCharset: 'utf-8', outCharset: 'utf-8' })) form.set(key, value)
         }
-        const httpCancel = new AbortController(), httpSignal = AbortSignal.any([signal, httpCancel.signal]), httpTimer = setTimeout(() => httpCancel.abort(), QQ_QZONE_HTTP_TIMEOUT_MS)
+        const httpSignal = AbortSignal.any([signal, AbortSignal.timeout(QQ_QZONE_HTTP_TIMEOUT_MS)])
+        let response: Response | undefined, body: string
+        await ensureCurrent()
         try {
-          await ensureCurrent()
-          const response = await wait(withDeliveryGuard(current, () => {
+          response = await wait(withDeliveryGuard(current, () => {
             if (!current()) throw invalid()
             if (!readsFeed) dispatched = true
             return fetcher(url.href, { method: readsFeed ? 'GET' : 'POST', redirect: 'error', signal: httpSignal,
               headers: { Cookie: secret.cookies, ...(readsFeed ? {} : { 'Content-Type': 'application/x-www-form-urlencoded' }) },
               ...(readsFeed ? {} : { body: form.toString() }) })
           }), httpSignal)
-          const body = await boundedBody(response, httpSignal)
-          if (readsFeed) await ensureCurrent()
-          return httpReceipt(body, op)
-        } finally { clearTimeout(httpTimer); httpCancel.abort() }
-      } catch { return dispatched ? unknown() : failed(signal.aborted ? 'qzone_cancelled' : 'qzone_provider_unavailable') }
+          if (response.redirected || !response.ok) {
+            void response.body?.cancel().catch(() => {})
+            return readsFeed ? failed(response.redirected ? 'qzone_http_redirected' : 'qzone_http_rejected', { httpStatus: response.status }) : unknown()
+          }
+          body = await boundedBody(response, httpSignal)
+        } catch (error) {
+          if (dispatched) return unknown()
+          const timeout = timedOut(httpSignal) || error instanceof DOMException && error.name === 'TimeoutError'
+          if (signal.aborted && !timeout) return failed('qzone_cancelled')
+          const code = response ? timeout ? 'qzone_http_body_timeout' : 'qzone_http_body_failed'
+            : timeout ? 'qzone_http_headers_timeout' : 'qzone_http_transport_error'
+          return failed(code, response ? { httpStatus: response.status } : undefined)
+        }
+        if (readsFeed) await ensureCurrent()
+        return httpReceipt(body, response.status, op)
+      } catch {
+        return dispatched ? unknown() : failed(timedOut(signal) ? 'qzone_provider_timeout' : signal.aborted ? 'qzone_cancelled' : 'qzone_provider_unavailable')
+      }
       finally { clearTimeout(timer); clearInterval(watch); cancel.abort() }
     },
   })

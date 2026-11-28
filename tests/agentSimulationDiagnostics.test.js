@@ -651,6 +651,8 @@ test('finish preflight reports fixed rejection reasons to QQ and allows a correc
     { code: 'tool_schema_invalid', cause: /要求 数组，收到 null/u, field: 'messages', rule: 'type',
       message: tools(toolCall('simFinishTurn', { ...params, messages: null })) },
     { code: 'tool_schema_invalid', cause: /reason 字符数不足/u, field: 'reason', rule: 'minLength', message: tools(toolCall('simFinishTurn', { ...params, reason: '' })) },
+    { code: 'tool_schema_invalid', cause: /replyToSeq 只能与本次 messages 一起使用/u, field: 'replyToSeq', rule: 'requires_messages',
+      message: tools(toolCall('simFinishTurn', { choice: 'chat', replyToSeq: 1 })) },
     { code: 'tool_content_blocked', cause: /触发了宿主出站内容检查/u, message: tools(toolCall('simFinishTurn', { ...params, reason: 'fixture-private-value' })) },
     { code: 'finish_read_range_invalid', cause: /throughSeq 超出本轮已读范围/u, field: 'throughSeq', rule: 'read_through',
       message: tools(toolCall('simFinishTurn', { ...params, throughSeq: 999 })) },
@@ -750,6 +752,24 @@ test('simSendMessage reports unsupported objects and can unwrap a plain text mes
   assert.match(h.calls[1].messages.find(row => row.role === 'tool').content, /"messages":\["你好"\]/u)
   assert.equal(h.sent.length, 1)
   assert.match(JSON.stringify(h.sent[0]), /已通过纯文本对象发送/u)
+})
+
+test('a quote left over after a confirmed send is removed from a finish-only call', async t => {
+  const diagnostics = spy()
+  const h = fixture({ diagnostics, script(request, index) {
+    if (index === 0) return tools(toolCall('simSendMessage', { messages: ['群里只会收到这一句话'], replyToSeq: 1 }))
+    assert.match(request.messages.at(-1).content, /本轮已有消息确认发送/u)
+    return tools(toolCall('simFinishTurn', { choice: 'silent', markRead: true, replyToSeq: 1 }))
+  } })
+  t.after(() => h.runtime.stop())
+  await h.ingest()
+  await settled(h, 2)
+  assert.equal(h.calls.length, 2)
+  assert.equal(h.sent.length, 1)
+  assert.equal(JSON.parse(h.kv.get(sessionKey(GROUP))).lastReadThroughSeq, 1)
+  assert.deepEqual(diagnostics.events.filter(row => row.operation === 'simFinishTurn').map(row => [row.outcome, row.code]), [
+    ['succeeded', 'finish_unused_reply_reference_removed'], ['started', undefined], ['succeeded', 'completed'],
+  ])
 })
 
 test('markRead can finish a directed reply with an earlier unread gap', async t => {

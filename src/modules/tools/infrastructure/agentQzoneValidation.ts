@@ -4,11 +4,33 @@ import type { AgentQzoneAction, AgentQzoneFeed, AgentQzoneLimits, AgentQzoneOper
 import { redactInternalStatusLeaks } from '../../conversation/domain/internalStatusLeak.js'
 
 const invalid = () => new Error('qzone_invalid_request')
+const receiptFailureSteps = new Map(Object.entries({
+  qzone_invalid_request: 'qzone_request',
+  qzone_source_unavailable: 'authorization',
+  qzone_ownership_unavailable: 'qzone_ownership',
+  qzone_native_rejected: 'qzone_native',
+  qzone_credentials_rejected: 'qzone_credentials',
+  qzone_credentials_invalid: 'qzone_credentials',
+  qzone_http_transport_error: 'response_headers',
+  qzone_http_headers_timeout: 'response_headers',
+  qzone_http_rejected: 'response_headers',
+  qzone_http_redirected: 'response_headers',
+  qzone_http_body_timeout: 'response_body',
+  qzone_http_body_failed: 'response_body',
+  qzone_remote_rejected: 'response_validation',
+  qzone_invalid_feed: 'response_validation',
+  qzone_feed_owner_mismatch: 'response_validation',
+  qzone_invalid_response: 'response_validation',
+  qzone_cancelled: 'qzone_provider',
+  qzone_provider_timeout: 'qzone_provider',
+  qzone_provider_unavailable: 'qzone_provider',
+}))
+export const qzoneReceiptFailureStep = (code: string) => receiptFailureSteps.get(code)
 const safeResultCodes = new Set(['qzone_invalid_request', 'qzone_source_unavailable', 'qzone_claim_failed', 'qzone_already_claimed',
   'qzone_disabled', 'qzone_daily_limit', 'qzone_visit_cooldown', 'qzone_claim_conflict', 'qzone_already_unknown', 'qzone_already_confirmed',
   'qzone_already_failed', 'qzone_ledger_unavailable', 'qzone_outcome_unknown', 'qzone_settlement_failed', 'qzone_rejected', 'qzone_invalid_result'])
 export function normalizeAgentQzoneCode(input: unknown): string {
-  return typeof input === 'string' && safeResultCodes.has(input) ? input : 'qzone_rejected'
+  return typeof input === 'string' && (safeResultCodes.has(input) || receiptFailureSteps.has(input)) ? input : 'qzone_rejected'
 }
 export function qzoneData(input: unknown, allowedKeys?: readonly string[]): Record<string, unknown> {
   if (!input || typeof input !== 'object' || types.isProxy(input) || Array.isArray(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input))) throw invalid()
@@ -104,9 +126,16 @@ export function validateAgentQzoneVisit(input: unknown): Readonly<AgentQzoneVisi
 export function normalizeAgentQzoneReceipt(input: unknown, operation: AgentQzoneOperation): AgentQzoneReceipt {
   const readsFeed = operation.kind === 'visit' || operation.kind === 'read'
   try {
-    const row = qzoneData(input, ['state', 'postId', 'feeds', 'code'])
+    const row = qzoneData(input, ['state', 'postId', 'feeds', 'code', 'httpStatus', 'nativeCode'])
     if (row.state === 'unknown' && Object.keys(row).length === 1) return Object.freeze({ state: 'unknown' })
-    if (row.state === 'failed' && Object.keys(row).length === 2 && typeof row.code === 'string' && /^[a-z][a-z0-9_]{0,79}$/u.test(row.code)) return Object.freeze({ state: 'failed', code: 'qzone_rejected' })
+    if (row.state === 'failed' && !Object.hasOwn(row, 'postId') && !Object.hasOwn(row, 'feeds') &&
+        typeof row.code === 'string' && /^[a-z][a-z0-9_]{0,79}$/u.test(row.code)) {
+      if (!receiptFailureSteps.has(row.code)) return Object.freeze({ state: 'failed', code: 'qzone_rejected' })
+      const { httpStatus, nativeCode } = row
+      return Object.freeze({ state: 'failed', code: row.code,
+        ...(typeof httpStatus === 'number' && Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? { httpStatus } : {}),
+        ...(typeof nativeCode === 'number' && Number.isInteger(nativeCode) && Math.abs(nativeCode) <= 2_147_483_647 ? { nativeCode } : {}) })
+    }
     if (row.state !== 'confirmed') throw invalid()
     if (operation.kind === 'publish' && Object.keys(row).length === 2 && Object.hasOwn(row, 'postId')) return Object.freeze({ state: 'confirmed', postId: qzoneToken(row.postId) })
     if (readsFeed && Object.keys(row).length === 2 && Object.hasOwn(row, 'feeds')) {

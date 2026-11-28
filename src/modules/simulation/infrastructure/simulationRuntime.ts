@@ -3593,6 +3593,16 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (tool === finishTool) requiresClosing = true
             return reject('tool_arguments_invalid', 'error: 工具参数必须是有效的 JSON 对象，未执行')
           }
+          // A quote attached to a finish-only call has no delivery effect once a text reply was confirmed.
+          if (tool === finishTool && memoryBox.sentTexts.length > 0 && !memoryBox.deliveryUnknown &&
+              !Object.hasOwn(args, 'messages') && !Object.hasOwn(args, 'atUserIds') &&
+              (args.choice === 'chat' || args.choice === 'interest_only' || args.choice === 'silent') &&
+              typeof args.replyToSeq === 'number' && Number.isSafeInteger(args.replyToSeq) && args.replyToSeq > 0) {
+            const { replyToSeq: _unused, ...finish } = args
+            args = finish
+            diagnose({ stage: 'tool', operation: tool.name, outcome: 'succeeded', code: 'finish_unused_reply_reference_removed',
+              details: { field: 'replyToSeq', step: 'normalization' } })
+          }
           const publicWebLookup = webRetention && ['webParserTool', 'searchInformationTool'].includes(tool.name)
           const ephemeralTool = tool === coreTool || extraTools.includes(tool) && (tool.agentDataPolicy === 'ephemeral' || publicWebLookup)
           if (ephemeralRead) {
@@ -3821,7 +3831,8 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
             if (durableWake && rounds === 1) { await discardWake(); return }
             break
           }
-          const context = buildCharacterTurnContext({ phase: closing ? 'closing' : 'acting', remainingToolRounds: cfg.turn.maxToolRounds - rounds + 1, ...(focusedGoalId ? { focusedGoalId } : {}), visibleEvidenceRefs: visibleEvidenceRefs() }) +
+          const context = buildCharacterTurnContext({ phase: closing ? 'closing' : 'acting', remainingToolRounds: cfg.turn.maxToolRounds - rounds + 1,
+            ...(focusedGoalId ? { focusedGoalId } : {}), visibleEvidenceRefs: visibleEvidenceRefs(), sentMessage: memoryBox.sentTexts.length > 0 }) +
             (anchor ? groupSelection?.mode === 'join' ? `\n可主动参与 #${anchor.seq} 的话题。你以自己身份参与，有具体贡献才发言。`
               : `\n当前只回应 #${anchor.seq} 的话题。前文仅在有关时用。` : '') +
             (reviewer ? `\n本轮剩余提交检查次数：${Math.max(0, 3 - reviewer.stats().checks)}。将需要保存的观点、目标和最终消息合并进 simFinishTurn；检查退回后自行修正或安静放弃，检查提示不发到群里。` : '')

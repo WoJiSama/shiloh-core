@@ -12,9 +12,10 @@ export interface CharacterTurnContextInput {
   remainingToolRounds: number
   focusedGoalId?: string
   visibleEvidenceRefs: string[]
+  sentMessage?: boolean
 }
 
-export const FINISH_CHOICE_GUIDANCE = 'simFinishTurn 的参数顶层必须填写 choice。普通回话示例 {"choice":"chat","messages":["实际回复"]}。messages 的每一项是正文字符串，没有正文就省略 messages。安静标读示例 {"choice":"silent","markRead":true}。'
+export const FINISH_CHOICE_GUIDANCE = 'simFinishTurn 的参数顶层必须填写 choice。普通回话示例 {"choice":"chat","messages":["实际回复"]}。messages 的每一项是正文字符串。replyToSeq 和 atUserIds 仅与本次 messages 一起使用。安静标读示例 {"choice":"silent","markRead":true}。'
 
 /** Keep per-request facts and the required closing arguments next to the tool call. */
 export function buildCharacterTurnContext(input: CharacterTurnContextInput): string {
@@ -24,6 +25,7 @@ export function buildCharacterTurnContext(input: CharacterTurnContextInput): str
       focusedGoalId: input.focusedGoalId ?? null, visibleEvidenceRefs: input.visibleEvidenceRefs }),
     input.phase === 'closing' ? '当前允许动作仅 simFinishTurn。' : '结束时调用 simFinishTurn。',
     FINISH_CHOICE_GUIDANCE,
+    ...(input.sentMessage ? ['本轮已有消息确认发送。只收尾时，例如 {"choice":"chat","markRead":true}，省略 messages、replyToSeq、atUserIds。'] : []),
   ].join('\n')
 }
 

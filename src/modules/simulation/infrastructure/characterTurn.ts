@@ -105,7 +105,7 @@ function parse(input: Record<string, unknown>, memoryFields: string[], goalField
     atUserIds = values as string[]
   }
   if (!messages && (replyToSeq !== undefined || atUserIds !== undefined)) throw new FinishParameterError('replyToSeq/atUserIds 只能与 messages 一起使用',
-    { field: replyToSeq === undefined ? 'atUserIds' : 'replyToSeq', rule: 'incompatible' })
+    { field: replyToSeq === undefined ? 'atUserIds' : 'replyToSeq', rule: 'requires_messages' })
   return {
     choice, reason: input.reason.trim(), memories: checkedMemories,
     ...(goal === undefined ? {} : { goal }), ...(messages === undefined ? {} : { messages }),
@@ -138,8 +138,8 @@ export function createCharacterTurnTool(ctx: CharacterTurnToolContext): Abstract
           memories: { type: 'array', maxItems: 2, description: '仅角色自己的经历、兴趣、观点。社交待办 pendingEvent 和本群相处习惯 interaction 请在收尾前单独调用 simRemember。每项不传 action 或新记录 id。', items: nestedSchema(memoryTool) },
           goal: { ...nestedSchema(goalTool), description: `仅 schedule/wait/complete/abandon 使用，操作由 choice 固定，不传 action。${goalTool.description}` },
           messages: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string', minLength: 1, maxLength: 500 }, description: '可选的最终群消息，填写字符串数组，例如 ["你好"]。silent/deferred 省略此字段。' },
-          replyToSeq: { type: 'number', minimum: 1, description: '可选：引用已展示的消息序号，须为整数。' },
-          atUserIds: { type: 'array', maxItems: 3, items: { type: 'string', ...(ctx.platformUserId ? { minLength: 1, maxLength: 128 } : { pattern: '^\\d{1,12}$' }) } },
+          replyToSeq: { type: 'number', minimum: 1, description: '仅随本次 messages 使用。填写已展示的被引用消息整数序号。' },
+          atUserIds: { type: 'array', maxItems: 3, description: '仅随本次 messages 使用。填写本次正文要提及的成员 ID。', items: { type: 'string', ...(ctx.platformUserId ? { minLength: 1, maxLength: 128 } : { pattern: '^\\d{1,12}$' }) } },
           markRead: { type: 'boolean', description: '传 true 标读已经连续展示的消息，遇到未展示的消息时停下。省略或传 false 保留已读位置。' },
           throughSeq: { type: 'number', minimum: 0 },
         },

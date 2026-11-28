@@ -56,7 +56,8 @@ test('quiet feed access uses the bound private peer and a GET without comments',
   assert.equal(result.state, 'confirmed')
   assert.equal(result.feeds[0].userId, userId)
   const [{ url, options }] = f.http
-  assert.equal(new URL(url).searchParams.get('hostUin'), userId)
+  assert.equal(new URL(url).searchParams.get('uin'), userId)
+  assert.equal(new URL(url).searchParams.has('hostUin'), false)
   assert.equal(new URL(url).searchParams.get('replynum'), '0')
   assert.equal(new URL(url).searchParams.get('need_private_comment'), '0')
   assert.equal(options.method, 'GET')
@@ -118,7 +119,7 @@ test('QQ Qzone malformed native and conflicting receipt fields remain unknown wi
     const f = fixture({ async callApi() { return response } }); assert.deepEqual(await f.execute('delete'), { state: 'unknown' })
   }
   const rejected = fixture({ async callApi() { return { status: 'failed', retcode: 1400, data: { tid: 'forged' } } } })
-  assert.deepEqual(await rejected.execute('publish'), { state: 'failed', code: 'qzone_native_rejected' })
+  assert.deepEqual(await rejected.execute('publish'), { state: 'failed', code: 'qzone_native_rejected', nativeCode: 1400 })
 })
 
 test('QQ Qzone recognizes only exact trusted pre-dispatch transport failure markers', async () => {
@@ -152,7 +153,7 @@ test('QQ Qzone visit credentials are account-bound, token zero is retained and c
   assert.deepEqual(f.calls.map(({ name, params }) => ({ name, params })), [{ name: 'get_credentials', params: { domain: 'qzone.qq.com' } }])
   const request = f.http[0], url = new URL(request.url)
   assert.equal(url.origin, 'https://user.qzone.qq.com'); assert.equal(url.pathname, '/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6')
-  assert.equal(url.searchParams.get('g_tk'), '0'); assert.equal(url.searchParams.get('uin'), account.id); assert.equal(url.searchParams.get('hostUin'), '333333333')
+  assert.equal(url.searchParams.get('g_tk'), '0'); assert.equal(url.searchParams.get('uin'), '333333333'); assert.equal(url.searchParams.has('hostUin'), false)
   assert.equal(request.options.method, 'GET'); assert.equal(request.options.redirect, 'error'); assert.equal(request.options.headers.Cookie, 'p_skey=SECRET; skey=DIFFERENT_SECRET;')
   assert.equal(JSON.stringify(result).includes('SECRET'), false); assert.ok(Object.isFrozen(result.feeds)); assert.ok(Object.isFrozen(result.feeds[0]))
 })
@@ -168,6 +169,19 @@ test('QQ Qzone visit requires an explicit valid list and never treats missing ev
   }
   const empty = fixture({ async fetch() { return json({ ret: 0, msglist: [] }) } })
   assert.deepEqual(await empty.execute('visit'), { state: 'confirmed', feeds: [] })
+})
+
+test('QQ Qzone reads the selected uin and distinguishes foreign feeds from HTTP or business rejection', async () => {
+  const fixtureFor = fetch => fixture({ fetch }).execute('visit')
+  const correct = await fixtureFor(async url => json({ code: 0, subcode: 0, msglist: [feed({ uin: Number(new URL(url).searchParams.get('uin')) })] }))
+  assert.equal(correct.state, 'confirmed')
+  assert.equal(correct.feeds[0].userId, op('visit').userId)
+  const wrongOwner = await fixtureFor(async () => json({ code: 0, msglist: [feed({ uin: Number(account.id) })] }))
+  assert.deepEqual(wrongOwner, { state: 'failed', code: 'qzone_feed_owner_mismatch', httpStatus: 200 })
+  const rejected = await fixtureFor(async () => new Response('PRIVATE_BODY', { status: 403 }))
+  assert.deepEqual(rejected, { state: 'failed', code: 'qzone_http_rejected', httpStatus: 403 })
+  const business = await fixtureFor(async () => json({ code: -3000, message: 'PRIVATE_BODY' }))
+  assert.deepEqual(business, { state: 'failed', code: 'qzone_remote_rejected', httpStatus: 200, nativeCode: -3000 })
 })
 
 test('QQ Qzone like and comment use controlled forms with one HTTP effect and retain ret:0 correctly', async () => {
@@ -195,7 +209,7 @@ test('QQ Qzone fs comment callback is strict JSON and rejects strings, alternate
     const result = await f.execute('comment'); assert.notEqual(result.state, 'confirmed', body); assert.equal(calls, 1)
   }
   const rejected = fixture({ async fetch() { return new Response('sharrpCallback({"ret":-1})') } })
-  assert.deepEqual(await rejected.execute('comment'), { state: 'failed', code: 'qzone_remote_rejected' })
+  assert.deepEqual(await rejected.execute('comment'), { state: 'failed', code: 'qzone_remote_rejected', httpStatus: 200, nativeCode: -1 })
   const ret = fixture({ async fetch() { return new Response('sharrpCallback({"ret":0})') } })
   assert.deepEqual(await ret.execute('comment'), { state: 'confirmed' })
 })
@@ -206,8 +220,11 @@ test('QQ Qzone credentials must be a strictly valid envelope and never reach HTT
     { data: { cookies: 'safe', token: 1 } }, ok({ cookies: 'safe', token: 1, skey: 'other' })]
   for (const response of invalid) {
     let http = 0; const f = fixture({ async callApi() { return response }, async fetch() { http++; return json({ ret: 0 }) } })
-    assert.equal((await f.execute('like')).state, 'failed'); assert.equal(http, 0)
+    assert.deepEqual(await f.execute('like'), { state: 'failed', code: 'qzone_credentials_invalid' }); assert.equal(http, 0)
   }
+  const rejected = fixture({ async callApi() { return { status: 'failed', retcode: 1200, message: 'PRIVATE_NATIVE_REPLY' } } })
+  assert.deepEqual(await rejected.execute('visit'), { state: 'failed', code: 'qzone_credentials_rejected', nativeCode: 1200 })
+  assert.equal(rejected.http.length, 0)
 })
 
 test('QQ Qzone source/connection revocation after credentials or own-post lookup stops the following external call', async () => {

@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { types } from 'node:util'
 import type { AgentBindingSnapshot } from '../../../contracts/agentBinding.js'
+import type { AgentDiagnosticDetails } from '../../../contracts/agentDiagnostics.js'
 import type { AgentQzoneAction, AgentQzoneExecution, AgentQzoneGuard, AgentQzoneLedger, AgentQzoneLimits, AgentQzoneProvider, AgentQzoneReceipt, AgentQzoneResult } from '../../../contracts/agentQzone.js'
 import { createAgentDiagnostics, type AgentDiagnostics } from './agentDiagnostics.js'
-import { normalizeAgentQzoneCode, normalizeAgentQzoneLimits, normalizeAgentQzoneReceipt, qzoneData, qzoneToken, validateAgentQzoneAccount, validateAgentQzoneAction, validateAgentQzoneBinding, validateAgentQzoneOwnPost, validateAgentQzoneVisit } from '../../tools/infrastructure/agentQzoneValidation.js'
+import { normalizeAgentQzoneCode, normalizeAgentQzoneLimits, normalizeAgentQzoneReceipt, qzoneData, qzoneReceiptFailureStep, qzoneToken, validateAgentQzoneAccount, validateAgentQzoneAction, validateAgentQzoneBinding, validateAgentQzoneOwnPost, validateAgentQzoneVisit } from '../../tools/infrastructure/agentQzoneValidation.js'
 
 const invalid = () => new Error('qzone_source_unavailable')
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
@@ -31,8 +32,9 @@ export function createAgentQzoneRuntime(options: AgentQzoneRuntimeOptions) {
   if (!ledger || !provider || !callable(provider.execute) || !callable(now) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000 ||
       ['claim', 'isPending', 'settle', 'readOwnPost', 'readVisit'].some(key => !callable(ledger[key as keyof AgentQzoneLedger]))) throw invalid()
   const defaults = normalizeAgentQzoneLimits(options.limits), diagnostics = options.diagnostics ?? createAgentDiagnostics()
-  const emit = (code: string, outcome: 'failed' | 'unknown' | 'cancelled' = 'failed') => {
-    try { diagnostics.emit({ stage: 'delivery', operation: 'qzone', outcome, code }) }
+  const emit = (code: string, outcome: 'failed' | 'unknown' | 'cancelled' = 'failed', details?: AgentDiagnosticDetails, httpStatus?: number) => {
+    try { diagnostics.emit({ stage: 'delivery', operation: 'qzone', outcome, code, ...(details ? { details } : {}),
+      ...(httpStatus === undefined ? {} : { httpStatus }) }) }
     catch { console.warn('[Agent] delivery/qzone failed qzone_diagnostics_failed') }
   }
   return {
@@ -204,8 +206,13 @@ export function createAgentQzoneRuntime(options: AgentQzoneRuntimeOptions) {
           return { state: 'unknown', kind, code: 'qzone_settlement_failed', terminal: true }
         }
         if (receipt.state !== 'confirmed') {
-          emit(receipt.state === 'unknown' ? 'qzone_outcome_unknown' : 'qzone_rejected', receipt.state)
-          return { state: receipt.state, kind, code: receipt.state === 'unknown' ? 'qzone_outcome_unknown' : 'qzone_rejected', terminal: dispatched && !readsFeed || receipt.state === 'unknown' }
+          const code = receipt.state === 'unknown' ? 'qzone_outcome_unknown' : receipt.code
+          const step = qzoneReceiptFailureStep(code)
+          emit(code, receipt.state, { field: 'qzone_' + kind, ...(step ? { step } : {}),
+            ...(receipt.state === 'failed' && receipt.nativeCode !== undefined ? { nativeCode: receipt.nativeCode } : {}),
+            ...(receipt.state === 'unknown' ? { result: 'confirmation_pending' } : {}) },
+          receipt.state === 'failed' ? receipt.httpStatus : undefined)
+          return { state: receipt.state, kind, code, terminal: dispatched && !readsFeed || receipt.state === 'unknown' }
         }
         if (readsFeed) {
           // Settlement can itself await durable storage while the source is withdrawn. Never release a late private feed.

@@ -30,7 +30,7 @@ export interface AgentQzoneFeed {
 }
 export type AgentQzoneReceipt =
   | { readonly state: 'confirmed'; readonly postId?: string; readonly feeds?: readonly AgentQzoneFeed[] }
-  | { readonly state: 'failed'; readonly code: string }
+  | { readonly state: 'failed'; readonly code: string; readonly httpStatus?: number; readonly nativeCode?: number }
   | { readonly state: 'unknown' }
 
 /** Trusted host-owned provider. It dispatches one external effect and never retries. */

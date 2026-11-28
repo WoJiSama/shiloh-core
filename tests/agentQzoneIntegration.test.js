@@ -29,7 +29,9 @@ async function fixture(t) {
       http.push({ url, method: options.method, body: options.body })
       await onHttp?.()
       if (httpResponse) return httpResponse(url, options)
-      if (options.method === 'GET') return new Response(JSON.stringify({ ret: 0, msglist: [{ tid: post, uin: peerId, content: 'PRIVATE_FEED_BODY', fwd: { cntlike: 0 } }] }))
+      if (options.method === 'GET') return new Response(JSON.stringify({ ret: 0, msglist: [{
+        tid: post, uin: new URL(url).searchParams.get('uin'), content: 'PRIVATE_FEED_BODY', fwd: { cntlike: 0 },
+      }] }))
       return String(url).includes('emotion_cgi_re_feeds') ? new Response('sharrpCallback({"code":0});') : new Response('{"ret":0}')
     } })
   const diagnostics = { emit(event) { emitted.push(event) } }, runtime = createAgentQzoneRuntime({ ledger, provider, enabled: true, getLimits: () => ({ enabled }), diagnostics })
@@ -72,6 +74,19 @@ test('verified visit feeds drive bounded like and fs comment with live membershi
   assert.equal((await f.tool('simQzoneInteract', { action: 'comment', ...base, text: '换句话再评论一次。' })).status, 'failed'); assert.equal(f.http.length, before)
   const keys = await f.redis.storage.keys('agent:qzone:v1:*'), data = (await Promise.all(keys.map(key => f.redis.storage.get(key)))).join('\n')
   for (const value of ['PRIVATE_FEED_BODY', 'PRIVATE_TEST_SECRET', '这片风景']) assert.equal(data.includes(value), false)
+})
+
+test('a failed Qzone read retains the provider stage and status in diagnostics without feed text or credentials', async t => {
+  const f = await fixture(t)
+  f.setHttp(() => new Response(JSON.stringify({ code: 0, msglist: [
+    { tid: post, uin: account.id, content: 'PRIVATE_WRONG_OWNER' },
+  ] })))
+  const result = await f.tool('simQzoneInteract', { action: 'visit', userId: peerId })
+  assert.equal(result.status, 'failed')
+  assert.equal(JSON.parse(result.content).code, 'qzone_feed_owner_mismatch')
+  assert.deepEqual(f.emitted, [{ stage: 'delivery', operation: 'qzone', outcome: 'failed', code: 'qzone_feed_owner_mismatch',
+    details: { field: 'qzone_visit', step: 'response_validation' }, httpStatus: 200 }])
+  assert.doesNotMatch(JSON.stringify(f.emitted) + result.content, /PRIVATE_|p_skey=|111111111|444444444/u)
 })
 
 test('personal group and friend reactions require the current feed proof and no user actor', async t => {
