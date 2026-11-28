@@ -103,7 +103,8 @@ function nativeId(input: unknown): string | undefined {
   return undefined
 }
 function envelope(input: unknown, selected: AgentQzoneAction): Record<string, unknown> {
-  const row = data(input, ['status', 'retcode', 'data', 'echo', 'message', 'wording', 'self_id'])
+  const row = data(input, ['status', 'retcode', 'data', 'echo', 'message', 'wording', 'self_id', 'stream'])
+  if (Object.hasOwn(row, 'stream') && row.stream !== 'normal-action') throw invalid()
   if (Object.hasOwn(row, 'self_id') && nativeId(row.self_id) !== selected.binding.target.account.id) throw invalid()
   return row
 }

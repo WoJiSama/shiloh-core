@@ -26,6 +26,22 @@ test('provider request phases distinguish authorization timeout from a dispatche
   ])
 })
 
+test('structured reflection can disable GLM Flash thinking without changing the output allowance or other routes', async () => {
+  const bodies = []
+  const { YTapi } = modelExecutor(async (_url, options) => { bodies.push(JSON.parse(options.body)); return success() })
+  const structured = { ...request, max_tokens: 1600, response_format: { type: 'json_object' } }
+  const glm = { ...config, chatAiConfig: { chatApiUrl: 'https://open.bigmodel.cn/api/paas/v4', chatApiModel: 'glm-5.3-flash',
+    chatApiKey: 'fixture', chatReasoningEffort: 'low' } }
+  const options = { forceChatBackend: true, generation: { disableGlmThinking: true } }
+  await YTapi(structured, glm, undefined, undefined, options)
+  await YTapi(structured, glm, undefined, undefined, { forceChatBackend: true })
+  await YTapi(structured, config, undefined, undefined, options)
+  assert.deepEqual(bodies.map(body => body.max_tokens), [1600, 1600, 1600])
+  assert.deepEqual(bodies.map(body => body.thinking), [{ type: 'disabled' }, undefined, undefined])
+  assert.equal(bodies[0].reasoning_effort, undefined)
+  assert.equal(bodies[1].reasoning_effort, 'low')
+})
+
 test('a narrower fallback uses its own wire budget and keeps current sources and tool IDs', async () => {
   const calls = []
   const carry = optionalContext({ role: 'user', content: 'OLD_STYLE'.repeat(1700) }, 'style')

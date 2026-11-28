@@ -1,6 +1,7 @@
 import { buildVisibleFailureDetail } from '../domain/visibleFailure.js'
 import { sanitizeJsonValue } from '../domain/unicodeText.js'
 import { parseChatResponse } from '../domain/chatResponse.js'
+import { glmFlashJsonOptions } from '../domain/modelGateway.js'
 import type { ChatMessage, ChatRequestData, ChatResponse } from '../../../contracts/modelGateway.js'
 import type { Backend, ChatBackendConfig, ExecutionConfig, ExecutionOptions, ModelContextLimits, ModelExecutionPorts, ModelRequestPhase } from '../../../contracts/modelExecution.js'
 import { awaitModelRequestAuthority, isModelRequestCurrent } from '../../../contracts/modelExecution.js'
@@ -587,6 +588,13 @@ function buildGenerationOptions(requestData: ChatRequestData = {}, options: Exec
     }
     const reasoningEffort = generation.reasoningEffort || backend.reasoningEffort
     if (reasoningEffort) output.reasoning_effort = reasoningEffort
+    if (generation.disableGlmThinking && backend.apiUrl && backend.model && URL.canParse(backend.apiUrl)) {
+        const structured = glmFlashJsonOptions(new URL(backend.apiUrl), backend.model)
+        if (structured.thinking) {
+            output.thinking = structured.thinking
+            delete output.reasoning_effort
+        }
+    }
     return output
 }
 

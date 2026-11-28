@@ -24,7 +24,7 @@ export interface ExecutionOptions {
  ensureCurrent?: () => Promise<void>
  /** Reports the active request phase using fixed labels. */
  onRequestPhase?: (phase: ModelRequestPhase, httpStatus?: number) => void
- signal?: AbortSignal; generation?: { temperature?: number; topP?: number; maxOutputTokens?: number; maxTokensField?: string; reasoningEffort?: string }
+ signal?: AbortSignal; generation?: { temperature?: number; topP?: number; maxOutputTokens?: number; maxTokensField?: string; reasoningEffort?: string; disableGlmThinking?: boolean }
 }
 export function isModelRequestCurrent(check?: () => boolean): boolean {
   if (check === undefined) return true

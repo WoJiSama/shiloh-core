@@ -12,7 +12,7 @@ const op = kind => kind === 'publish' ? { kind, text: '今天风很好。' } : k
   : kind === 'visit' ? { kind, userId: '333333333' } : { kind, userId: '333333333', postId: 'stable-post_1', visitId: 'trusted-visit', ...(kind === 'comment' ? { text: '真好看。' } : {}) }
 const action = (kind = 'publish', extra = {}) => ({ version: 1, binding: structuredClone(binding), operation: op(kind), ...extra })
 const ok = (data = null, extra = {}) => ({ status: 'ok', retcode: 0, data, ...extra })
-const creds = () => ok({ cookies: 'p_skey=SECRET; skey=DIFFERENT_SECRET;', token: 0 })
+const creds = () => ok({ cookies: 'p_skey=SECRET; skey=DIFFERENT_SECRET;', token: 0 }, { stream: 'normal-action' })
 const ownership = () => ({ account: structuredClone(account), agentId: binding.agentId, postId: 'stable-post_1', source: structuredClone(binding) })
 const feed = (extra = {}) => ({ tid: 'stable-post_1', content: '在公园散步。', uin: '333333333', created_time: 12345, fwd: { cntlike: 2 }, ...extra })
 const json = value => new Response(JSON.stringify(value))
@@ -217,6 +217,7 @@ test('QQ Qzone fs comment callback is strict JSON and rejects strings, alternate
 test('QQ Qzone credentials must be a strictly valid envelope and never reach HTTP when invalid', async () => {
   const invalid = [ok({ cookies: '', token: 1 }), ok({ cookies: 'skey=x\r\nInjected: yes', token: 1 }), ok({ cookies: 'safe', token: -1 }),
     ok({ cookies: 'safe', token: 'invalid' }), ok({ cookies: 'safe', token: 2147483648 }), ok({ cookies: 'safe', token: 1 }, { self_id: '999' }),
+    ok({ cookies: 'safe', token: 1 }, { stream: 'stream-action' }),
     { data: { cookies: 'safe', token: 1 } }, ok({ cookies: 'safe', token: 1, skey: 'other' })]
   for (const response of invalid) {
     let http = 0; const f = fixture({ async callApi() { return response }, async fetch() { http++; return json({ ret: 0 }) } })
