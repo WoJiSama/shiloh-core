@@ -212,6 +212,9 @@ const failureReasons = new Map(Object.entries({
   character_background_prepare_failed: '未能读取或准备角色后台任务需要的状态。',
   character_background_subscription_failed: '角色公开订阅检查或回执保存失败。',
   character_background_reflection_failed: '角色独立反思或结果保存失败。',
+  cognition_proposal_schema_invalid: '认知整理模型返回的提案字段未通过校验。',
+  cognition_proposal_evidence_invalid: '认知整理提案的目标或证据未通过校验。',
+  cognition_proposal_json_invalid: '认知整理模型未返回完整有效的 JSON。',
   character_background_timeout: '角色后台任务超时。',
   user_style_extraction_failed: '群友口头禅提取未完成，未提交的结果已丢弃。',
   health_style_read_failed: '健康检查未能读取风格学习状态。',
@@ -612,6 +615,14 @@ const ruleNames = new Map(Object.entries({
   minItems: '条目数不足', maxItems: '条目数超限', minimum: '低于最小值', maximum: '高于最大值',
   format: '格式不符', pattern: '格式不符', oneOf: '与允许的结构不符', anyOf: '与允许的结构不符',
   uniqueItems: '条目重复', incompatible: '字段组合不允许', requires_messages: '只能与本次 messages 一起使用', normalization: '参数规范化失败',
+  cognition_json_object: '未返回有效 JSON', cognition_output_truncated: '响应在输出上限处截断',
+  cognition_identifier: '标识格式无效', cognition_text: '须为非空文字',
+  cognition_target_by_action: '目标字段与操作不匹配', cognition_match_target: '须与现有目标一致',
+  cognition_new_identifier: '须使用新的提案标识', cognition_self_kind: '仅允许自身兴趣、观点或习惯',
+  cognition_self_only: '自身提案不能包含他人', cognition_target_current: '目标未出现在本次有效条目中',
+  cognition_source_unavailable: '引用来源已失效', cognition_source_audience: '证据不支持所选适用范围',
+  cognition_distinct_sources: '需要至少两项独立来源', cognition_successful_receipt: '需要本次成功动作的结构化回执',
+  cognition_source_not_supplied: '引用编号不在本次提供的来源中',
   input_size: '参数总长度超限', business_rule: '未通过工具业务规则', schema_unavailable: '工具声明无法校验',
   read_through: '超出本轮已读范围', visible_sequence: '不在本轮可引用的序号内',
   single_line: '需使用单段文字', profile_changes_required: '缺少可修改的档案字段', source_match: '引用内容与原文不一致',
@@ -637,6 +648,7 @@ const stepNames = new Map(Object.entries({
   model_request_authorization: '复核模型请求来源权限',
   model_response_authorization: '复核模型结果使用权限',
   reflection_reserve: '登记反思任务和预算', cognition_consolidation: '整理认知资料', reflection_review: '审核反思结果',
+  cognition_evidence_validation: '校验认知提案的证据',
   wake_request_authorization: '复核唤醒请求发送权限', wake_response_authorization: '复核唤醒结果使用权限',
   meme_request_authorization: '复核群梗请求发送权限', meme_response_authorization: '复核群梗结果使用权限',
   semantic_acquire: '取得语义记忆读取授权', semantic_store_observation: '读取语义原文和向量状态',
@@ -743,7 +755,7 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
       : 'Node.js 已运行发送调度探针，Redis 命令到超时时仍留在客户端队列。'
     : undefined
   const limitUnit = details?.cause === 'bilibili_size_limit' || details?.cause === 'bilibili_length_mismatch' ? ' 字节' :
-    code === 'model_response_truncated' || details?.cause === 'model_response_truncated' ? ' token' :
+    code === 'model_response_truncated' || details?.cause === 'model_response_truncated' || details?.rule === 'cognition_output_truncated' ? ' token' :
     code?.includes('timeout') || code === 'semantic_provider_budget_elapsed' || details?.cause === 'semantic_recall_budget_elapsed' || details?.cause?.startsWith('douyin_browser_') && details.cause.endsWith('timeout') ? ' ms' : ''
   const evidence = [!journalReason && location && `环节 ${location}`, details?.field &&
     (stepNames.get(details.field) ?? `字段 ${details.field}`), rule,

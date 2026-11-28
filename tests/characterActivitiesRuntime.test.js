@@ -4,6 +4,7 @@ import { createSimulationRuntime } from '../dist/backend/modules/simulation/infr
 import { createDefaultSimSession } from '../dist/backend/modules/simulation/domain/simConfig.js'
 import { addCharacterMemory, characterKey, createCharacterGoal, createEmptyCharacterState } from '../dist/backend/modules/simulation/domain/characterState.js'
 import { createCharacterStore } from '../dist/backend/modules/simulation/infrastructure/characterStore.js'
+import { CognitionProposalError } from '../dist/backend/modules/memory/domain/cognitionSelf.js'
 import { createCharacterSharedSelf } from '../dist/backend/modules/simulation/infrastructure/characterSharedSelf.js'
 import { decodeQqIncomingMessage } from '../dist/backend/adapters/qqMessage.js'
 
@@ -373,6 +374,21 @@ test('a reflection failure is reported even though the background sweep complete
   assert.equal(failures[0].code, 'character_background_timeout')
   assert.equal(failures[0].details.step, 'provider_request')
   assert.equal(failures[0].error, deadline)
+  assert.equal(h.sent.length, 0)
+})
+
+test('background cognition validation reports the rejected field and evidence rule', async t => {
+  const events = []
+  const h = fixture({ diagnostics: { emit: event => events.push(event), traceId: () => 'reflection-test' },
+    async reflectCharacter() { throw new CognitionProposalError('cognition_proposal_evidence_invalid', 'proposals.epistemic', 'cognition_successful_receipt') } })
+  t.after(() => h.runtime.stop())
+  await h.memory('source-a', '我喜欢探索')
+  await h.memory('source-b', '我喜欢有线索的谜题')
+  h.clock.value = (await h.runtime.describeGroup(GROUP)).activities.reflection.nextRunAt
+  await h.runtime.sweepOnce()
+  const [event] = events.filter(event => event.operation === 'simulation_character_background' && event.outcome === 'failed')
+  assert.equal(event.code, 'cognition_proposal_evidence_invalid')
+  assert.deepEqual(event.details, { step: 'cognition_evidence_validation', field: 'proposals.epistemic', rule: 'cognition_successful_receipt' })
   assert.equal(h.sent.length, 0)
 })
 

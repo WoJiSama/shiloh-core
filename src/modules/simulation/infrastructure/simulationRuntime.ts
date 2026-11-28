@@ -14,6 +14,7 @@ import type { AgentHistoryRecall, AgentHistoryRequestSource } from '../../../con
 import type { ConversationTopicRecall } from '../../../contracts/conversationTopic.js'
 import type { CognitionConsolidator, CognitionGuard, CognitionRecall, CognitionTurnProjection } from '../../../contracts/agentCognition.js'
 import { cognitionConsolidationPrompt, parseCognitionProposals } from '../../memory/infrastructure/cognitionConsolidation.js'
+import { CognitionProposalError } from '../../memory/domain/cognitionSelf.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest, ConversationFileCatalog, ConversationFileEntry, ConversationFileReadOptions, FileReadGuard, MessageFileReadOptions } from '../../../contracts/agentFiles.js'
 import type { AgentFileUpload, FileDeliveryReceipt } from '../../../contracts/agentFileDelivery.js'
 import type { AgentMessageVideo, AgentVideoInput, MessageVideoReadOptions } from '../../../contracts/agentVideo.js'
@@ -4820,9 +4821,14 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
     const reportFailure = (error: unknown, step?: string) => {
       const timedOut = [error, controller.signal.reason].some(reason => reason instanceof DOMException && reason.name === 'TimeoutError')
       const revoked = !timedOut && (error instanceof CharacterBackgroundRevokedError || controller.signal.aborted || memoryTurn?.signal.aborted)
+      const proposalIssue = error instanceof CognitionProposalError ? {
+        step: error.code === 'cognition_proposal_evidence_invalid' ? 'cognition_evidence_validation' : 'response_validation',
+        field: error.field, rule: error.rule, ...(error.limit === undefined ? {} : { limit: error.limit }),
+      } : undefined
       const diagnostic = { stage: 'runtime', operation: 'simulation_character_background', outcome: revoked ? 'cancelled' : 'failed',
-        code: revoked ? 'character_background_revoked' : timedOut ? 'character_background_timeout' : `character_background_${phase}_failed`,
-        durationMs: now() - started, ...(revoked ? {} : { error }), ...(step ? { details: { step } } : {}),
+        code: revoked ? 'character_background_revoked' : timedOut ? 'character_background_timeout' :
+          error instanceof CognitionProposalError ? error.code : `character_background_${phase}_failed`,
+        durationMs: now() - started, ...(revoked ? {} : { error }), ...(proposalIssue ? { details: proposalIssue } : step ? { details: { step } } : {}),
       } satisfies Parameters<AgentDiagnostics['emit']>[0]
       try {
         if (!revoked && ports.diagnostics?.emitFailure) ports.diagnostics.emitFailure(diagnostic)
@@ -4899,16 +4905,21 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                 signal.throwIfAborted()
               }
               await ensureSources()
-              const response = await ports.reflectCharacter!({ messages: [{ role: 'system', content: cognitionConsolidationPrompt(input) }, { role: 'user', content: '只返回本次有依据的认知变更 JSON。' }], temperature: 0.3, max_tokens: 1600 }, ports.getExecutionConfig(), signal, sourceGuard.isCurrent, ensureSources)
+              const response = await ports.reflectCharacter!({
+                messages: [{ role: 'system', content: cognitionConsolidationPrompt(input) }, { role: 'user', content: '只返回本次有依据的认知变更 JSON 对象。' }],
+                response_format: { type: 'json_object' }, temperature: 0.3, max_tokens: 1600,
+              }, ports.getExecutionConfig(), signal, sourceGuard.isCurrent, ensureSources)
               const usage = record(response.usage)
               recordWakeTokens(state, Number(usage.total_tokens) || 0)
               await store.save(groupId, state)
               ports.recordTokens?.({ scope: groupId, stage: 'cognition-consolidation', model: String(response.model || ''), usage })
               await ensureSources()
               if (response.error || signal.aborted) throw new Error('认知整理模型调用失败')
-              const content = response.choices?.[0]?.message?.content
-              if (typeof content !== 'string' || content.length > 16_000) throw new Error('认知整理未返回有效结构')
-              return parseCognitionProposals(JSON.parse(content.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')))
+              const reply = response.choices?.[0], content = reply?.message?.content
+              if (reply?.finish_reason === 'length') throw new CognitionProposalError('cognition_proposal_json_invalid', 'proposals', 'cognition_output_truncated', 1600)
+              if (typeof content !== 'string' || !content.trim()) throw new CognitionProposalError('cognition_proposal_schema_invalid', 'proposals', 'required')
+              if (content.length > 16_000) throw new CognitionProposalError('cognition_proposal_schema_invalid', 'proposals', 'maxLength', 16_000)
+              return parseCognitionProposals(content.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, ''))
             })
           } } : {}),
           ...(ports.getSection().consistency?.enabled === true ? { review: async (candidate: Record<string, unknown>, before: CharacterState, evidence: unknown) => {

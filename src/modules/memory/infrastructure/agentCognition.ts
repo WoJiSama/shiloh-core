@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { AgentCognition, CognitionConsolidator, CognitionGuard, CognitionNode, CognitionRedis, CognitionSource, CognitionState, CognitionTurnProjection } from '../../../contracts/agentCognition.js'
 import { conversationAddressKey } from '../../runtime/domain/agentBindings.js'
 import { cognitionLinkIsDependency, cognitionSourceId, invalidateCognitionState, recordCognitionSources } from '../domain/cognitionState.js'
-import { applyCognitionProposals } from '../domain/cognitionSelf.js'
+import { applyCognitionProposals, CognitionProposalError } from '../domain/cognitionSelf.js'
 import { buildCognitionRecall } from '../domain/cognitionRecall.js'
 import { createCognitionStore } from './cognitionStore.js'
 import { createCognitionConsolidation } from './cognitionConsolidation.js'
@@ -141,7 +141,8 @@ export function createAgentCognition(ports: {
           const proposals = await model({ sources: input.sources, current: currentNodes }, modelGuard)
           await check(modelGuard)
           if (proposals.some(proposal => ports.allowsText?.(proposal.content) === false)) throw new Error('认知整理内容不可用')
-          for (const proposal of proposals) if (proposal.targetId && !currentNodes.some(node => node.id === proposal.targetId)) throw new Error('认知整理目标已不可用')
+          for (const proposal of proposals) if (proposal.targetId && !currentNodes.some(node => node.id === proposal.targetId))
+            throw new CognitionProposalError('cognition_proposal_evidence_invalid', 'proposals.targetId', 'cognition_target_current')
           return proposals
         },
         canUseSource: async (source, sourceGuard) => {
