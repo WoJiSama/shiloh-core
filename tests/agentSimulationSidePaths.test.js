@@ -109,7 +109,8 @@ test('a provider failure is recorded once and subsequent wakes bypass screening 
     await f.emit('wake-after-provider-backoff'); await until(() => requests === 2); await f.runtime.drain()
     assert.equal(f.models.length, 2)
     assert.deepEqual(diagnostics.filter(event => event.operation === 'simulation_wake_gate').map(event => [event.outcome, event.code, event.httpStatus]),
-      [['failed', 'http_error', 429], ['succeeded', undefined, undefined]])
+      [['failed', 'http_error', 429], ['succeeded', 'wake_gate_provider_recovered', undefined]])
+    assert.equal(diagnostics.find(event => event.code === 'wake_gate_provider_recovered').details.result, 'recovered')
   } finally { f.runtime.stop(); await f.runtime.drain() }
 })
 

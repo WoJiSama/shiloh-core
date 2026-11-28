@@ -6,6 +6,7 @@ import { importBilibiliHost } from './helpers/bilibiliQualitySource.mjs'
 const { createQqMediaRelayDeliveryPort, QQ_MEDIA_RELAY_SEND_TIMEOUT_MS } = await importBilibiliHost('adapters/qqMediaRelayDelivery.js')
 const { createOneBotConnection } = await importBilibiliHost('adapters/oneBotConnection.js')
 const { queuedDeliveryAllowed, withDeliveryGuard } = await importBilibiliHost('modules/messaging/infrastructure/deliveryScope.js')
+const { deliveryFailureEvidence, normalizeDeliveryReceipt } = await importBilibiliHost('modules/messaging/domain/deliveryReceipt.js')
 
 const account = { platform: 'qq', namespace: 'global', id: '123456789' }
 const target = { account, kind: 'group', id: '315320' }
@@ -166,6 +167,24 @@ test('schema failures and transport pre-dispatch markers remain failed while ord
   }
   assert.deepEqual(await direct({ state: 'failed', code: 'onebot_disconnected' }).sendMediaRelay(action()), { state: 'failed', code: 'onebot_disconnected' })
   assert.deepEqual(await direct(() => { throw Error('http://secret/private-path') }).sendMediaRelay(action()), { state: 'unknown' })
+})
+
+test('unknown receipts keep the safe native failure phase after normalization', async () => {
+  const secret = 'some-private-res-id'
+  for (const [native, code, step, status] of [
+    [{ status: 'ok', retcode: 0, data: { res_id: secret } }, 'qq_media_message_id_missing', 'qq_media_response', 0],
+    [resourceError(`发送转发消息（res_id：${secret} 失败`), 'qq_media_packet_uploaded_send_unconfirmed', 'qq_media_final_send', 1200],
+    [resourceError('other error private-body'), 'qq_media_handler_unconfirmed', 'qq_media_response', 1200],
+    [{ ...success(), group_id: '999999' }, 'qq_media_receipt_target_mismatch', 'qq_media_response', 0],
+  ]) {
+    const d = direct(native)
+    const receipt = await d.sendMediaRelay(action())
+    assert.deepEqual(receipt, { state: 'unknown' })
+    assert.equal(normalizeDeliveryReceipt(receipt), receipt)
+    assert.deepEqual(deliveryFailureEvidence(receipt), { code, details: { step, nativeCode: status, dispatched: true, result: 'confirmation_pending' } })
+    assert.doesNotMatch(JSON.stringify([receipt, deliveryFailureEvidence(receipt)]), /private-res-id|private-body|999999/u)
+    assert.equal(d.calls.length, 1)
+  }
 })
 
 test('only inspected NapCat packet resource AggregateError proves final forward was not sent', async () => {

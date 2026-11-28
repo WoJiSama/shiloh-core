@@ -13,7 +13,7 @@ import { awaitModelRequestAuthority } from '../../../contracts/modelExecution.js
 import type { AgentHistoryRecall, AgentHistoryRequestSource } from '../../../contracts/agentHistory.js'
 import type { ConversationTopicRecall } from '../../../contracts/conversationTopic.js'
 import type { CognitionConsolidator, CognitionGuard, CognitionRecall, CognitionTurnProjection } from '../../../contracts/agentCognition.js'
-import { cognitionConsolidationPrompt, parseCognitionProposals } from '../../memory/infrastructure/cognitionConsolidation.js'
+import { prepareCognitionModel } from '../../memory/infrastructure/cognitionConsolidation.js'
 import { CognitionProposalError } from '../../memory/domain/cognitionSelf.js'
 import type { AgentFileBytes, AgentFileListing, AgentFileRequest, ConversationFileCatalog, ConversationFileEntry, ConversationFileReadOptions, FileReadGuard, MessageFileReadOptions } from '../../../contracts/agentFiles.js'
 import type { AgentFileUpload, FileDeliveryReceipt } from '../../../contracts/agentFileDelivery.js'
@@ -1888,6 +1888,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
           let sourceFailure: 'wake_gate_source_changed' | 'wake_gate_source_check_failed' | undefined
           let gateUsageRecorded = false, gateActive = true
           const gateTimeoutMs = 8_000, gateStarted = performance.now(), gateLoop = performance.eventLoopUtilization()
+          const backoffBeforeRequest = wakeGateRetryAt
           const providerChecksSources = wakeGateChecksSources(judgeWake)
           type GateStep = AgentSimulationWakePhase | 'provider_request'
           let gateStep: GateStep = 'wake_request_authorization'
@@ -1945,7 +1946,12 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               }
               if (verdict === null) diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'failed', code: 'wake_gate_unavailable',
                 durationMs: now() - started, details: { step: 'response_validation', result: 'discarded' } })
-              else diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'succeeded', durationMs: now() - started })
+              else {
+                const recovered = backoffBeforeRequest > 0 && wakeGateRetryAt === backoffBeforeRequest
+                if (recovered) wakeGateRetryAt = 0
+                diagnose({ stage: 'model', operation: 'simulation_wake_gate', outcome: 'succeeded', durationMs: now() - started,
+                  ...(recovered ? { code: 'wake_gate_provider_recovered', details: { result: 'recovered' } } : {}) })
+              }
               return verdict
             } finally { gateActive = false }
           }
@@ -4866,7 +4872,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
       const revoked = !timedOut && (error instanceof CharacterBackgroundRevokedError || controller.signal.aborted || memoryTurn?.signal.aborted)
       const proposalIssue = error instanceof CognitionProposalError ? {
         step: error.code === 'cognition_proposal_evidence_invalid' ? 'cognition_evidence_validation' : 'response_validation',
-        field: error.field, rule: error.rule, ...(error.limit === undefined ? {} : { limit: error.limit }),
+        field: error.field, rule: error.rule, result: 'not_saved' as const, ...(error.limit === undefined ? {} : { limit: error.limit }),
       } : undefined
       const diagnostic = { stage: 'runtime', operation: 'simulation_character_background', outcome: revoked ? 'cancelled' : 'failed',
         code: revoked ? 'character_background_revoked' : timedOut ? 'character_background_timeout' :
@@ -4948,8 +4954,9 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
                 signal.throwIfAborted()
               }
               await ensureSources()
+              const request = prepareCognitionModel(input)
               const response = await ports.reflectCharacter!({
-                messages: [{ role: 'system', content: cognitionConsolidationPrompt(input) }, { role: 'user', content: '只返回本次有依据的认知变更 JSON 对象。' }],
+                messages: [{ role: 'system', content: request.prompt }, { role: 'user', content: '只返回本次有依据的认知变更 JSON 对象。' }],
                 response_format: { type: 'json_object' }, temperature: 0.3, max_tokens: 1600,
               }, ports.getExecutionConfig(), signal, sourceGuard.isCurrent, ensureSources)
               const usage = record(response.usage)
@@ -4962,7 +4969,7 @@ export function createSimulationRuntime(ports: SimulationRuntimePorts): Simulati
               if (reply?.finish_reason === 'length') throw new CognitionProposalError('cognition_proposal_json_invalid', 'proposals', 'cognition_output_truncated', 1600)
               if (typeof content !== 'string' || !content.trim()) throw new CognitionProposalError('cognition_proposal_schema_invalid', 'proposals', 'required')
               if (content.length > 16_000) throw new CognitionProposalError('cognition_proposal_schema_invalid', 'proposals', 'maxLength', 16_000)
-              return parseCognitionProposals(content.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, ''))
+              return request.parse(content.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, ''))
             })
           } } : {}),
           ...(ports.getSection().consistency?.enabled === true ? { review: async (candidate: Record<string, unknown>, before: CharacterState, evidence: unknown) => {

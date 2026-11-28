@@ -388,7 +388,7 @@ test('background cognition validation reports the rejected field and evidence ru
   await h.runtime.sweepOnce()
   const [event] = events.filter(event => event.operation === 'simulation_character_background' && event.outcome === 'failed')
   assert.equal(event.code, 'cognition_proposal_evidence_invalid')
-  assert.deepEqual(event.details, { step: 'cognition_evidence_validation', field: 'proposals.epistemic', rule: 'cognition_successful_receipt' })
+  assert.deepEqual(event.details, { step: 'cognition_evidence_validation', field: 'proposals.epistemic', rule: 'cognition_successful_receipt', result: 'not_saved' })
   assert.equal(h.sent.length, 0)
 })
 

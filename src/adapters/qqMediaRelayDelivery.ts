@@ -1,11 +1,13 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { types } from 'node:util'
 import type { AgentBindingSnapshot, ConversationAddress, PlatformAccountRef } from '../contracts/agentBinding.js'
+import type { AgentDiagnosticDetails } from '../contracts/agentDiagnostics.js'
 import type { AgentMediaArtifact, AgentMediaRelayPlan, SendMediaRelayAction } from '../contracts/agentMediaRelay.js'
 import type { DeliveryReceipt } from '../contracts/delivery.js'
 import type { MessageActionOptions, MessageActionPort } from '../contracts/platformMessage.js'
 import { validateAgentMediaRelayPlan } from '../modules/media/domain/agentMediaRelayPlan.js'
 import { conversationAddressKey, platformAccountKey } from '../modules/runtime/domain/agentBindings.js'
+import { annotateDeliveryFailure, type DeliveryFailureEvidence } from '../modules/messaging/domain/deliveryReceipt.js'
 import { queuedDeliveryAllowed, withDeliveryGuard } from '../modules/messaging/infrastructure/deliveryScope.js'
 import { qqId } from './qqIdentity.js'
 import type { QqMediaRelayBridge } from './qqMediaRelayBridge.js'
@@ -16,7 +18,11 @@ type NativeAction = 'send_group_forward_msg' | 'send_private_forward_msg' | 'sen
 type RelayOptions = MessageActionOptions & { readonly signal?: AbortSignal }
 type BridgeLease = Awaited<ReturnType<QqMediaRelayBridge['stage']>>
 const failed = (code: string): DeliveryReceipt => ({ state: 'failed', code })
-const unknown = (): DeliveryReceipt => ({ state: 'unknown' })
+
+function unconfirmed(code: string, details: AgentDiagnosticDetails = {}): DeliveryReceipt {
+  return annotateDeliveryFailure({ state: 'unknown' }, { code,
+    details: { step: 'qq_media_response', result: 'confirmation_pending', ...details } })
+}
 
 function data(input: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!input || typeof input !== 'object' || types.isProxy(input) || Array.isArray(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input))) throw Error('Invalid relay data')
@@ -55,7 +61,7 @@ function messageId(value: unknown): value is number | string {
   return typeof value === 'number' && Number.isSafeInteger(value) && value !== 0 ||
     typeof value === 'string' && /^-?[1-9]\d{0,15}$/u.test(value) && Number.isSafeInteger(Number(value))
 }
-export function qqForwardVideoPreSendFailure(value: unknown): string | undefined {
+function qqForwardVideoPreSendFailure(value: unknown): string | undefined {
   let response
   try { response = data(value, ['status', 'retcode', 'data', 'message', 'wording', 'echo', 'stream', 'self_id', 'group_id', 'user_id']) }
   catch { return }
@@ -75,28 +81,45 @@ export function qqForwardVideoPreSendFailure(value: unknown): string | undefined
   const packet = lines.findIndex(line => /\.uploadForwardedNodesPacket \(file:\/\/\/[^()]+\/napcat\.mjs:\d+:\d+\)$/u.test(line))
   if (file === 0 && file < video && video < elements && elements < packet) return 'media_resource_fetch_closed'
 }
-function receipt(value: unknown, address: ConversationAddress, mode: SendMediaRelayAction['mode'], hasVideo: boolean): DeliveryReceipt {
+function receipt(value: unknown, address: ConversationAddress, mode: SendMediaRelayAction['mode'], hasVideo: boolean, transport?: DeliveryFailureEvidence): DeliveryReceipt {
   try {
     const response = data(value, ['status', 'retcode', 'data', 'message', 'wording', 'echo', 'stream', 'self_id', 'group_id', 'user_id', 'state', 'code'])
-    if (response.state === 'failed') return failed(typeof response.code === 'string' && /^[a-zA-Z0-9_:-]{1,128}$/u.test(response.code) ? response.code : 'native_rejected')
-    if (response.state === 'unknown') return unknown()
-    if (response.retcode === 400 || response.retcode === 1400) return failed(String(response.retcode))
+    if (response.state === 'failed') {
+      const code = typeof response.code === 'string' && /^[a-zA-Z0-9_:-]{1,128}$/u.test(response.code) ? response.code : 'native_rejected'
+      return annotateDeliveryFailure({ state: 'failed', code }, transport ?? { code, details: { step: 'qq_media_dispatch', dispatched: false, result: 'not_dispatched' } })
+    }
+    if (response.state === 'unknown') return unconfirmed(transport?.code ?? 'qq_media_transport_unconfirmed', transport?.details)
+    const nativeCode = typeof response.retcode === 'number' && Number.isInteger(response.retcode) &&
+      Math.abs(response.retcode) <= 2_147_483_647 ? response.retcode : undefined
+    const native = { dispatched: true, ...(nativeCode === undefined ? {} : { nativeCode }) }
+    if (response.retcode === 400 || response.retcode === 1400) return annotateDeliveryFailure({ state: 'failed', code: String(response.retcode) },
+      { code: 'onebot_rejected', details: { step: 'qq_media_response', ...native } })
     // NapCat Bt serializes the same handler error into message and wording. Its
     // inspected packet resource AggregateError occurs before final native send.
     if (mode === 'forward' && hasVideo) {
       const failure = qqForwardVideoPreSendFailure(value)
-      if (failure) return failed(failure)
+      if (failure) return annotateDeliveryFailure({ state: 'failed', code: failure }, { code: failure,
+        details: { step: 'qq_media_preprocess', ...(nativeCode === undefined ? {} : { nativeCode }), result: 'not_dispatched' } })
     }
-    if (response.status !== 'ok' || response.retcode !== 0) return unknown()
+    if (mode === 'forward' && response.status === 'failed' && response.retcode === 1200 && response.data === null &&
+        typeof response.message === 'string' && response.message === response.wording &&
+        /^发送转发消息（res_id：[a-zA-Z0-9_+./=-]{1,256} 失败$/u.test(response.message)) {
+      return unconfirmed('qq_media_packet_uploaded_send_unconfirmed', { ...native, step: 'qq_media_final_send' })
+    }
+    if (response.status !== 'ok' || response.retcode !== 0) {
+      return unconfirmed(response.status === 'failed' ? 'qq_media_handler_unconfirmed' : transport?.code ?? 'qq_media_receipt_invalid',
+        { ...native, ...transport?.details })
+    }
+    if (!response.data || typeof response.data !== 'object') return unconfirmed('qq_media_message_id_missing', native)
     const detail = data(response.data, ['message_id', 'res_id', 'forward_id', 'self_id', 'group_id', 'user_id'])
-    if (!messageId(detail.message_id)) return unknown()
+    if (!messageId(detail.message_id)) return unconfirmed('qq_media_message_id_missing', native)
     for (const row of [response, detail]) {
       if (row.self_id !== undefined && String(row.self_id) !== address.account.id ||
           row.group_id !== undefined && (address.kind !== 'group' || String(row.group_id) !== address.id) ||
-          row.user_id !== undefined && (address.kind !== 'private' || String(row.user_id) !== address.id)) return unknown()
+          row.user_id !== undefined && (address.kind !== 'private' || String(row.user_id) !== address.id)) return unconfirmed('qq_media_receipt_target_mismatch', native)
     }
     return { state: 'sent', messageId: String(detail.message_id) }
-  } catch { return unknown() }
+  } catch { return unconfirmed(transport?.code ?? 'qq_media_receipt_invalid', transport?.details) }
 }
 
 /** One connection owns one bounded queue. Native URLs stay inside this adapter. */
@@ -108,7 +131,8 @@ export function createQqMediaRelayDeliveryPort(options: {
   /** Trusted host/testing override can shorten, never extend the 90 minute ceiling. */
   readonly timeoutMs?: number
   sendApi(action: NativeAction, params: Record<string, unknown>, options: {
-    readonly isCurrent: () => boolean; readonly signal: AbortSignal; readonly timeoutMs: number; readonly videoForward: boolean
+    readonly isCurrent: () => boolean; readonly signal: AbortSignal; readonly timeoutMs: number
+    reportFailure(code: string, details: AgentDiagnosticDetails): void
   }): Promise<unknown>
 }): NonNullable<MessageActionPort['sendMediaRelay']> {
   const configuredAccount = options.account, accountKey = platformAccountKey(account(configuredAccount)), connectionId = options.connectionId
@@ -125,7 +149,7 @@ export function createQqMediaRelayDeliveryPort(options: {
     next.signal.removeEventListener('abort', next.abort)
     if (next.signal.aborted) { next.resolve(failed('binding_changed')); drain(); return }
     active = true
-    void Promise.resolve().then(next.run).then(next.resolve, () => next.resolve(unknown())).finally(() => { active = false; drain() })
+    void Promise.resolve().then(next.run).then(next.resolve, () => next.resolve(unconfirmed('qq_media_transport_unconfirmed'))).finally(() => { active = false; drain() })
   }
   const enqueue = (run: Waiting['run'], signal: AbortSignal): Promise<DeliveryReceipt> => {
     if (signal.aborted) return Promise.resolve(failed('binding_changed'))
@@ -190,11 +214,17 @@ export function createQqMediaRelayDeliveryPort(options: {
       if (ensureCurrent) await wait(Promise.resolve().then(() => ensureCurrent!()))
       if (!isCurrent()) throw Error('QQ媒体转发来源已失效')
     }
+    const interrupted = (transport?: DeliveryFailureEvidence) => {
+      if (transport) return unconfirmed(transport.code, transport.details)
+      if (deadline.signal.aborted) return unconfirmed('onebot_timeout', { limit: timeoutMs })
+      return unconfirmed(signal.aborted || !isCurrent() ? 'qq_media_authority_lost' : 'qq_media_transport_unconfirmed')
+    }
     try {
       if (!isCurrent()) return failed('binding_changed')
       return await enqueue(async () => {
         const leases: BridgeLease[] = [], urls = new Map<string, string>()
         let dispatched = false, accepting = true
+        let transport: DeliveryFailureEvidence | undefined
         try {
           await ensure()
           const artifacts = new Map<string, AgentMediaArtifact>()
@@ -234,17 +264,18 @@ export function createQqMediaRelayDeliveryPort(options: {
             await ensure()
             if (!isCurrent()) return failed('binding_changed')
             dispatched = true
-            return withDeliveryGuard(isCurrent, () => sendApi(nativeAction, params, { isCurrent, signal, timeoutMs, videoForward: mode === 'forward' && hasVideo }))
+            return withDeliveryGuard(isCurrent, () => sendApi(nativeAction, params, { isCurrent, signal, timeoutMs,
+              reportFailure(code, details) { transport ??= { code, details } } }))
           }))
-          if (!isCurrent()) return dispatched ? unknown() : failed('binding_changed')
-          return receipt(result, address, mode, hasVideo)
-        } catch { return dispatched ? unknown() : failed(signal.aborted ? 'binding_changed' : 'media_relay_preparation_failed') }
+          if (!isCurrent()) return dispatched ? interrupted(transport) : failed('binding_changed')
+          return receipt(result, address, mode, hasVideo, transport)
+        } catch { return dispatched ? interrupted(transport) : failed(signal.aborted ? 'binding_changed' : 'media_relay_preparation_failed') }
         finally {
           accepting = false; cancel.abort()
           await Promise.allSettled(leases.map(lease => Promise.resolve().then(() => lease.release())))
         }
       }, signal)
-    } catch { return unknown() }
+    } catch { return interrupted() }
     finally { clearTimeout(timer); clearInterval(watcher); cancel.abort() }
   }
 }

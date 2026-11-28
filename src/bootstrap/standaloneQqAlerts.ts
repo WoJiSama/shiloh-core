@@ -561,6 +561,13 @@ const failureReasons = new Map(Object.entries({
   effect_unknown: '暂时无法确认内容是否已送达。',
   media_resource_fetch_closed: 'NapCat 在读取视频资源时连接断开，本次还未向会话发送合并转发。',
   media_resource_preprocessing_failed: 'NapCat 在准备合并转发资源时失败，本次还未向会话发送。',
+  qq_media_transport_unconfirmed: 'QQ 媒体投递调用中断，暂时无法确认是否送达。',
+  qq_media_receipt_invalid: 'QQ 媒体投递返回的回执格式无法核验。',
+  qq_media_message_id_missing: 'QQ 返回成功状态，回执缺少可核验的消息编号。',
+  qq_media_receipt_target_mismatch: 'QQ 媒体回执的归属与投递目标不一致。',
+  qq_media_handler_unconfirmed: 'NapCat 处理媒体投递时返回错误，尚无证据确认最终消息是否送达。',
+  qq_media_packet_uploaded_send_unconfirmed: 'NapCat 已上传合并转发包，最后一步没有返回可确认的群消息。',
+  qq_media_authority_lost: '媒体投递期间会话授权或连接状态失效，无法确认是否送达。',
   media_bridge_socket_timeout: '媒体桥接连接长时间未传输数据，服务端已关闭连接。',
   media_bridge_peer_closed: '媒体桥接响应结束前，接收端关闭了连接。',
   media_bridge_read_failed: '媒体桥接未能完成临时资源读取或写入。',
@@ -682,6 +689,8 @@ const stepNames = new Map(Object.entries({
   search_query: '校验查询词', search_usage: '记录搜索用量',
   send_validation: '检查待发消息', send_budget: '检查发送额度', send_review: '校验待发消息一致性',
   send_authorization: '复核发送权限', send_dispatch: '投递群消息', send_session_save: '保存已发送状态', send_memory_save: '保存被引用的群梗',
+  qq_media_dispatch: '派发 QQ 媒体投递', qq_media_response: '核验 QQ 媒体回执',
+  qq_media_preprocess: '准备合并转发资源', qq_media_final_send: '发送已上传的合并转发包',
   model_request_authorization: '复核模型请求来源权限',
   model_response_authorization: '复核模型结果使用权限',
   reflection_reserve: '登记反思任务和预算', cognition_consolidation: '整理认知资料', reflection_review: '审核反思结果',
@@ -817,7 +826,9 @@ export function describeAgentDiagnostic(event: DiagnosticDescriptionSource) {
     details?.causeEventId && `关联记录 ${details.causeEventId}`,
     event.sourceTag && `来源 ${event.sourceTag}`, details?.cause && details.cause !== code && `关联原因 ${cause ?? details.cause}`].filter(Boolean).join(' · ')
   const result = details?.result && resultNames[details.result]
-  const disposition = [result, details?.retryInMs !== undefined && `${(details.retryInMs / 1000).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} 秒后`,
+  const retrySeconds = details?.retryInMs === undefined ? undefined : (details.retryInMs / 1000).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+  const disposition = [result, retrySeconds === undefined ? undefined : event.operation === 'simulation_wake_gate'
+    ? `${retrySeconds} 秒后允许后续唤醒再请求预判` : `${retrySeconds} 秒后`,
     details?.attempt !== undefined && `第 ${details.attempt}${details.maxAttempts === undefined ? '' : `/${details.maxAttempts}`} 次`].filter(Boolean).join(' · ')
   if (event.outcome === 'succeeded' || event.outcome === 'started') return { operation, evidence, result: disposition }
   const knownReason = code && !genericCodes.has(code) && failureReasons.get(code)

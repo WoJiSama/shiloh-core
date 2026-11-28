@@ -1,4 +1,19 @@
 import type { DeliveryReceipt } from '../../../contracts/delivery.js'
+import type { AgentDiagnosticDetails } from '../../../contracts/agentDiagnostics.js'
+
+export interface DeliveryFailureEvidence { readonly code: string; readonly details: AgentDiagnosticDetails }
+type FailedDelivery = Exclude<DeliveryReceipt, { state: 'sent' }>
+const failures = new WeakMap<object, DeliveryFailureEvidence>()
+
+/** Keep adapter diagnostics on the host while preserving the delivery receipt contract. */
+export function annotateDeliveryFailure<T extends FailedDelivery>(receipt: T, evidence: DeliveryFailureEvidence): T {
+  failures.set(receipt, evidence)
+  return Object.freeze(receipt)
+}
+
+export function deliveryFailureEvidence(value: unknown): DeliveryFailureEvidence | undefined {
+  return value && typeof value === 'object' ? failures.get(value) : undefined
+}
 
 export function validDeliveryMessageId(value: unknown): value is string | number {
   if (typeof value === 'number') return Number.isSafeInteger(value) && value !== 0
@@ -9,6 +24,7 @@ export function validDeliveryMessageId(value: unknown): value is string | number
 export function normalizeDeliveryReceipt(value: unknown): DeliveryReceipt {
   if (value === false) return { state: 'failed', code: null }
   if (!value || (typeof value !== 'object' && typeof value !== 'function')) return { state: 'unknown' }
+  if (deliveryFailureEvidence(value)) return value as FailedDelivery
   const status = 'status' in value ? value.status : undefined
   const code = 'retcode' in value ? value.retcode : undefined
   const state = 'state' in value ? value.state : undefined

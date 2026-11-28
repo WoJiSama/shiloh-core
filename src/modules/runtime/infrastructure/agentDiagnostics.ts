@@ -5,6 +5,7 @@ import { types } from 'node:util'
 import { agentJournalWriteSteps, type AgentDiagnosticDetails, type AgentDiagnosticEvent, type AgentDiagnosticScope,
   type AgentDiagnosticSink, type AgentDiagnosticValueType, type AgentJournalWriteObserver, type AgentJournalWriteStep } from '../../../contracts/agentDiagnostics.js'
 import { agentBindingToken, conversationAddressKey, platformAccountKey } from '../domain/agentBindings.js'
+import { deliveryFailureEvidence } from '../../messaging/domain/deliveryReceipt.js'
 import { parseAgentDiagnosticDetails } from './agentOperationJournal.js'
 
 type Logger = { info(message: string, ...values: unknown[]): void; warn(message: string, ...values: unknown[]): void; error(message: string, ...values: unknown[]): void }
@@ -293,8 +294,10 @@ export function createAgentDiagnostics(options: {
           const outcome = outcomeOf(result)
           const failureReceipt = (outcome === 'failed' || outcome === 'unknown') && result && typeof result === 'object' ? result : undefined
           const cause = failureReceipt ? relation(receiptEvents.get(failureReceipt), outcome) : undefined
+          const evidence = delivery && deliveryFailureEvidence(failureReceipt)
           const event = recordEvent({ stage, operation, outcome, durationMs: now() - started,
-            ...(delivery ? { delivery } : {}), ...(cause ? { details: cause } : {}) }, !cause)
+            ...(delivery ? { delivery } : {}), ...(evidence ? { code: evidence.code } : {}),
+            ...(evidence || cause ? { details: { ...evidence?.details, ...cause } } : {}) }, !cause)
           if (failureReceipt && !cause) receiptEvents.set(failureReceipt, event)
           return result
         } catch (error) {

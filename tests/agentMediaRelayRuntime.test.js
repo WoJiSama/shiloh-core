@@ -14,6 +14,8 @@ const { createAgentRuntime, createAgentBindingDirectory } = await load('core/ind
 const { conversationAddressKey, platformAccountKey, agentBindingToken } = await load('modules/runtime/domain/agentBindings.js')
 const { createAgentInbox } = await load('modules/runtime/infrastructure/agentInbox.js')
 const { connectAgentRedis, openAgentRedis, agentRedisPrefix } = await load('modules/runtime/infrastructure/agentRedis.js')
+const { createAgentDiagnostics } = await load('modules/runtime/infrastructure/agentDiagnostics.js')
+const { annotateDeliveryFailure } = await load('modules/messaging/domain/deliveryReceipt.js')
 const { createAgentMediaOutboxLedger, agentMediaOutboxId } = await load('modules/media/infrastructure/agentMediaOutboxLedger.js')
 const share = { provider: 'bilibili', reference: { kind: 'video', id: 'BV1H7Gq6zEiC' } }
 const video = { id: '1'.repeat(32), kind: 'video', mime: 'video/mp4', sizeBytes: 64, sha256: '2'.repeat(64) }
@@ -86,6 +88,7 @@ async function fixture(t, settings = {}) {
   }
   function makeHost() {
     return createAgentRuntime({ storage, adapters, now: () => now, isExecutionCurrent: () => connection.isCurrent() && current,
+      ...(settings.diagnostics ? { diagnostics: settings.diagnostics } : {}),
       featureSwitches: settings.featureSwitches,
       privateChatEnabled: true, useTextGroup: () => settings.mode === 'text', history: { enabled: true, retentionDays: 30, maxMessagesPerConversation: 1000 },
       mediaRelay: { enabled: settings.enabled !== false, ...(settings.providers ? { providers: settings.providers } : {}) }, isMediaRelayCurrent: () => enabled,
@@ -180,8 +183,20 @@ test('group-only relay skips new events and restarts cancel queued work in a dis
 })
 
 test('Core unknown native receipt survives duplicate input and host restart without another effect', { timeout: 20000 }, async t => {
-  const f = await fixture(t, { deliver: async () => ({ state: 'unknown' }) })
+  const rows = [], alerts = []
+  const diagnostics = createAgentDiagnostics({ sink: { async append(row) { rows.push(row); return true } },
+    logger: { info() {}, warn() {}, error() {} }, onFailure: row => alerts.push(row) })
+  const evidence = { code: 'qq_media_message_id_missing', details: { step: 'qq_media_response', nativeCode: 0, dispatched: true, result: 'confirmation_pending' } }
+  const f = await fixture(t, { diagnostics, deliver: async () => annotateDeliveryFailure({ state: 'unknown' }, evidence) })
   await f.emit(); await f.drain(); assert.equal((await f.terminal()).state, 'unknown')
+  await waitFor(() => rows.some(row => row.operation === 'media_deliver' && row.outcome === 'unknown'), 'workflow diagnostic')
+  const [native, forward, workflow] = rows.filter(row => row.outcome === 'unknown' && ['send_sendMediaRelay', 'media_forward', 'media_deliver'].includes(row.operation))
+  assert.deepEqual([native.code, native.details], [evidence.code, evidence.details])
+  for (const row of [forward, workflow]) {
+    assert.equal(row.traceId, native.traceId)
+    assert.equal(row.details.causeEventId, native.id)
+  }
+  assert.deepEqual(alerts.filter(row => row.traceId === native.traceId).map(row => row.code), [evidence.code])
   await f.emit(); await f.drain(); await f.restart(); await f.emit(); await f.drain()
   assert.equal(f.calls.length, 1); assert.equal(f.preparations.length, 1); await f.assertPrivate()
 })
